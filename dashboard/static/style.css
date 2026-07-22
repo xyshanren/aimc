@@ -1,0 +1,146 @@
+/* AIMC Dashboard 样式 */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f1419;
+    color: #e7e9ea;
+    line-height: 1.6;
+    padding: 20px;
+    max-width: 1000px;
+    margin: 0 auto;
+}
+
+header {
+    text-align: center;
+    padding: 30px 0 20px;
+    border-bottom: 1px solid #2f3336;
+    margin-bottom: 24px;
+}
+
+header h1 {
+    font-size: 2em;
+    color: #1d9bf0;
+}
+
+header .subtitle {
+    font-weight: 300;
+    color: #71767b;
+    font-size: 0.6em;
+}
+
+header .desc {
+    color: #71767b;
+    margin-top: 8px;
+}
+
+.card {
+    background: #16202a;
+    border: 1px solid #2f3336;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.card h2 {
+    font-size: 1.1em;
+    color: #e7e9ea;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #2f3336;
+}
+
+.loading {
+    color: #71767b;
+    text-align: center;
+    padding: 20px;
+}
+
+/* 渠道状态表格 */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9em;
+}
+
+th, td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid #2f3336;
+}
+
+th {
+    color: #71767b;
+    font-weight: 500;
+}
+
+.status-active {
+    color: #00ba7c;
+}
+
+.status-disabled, .status-error {
+    color: #f4212e;
+}
+
+.status-exhausted {
+    color: #ffad1f;
+}
+
+/* 优惠卡片 */
+.promo-item {
+    padding: 12px;
+    border: 1px solid #2f3336;
+    border-radius: 8px;
+    margin-bottom: 10px;
+}
+
+.promo-item .provider {
+    display: inline-block;
+    background: #1d9bf0;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.8em;
+    margin-right: 8px;
+}
+
+.promo-item .discount {
+    color: #00ba7c;
+    font-weight: bold;
+}
+
+.promo-item .title {
+    margin-top: 6px;
+}
+
+.promo-item .meta {
+    color: #71767b;
+    font-size: 0.85em;
+    margin-top: 4px;
+}
+
+/* 价格表 */
+.price-low {
+    color: #00ba7c;
+}
+
+.price-high {
+    color: #ffad1f;
+}
+
+footer {
+    text-align: center;
+    padding: 20px;
+    color: #71767b;
+    font-size: 0.85em;
+}
+
+footer a {
+    color: #1d9bf0;
+    text-decoration: none;
+}

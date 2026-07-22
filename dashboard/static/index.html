@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIMC - AI Model Compass</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZTOjDkG0eMq1vq9iF1K2g3H4j5L6m7N8o9P0q1R2s3T4u5V6w7X8y9Z0" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" integrity="sha384-k2G1V1M0mN4j5L6n7O8p9Q0r1S2t3U4v5W6x7Y8z9A0b1C2d3E4f5G6h7I8j9K0" crossorigin="anonymous"></script>
+</head>
+<body>
+    <header>
+        <h1>AIMC <span class="subtitle">AI Model Compass</span></h1>
+        <p class="desc">轻量级 LLM 网关与优惠情报聚合</p>
+    </header>
+
+    <main>
+        <!-- 渠道状态 -->
+        <section class="card" id="channels-section">
+            <h2>渠道状态</h2>
+            <div id="channels-list" hx-get="/dashboard/api/channels" hx-trigger="load, every 30s" hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
+
+        <!-- 优惠排行榜 -->
+        <section class="card" id="promotions-section">
+            <h2>优惠情报</h2>
+            <div id="promotions-list" hx-get="/dashboard/api/promotions" hx-trigger="load, every 60s" hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
+
+        <!-- 价格对比 -->
+        <section class="card" id="prices-section">
+            <h2>价格对比</h2>
+            <div id="prices-list" hx-get="/dashboard/api/prices" hx-trigger="load, every 60s" hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
+
+        <!-- 用量统计 -->
+        <section class="card" id="usage-section">
+            <h2>用量统计（近7天）</h2>
+            <canvas id="usage-chart" width="600" height="200"></canvas>
+        </section>
+    </main>
+
+    <footer>
+        <p>AIMC v0.1.0 | 自用工具 | <a href="/docs">API 文档</a></p>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

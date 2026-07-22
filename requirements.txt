@@ -1,0 +1,23 @@
+# AIMC - AI Model Compass 依赖清单
+# 网关核心
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+httpx>=0.27.0
+
+# 数据库
+sqlalchemy[asyncio]>=2.0.0
+aiosqlite>=0.20.0
+
+# 数据校验
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# 配置
+python-dotenv>=1.0.0
+
+# 定时调度
+apscheduler>=3.10.0
+
+# 情报采集
+playwright>=1.45.0
+openai>=1.40.0
