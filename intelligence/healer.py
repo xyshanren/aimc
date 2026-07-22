@@ -171,14 +171,23 @@ async def _alert_low_confidence(result: ParseResult, source):
 async def handle_fetch_error(source, error: str):
     """处理采集失败
 
-    连续失败超过 3 次触发告警。
+    Phase 2C-1: 升级告警策略
+    - 第 1 次失败：立即告警（不要延迟发现故障）
+    - 第 2 次失败：log only（避免刷屏）
+    - 第 3 次失败：告警 + 自动 disable source
+    - 第 4+ 次：log only（已 disabled）
+
+    Args:
+        source: 采集源对象（in-memory error_count 会被累加并同步到 DB）
+        error: 错误描述（来自 fetch_page_with_error 的 reason）
     """
     try:
         from db.engine import async_session_factory
         from db import crud
+        from intelligence.alerter import send_alert
 
         async with async_session_factory() as session:
-            # 增加错误计数
+            # 增加错误计数（in-memory + DB）
             source.error_count = (source.error_count or 0) + 1
             await crud.update_intel_source(
                 session,
@@ -186,10 +195,17 @@ async def handle_fetch_error(source, error: str):
                 error_count=source.error_count,
             )
 
-            # 连续失败超过 3 次，标记为 error 并告警
-            if source.error_count >= 3:
+            if source.error_count == 1:
+                # 首次失败：立即告警
+                await send_alert(
+                    f"[采集异常] {source.provider} 首次失败\n"
+                    f"URL: {source.url}\n"
+                    f"错误: {error}\n"
+                    f"error_count={source.error_count}/3"
+                )
+            elif source.error_count >= 3:
+                # 连续 3 次失败：升级告警 + 自动禁用
                 await crud.update_intel_source(session, source.source_id, status="error")
-                from intelligence.alerter import send_alert
                 await send_alert(
                     f"[采集异常] {source.provider} 连续失败 {source.error_count} 次\n"
                     f"URL: {source.url}\n"

@@ -219,3 +219,66 @@ async def close_browser():
         await _browser.close()
         _browser = None
         logger.info("Playwright 浏览器已关闭")
+
+
+async def fetch_page_with_error(
+    url: str,
+    wait_until: str = "domcontentloaded",
+    timeout: int = 30000,
+    wait_for: Optional[str] = None,
+    wait_for_timeout: int = 10000,
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+    backoff: float = 2.0,
+) -> tuple[Optional[str], Optional[str]]:
+    """fetch_page 升级版：返回 (content, error) tuple
+
+    Phase 2C-1: 让 _run_source_task 拿到错误原因，告警能显示具体问题
+
+    Returns:
+        (content, None) 成功
+        (None, error_str) 失败（含具体原因）
+
+    与 fetch_page 区别：
+    - fetch_page 返回 content | None（丢错误原因）
+    - fetch_page_with_error 返回 (content, error)，调用方知道为什么失败
+    """
+    last_error: Optional[Exception] = None
+    last_error_status: Optional[int] = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            content = await _fetch_page_once(
+                url, wait_until, timeout, wait_for, wait_for_timeout
+            )
+            if content is not None:
+                if attempt > 1:
+                    logger.info(f"fetch 重试成功 (attempt {attempt}/{max_attempts}): {url}")
+                return content, None
+            last_error = Exception("fetch_page_once returned None")
+
+        except Exception as e:
+            last_error = e
+            last_error_status = (
+                getattr(e, "status", None)
+                or getattr(getattr(e, "response", None), "status", None)
+            )
+            if last_error_status and 400 <= last_error_status < 500 and last_error_status not in (408, 429):
+                logger.warning(f"fetch 客户端错误 {last_error_status}，不重试: {url}")
+                return None, f"HTTP {last_error_status} 客户端错误（不重试）: {type(e).__name__}: {e}"
+
+        if attempt < max_attempts:
+            delay = base_delay * (backoff ** (attempt - 1))
+            logger.warning(
+                f"fetch 失败 (attempt {attempt}/{max_attempts}): {url} "
+                f"error={last_error}, {delay:.1f}s 后重试"
+            )
+            await asyncio.sleep(delay)
+
+    # 全部失败
+    if last_error_status:
+        reason = f"HTTP {last_error_status} 重试 {max_attempts} 次失败: {type(last_error).__name__}: {last_error}"
+    else:
+        reason = f"重试 {max_attempts} 次失败: {type(last_error).__name__}: {last_error}"
+    logger.error(f"fetch 全部 {max_attempts} 次失败: {url}, reason={reason}")
+    return None, reason

@@ -93,16 +93,23 @@ async def run_source_now(provider: str) -> int:
 
 
 async def _run_source_task(source):
-    """执行单个采集源的任务"""
-    try:
-        from intelligence.fetcher import fetch_page
-        from intelligence.differ import has_changed
-        from intelligence.healer import handle_parse_result
+    """执行单个采集源的任务
 
-        # 1. 抓取页面
-        content = await fetch_page(source.url)
+    Phase 2C-1: 接入 handle_fetch_error 告警
+    - fetch 失败时调 handle_fetch_error（连续 3 次告警 + disable）
+    - 外层 Exception 仍然只 log（开发者 bug 不应刷 Telegram）
+    """
+    try:
+        from intelligence.fetcher import fetch_page_with_error
+        from intelligence.differ import has_changed
+        from intelligence.healer import handle_parse_result, handle_fetch_error
+
+        # 1. 抓取页面（Phase 2C-1: 用 _with_error 版本拿错误原因）
+        content, error = await fetch_page_with_error(source.url)
         if not content:
-            logger.warning(f"采集失败（空内容）: {source.provider}")
+            logger.warning(f"采集失败: {source.provider} - {error}")
+            # 调 handle_fetch_error：累加 error_count + 按规则告警
+            await handle_fetch_error(source, error or "未知错误")
             return
 
         # 2. Diff 检测
@@ -118,6 +125,8 @@ async def _run_source_task(source):
         await handle_parse_result(content, source)
 
     except Exception as e:
+        # 外层 Exception 是代码 bug，开发者排查用
+        # 不发 Telegram 避免刷屏（设计选择）
         logger.error(f"采集任务异常: {source.provider} - {e}", exc_info=True)
 
 
