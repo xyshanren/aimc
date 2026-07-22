@@ -32,7 +32,17 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     parse_model: str = "gpt-4o-mini"
 
-    # === Telegram 告警 ===
+    # === 告警通道（Phase 试用简化）===
+    # alert_channel:
+    #   "log"        - 只 log（默认，dry-run，不发任何东西）
+    #   "bark"       - iOS Bark（国内首选）
+    #   "telegram"   - Telegram bot（需翻墙）
+    #   "serverchan" - Server 酱（推微信）
+    alert_channel: str = "log"
+    bark_key: str = ""  # Bark device key（iPhone app 注册时给）
+    bark_server: str = ""  # 自建 Bark server URL（留空用官方 https://api.day.app）
+    serverchan_key: str = ""  # Server 酱 SendKey
+    # === Telegram 告警（兼容老配置，channel=telegram 时启用）===
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
