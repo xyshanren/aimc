@@ -2,6 +2,11 @@
 
 使用 LLM（gpt-4o-mini）对抓取的页面内容进行结构化提取。
 成本极低，适合高频调用。
+
+改进历史：
+- 2026-07-22: 接 HTML 净化器 (Phase 2B-1)
+  - 之前：直接截断 3000 字符 HTML（含 nav/footer/script 噪音）
+  - 现在：cleaner.py 净化成 Markdown 后截断 1500（等价信息 50% token）
 """
 
 import json
@@ -11,6 +16,7 @@ from typing import Optional
 from openai import AsyncOpenAI
 
 from config import settings
+from intelligence.cleaner import clean_html
 from schemas.intel import ParseResult
 
 logger = logging.getLogger(__name__)
@@ -31,7 +37,8 @@ def _get_client() -> AsyncOpenAI:
 
 SYSTEM_PROMPT = """你是一个 AI 大模型优惠情报分析助手。
 
-请分析以下页面内容，判断是否包含 AI 模型相关的优惠/活动/价格变动信息。
+你将收到一段已经过清洗的 Markdown 页面内容（去除了导航/页脚/广告/脚本等噪音）。
+请分析是否包含 AI 模型相关的优惠/活动/价格变动信息。
 
 返回严格的 JSON 格式：
 {
@@ -49,14 +56,16 @@ SYSTEM_PROMPT = """你是一个 AI 大模型优惠情报分析助手。
 注意：
 - 如果不是优惠/活动信息，is_promotion 设为 false，confidence 设为判断置信度
 - 日期格式统一为 YYYY-MM-DD
-- 无法确定的字段设为 null"""
+- 无法确定的字段设为 null
+- 输入是 Markdown 格式（含 # 标题、`代码`、[链接](url)），直接按语义理解即可
+"""
 
 
 async def parse_content(content: str, provider: str, url: str) -> ParseResult:
     """使用 AI 解析页面内容
 
     Args:
-        content: 页面 HTML/文本内容
+        content: 页面 HTML（来自 fetcher 的 page.content()）
         provider: 厂商标识
         url: 来源 URL
 
@@ -65,13 +74,14 @@ async def parse_content(content: str, provider: str, url: str) -> ParseResult:
     """
     client = _get_client()
 
-    # 截断内容（控制 token 成本）
-    truncated = content[:3000]
+    # 1. 净化 HTML → 干净 Markdown（移除 nav/footer/script/style 等）
+    # 2. 截断到 1500 字符（之前是 3000 字符 HTML，等价信息 50% token）
+    cleaned_md = clean_html(content, max_chars=1500)
 
     user_prompt = f"""页面来源：{provider} ({url})
-页面内容：
+清洗后的 Markdown 内容：
 ---
-{truncated}
+{cleaned_md}
 ---
 
 请分析此页面是否包含 AI 模型优惠/活动/价格变动信息，返回 JSON。"""

@@ -5,6 +5,8 @@
 改进历史：
 - 2026-07-22: 加重试 + 指数退避 (Phase 2A-1, 借鉴 firecrawl)
 - 2026-07-22: 加资源拦截 text_mode (Phase 2A-3, 借鉴 crawl4ai)
+- 2026-07-22: 修资源拦截 bug — 之前传 list 当 url pattern 触发 'list' not callable 错误
+              改成单 glob 字符串
 """
 
 import asyncio
@@ -18,16 +20,15 @@ logger = logging.getLogger(__name__)
 # Playwright 浏览器实例（延迟初始化）
 _browser = None
 
-# 资源拦截：屏蔽的图片/样式/字体（节省 60-80% 带宽，5x 加速）
-_BLOCKED_RESOURCE_PATTERNS = [
-    "**/*.png", "**/*.jpg", "**/*.jpeg", "**/*.gif", "**/*.webp",
-    "**/*.svg", "**/*.ico", "**/*.bmp",
-    "**/*.css",
-    "**/*.woff", "**/*.woff2", "**/*.ttf", "**/*.otf", "**/*.eot",
-    # 常见追踪 / 分析（可选启用，谨慎）
-    # "**/google-analytics.com/**",
-    # "**/googletagmanager.com/**",
-]
+# 资源拦截：屏蔽图片/CSS/字体（节省 60-80% 带宽，3-5x 加速）
+# Playwright 的 glob 支持 {a,b,c} 语法，单字符串即可
+_BLOCKED_RESOURCE_PATTERN = (
+    "**/*.{png,jpg,jpeg,gif,webp,svg,ico,bmp,"
+    "css,woff,woff2,ttf,otf,eot}"
+)
+# 常见追踪 / 分析（默认不启用，需要时手动加到 pattern 即可）
+# "**/google-analytics.com/**",
+# "**/googletagmanager.com/**",
 
 
 async def _get_browser():
@@ -51,7 +52,9 @@ async def _apply_resource_blocking(context) -> None:
     """
     async def _route_handler(route):
         await route.abort()
-    await context.route(_BLOCKED_RESOURCE_PATTERNS, _route_handler)
+    # Playwright 的 route() 第二个参数（handler）是 callable，
+    # 第一个参数（url pattern）必须是单 string/Pattern，不能是 list
+    await context.route(_BLOCKED_RESOURCE_PATTERN, _route_handler)
 
 
 async def fetch_page(

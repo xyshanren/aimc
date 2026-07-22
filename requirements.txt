@@ -21,3 +21,4 @@ apscheduler>=3.10.0
 # 情报采集
 playwright>=1.45.0
 openai>=1.40.0
+beautifulsoup4>=4.12.0  # Phase 2B-1 HTML 净化
