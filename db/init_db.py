@@ -1,10 +1,16 @@
 """数据库初始化模块
 
 负责建表和初始数据导入。
+
+改进历史：
+- 2026-07-22: 加 ensure_migrations() 幂等迁移 (Phase 2A-2)
+  - 老 DB 表已存在时，给 intel_sources 加 last_content 列
 """
 
 import asyncio
 import logging
+
+from sqlalchemy import text
 
 from db.engine import engine
 from db.models import Base
@@ -13,10 +19,32 @@ logger = logging.getLogger(__name__)
 
 
 async def init_db():
-    """创建所有表（如果不存在）"""
+    """创建所有表（如果不存在）+ 跑幂等迁移"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await ensure_migrations()
     logger.info("数据库表初始化完成")
+
+
+async def ensure_migrations():
+    """增量 schema 迁移（幂等）
+
+    用途：老 DB 已经 init 过、但 schema 演进时（加新列），不会重新建表。
+    SQLAlchemy `create_all` 只建不存在的表，不会改已有表。
+    所以新增列必须用 ALTER TABLE，且要手动检查列存在性。
+
+    当前迁移项：
+    - intel_sources.last_content (Phase 2A-2, 2026-07-22)
+    """
+    async with engine.begin() as conn:
+        # intel_sources.last_content
+        result = await conn.execute(text("PRAGMA table_info('intel_sources')"))
+        columns = {row[1] for row in result.fetchall()}
+        if "last_content" not in columns:
+            await conn.execute(text("ALTER TABLE intel_sources ADD COLUMN last_content TEXT"))
+            logger.info("迁移: intel_sources 添加 last_content 列")
+        else:
+            logger.debug("迁移: intel_sources.last_content 已存在，跳过")
 
 
 async def drop_all():

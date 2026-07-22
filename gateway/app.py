@@ -1,6 +1,11 @@
 """FastAPI 应用工厂
 
 负责创建 app 实例、注册路由、挂载中间件和静态文件。
+
+改进历史：
+- 2026-07-22: lifespan 启动情报层 scheduler (Phase 2A 收尾)
+  - 启动：调 start_scheduler() 注册 6 个 source + 1 个 route cache refresh
+  - 关闭：调 stop_scheduler() 优雅停机 + close_browser() 释放 Playwright
 """
 
 import logging
@@ -34,15 +39,36 @@ async def lifespan(app: FastAPI):
     await route_engine.refresh_cache()
     logger.info("路由缓存加载完成")
 
-    # 启动情报采集调度器（Phase 3 启用）
-    # from intelligence.scheduler import start_scheduler
-    # await start_scheduler()
+    # 启动情报采集调度器（Phase 2A 启用）
+    # 注意：scheduler 启动是 fire-and-forget，第一次抓取会按 interval 触发
+    # 如果未装 Playwright 浏览器二进制，第一次抓取会失败但不影响服务
+    try:
+        from intelligence.scheduler import start_scheduler
+        await start_scheduler()
+    except Exception as e:
+        logger.error(f"启动情报层调度器失败: {e}", exc_info=True)
+        # 不影响主服务继续跑（网关层独立可用）
 
     logger.info(f"AIMC 已启动 -> http://{settings.host}:{settings.port}")
     yield
 
     # === 关闭阶段 ===
     logger.info("AIMC 关闭中...")
+    # 停情报层调度器
+    try:
+        from intelligence.scheduler import stop_scheduler
+        await stop_scheduler()
+    except Exception as e:
+        logger.warning(f"停情报层调度器失败: {e}")
+
+    # 关 Playwright 浏览器
+    try:
+        from intelligence.fetcher import close_browser
+        await close_browser()
+    except Exception as e:
+        logger.warning(f"关浏览器失败: {e}")
+
+    # 关 DB 引擎
     from db.engine import engine
     await engine.dispose()
 

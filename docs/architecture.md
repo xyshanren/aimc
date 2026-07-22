@@ -154,3 +154,97 @@ python scripts/backup.py
 ```
 
 环境要求：Python 3.11+，无需 Docker。
+
+
+## 八、开发计划
+
+> aimc 还在早期(1 个 feat commit,9103c37 之后),没有正式 release tag。
+> 这里按 Phase 跟进展分,不绑死版本号;首次 tag(v0.1.0)再统一开 ROADMAP.md。
+
+### 当前状态 (2026-07-22 14:35)
+
+- Phase 1 脚手架完成:
+  - 路由决策引擎 (`gateway/router.py`) — 时段/价格/配额/频限 多维权重选最优渠道
+  - 内存频限器 (`gateway/limiter.py`) — QPM/TPM/并发/日限
+  - 代理透传 (`gateway/proxy.py`) — 流式/非流式原样字节透传
+  - OpenAI 兼容接口 (`gateway/routes.py`) — `/v1/chat/completions` + `/v1/models` + `/health`
+  - SQLite schema (8 表) + `usage_logs` 写入
+  - 情报采集层 (`intelligence/`) 脚手架,OpenAI 解析引擎 (`parse_model: gpt-4o-mini`)
+  - 极简 Dashboard 框架 (FastAPI 静态 + htmx)
+- License 已统一为 MulanPSL-2.0 (commit 9103c37)
+- **没动**: SSE 路由决策元数据透出、promotion 表实际使用、Dashboard 实装、
+  fallback 跨渠道自动切换、API key 轮询。`routes.py:list_models()` 只回
+  `{"id": m, "object": "model", "owned_by": "aimc"}` 3 字段。
+
+### Phase 2 — SSE 路由决策元数据注入 (跨 hermes-tray, ~0.5d)
+
+**触发**: hermes-tray v0.2.1 的 footer model pill + stats page 拿不到
+aimc 实际选的渠道和 cost,前端只能显示 routing 意图(用户的 `model`
+请求),tray 端 stats 的 cost 是用自己 pricing 表拍的,可能跟 aimc 实际
+收的对不上。Phase 1 必做。
+
+**改动**: `gateway/proxy.py` `_forward_stream` 当前是 `aiter_raw()`
+原样透传;改成在 first chunk yield 后,先 yield 一段自定义 SSE event,
+再继续透传剩余字节。**不解析上游 SSE**(架构原则不动),只插一段。
+
+注入格式用 OpenAI SSE 兼容的 `event:` + `data:` 两行结构
+(hermes-tray 端 SSE parser 只看 `data:` 行,新 event type 是
+forward-compatible):
+
+```
+event: routing_decision
+data: {"chosen_channel": "AWS-Bedrock Account-1", "model": "claude-opus-4-6", "cost_estimate_usd": 0.0234}
+
+```
+
+字段:
+- `chosen_channel` (str): aimc 选中的渠道名(`channel["name"]`)
+- `model` (str): 用户请求的 routing key (与 SSE `data.model` 同)
+- `cost_estimate_usd` (float, 可选): aimc 按选中渠道价格算的预估成本,
+  由 `_forward_normal` 已有 `_write_usage_log` 同源计算
+- `routing_strategy` (str, 可选): `price_first` / `quota_first` / `fallback`,
+  方便 debug
+
+**实现要点**:
+- `injected_routing` 布尔 flag,first chunk 之后置 true,只注入 1 次
+- 流式响应:在 `stream_generator()` 内部 `await response.aiter_raw()` 循环里
+- 非流式响应:不注入(没有 SSE 流;非流式走 HTTP response headers 或
+  响应 body 顶层加 `routing_decision` 字段,跟 hermes-tray 联调时再定)
+- 错误路径:aimc 自己 error 时不注入(走 502/503/504,直接 JSONResponse)
+
+**测试**:
+- `tests/gateway/test_routing_injection.py`:mock upstream stream,
+  验证 first chunk 之后是 `event: routing_decision\ndata: {...}\n\n`
+  + 后续字节原样
+- happy path + 错误路径 + 多次请求隔离
+
+**联调**: hermes-tray 侧 v0.3.0 Phase 1 一并做:
+- `src/lib/chat-stream.ts` 解析新字段 → 写 state
+- footer pill 读 `chosen_channel` + `model`
+- stats page by_model 表加 "渠道" 列 (key 改 model+channel 二元组)
+- 详见 hermes-tray ROADMAP.md Phase 1 「aimc SSE 注入 + tray 端 consumed」
+
+### Phase 3+ — 待定 (不写死,等 Phase 1 + 2 用起来再说)
+
+- `routes.py:list_models()` 加 `owned_by` (从 `channel.provider` 透出) +
+  `display_name` (跟 model id 一致或单独映射) — hermes-tray 端能本地
+  split 渲染(虽然 aimc routing key 没 `/`)
+- `routes.py:list_models()` 还可以加 `context_window` / `capabilities`
+  / `pricing`,给 hermes-tray 做 cost 估算(目前 tray 用自己 pricing 表
+  跟 aimc 不一致,Phase 2 注入的 `cost_estimate_usd` 才是真值)
+- `usage_logs` 已写但没暴露查询接口,Dashboard 加 "by channel /
+  by model / by day" 透视
+- promotion 表当前 schema 落库但没在路由里用,等"自动用最便宜的
+  活动价"逻辑
+- API key 轮询 + 跨账号 fall back(目前 channel 绑死 account)
+- Dashboard 实装:htmx 写"渠道对比" / "用量热图" / "价格日历"
+- 跟 hermes-tray 的 `recent_routing_decision` 字段对齐(Phase 2
+  注入就是这块的 producer)
+
+### 跨项目 cross-ref
+
+- **hermes-tray** (D:\work\workspace\Qoder\hermes-tray) 的 v0.3.0
+  Phase 1 同时做了 aimc SSE 注入的 consumer 侧。两侧 commit 走各自
+  仓库,联调在 v0.3.0 alpha-33 release 后做。
+- 一旦 aimc 进入"被 hermes-tray 当中介 gateway 用"为主场景的阶段,
+  Phase 2/3 的优先级会跟着 hermes-tray 的 stats page UX 迭代。

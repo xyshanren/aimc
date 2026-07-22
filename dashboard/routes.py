@@ -3,12 +3,13 @@
 提供：
 - /dashboard -> 单页面 HTML
 - /api/dashboard/* -> Dashboard 数据 API
+- /api/dashboard/sources/run-now -> 手动触发情报采集 (Phase 2A-4)
 """
 
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -135,3 +136,28 @@ async def get_prices(session: AsyncSession = Depends(get_session)):
         }
         for row in rows
     ]
+
+
+@router.post("/api/sources/run-now")
+async def run_source_now(provider: str = Query(..., description="厂商标识，如 deepseek / qwen / glm")):
+    """手动触发指定 provider 的情报采集（不等定时器）
+
+    Phase 2A-4：改完代码想立刻验证、刚加完新 source 不想等 15 分钟时用。
+    任务在后台跑（fire-and-forget），接口立即返回。
+
+    Returns:
+        200: { "status": "started", "provider": "...", "count": N }
+        400: 未知 provider
+    """
+    from intelligence.scheduler import run_source_now as _run_now
+
+    count = await _run_now(provider)
+    if count == 0:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
+
+    return {
+        "status": "started",
+        "provider": provider,
+        "count": count,
+        "note": "task 在后台跑，fire-and-forget",
+    }

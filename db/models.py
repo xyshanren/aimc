@@ -168,5 +168,6 @@ class IntelSource(Base):
     status = Column(Text, default="active", comment="active/error/disabled")
     last_check_at = Column(DateTime, nullable=True)
     last_hash = Column(Text, nullable=True, comment="上次内容哈希（Diff 用）")
+    last_content = Column(Text, nullable=True, comment="上次完整内容（截断 50KB，用于相似度计算）")
     error_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=func.now())

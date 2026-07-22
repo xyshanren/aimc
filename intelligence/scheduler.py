@@ -1,8 +1,12 @@
 """APScheduler 定时调度器
 
 在 FastAPI 启动时注册定时任务，同进程异步运行。
+
+改进历史：
+- 2026-07-22: 加 run_source_now 手动触发 (Phase 2A-4, 借鉴 firecrawl 异步 job 模式)
 """
 
+import asyncio
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -22,15 +26,18 @@ async def start_scheduler():
     sources = get_all_sources()
 
     for source in sources:
+        # 用 provider + source_type 作为 job id 后缀
+        # （source_id 默认 0，会冲突；同一 provider 下两个 source 通过 source_type 区分）
+        job_id = f"crawl_{source.provider}_{source.source_type}"
         scheduler.add_job(
             _run_source_task,
             trigger=IntervalTrigger(seconds=source.poll_interval),
             args=[source],
-            id=f"crawl_{source.provider}_{source.source_id}",
-            name=f"采集: {source.provider}",
+            id=job_id,
+            name=f"采集: {source.provider}/{source.source_type}",
             replace_existing=True,
         )
-        logger.info(f"注册采集任务: {source.provider} (间隔 {source.poll_interval}s)")
+        logger.info(f"注册采集任务: {source.provider}/{source.source_type} (间隔 {source.poll_interval}s)")
 
     # 路由缓存定时刷新
     scheduler.add_job(
@@ -50,6 +57,39 @@ async def stop_scheduler():
     if scheduler.running:
         scheduler.shutdown(wait=False)
         logger.info("调度器已停止")
+
+
+async def run_source_now(provider: str) -> int:
+    """立即触发指定 provider 的所有 source（不等待定时器）
+
+    Args:
+        provider: 厂商标识，如 'deepseek' / 'qwen' / 'glm'
+
+    Returns:
+        启动的 task 数量
+
+    适用场景：
+    - 改完解析逻辑想立刻验证
+    - 刚加完新 source 不想等 15 分钟
+    - 调试时反复触发
+
+    借鉴：firecrawl 异步 job 模式（caller 不阻塞，task 在后台跑）
+    """
+    from intelligence.sources import get_source_by_provider
+
+    sources = get_source_by_provider(provider)
+    if not sources:
+        logger.warning(f"手动触发失败：未知 provider '{provider}'")
+        return 0
+
+    count = 0
+    for source in sources:
+        # fire-and-forget：每个 source 一个独立 task
+        asyncio.create_task(_run_source_task(source))
+        count += 1
+
+    logger.info(f"手动触发 {provider}: 启动 {count} 个 task")
+    return count
 
 
 async def _run_source_task(source):

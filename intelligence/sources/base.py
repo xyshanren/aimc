@@ -27,6 +27,8 @@ class IntelSourceBase:
     poll_interval: int = 900
     # 上次内容哈希
     last_hash: Optional[str] = None
+    # 上次完整内容（截断 50KB，用于相似度计算，避免 99% 一样的页面触发 AI 解析）
+    last_content: Optional[str] = None
     # 连续错误计数
     error_count: int = 0
     # CSS 选择器（可选，用于精确定位内容区域）
