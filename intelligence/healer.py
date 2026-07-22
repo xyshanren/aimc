@@ -189,11 +189,28 @@ async def handle_fetch_error(source, error: str):
         async with async_session_factory() as session:
             # 增加错误计数（in-memory + DB）
             source.error_count = (source.error_count or 0) + 1
-            await crud.update_intel_source(
-                session,
-                source.source_id,
-                error_count=source.error_count,
+
+            # Phase 2C-2: 用 (provider, url) 替代 source_id
+            db_source = await crud.get_intel_source_by_provider_url(
+                session, source.provider, source.url
             )
+            if db_source:
+                db_source.error_count = source.error_count
+                if source.error_count >= 3:
+                    db_source.status = "error"
+                await session.commit()
+            else:
+                # DB 没对应行（首次失败）→ upsert 一条
+                await crud.upsert_intel_source(
+                    session,
+                    provider=source.provider,
+                    url=source.url,
+                    source_type=getattr(source, "source_type", "web_page"),
+                    poll_interval=getattr(source, "poll_interval", 900),
+                    status="error" if source.error_count >= 3 else "active",
+                    error_count=source.error_count,
+                )
+                await session.commit()
 
             if source.error_count == 1:
                 # 首次失败：立即告警
@@ -205,7 +222,6 @@ async def handle_fetch_error(source, error: str):
                 )
             elif source.error_count >= 3:
                 # 连续 3 次失败：升级告警 + 自动禁用
-                await crud.update_intel_source(session, source.source_id, status="error")
                 await send_alert(
                     f"[采集异常] {source.provider} 连续失败 {source.error_count} 次\n"
                     f"URL: {source.url}\n"
@@ -213,6 +229,5 @@ async def handle_fetch_error(source, error: str):
                     f"已自动禁用，请人工检查。"
                 )
 
-            await session.commit()
     except Exception as e:
         logger.error(f"处理采集错误失败: {e}")

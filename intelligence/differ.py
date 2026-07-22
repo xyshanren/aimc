@@ -102,10 +102,7 @@ async def _update_source_hash(source, new_hash: str, new_content: Optional[str] 
         source.last_content = new_content[:_LAST_CONTENT_MAX_LEN]
 
     # 2. DB 更新（best-effort，失败不影响主流程）
-    if not source.source_id:
-        # source.source_id 默认为 0（dataclass 默认值），DB 没对应行，跳过
-        return
-
+    # Phase 2C-2: 用 (provider, url) 替代 source_id（dataclass.source_id=0 不可靠）
     try:
         from db.engine import async_session_factory
         from db import crud
@@ -119,11 +116,24 @@ async def _update_source_hash(source, new_hash: str, new_content: Optional[str] 
             if new_content is not None:
                 update_kwargs["last_content"] = new_content[:_LAST_CONTENT_MAX_LEN]
 
-            await crud.update_intel_source(
-                session,
-                source.source_id,
-                **update_kwargs,
+            db_source = await crud.get_intel_source_by_provider_url(
+                session, source.provider, source.url
             )
-            await session.commit()
+            if db_source:
+                for key, value in update_kwargs.items():
+                    setattr(db_source, key, value)
+                await session.commit()
+            else:
+                # DB 没对应行（dataclass 跟 DB 没关联）→ 自动 upsert 一条
+                await crud.upsert_intel_source(
+                    session,
+                    provider=source.provider,
+                    url=source.url,
+                    source_type=getattr(source, "source_type", "web_page"),
+                    poll_interval=getattr(source, "poll_interval", 900),
+                    status="active",
+                    **update_kwargs,
+                )
+                await session.commit()
     except Exception as e:
         logger.warning(f"更新采集源哈希失败: {e}")

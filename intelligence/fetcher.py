@@ -7,6 +7,9 @@
 - 2026-07-22: 加资源拦截 text_mode (Phase 2A-3, 借鉴 crawl4ai)
 - 2026-07-22: 修资源拦截 bug — 之前传 list 当 url pattern 触发 'list' not callable 错误
               改成单 glob 字符串
+- 2026-07-22: 加 playwright-stealth 反爬 (Phase 2C-3)
+  - 屏蔽 navigator.webdriver 等 bot 特征
+  - 默认 evasions 全开（成本 < 50ms/context）
 """
 
 import asyncio
@@ -29,6 +32,19 @@ _BLOCKED_RESOURCE_PATTERN = (
 # 常见追踪 / 分析（默认不启用，需要时手动加到 pattern 即可）
 # "**/google-analytics.com/**",
 # "**/googletagmanager.com/**",
+
+# Stealth 实例（Phase 2C-3）
+# 全局复用，script_payload 只算一次。应用在每个 context 上即可对所有 page 生效
+_stealth = None
+
+
+def _get_stealth():
+    """延迟初始化 Stealth（避免 import 时的副作用）"""
+    global _stealth
+    if _stealth is None:
+        from playwright_stealth import Stealth
+        _stealth = Stealth()
+    return _stealth
 
 
 async def _get_browser():
@@ -55,6 +71,22 @@ async def _apply_resource_blocking(context) -> None:
     # Playwright 的 route() 第二个参数（handler）是 callable，
     # 第一个参数（url pattern）必须是单 string/Pattern，不能是 list
     await context.route(_BLOCKED_RESOURCE_PATTERN, _route_handler)
+
+
+async def _apply_stealth(context) -> None:
+    """在 context 上注入反爬 init script（Phase 2C-3）
+
+    借鉴 playwright-stealth 默认 evasions：
+    - navigator.webdriver → false
+    - chrome.runtime / chrome.app 等对象模拟
+    - navigator.languages / platform / plugins 真实化
+    - webgl vendor/renderer 真实化（避免被识别为 SwiftShader）
+
+    注：add_init_script 会在 context 内**所有 page 创建前**执行，
+    所以一个 context 应用一次即可（每个 fetch 新建 context 的代价已存在）
+    """
+    stealth = _get_stealth()
+    await stealth.apply_stealth_async(context)
 
 
 async def fetch_page(
@@ -131,9 +163,13 @@ async def _fetch_page_once(
     Phase 2B-3: 支持 wait_for CSS selector
     - 优先级：wait_until → wait_for(可选) → page.content()
     - 不再有硬编码的 wait_for_timeout(2000)，用 wait_for 替代
+
+    Phase 2C-3: 加 stealth 反爬
+    - 顺序很重要：先 new_context → 后 apply_stealth（init script）
     """
     browser = await _get_browser()
     context = await browser.new_context()
+    await _apply_stealth(context)
     await _apply_resource_blocking(context)
     page = await context.new_page()
     try:
@@ -176,6 +212,7 @@ async def fetch_text(
         try:
             browser = await _get_browser()
             context = await browser.new_context()
+            await _apply_stealth(context)
             await _apply_resource_blocking(context)
             page = await context.new_page()
             try:

@@ -2,7 +2,7 @@
 
 > 调研来源：crawl4ai (53k⭐, Apache-2.0) / firecrawl (25.6k⭐, AGPL-3.0) / crawlee-python (Apache-2.0)
 > 创建时间：2026-07-22
-> 状态：Phase 2A 编码中
+> 状态：Phase 2A/2B/2C-1~3 全部完成 ✅
 
 ## 一、为什么需要改进
 
@@ -179,3 +179,17 @@ async def has_changed(source, new_content: str) -> bool:
 - hermes-tray 联调线（architecture.md Phase 2）：网关层 SSE 注入
 
 两侧各自 commit 走各自仓库，**没有代码耦合**。
+
+## 八、完成记录
+
+| Commit | 阶段 | 内容 | 状态 |
+|--------|------|------|------|
+| 1a4cd97 | 2A | fetch 重试退避 + 资源拦截 + differ 相似度 + 手动触发 + scheduler lifespan + job id bug fix | ✅ |
+| f9a1442 | 2B-1 | `intelligence/cleaner.py` HTML→Markdown 净化 (13/13 tests, 78.8% compression) | ✅ |
+| 65378d4 | 2B-2 | `intelligence/extractor.py` + `healer.py` 3-tier fallback (AI→CSS→silent) | ✅ |
+| af87edc | 2B-3 | `wait_until`/`wait_for`/`wait_for_timeout` 等待策略精细化 (8/8 tests) | ✅ |
+| 0537000 | 2C-1 | `fetch_page_with_error()` 升级告警 (3/3 tests) | ✅ |
+| _本批_ | 2C-2 | `SQLAlchemyJobStore` scheduler 持久化 (3/3 tests) — jobs 重启不丢 | ✅ |
+| _本批_ | 2C-3 | `playwright-stealth` 反爬 evasions (4/4 tests) — webdriver/vendor 真实化 | ✅ |
+
+剩余 2C 项 (多引擎策略 / 持久化队列 / scheduler 错峰 / ParseRule 自动升级 / few-shot 等) 按需触发，**当前不阻塞**。

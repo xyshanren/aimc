@@ -193,3 +193,48 @@ async def get_intel_sources(session: AsyncSession, status: str = "active") -> li
 async def update_intel_source(session: AsyncSession, source_id: int, **kwargs):
     stmt = update(IntelSource).where(IntelSource.id == source_id).values(**kwargs)
     await session.execute(stmt)
+
+
+async def get_intel_source_by_provider_url(
+    session: AsyncSession, provider: str, url: str
+) -> Optional[IntelSource]:
+    """按 (provider, url) 查 IntelSource 行
+
+    Phase 2C-2: 替代 source_id 关联（dataclass.source_id 默认为 0，无法用）
+    语义：每个 source 的 (provider, url) 是唯一标识，跟 DB IntelSource 表的 url 列对应
+    """
+    stmt = select(IntelSource).where(
+        IntelSource.provider == provider,
+        IntelSource.url == url,
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def upsert_intel_source(
+    session: AsyncSession,
+    provider: str,
+    url: str,
+    **kwargs,
+) -> IntelSource:
+    """按 (provider, url) 创建或更新 IntelSource
+
+    用于 scheduler 启动时把 dataclass 跟 DB 行关联起来
+    """
+    existing = await get_intel_source_by_provider_url(session, provider, url)
+    if existing:
+        for key, value in kwargs.items():
+            setattr(existing, key, value)
+        return existing
+    else:
+        new = IntelSource(
+            provider=provider,
+            url=url,
+            status="active",
+            poll_interval=900,
+            source_type="web_page",
+            **kwargs,
+        )
+        session.add(new)
+        await session.flush()
+        return new

@@ -4,10 +4,14 @@
 
 改进历史：
 - 2026-07-22: 加 run_source_now 手动触发 (Phase 2A-4, 借鉴 firecrawl 异步 job 模式)
+- 2026-07-22: APScheduler 改用 SQLAlchemyJobStore (Phase 2C-2)
+  - 之前: MemoryJobStore（重启丢 jobs）
+  - 现在: SQLite 持久化（重启任务不丢，跟 firecrawl BullMQ 思想类似）
 """
 
 import asyncio
 import logging
+from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -16,18 +20,47 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-scheduler = AsyncIOScheduler()
+
+def _build_scheduler() -> AsyncIOScheduler:
+    """构建 scheduler（Phase 2C-2: 用 SQLAlchemyJobStore 持久化 jobs）
+
+    重要：用 `url=` 而不是 `engine=`，因为：
+    - `url=` 时 SQLAlchemyJobStore 自动建表 + 自动 commit
+    - `engine=` 时不自动建表，需要手动 Base.metadata.create_all()
+    """
+    from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+
+    # 从 settings.db_path 推导 sync sqlite URL
+    # settings.db_path = './data/aimc.db' → sqlite:///./data/aimc.db
+    db_path = Path(settings.db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    sync_db_url = f"sqlite:///{db_path.as_posix()}"
+
+    jobstore = SQLAlchemyJobStore(
+        url=sync_db_url,
+        tablename="apscheduler_jobs",
+    )
+
+    return AsyncIOScheduler(jobstores={"default": jobstore})
+
+
+# 模块级 scheduler 单例（持久化模式）
+scheduler = _build_scheduler()
 
 
 async def start_scheduler():
-    """启动情报采集调度器"""
+    """启动情报采集调度器
+
+    Phase 2C-2: jobs 持久化到 SQLite
+    - 启动时自动 reload 上次未执行的 jobs
+    - 重启服务后任务不丢（如果服务挂了，apscheduler_jobs 表里 next_run_time 仍存着）
+    """
     from intelligence.sources import get_all_sources
 
     sources = get_all_sources()
 
     for source in sources:
         # 用 provider + source_type 作为 job id 后缀
-        # （source_id 默认 0，会冲突；同一 provider 下两个 source 通过 source_type 区分）
         job_id = f"crawl_{source.provider}_{source.source_type}"
         scheduler.add_job(
             _run_source_task,
@@ -49,7 +82,10 @@ async def start_scheduler():
     )
 
     scheduler.start()
-    logger.info(f"调度器已启动，共 {len(sources) + 1} 个定时任务")
+    logger.info(
+        f"调度器已启动 (持久化模式), 共 {len(sources) + 1} 个定时任务, "
+        f"jobstore={settings.db_path}"
+    )
 
 
 async def stop_scheduler():
