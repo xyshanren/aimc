@@ -1,9 +1,13 @@
 """自愈循环模块
 
-根据 AI 解析结果的置信度决定处理方式：
-- 置信度 > 阈值：自动入库
-- 置信度 < 阈值：告警人工介入
-- 解析失败：记录错误，触发告警
+Phase 2B-2 改造后的流程：
+1. AI 解析（异常向上抛）
+2. 成功 + 置信度 ≥ 阈值 → 入库
+3. 失败 OR 置信度 < 阈值 → CSS 降级（接 ParseRule 表）
+4. CSS 降级成功 → 入库（标 parse_rule.confidence）
+5. 全部失败 → 告警人工
+
+借鉴 crawl4ai 多 extraction strategy fallback。
 """
 
 import json
@@ -15,33 +19,113 @@ from schemas.intel import ParseResult
 logger = logging.getLogger(__name__)
 
 
-async def handle_parse_result(result: ParseResult, source):
-    """处理 AI 解析结果
+async def handle_parse_result(content: str, source):
+    """自愈循环主入口
 
     Args:
-        result: AI 解析结果
+        content: 页面 HTML（已通过 differ 检测有变化）
         source: 采集源对象
+
+    流程图：
+    ┌─────────────────┐
+    │   AI 解析        │ try/except
+    │  parse_content  │ ←──┐
+    └────────┬────────┘    │
+             │             │
+        ┌────┴────┐        │
+        │ 成功?   │        │ 异常
+        ▼         ▼        │
+    ┌──────┐  ┌──────┐     │
+    │入库  │  │CSS降级│ ←──┘
+    └──┬───┘  └──┬───┘
+       │         │
+       │    ┌────┴────┐
+       │    │ 成功?   │
+       │    ▼         ▼
+       │ ┌──────┐  ┌──────┐
+       │ │入库  │  │告警  │
+       │ └──────┘  └──────┘
+       │
+       └─→ 全部结束
     """
-    # 非优惠信息，跳过
-    if not result.is_promotion:
-        logger.debug(f"非优惠信息，跳过: {source.provider} - {result.summary}")
+    # === 1. AI 解析 ===
+    ai_result: ParseResult | None = None
+    try:
+        from intelligence.parser import parse_content
+        ai_result = await parse_content(content, source.provider, source.url)
+        logger.debug(
+            f"AI 解析完成: provider={source.provider}, "
+            f"is_promotion={ai_result.is_promotion}, "
+            f"confidence={ai_result.confidence:.2f}"
+        )
+    except Exception as e:
+        logger.warning(f"AI 解析异常: {source.provider} - {e}")
+        ai_result = None
+
+    # === 2. AI 成功 + 置信度足够 → 入库 ===
+    if ai_result and ai_result.is_promotion and ai_result.confidence >= settings.parse_confidence_threshold:
+        await _save_promotion(ai_result, source)
+        logger.info(
+            f"优惠入库(AI): [{ai_result.provider}] {ai_result.title} "
+            f"(置信度: {ai_result.confidence:.2f})"
+        )
         return
 
-    # 置信度判断
-    if result.confidence >= settings.parse_confidence_threshold:
-        # 高置信度：自动入库
-        await _save_promotion(result, source)
+    # === 3. 触发降级：AI 失败 OR AI 成功但低置信度 OR AI 判断非优惠 ===
+    # （注：即使 AI 判断"非优惠"，CSS 降级也可能捞到手动漏掉的活动）
+    css_result = await _try_css_fallback(content, source)
+    if css_result:
+        await _save_promotion(css_result, source)
         logger.info(
-            f"优惠入库: [{result.provider}] {result.title} "
-            f"(置信度: {result.confidence:.2f})"
+            f"优惠入库(CSS 降级): [{css_result.provider}] "
+            f"selector={css_result.summary!r}"
         )
+        return
+
+    # === 4. 全部失败 → 告警 ===
+    if ai_result and ai_result.is_promotion:
+        # AI 解析出"是优惠"但 CSS 降级也没救 → 人工确认
+        await _alert_low_confidence(ai_result, source)
     else:
-        # 低置信度：告警人工确认
-        logger.warning(
-            f"低置信度解析: [{result.provider}] {result.title} "
-            f"(置信度: {result.confidence:.2f} < {settings.parse_confidence_threshold})"
+        # AI 失败 / AI 判断非优惠 / CSS 降级也失败 → 静默
+        logger.debug(
+            f"非优惠或全部失败，跳过: {source.provider} "
+            f"(ai={'failed' if ai_result is None else 'no_promotion'})"
         )
-        await _alert_low_confidence(result, source)
+
+
+async def _try_css_fallback(content: str, source) -> ParseResult | None:
+    """尝试 CSS 降级
+
+    Returns:
+        ParseResult 成功提取 / None 没有可用 rule 或提取失败
+    """
+    try:
+        from db.engine import async_session_factory
+        from db import crud
+        from intelligence.extractor import extract_by_css
+
+        async with async_session_factory() as session:
+            rule = await crud.get_active_parse_rule(session, source.provider)
+
+        if not rule:
+            logger.debug(f"无 {source.provider} 的 CSS 降级规则")
+            return None
+
+        logger.info(
+            f"尝试 CSS 降级: {source.provider} (rule.confidence={rule.confidence:.2f}, "
+            f"selector={rule.css_selector!r})"
+        )
+        return extract_by_css(
+            html=content,
+            css_selector=rule.css_selector,
+            confidence=rule.confidence or 0.5,
+            provider=source.provider,
+            url=source.url,
+        )
+    except Exception as e:
+        logger.error(f"CSS 降级异常: {e}")
+        return None
 
 
 async def _save_promotion(result: ParseResult, source):

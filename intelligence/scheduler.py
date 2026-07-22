@@ -97,7 +97,6 @@ async def _run_source_task(source):
     try:
         from intelligence.fetcher import fetch_page
         from intelligence.differ import has_changed
-        from intelligence.parser import parse_content
         from intelligence.healer import handle_parse_result
 
         # 1. 抓取页面
@@ -112,13 +111,11 @@ async def _run_source_task(source):
             logger.debug(f"无变化，跳过: {source.provider}")
             return
 
-        logger.info(f"检测到变化: {source.provider} -> 触发 AI 解析")
+        logger.info(f"检测到变化: {source.provider} -> 触发自愈流程")
 
-        # 3. AI 解析
-        result = await parse_content(content, source.provider, source.url)
-
-        # 4. 处理解析结果（入库 / 自愈 / 告警）
-        await handle_parse_result(result, source)
+        # 3. 自愈流程（AI 解析 → CSS 降级 → 告警）
+        # Phase 2B-2: handle_parse_result 接收原始 content，自己跑 AI
+        await handle_parse_result(content, source)
 
     except Exception as e:
         logger.error(f"采集任务异常: {source.provider} - {e}", exc_info=True)

@@ -71,11 +71,19 @@ async def parse_content(content: str, provider: str, url: str) -> ParseResult:
 
     Returns:
         ParseResult 结构化解析结果
-    """
-    client = _get_client()
 
-    # 1. 净化 HTML → 干净 Markdown（移除 nav/footer/script/style 等）
-    # 2. 截断到 1500 字符（之前是 3000 字符 HTML，等价信息 50% token）
+    Raises:
+        Exception: 任何 AI 调用失败（OpenAIError / JSONDecodeError / 网络超时等）
+        由 healer.py 负责 try/except，决定走 CSS 降级 / 告警
+
+    改进历史：
+    - 2026-07-22: 移除内部 try/except，让异常向上抛给 healer
+      之前是"AI 失败就返回 is_promotion=False"——这样 healer 看不到失败
+      现在 healer 自己 try/except，能区分"AI 失败"和"AI 成功但不是优惠"
+    """
+    client = _get_client()  # 缺 key 时这里抛 OpenAIError
+
+    # 1. 净化 HTML → 干净 Markdown
     cleaned_md = clean_html(content, max_chars=1500)
 
     user_prompt = f"""页面来源：{provider} ({url})
@@ -86,37 +94,29 @@ async def parse_content(content: str, provider: str, url: str) -> ParseResult:
 
 请分析此页面是否包含 AI 模型优惠/活动/价格变动信息，返回 JSON。"""
 
-    try:
-        response = await client.chat.completions.create(
-            model=settings.parse_model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=500,
-        )
+    response = await client.chat.completions.create(
+        model=settings.parse_model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1,
+        max_tokens=500,
+    )
 
-        result_text = response.choices[0].message.content
-        data = json.loads(result_text)
+    result_text = response.choices[0].message.content
+    data = json.loads(result_text)  # JSONDecodeError 向上抛
 
-        return ParseResult(
-            is_promotion=data.get("is_promotion", False),
-            confidence=data.get("confidence", 0.0),
-            title=data.get("title"),
-            provider=data.get("provider", provider),
-            discount_desc=data.get("discount_desc"),
-            content=data.get("content"),
-            start_date=data.get("start_date"),
-            end_date=data.get("end_date"),
-            url=url,
-            summary=data.get("summary"),
-        )
-
-    except json.JSONDecodeError as e:
-        logger.error(f"AI 解析结果 JSON 格式错误: {e}")
-        return ParseResult(is_promotion=False, confidence=0.0, summary="解析失败：JSON格式错误")
-    except Exception as e:
-        logger.error(f"AI 解析调用失败: {e}")
-        return ParseResult(is_promotion=False, confidence=0.0, summary=f"解析失败：{str(e)}")
+    return ParseResult(
+        is_promotion=data.get("is_promotion", False),
+        confidence=data.get("confidence", 0.0),
+        title=data.get("title"),
+        provider=data.get("provider", provider),
+        discount_desc=data.get("discount_desc"),
+        content=data.get("content"),
+        start_date=data.get("start_date"),
+        end_date=data.get("end_date"),
+        url=url,
+        summary=data.get("summary"),
+    )

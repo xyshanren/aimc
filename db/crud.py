@@ -148,6 +148,23 @@ async def get_parse_rules(session: AsyncSession, provider: str) -> list[ParseRul
     return list(result.scalars().all())
 
 
+async def get_active_parse_rule(session: AsyncSession, provider: str) -> Optional[ParseRule]:
+    """获取 provider 当前 active 的最高 confidence 解析规则
+
+    Phase 2B-2: AI 解析失败时降级用
+    """
+    stmt = (
+        select(ParseRule)
+        .where(
+            ParseRule.provider == provider,
+            ParseRule.status == "active",
+        )
+        .order_by(ParseRule.confidence.desc())
+    )
+    result = await session.execute(stmt)
+    return result.scalars().first()
+
+
 async def upsert_parse_rule(session: AsyncSession, provider: str, **kwargs) -> ParseRule:
     """创建或更新解析规则"""
     stmt = select(ParseRule).where(ParseRule.provider == provider)
