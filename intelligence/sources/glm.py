@@ -13,6 +13,9 @@ class GLMSource(IntelSourceBase):
             source_type="web_page",
             poll_interval=900,
             css_selector="main",
+            # Phase 2B-3: 定价页静态
+            wait_until="domcontentloaded",
+            wait_for=None,
         )
 
 
@@ -26,4 +29,7 @@ class GLMActivitySource(IntelSourceBase):
             source_type="announcement",
             poll_interval=1800,
             css_selector="main",
+            # Phase 2B-3: 公告页
+            wait_until="domcontentloaded",
+            wait_for="main",
         )

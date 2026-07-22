@@ -59,8 +59,10 @@ async def _apply_resource_blocking(context) -> None:
 
 async def fetch_page(
     url: str,
-    wait_until: str = "networkidle",
+    wait_until: str = "domcontentloaded",
     timeout: int = 30000,
+    wait_for: Optional[str] = None,
+    wait_for_timeout: int = 10000,
     max_attempts: int = 3,
     base_delay: float = 1.0,
     backoff: float = 2.0,
@@ -69,8 +71,10 @@ async def fetch_page(
 
     Args:
         url: 目标 URL
-        wait_until: 等待条件 (load/domcontentloaded/networkidle)
-        timeout: 单次请求超时（毫秒）
+        wait_until: page.goto 等待条件 (load/domcontentloaded/networkidle)
+        timeout: 单次请求超时（毫秒），同时也是 wait_for 的默认超时
+        wait_for: 可选 CSS selector，page.goto 后等该元素出现（Phase 2B-3）
+        wait_for_timeout: wait_for 的超时（毫秒），默认 10s
         max_attempts: 最大尝试次数（默认 3）
         base_delay: 首次重试等待秒数（默认 1.0）
         backoff: 退避倍数（默认 2.0，1s → 2s → 4s）
@@ -84,7 +88,9 @@ async def fetch_page(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            content = await _fetch_page_once(url, wait_until, timeout)
+            content = await _fetch_page_once(
+                url, wait_until, timeout, wait_for, wait_for_timeout
+            )
             if content is not None:
                 if attempt > 1:
                     logger.info(f"fetch 重试成功 (attempt {attempt}/{max_attempts}): {url}")
@@ -113,16 +119,34 @@ async def fetch_page(
     return None
 
 
-async def _fetch_page_once(url: str, wait_until: str, timeout: int) -> Optional[str]:
-    """单次抓取（不带重试），使用独立 context 实现资源拦截"""
+async def _fetch_page_once(
+    url: str,
+    wait_until: str,
+    timeout: int,
+    wait_for: Optional[str] = None,
+    wait_for_timeout: int = 10000,
+) -> Optional[str]:
+    """单次抓取（不带重试），使用独立 context 实现资源拦截
+
+    Phase 2B-3: 支持 wait_for CSS selector
+    - 优先级：wait_until → wait_for(可选) → page.content()
+    - 不再有硬编码的 wait_for_timeout(2000)，用 wait_for 替代
+    """
     browser = await _get_browser()
     context = await browser.new_context()
     await _apply_resource_blocking(context)
     page = await context.new_page()
     try:
         await page.goto(url, wait_until=wait_until, timeout=timeout)
-        # 等待一小段时间确保动态内容加载
-        await page.wait_for_timeout(2000)
+        # Phase 2B-3: 等关键元素出现（可选）
+        # 比硬编码 sleep 2s 更精准 — 元素出现立即继续，没出现等到超时
+        if wait_for:
+            try:
+                await page.wait_for_selector(wait_for, timeout=wait_for_timeout)
+                logger.debug(f"wait_for 命中: {wait_for!r} ({url})")
+            except Exception as e:
+                # wait_for 超时 — 这是告警级事件，但仍然返回当前 content
+                logger.warning(f"wait_for 超时 ({wait_for!r}): {e}")
         content = await page.content()
         return content
     finally:

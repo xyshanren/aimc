@@ -13,6 +13,9 @@ class QwenSource(IntelSourceBase):
             source_type="web_page",
             poll_interval=900,
             css_selector="article",
+            # Phase 2B-3: 阿里云帮助中心是 SSR，DOM 解析即可
+            wait_until="domcontentloaded",
+            wait_for=None,
         )
 
 
@@ -26,4 +29,8 @@ class QwenActivitySource(IntelSourceBase):
             source_type="web_page",
             poll_interval=1800,
             css_selector=None,
+            # Phase 2B-3: 活动页 SPA 多，等 article 元素出现
+            wait_until="domcontentloaded",
+            wait_for="article",
+            wait_for_timeout=15000,  # 活动页加载慢，给 15s
         )
