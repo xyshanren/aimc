@@ -77,6 +77,22 @@ CHANNELS = [
             ("glm-4-flash", "normal", "全天", 0.1, 0.1),
         ],
     },
+    {
+        # Phase 2D-3: MiniMax 渠道 (2026-07-24)
+        # OpenAI-compatible 代理 — base_url + model 名称需用户填 (留 placeholder)
+        # 用 MINIMAX_BASE_URL + MINIMAX_MODEL 单独配（其他渠道用硬编码 base_url）
+        "key": "minimax",
+        "name": "minimax_compat",
+        "provider": "minimax",
+        "base_url": os.getenv("MINIMAX_BASE_URL", "https://PLACEHOLDER.minimax/v1"),
+        "priority": 5,
+        "env_var": "MINIMAX_API_KEY",
+        "qpm": 60,
+        "prices": [
+            # 价格 placeholder — 等用户填真实计费后改
+            ("gpt-4o-mini", "normal", "全天", 0.0, 0.0),
+        ],
+    },
 ]
 
 
