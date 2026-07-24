@@ -34,10 +34,11 @@ from db.models import ModelCard
 # score 默认 0.0 — 你从 OpenCompass / SuperCLUE 填真实分数
 #
 # 设计原则（用户偏好）：**只列国内模型**，不列 GPT/Claude/Gemini 等国外模型
-#   - DeepSeek V4 (2026-04-24, 1.6T 参数, 1M 上下文)
-#   - Qwen 3.7 (2026-05-20, 128K, 多模态) + 3.8-Max-Preview (2026-07, 2.4T)
-#   - GLM-5 (2026-02-11, 744B 参数, 200K, 国产昇腾训练)
-#   - MiniMax M2.7 (2026-03, 自我进化) / M3 (2026-06, 1M, 多模态)
+#   - DeepSeek V4 (2026-04, 1M 上下文)
+#   - Qwen 3.7/3.8 (2026-05/07, 多模态)
+#   - GLM-5.2 (2026-06, 智谱最强开源, 1M 上下文, MIT)
+#   - Kimi K3 (2026-07-16, 月之暗面, 2.8T 参数, 1M 上下文, 7-27 开源)
+#   - MiniMax M2.7 / M3 / M3 Pro (2026-03/06/Q3)
 MODEL_CARDS = [
     # ===== DeepSeek (V4 系列) =====
     # V4-Pro: 1.6T 总参, 49B 激活, 1M 上下文, 编程追平闭源
@@ -55,16 +56,19 @@ MODEL_CARDS = [
     # Qwen3.8-Max-Preview: 2.4T 参数, 2026-07 预览
     ("qwen3.8-max-preview", "qwen", "OpenCompass 2026-Q3", 0.0, "code", "https://opencompass.org.cn/", "2.4T 参数预览版"),
 
-    # ===== GLM-5 系列 (智谱) =====
-    # GLM-5: 744B 总参, 40B 激活, 200K, 昇腾训练
-    ("glm-5", "glm", "OpenCompass 2026-Q1", 0.0, "code", "https://opencompass.org.cn/", "744B 参数, 200K ctx, 国产昇腾训练"),
-    # GLM-5-Turbo: 高吞吐代理变体
-    ("glm-5-turbo", "glm", "OpenCompass 2026-Q1", 0.0, "general", "https://opencompass.org.cn/", "高吞吐代理任务优化"),
-    # GLM-4.6: 200K, 国内最强 Coding（上一代，仍可用）
-    ("glm-4.6", "glm", "OpenCompass 2025-Q4", 0.0, "code", "https://opencompass.org.cn/", "200K ctx, 老旗舰, 编码强"),
+    # ===== GLM-5.2 (智谱最新旗舰) =====
+    # GLM-5.2: 753B 总参, 40B 激活, 1M 上下文, MIT 开源
+    # 2026-06-17 发布, 智谱迄今最强编程模型, Design Arena 第一
+    ("glm-5.2", "glm", "OpenCompass 2026-Q2", 0.0, "code", "https://opencompass.org.cn/", "753B, 1M ctx, MIT 开源, Design Arena 第一"),
+
+    # ===== Kimi K3 (月之暗面最新旗舰) =====
+    # K3: 2.8T 参数, 1M 上下文, 原生多模态
+    # 2026-07-16 发布, 全球参数最大开源模型, 7-27 完整权重开源
+    # Arena WebDev 登顶 (1679 分, 超 Claude Fable 5)
+    ("kimi-k3", "kimi", "OpenCompass 2026-Q3", 0.0, "code", "https://opencompass.org.cn/", "2.8T 参数, 1M ctx, Arena WebDev 第一, 7-27 开源"),
 
     # ===== MiniMax (M2.7 / M3 系列) =====
-    # M2.7: 200K, 自我进化（2026-03）
+    # M2.7: 200K, 自我进化 (2026-03)
     ("MiniMax-M2.7", "MiniMax", "OpenCompass 2026-Q1", 0.0, "general", "https://opencompass.org.cn/", "自我进化, Agent 强"),
     # M2.7-highspeed: 极速版, TPS 100
     ("MiniMax-M2.7-highspeed", "MiniMax", "OpenCompass 2026-Q1", 0.0, "general", "https://opencompass.org.cn/", "TPS 100 极速版"),

@@ -32,6 +32,12 @@ data/
 logs/
 *.log
 
+# 临时 smoke test 脚本（跑过即弃，不入仓）
+/.smoke_*.py
+.test_*.py
+.debug_*.py
+.check_*.py
+
 # 系统文件
 .DS_Store
 Thumbs.db
