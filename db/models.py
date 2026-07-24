@@ -175,3 +175,28 @@ class IntelSource(Base):
     last_content = Column(Text, nullable=True, comment="上次完整内容（截断 50KB，用于相似度计算）")
     error_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=func.now())
+
+
+class ModelCard(Base):
+    """模型评测卡 (Phase 2D-4, 2026-07-24)
+
+    静态引用公开 benchmark 分数（OpenCompass / LMSYS Arena），
+    让 dashboard / 路由决策有依据。
+
+    设计哲学：
+    - 不自己做 benchmark（成本高、个人没必要）
+    - 引用第三方公开数据，标 source 即可
+    - 路由时按 score + tier 选模型
+    """
+    __tablename__ = "model_cards"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model = Column(Text, nullable=False, comment="模型名 (e.g. deepseek-chat)")
+    provider = Column(Text, nullable=False, comment="厂商标识")
+    benchmark = Column(Text, nullable=False, comment="benchmark 来源 (OpenCompass 2024-Q3)")
+    score = Column(Float, nullable=True, comment="benchmark 分数 (0-100)")
+    tier = Column(Text, nullable=True, comment="适配场景: code/chinese/general/multimodal")
+    source_url = Column(Text, nullable=True, comment="benchmark 数据来源链接")
+    notes = Column(Text, nullable=True, comment="备注 (e.g. 'snapshot 2024-10')")
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import (
     Channel, Account, PriceSnapshot, Promotion,
     ChannelQuota, UsageLog, ParseRule, IntelSource,
+    ModelCard,
 )
 
 logger = logging.getLogger(__name__)
@@ -239,3 +240,53 @@ async def upsert_intel_source(
         session.add(new)
         await session.flush()
         return new
+
+
+# === ModelCard 操作 (Phase 2D-4, 2026-07-24) ===
+
+async def upsert_model_card(session, model: str, benchmark: str, **kwargs) -> ModelCard:
+    """插入或更新 ModelCard（用 model+benchmark 作为唯一键）"""
+    from sqlalchemy import select
+
+    stmt = select(ModelCard).where(
+        ModelCard.model == model, ModelCard.benchmark == benchmark
+    )
+    existing = (await session.execute(stmt)).scalar_one_or_none()
+
+    if existing:
+        for k, v in kwargs.items():
+            setattr(existing, k, v)
+        return existing
+    else:
+        card = ModelCard(model=model, benchmark=benchmark, **kwargs)
+        session.add(card)
+        await session.flush()
+        return card
+
+
+async def list_model_cards(session, provider: str = None) -> list[ModelCard]:
+    """列出 ModelCard，可按 provider 过滤"""
+    from sqlalchemy import select
+
+    stmt = select(ModelCard)
+    if provider:
+        stmt = stmt.where(ModelCard.provider == provider)
+    stmt = stmt.order_by(ModelCard.model, ModelCard.benchmark)
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def get_best_model_for_tier(session, tier: str) -> ModelCard | None:
+    """按 tier 找 score 最高的模型（用于路由决策）
+
+    Returns:
+        score > 0 的最高分 ModelCard；全为 0 时返回第一个
+    """
+    from sqlalchemy import select
+
+    stmt = (
+        select(ModelCard)
+        .where(ModelCard.tier == tier)
+        .order_by(ModelCard.score.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
