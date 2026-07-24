@@ -227,12 +227,13 @@ async def upsert_intel_source(
             setattr(existing, key, value)
         return existing
     else:
+        # source_type 已经在 kwargs 里（调用方传）→ 不要再写默认值
+        # 修复：之前 hardcode source_type="web_page" + **kwargs 会冲突 (2026-07-24)
         new = IntelSource(
             provider=provider,
             url=url,
             status="active",
             poll_interval=900,
-            source_type="web_page",
             **kwargs,
         )
         session.add(new)

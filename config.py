@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     crawl_interval: int = 900  # 默认爬取间隔（秒），15分钟
     diff_similarity_threshold: float = 0.9  # 相似度阈值，低于此值触发解析
     parse_confidence_threshold: float = 0.8  # 自愈置信度阈值
+    crawl_enabled: bool = True  # 总开关：False = 跳过所有采集（试用阶段省心）
 
     @property
     def db_url(self) -> str:

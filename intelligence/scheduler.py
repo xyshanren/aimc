@@ -134,7 +134,16 @@ async def _run_source_task(source):
     Phase 2C-1: 接入 handle_fetch_error 告警
     - fetch 失败时调 handle_fetch_error（连续 3 次告警 + disable）
     - 外层 Exception 仍然只 log（开发者 bug 不应刷 Telegram）
+
+    Phase 2D-2: 加 crawl_enabled 总开关
+    - 试用阶段关掉 → _run_source_task 第一行 short-circuit
+    - 避免刷 retry 日志 + 节省 playwright 资源
     """
+    # Phase 2D-2: 总开关（试用阶段可关）
+    if not settings.crawl_enabled:
+        logger.debug(f"采集已禁用 (AIMC_CRAWL_ENABLED=false), skip: {source.provider}")
+        return
+
     try:
         from intelligence.fetcher import fetch_page_with_error
         from intelligence.differ import has_changed
