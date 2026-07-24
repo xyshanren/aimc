@@ -3,11 +3,13 @@
 支持 channel（通过 ALERT_CHANNEL env 选）：
 - log         只 log（默认，dry-run）
 - bark        iOS Bark push（国内首选，30秒配）——  https://api.day.app
-- telegram    Telegram bot（需要翻墙 + 注册）
 - serverchan  Server 酱（推送到微信）—— https://sctapi.ftqq.com
-- wechat_work 企业微信 webhook
-- feishu      飞书 webhook
-- dingtalk    钉钉 webhook
+- feishu      飞书自定义机器人 webhook（国内办公首选）—— https://open.feishu.cn
+
+不在支持的 channel（已移除）：
+- ~~telegram~~    需要翻墙 + 注册，国内用户不实用
+- ~~discord~~     国内不稳定
+- ~~slack~~       国内不稳定
 
 借鉴：hermes-tray alerter 设计 — channel 路由 + 单一 send_alert 入口
 """
@@ -54,32 +56,6 @@ async def _send_bark(message: str) -> bool:
     return False
 
 
-async def _send_telegram(message: str) -> bool:
-    """Telegram bot push（需要翻墙）"""
-    if not settings.telegram_bot_token or not settings.telegram_chat_id:
-        logger.warning(f"[ALERT-telegram-no-config] {message}")
-        return False
-
-    url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                url,
-                json={
-                    "chat_id": settings.telegram_chat_id,
-                    "text": f"[AIMC] {_short(message, 500)}",
-                    "parse_mode": "HTML",
-                },
-            )
-            if resp.status_code == 200:
-                logger.info("Telegram 告警已发送")
-                return True
-            logger.warning(f"Telegram 发送失败: {resp.status_code} - {resp.text[:200]}")
-    except Exception as e:
-        logger.error(f"Telegram 告警异常: {e}")
-    return False
-
-
 async def _send_serverchan(message: str) -> bool:
     """Server 酱 push（推送到微信）"""
     if not settings.serverchan_key:
@@ -102,12 +78,42 @@ async def _send_serverchan(message: str) -> bool:
     return False
 
 
+async def _send_feishu(message: str) -> bool:
+    """飞书自定义机器人 webhook
+
+    配置：在飞书群里添加"自定义机器人" → 拿到 webhook URL → 填到 FEISHU_WEBHOOK_URL
+
+    国内办公首选，签到/工作流通知都用这个
+    """
+    if not settings.feishu_webhook_url:
+        logger.warning(f"[ALERT-feishu-no-config] {message}")
+        return False
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                settings.feishu_webhook_url,
+                json={
+                    "msg_type": "text",
+                    "content": {"text": f"[AIMC] {_short(message, 500)}"},
+                },
+            )
+            # 飞书返回 {"StatusCode": 0, "msg": "success"} 或 {"StatusCode": <非零>, "msg": "..."}
+            data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            if resp.status_code == 200 and data.get("StatusCode") in (0, "0"):
+                logger.info("飞书告警已发送")
+                return True
+            logger.warning(f"飞书发送失败: status={resp.status_code} body={resp.text[:200]}")
+    except Exception as e:
+        logger.error(f"飞书告警异常: {e}")
+    return False
+
+
 # 通道路由表（用户加新 channel 就在这里注册）
 CHANNEL_HANDLERS = {
     "bark": _send_bark,
-    "telegram": _send_telegram,
     "serverchan": _send_serverchan,
-    # wechat_work / feishu / dingtalk — 用户可按需加
+    "feishu": _send_feishu,
 }
 
 
@@ -132,10 +138,12 @@ async def send_alert(message: str) -> bool:
 
     handler = CHANNEL_HANDLERS.get(channel)
     if not handler:
+        # 未知 channel (e.g. 用户配了 telegram 但 alerter 已移除) → fallback log
+        # 跟"显式配 log"等价：用户至少能在 log 里看到告警
         logger.warning(
             f"[ALERT-fallback] unknown channel={channel!r} "
             f"(available: log/{','.join(CHANNEL_HANDLERS.keys())}), msg: {message}"
         )
-        return False
+        return True  # fallback log 算成功（跟"显式 log"行为对齐）
 
     return await handler(message)

@@ -28,22 +28,48 @@ from db import crud
 from db.models import ModelCard
 
 
-# 模型评测卡 (Phase 2D-4)
+# 模型评测卡 (Phase 2D-4, 2026-07-24 更新国内最新模型)
 # 字段：
 #   model, provider, benchmark, score (0-100), tier, source_url, notes
-# score 默认 0.0 — 你填真实分数
+# score 默认 0.0 — 你从 OpenCompass / SuperCLUE 填真实分数
+#
+# 设计原则（用户偏好）：**只列国内模型**，不列 GPT/Claude/Gemini 等国外模型
+#   - DeepSeek V4 (2026-04-24, 1.6T 参数, 1M 上下文)
+#   - Qwen 3.7 (2026-05-20, 128K, 多模态) + 3.8-Max-Preview (2026-07, 2.4T)
+#   - GLM-5 (2026-02-11, 744B 参数, 200K, 国产昇腾训练)
+#   - MiniMax M2.7 (2026-03, 自我进化) / M3 (2026-06, 1M, 多模态)
 MODEL_CARDS = [
-    # DeepSeek
-    ("deepseek-chat", "deepseek", "OpenCompass 2024-Q3", 0.0, "general", "https://opencompass.org.cn/", "snapshot 2024-09"),
-    ("deepseek-reasoner", "deepseek", "OpenCompass 2024-Q3", 0.0, "code", "https://opencompass.org.cn/", "强推理/代码"),
-    # Qwen
-    ("qwen-max", "qwen", "OpenCompass 2024-Q3", 0.0, "general", "https://opencompass.org.cn/", ""),
-    ("qwen-plus", "qwen", "OpenCompass 2024-Q3", 0.0, "chinese", "https://opencompass.org.cn/", "中文场景"),
-    # GLM
-    ("glm-4-plus", "glm", "OpenCompass 2024-Q3", 0.0, "general", "https://opencompass.org.cn/", ""),
-    ("glm-4-flash", "glm", "OpenCompass 2024-Q3", 0.0, "chinese", "https://opencompass.org.cn/", "快速 + 便宜"),
-    # MiniMax 代理的 OpenAI 模型 (示例)
-    ("gpt-4o-mini", "minimax", "OpenCompass 2024-Q3", 0.0, "general", "https://opencompass.org.cn/", "MiniMax OpenAI-compatible 转发"),
+    # ===== DeepSeek (V4 系列) =====
+    # V4-Pro: 1.6T 总参, 49B 激活, 1M 上下文, 编程追平闭源
+    ("deepseek-v4-pro", "deepseek", "OpenCompass 2026-Q2", 0.0, "code", "https://opencompass.org.cn/", "1.6T 参数, 49B 激活, 1M ctx"),
+    # V4-Flash: 284B 总参, 13B 激活, 1M 上下文, 性价比路线
+    ("deepseek-v4-flash", "deepseek", "OpenCompass 2026-Q2", 0.0, "general", "https://opencompass.org.cn/", "284B 参数, 13B 激活, 1M ctx, 极便宜"),
+
+    # ===== Qwen 3.7/3.8 系列 =====
+    # Qwen3.7-Max: 1.2T MoE, 激活 45B, 128K, 多模态
+    ("qwen3.7-max", "qwen", "OpenCompass 2026-Q2", 0.0, "general", "https://opencompass.org.cn/", "1.2T 参数, 全域思考, 多模态"),
+    # Qwen3.7-Plus: 35B 密集, 128K, 多模态
+    ("qwen3.7-plus", "qwen", "OpenCompass 2026-Q2", 0.0, "chinese", "https://opencompass.org.cn/", "35B 密集, 中文场景首选"),
+    # Qwen3.7-Flash: 轻量多模态
+    ("qwen3.7-flash", "qwen", "OpenCompass 2026-Q2", 0.0, "general", "https://opencompass.org.cn/", "轻量快速"),
+    # Qwen3.8-Max-Preview: 2.4T 参数, 2026-07 预览
+    ("qwen3.8-max-preview", "qwen", "OpenCompass 2026-Q3", 0.0, "code", "https://opencompass.org.cn/", "2.4T 参数预览版"),
+
+    # ===== GLM-5 系列 (智谱) =====
+    # GLM-5: 744B 总参, 40B 激活, 200K, 昇腾训练
+    ("glm-5", "glm", "OpenCompass 2026-Q1", 0.0, "code", "https://opencompass.org.cn/", "744B 参数, 200K ctx, 国产昇腾训练"),
+    # GLM-5-Turbo: 高吞吐代理变体
+    ("glm-5-turbo", "glm", "OpenCompass 2026-Q1", 0.0, "general", "https://opencompass.org.cn/", "高吞吐代理任务优化"),
+    # GLM-4.6: 200K, 国内最强 Coding（上一代，仍可用）
+    ("glm-4.6", "glm", "OpenCompass 2025-Q4", 0.0, "code", "https://opencompass.org.cn/", "200K ctx, 老旗舰, 编码强"),
+
+    # ===== MiniMax (M2.7 / M3 系列) =====
+    # M2.7: 200K, 自我进化（2026-03）
+    ("MiniMax-M2.7", "MiniMax", "OpenCompass 2026-Q1", 0.0, "general", "https://opencompass.org.cn/", "自我进化, Agent 强"),
+    # M2.7-highspeed: 极速版, TPS 100
+    ("MiniMax-M2.7-highspeed", "MiniMax", "OpenCompass 2026-Q1", 0.0, "general", "https://opencompass.org.cn/", "TPS 100 极速版"),
+    # M3: 196B 总参, 11B 激活, 1M 上下文, 原生多模态 (2026-06)
+    ("MiniMax-M3", "MiniMax", "OpenCompass 2026-Q2", 0.0, "multimodal", "https://opencompass.org.cn/", "1M ctx, 原生多模态, SWE-Bench Pro 59%"),
 ]
 
 

@@ -42,7 +42,8 @@ class Settings(BaseSettings):
     bark_key: str = ""  # Bark device key（iPhone app 注册时给）
     bark_server: str = ""  # 自建 Bark server URL（留空用官方 https://api.day.app）
     serverchan_key: str = ""  # Server 酱 SendKey
-    # === Telegram 告警（兼容老配置，channel=telegram 时启用）===
+    feishu_webhook_url: str = ""  # 飞书自定义机器人 webhook URL
+    # === Telegram 告警（已废弃，国内不实用；保留字段避免破坏旧 .env）===
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
