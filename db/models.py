@@ -103,6 +103,10 @@ class Promotion(Base):
     status = Column(Text, default="active", comment="active/expired/upcoming")
     confidence = Column(Float, nullable=True, comment="AI 解析置信度 0-1")
     raw_data = Column(Text, nullable=True, comment="JSON 原始数据备份")
+    # Phase 2D: 异常标记（2026-07-24）
+    # 不阻止入库，但人工关注 - LLM 可能编造看似合理的错误优惠
+    flagged = Column(Integer, default=0, comment="0=正常, 1=异常（人工确认）")
+    flagged_reason = Column(Text, nullable=True, comment="异常原因: low_confidence/abnormal_discount/...")
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

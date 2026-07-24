@@ -35,6 +35,7 @@ async def ensure_migrations():
 
     当前迁移项：
     - intel_sources.last_content (Phase 2A-2, 2026-07-22)
+    - promotions.flagged / flagged_reason (Phase 2D-1, 2026-07-24)
     """
     async with engine.begin() as conn:
         # intel_sources.last_content
@@ -45,6 +46,20 @@ async def ensure_migrations():
             logger.info("迁移: intel_sources 添加 last_content 列")
         else:
             logger.debug("迁移: intel_sources.last_content 已存在，跳过")
+
+        # promotions.flagged / flagged_reason (Phase 2D-1)
+        result = await conn.execute(text("PRAGMA table_info('promotions')"))
+        columns = {row[1] for row in result.fetchall()}
+        if "flagged" not in columns:
+            await conn.execute(text("ALTER TABLE promotions ADD COLUMN flagged INTEGER DEFAULT 0"))
+            logger.info("迁移: promotions 添加 flagged 列")
+        else:
+            logger.debug("迁移: promotions.flagged 已存在，跳过")
+        if "flagged_reason" not in columns:
+            await conn.execute(text("ALTER TABLE promotions ADD COLUMN flagged_reason TEXT"))
+            logger.info("迁移: promotions 添加 flagged_reason 列")
+        else:
+            logger.debug("迁移: promotions.flagged_reason 已存在，跳过")
 
 
 async def drop_all():

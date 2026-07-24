@@ -8,15 +8,71 @@ Phase 2B-2 改造后的流程：
 5. 全部失败 → 告警人工
 
 借鉴 crawl4ai 多 extraction strategy fallback。
+
+改进历史：
+- 2026-07-24: Phase 2D-1 加 sanity_check + flagged 标黄
+  - 解决 LLM 编造错误优惠/折扣的风险
+  - 不阻止入库，标黄让 dashboard 醒目标记
 """
 
 import json
 import logging
+import re
 
 from config import settings
 from schemas.intel import ParseResult
 
 logger = logging.getLogger(__name__)
+
+# Sanity check 阈值 (Phase 2D-1, 2026-07-24)
+# 这些是经验值，不追求精确 — 宁可误标也不漏标（人工过滤比 AI 编造好）
+_SANITY_MIN_CONFIDENCE = 0.6      # < 0.6 标黄（AI 自己都不确信）
+_SANITY_MIN_TITLE_LEN = 5          # 标题太短大概率是解析失败
+_SANITY_MAX_TITLE_LEN = 200        # 标题太长可能是 HTML 污染
+_SANITY_MIN_DISCOUNT = 1.0         # "X 折" < 1 折 = 超过 99% 折扣（异常）
+_SANITY_MAX_DISCOUNT = 9.5         # "X 折" > 9.5 折 = 折扣 < 5%（几乎没意义）
+
+
+def _sanity_check(result: ParseResult) -> tuple[bool, str | None]:
+    """简单 sanity check 解析结果
+
+    Phase 2D-1: 防止 LLM 编造看似合理的错误优惠入库
+
+    Returns:
+        (flagged, reason)
+        - (False, None) 正常
+        - (True, "low_confidence(0.45)") 异常（不阻止入库，标黄让人看）
+
+    规则（按优先级）：
+    1. confidence < 0.6 → low_confidence
+    2. title 太短/太长 → title_length
+    3. "X 折" < 1 或 > 9.5 → abnormal_discount
+    4. "免费/白嫖" 但 confidence < 0.8 → free_but_uncertain
+    """
+    if result.confidence < _SANITY_MIN_CONFIDENCE:
+        return True, f"low_confidence({result.confidence:.2f})"
+
+    title = result.title or ""
+    if len(title) < _SANITY_MIN_TITLE_LEN:
+        return True, f"title_too_short(len={len(title)})"
+    if len(title) > _SANITY_MAX_TITLE_LEN:
+        return True, f"title_too_long(len={len(title)})"
+
+    desc = result.discount_desc or ""
+    if desc:
+        m = re.search(r"(\d+(?:\.\d+)?)\s*折", desc)
+        if m:
+            try:
+                discount = float(m.group(1))
+                if discount < _SANITY_MIN_DISCOUNT or discount > _SANITY_MAX_DISCOUNT:
+                    return True, f"abnormal_discount({discount}折)"
+            except ValueError:
+                pass
+
+        if result.confidence < 0.8 and ("免费" in desc or "白嫖" in desc):
+            return True, f"free_but_uncertain({result.confidence:.2f})"
+
+    return False, None
 
 
 async def handle_parse_result(content: str, source):
@@ -129,10 +185,18 @@ async def _try_css_fallback(content: str, source) -> ParseResult | None:
 
 
 async def _save_promotion(result: ParseResult, source):
-    """将解析结果存入优惠活动表"""
+    """将解析结果存入优惠活动表
+
+    Phase 2D-1: 加 sanity_check 标黄
+    - 标黄不阻止入库（你之前说倾向后者 — 不丢数据，只是醒目标记）
+    - 标黄原因写到 flagged_reason
+    """
     try:
         from db.engine import async_session_factory
         from db import crud
+
+        # sanity check（先于入库，但不影响入库）
+        flagged, flagged_reason = _sanity_check(result)
 
         async with async_session_factory() as session:
             await crud.create_promotion(
@@ -147,8 +211,16 @@ async def _save_promotion(result: ParseResult, source):
                 status="active",
                 confidence=result.confidence,
                 raw_data=json.dumps(result.model_dump(), ensure_ascii=False),
+                flagged=1 if flagged else 0,
+                flagged_reason=flagged_reason,
             )
             await session.commit()
+
+        if flagged:
+            logger.warning(
+                f"⚠️  优惠入库(标黄): [{result.provider or source.provider}] "
+                f"{result.title!r} reason={flagged_reason}"
+            )
     except Exception as e:
         logger.error(f"优惠入库失败: {e}")
 
