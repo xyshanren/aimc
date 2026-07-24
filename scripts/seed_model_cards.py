@@ -28,16 +28,18 @@ from db import crud
 from db.models import ModelCard
 
 
-# 模型评测卡 (Phase 2D-4, 2026-07-24 更新国内最新模型)
+# 模型评测卡 (Phase 2D-4, 2026-07-24)
 # 字段：
 #   model, provider, benchmark, score (0-100), tier, source_url, notes
-# score 默认 0.0 — 你从 OpenCompass / SuperCLUE 填真实分数
+# score 默认 0.0 — 你从 OpenCompass / SuperCLUE 填真实分数（**非必填**，score=0 时
+#   get_best_model_for_tier 会 fallback 到第一个 model；填了是为后续按分路由打底）
 #
-# 设计原则（用户偏好）：**只列国内模型**，不列 GPT/Claude/Gemini 等国外模型
-#   - DeepSeek V4 (2026-04, 1M 上下文)
+# 设计原则：**只列国内模型**，不列 GPT/Claude/Gemini 等国外模型
+# 2026-07-24 修正：**保留所有仍在服务的版本**（新版 ≠ 替换，老版同服务照样可用）：
+#   - DeepSeek V4 (2026-04, V4-Pro/V4-Flash, 1M ctx)
 #   - Qwen 3.7/3.8 (2026-05/07, 多模态)
-#   - GLM-5.2 (2026-06, 智谱最强开源, 1M 上下文, MIT)
-#   - Kimi K3 (2026-07-16, 月之暗面, 2.8T 参数, 1M 上下文, 7-27 开源)
+#   - GLM 全代际: 4.6 / 5 / 5-Turbo (仍在服务) + 5.2 (2026-06-17 新旗舰, 753B, 1M ctx, MIT 开源)
+#   - Kimi K2 / K3 (K3 2026-07-16, 2.8T 参数, 7-27 开源)
 #   - MiniMax M2.7 / M3 / M3 Pro (2026-03/06/Q3)
 MODEL_CARDS = [
     # ===== DeepSeek (V4 系列) =====
@@ -56,15 +58,22 @@ MODEL_CARDS = [
     # Qwen3.8-Max-Preview: 2.4T 参数, 2026-07 预览
     ("qwen3.8-max-preview", "qwen", "OpenCompass 2026-Q3", 0.0, "code", "https://opencompass.org.cn/", "2.4T 参数预览版"),
 
-    # ===== GLM-5.2 (智谱最新旗舰) =====
-    # GLM-5.2: 753B 总参, 40B 激活, 1M 上下文, MIT 开源
-    # 2026-06-17 发布, 智谱迄今最强编程模型, Design Arena 第一
+    # ===== GLM (智谱) — 全代际，保留仍在服务的所有版本 =====
+    # GLM-4.6: 200K, 老旗舰, 编码强
+    ("glm-4.6", "glm", "OpenCompass 2025-Q4", 0.0, "code", "https://opencompass.org.cn/", "200K ctx, 老旗舰, 编码强"),
+    # GLM-5: 744B 总参, 40B 激活, 200K, 国产昇腾训练
+    ("glm-5", "glm", "OpenCompass 2026-Q1", 0.0, "code", "https://opencompass.org.cn/", "744B 参数, 200K ctx, 国产昇腾训练"),
+    # GLM-5-Turbo: 高吞吐代理变体
+    ("glm-5-turbo", "glm", "OpenCompass 2026-Q1", 0.0, "general", "https://opencompass.org.cn/", "高吞吐代理任务优化"),
+    # GLM-5.2: 2026-06-17 新旗舰, 753B, 1M ctx, MIT 开源, Design Arena 第一
     ("glm-5.2", "glm", "OpenCompass 2026-Q2", 0.0, "code", "https://opencompass.org.cn/", "753B, 1M ctx, MIT 开源, Design Arena 第一"),
 
-    # ===== Kimi K3 (月之暗面最新旗舰) =====
+    # ===== Kimi (月之暗面) — 保留 K2，加 K3 =====
+    # K2: 上一代旗舰, 还在服务
+    ("kimi-k2", "kimi", "OpenCompass 2025-Q4", 0.0, "general", "https://opencompass.org.cn/", "上一代旗舰, 仍在服务"),
     # K3: 2.8T 参数, 1M 上下文, 原生多模态
     # 2026-07-16 发布, 全球参数最大开源模型, 7-27 完整权重开源
-    # Arena WebDev 登顶 (1679 分, 超 Claude Fable 5)
+    # Arena WebDev 登顶 (1679 分)
     ("kimi-k3", "kimi", "OpenCompass 2026-Q3", 0.0, "code", "https://opencompass.org.cn/", "2.8T 参数, 1M ctx, Arena WebDev 第一, 7-27 开源"),
 
     # ===== MiniMax (M2.7 / M3 系列) =====
