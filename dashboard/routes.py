@@ -161,3 +161,33 @@ async def run_source_now(provider: str = Query(..., description="厂商标识，
         "count": count,
         "note": "task 在后台跑，fire-and-forget",
     }
+
+
+@router.post("/api/cache/refresh")
+async def refresh_route_cache():
+    """手动刷新路由缓存 (Phase 3 #5)
+
+    用途: 改完 channel / account / price 后立即生效, 不必等 5 分钟自动刷新.
+    场景:
+    - 改了 .env 的 key 重新跑 manual_import.py
+    - 跑了 refresh_siliconflow_models.py 加了新 model
+    - 在 DB 里手动改了 priority
+
+    Returns:
+        200: { "status": "ok", "channels": N, "models": M }
+    """
+    from gateway.router import route_engine
+
+    try:
+        await route_engine.refresh_cache()
+    except Exception as e:
+        logger.error(f"路由缓存刷新失败: {e}")
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {e}")
+
+    channels = len(route_engine._channels_cache)
+    models = len(route_engine.get_available_models())
+    return {
+        "status": "ok",
+        "channels": channels,
+        "models": models,
+    }
