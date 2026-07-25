@@ -182,13 +182,24 @@ CHANNELS = [
 ]
 
 
+def _clean_env_value(value: str) -> str:
+    """跟 scripts/check_env.py 保持一致: 清洗行内注释 ('KEY=  # 注释')"""
+    v = (value or "").strip()
+    if v.lstrip().startswith("#"):
+        return ""
+    if " #" in v:
+        v = v.split(" #", 1)[0].rstrip()
+    return v
+
+
 async def import_one_channel(session, cfg: dict) -> bool:
     """导入单个渠道（如果 env 有 api_key）
 
     Returns:
         True = 创建了 account，False = 跳过（env 缺 key）
     """
-    api_key = os.getenv(cfg["env_var"], "").strip()
+    raw = os.getenv(cfg["env_var"], "")
+    api_key = _clean_env_value(raw)
     if not api_key or api_key.startswith("sk-your-"):
         print(f"[skip] {cfg['name']}: {cfg['env_var']} 未配置")
         return False
