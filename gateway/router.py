@@ -135,6 +135,15 @@ class RouteEngine:
                     candidates.append((ch, price_info))
 
         if not candidates:
+            # Phase 2E: 无渠道明确支持该 model — 尝试 fallback 到 priority 最低的 channel
+            # (默认是聚合平台, 例如硅基流动: 1 个 key 通吃 100+ model)
+            fallback = self._get_fallback_channel()
+            if fallback and self._is_channel_usable(fallback):
+                logger.info(
+                    f"无可用渠道支持模型: {model}, fallback 到 {fallback['name']} "
+                    f"(priority={fallback['priority']})"
+                )
+                return fallback
             logger.warning(f"无可用渠道支持模型: {model}")
             return None
 
@@ -196,6 +205,29 @@ class RouteEngine:
                 if self._match_time_range(p["time_range"], current_hour):
                     return p
         return None
+
+    def _get_fallback_channel(self) -> Optional[dict]:
+        """Phase 2E: 获取 priority 最低的 channel 作为 fallback (默认 = 聚合平台)
+
+        设计: 硅基流动这种第三方聚合 (priority=1) 1 个 key 通吃 100+ model,
+        当 prices 表里没列某个 model 时, 走 fallback 把 model 名透传给硅基流动,
+        硅基流动再根据 model 名路由到对应厂商.
+
+        Returns:
+            priority 最小的 channel, 或 None (没有可用 channel)
+        """
+        if not self._channels_cache:
+            return None
+        return min(self._channels_cache, key=lambda ch: ch.get("priority", 999))
+
+    def _is_channel_usable(self, ch: dict) -> bool:
+        """Phase 2E: 检查 channel 是否可用 (限频 + 配额), 不检查 model 支持"""
+        from gateway.limiter import rate_limiter
+        if rate_limiter.is_limited(ch["account_id"], ch["quotas"]):
+            return False
+        if ch.get("quota_remaining") is not None and ch["quota_remaining"] <= 0:
+            return False
+        return True
 
     def _match_time_range(self, time_range: str, current_hour: int) -> bool:
         """判断当前时间是否在时段范围内
