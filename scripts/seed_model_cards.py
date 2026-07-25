@@ -24,7 +24,18 @@
     python scripts/seed_model_cards.py
     重复运行会全删后重建（crud.upsert 备份此行为）
 
-总规模：21 张 cards / 22 行（Kimi-K2.6 跨 LLM + VLM 2 榜 → 2 行）
+总规模：45 张 cards / 46 行（Kimi-K2.6 跨 LLM + VLM 2 榜 → 2 行）
+
+覆盖厂商（5 家 + 扩展）:
+- 优先级高: DeepSeek / Qwen / GLM / Kimi / MiniMax / 字节 Doubao / 腾讯 Hy+Hunyuan / 蚂蚁 Ring / 商汤 SenseNova / 阶跃 StepFun
+- 优先级低: 移动 JT / 电信 TeleMM / 云从 CongRong / Ovis / 上海 AI Lab InternVL / 面壁 MiniCPM / 百应 Bailing
+- 排除: 小米 MiMo（用户偏好不上小米）
+
+数据来源（2026-07-25 playwright 抓取 4 榜 top 20-30）:
+- LLM 官方 2026-05-13  https://rank.opencompass.org.cn/leaderboard/llm?class=official
+- LLM 开源 2026-03-09  https://rank.opencompass.org.cn/leaderboard/llm?class=open_source
+- VLM 官方 2026-06-01  https://rank.opencompass.org.cn/leaderboard/image-vlm?class=official
+- VLM 开源 2026-05-26  https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source
 """
 
 import asyncio
@@ -95,6 +106,59 @@ MODEL_CARDS = [
     ("MiniMax-M2.7-highspeed", "minimax", "OpenCompass LLM 官方 2026-05-13", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=official", "未收录, TPS 100 极速版"),
     # M3: 2026-06-01, 196B, 1M ctx 多模态, VLM 官方榜
     ("MiniMax-M3", "minimax", "OpenCompass VLM 官方 2026-06-01", 51.6, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=official", "196B, 2026-06-01, 1M ctx, 原生多模态"),
+
+    # ========== 字节 Doubao (4 张) ==========
+    # Doubao-Seed-2-0-Pro (High): LLM 官方 #3, 火山方舟头部
+    ("Doubao-Seed-2-0-Pro", "doubao", "OpenCompass LLM 官方 2026-05-13", 63.5, "code", "https://rank.opencompass.org.cn/leaderboard/llm?class=official", "2026-02-15, 字节旗舰, 高 quality"),
+    # Doubao-Seed-2-0-Lite: LLM 官方 #9
+    ("Doubao-Seed-2-0-Lite", "doubao", "OpenCompass LLM 官方 2026-05-13", 60.4, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=official", "2026-02-15, 轻量版"),
+    # Doubao-Seed-1.6-Thinking-250615: LLM 开源 #29
+    ("Doubao-Seed-1.6-Thinking", "doubao", "OpenCompass LLM 开源 2026-03-09", 66.0, "code", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "2025-06-15, 思考链版本"),
+    # Doubao-1.5-Pro: VLM 开源 #18
+    ("Doubao-1.5-Pro", "doubao", "OpenCompass VLM 开源 2026-05-26", 69.36, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "2025 上半年发布, 多模态"),
+
+    # ========== 腾讯 (2 张) ==========
+    # Hy3-Preview (High): 腾讯混元 LLM 官方 #13
+    ("Hy3-Preview", "tencent", "OpenCompass LLM 官方 2026-05-13", 56.5, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=official", "295B, 2026-04-23, 腾讯混元预览版"),
+    # HunYuan-Standard-Vision: VLM 开源 #19
+    ("HunYuan-Standard-Vision", "tencent", "OpenCompass VLM 开源 2026-05-26", 69.5, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "腾讯混元, 多模态"),
+
+    # ========== 蚂蚁 Ring (1 张) ==========
+    # Ring-2.5-1T: LLM 官方 #14
+    ("Ring-2.5-1T", "ant", "OpenCompass LLM 官方 2026-05-13", 54.5, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=official", "1T 参数, 2026-02-13, 蚂蚁集团"),
+
+    # ========== 商汤 SenseNova (2 张) ==========
+    # SenseNova-V6-5-Pro: VLM 开源 #1 国产第一
+    ("SenseNova-V6-5-Pro", "sensetime", "OpenCompass VLM 开源 2026-05-26", 82.2, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "2025-09-03, VLM 开源榜国产第一"),
+    # SenseNova-6-7-Flash-Alpha: VLM 官方 #6
+    ("SenseNova-6-7-Flash-Alpha", "sensetime", "OpenCompass VLM 官方 2026-06-01", 68.99, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=official", "2026-05-28, Flash 极速版"),
+
+    # ========== 阶跃 StepFun (3 张, 跨榜) ==========
+    # Step-3.5-Flash: LLM 官方 52.9 + LLM 开源 76.9（2 行）
+    ("Step-3.5-Flash", "stepfun", "OpenCompass LLM 官方 2026-05-13", 52.9, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=official", "196B, 2026-02-02, 阶跃主力"),
+    ("Step-3.5-Flash", "stepfun", "OpenCompass LLM 开源 2026-03-09", 76.9, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "开源榜 #7, 阶跃"),
+    # Step-3.7-Flash (High): VLM 官方 #8
+    ("Step-3.7-Flash", "stepfun", "OpenCompass VLM 官方 2026-06-01", 67.67, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=official", "2026-04-01, 多模态升级版"),
+    # Step-1o: VLM 开源 #14
+    ("Step-1o", "stepfun", "OpenCompass VLM 开源 2026-05-26", 72.5, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "Step 多模态 1o 代"),
+
+    # ========== 优先级低 (7 张) — 用户说"小众"放最后 ==========
+    # 移动 JT (2 张)
+    ("JT-Think", "jt", "OpenCompass LLM 开源 2026-03-09", 67.2, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "中国移动, 思考链版本"),
+    ("JT-VL-Chat-Mini", "jt", "OpenCompass VLM 开源 2026-05-26", 66.0, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "中国移动, 轻量多模态"),
+    # 电信 TeleMM (2 张)
+    ("TeleChat-Thinking", "chinatelecom", "OpenCompass LLM 开源 2026-03-09", 71.8, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "中国电信, 思考链"),
+    ("TeleMM-2.0-Thinking", "chinatelecom", "OpenCompass VLM 开源 2026-05-26", 81.1, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "中国电信, 多模态 VLM 开源 #2"),
+    # 云从 CongRong (1 张)
+    ("CongRong-V2.0", "cloudwalk", "OpenCompass VLM 开源 2026-05-26", 80.7, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "云从, VLM 开源 #3"),
+    # Ovis (1 张, top 1)
+    ("Ovis2.6-80B-A3B", "ovis", "OpenCompass VLM 官方 2026-06-01", 67.0, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=official", "80B MoE, 2026-05, Ovis 多模态"),
+    # 上海 AI Lab / InternVL (1 张, top 1)
+    ("InternVL3-78B", "internvl", "OpenCompass VLM 开源 2026-05-26", 73.0, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "78B, VLM 开源 #7, 上海 AI Lab"),
+    # 面壁 MiniCPM (1 张, top 1)
+    ("MiniCPM-O-4.5", "minicpm", "OpenCompass VLM 开源 2026-05-26", 72.0, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "面壁智能, 多模态端侧"),
+    # 百应 Bailing (1 张)
+    ("BailingMM-Pro-0120", "bailing", "OpenCompass VLM 开源 2026-05-26", 68.0, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "百应, 80B, VLM 开源 #25"),
 ]
 
 

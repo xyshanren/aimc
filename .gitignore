@@ -19,8 +19,16 @@ env/
 *.swp
 *.swo
 
-# 环境变量（含敏感信息）
+# 环境变量（含敏感信息 — 绝对不能 commit/push）
+# Phase 2E (2026-07-25) 加强: 排除所有 .env.* 变体
 .env
+.env.*
+.env.local
+.env.production
+.env.development
+.env.*.local
+# 但保留 .env.example 作为模板（! 表示反向 allow）
+!.env.example
 
 # 数据库文件
 data/
@@ -152,6 +160,12 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+.env.local
+.env.production
+.env.development
+.env.*.local
+!.env.example
 .venv
 env/
 venv/

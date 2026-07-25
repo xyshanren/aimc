@@ -4,14 +4,16 @@ Phase 1 使用：在爬虫未就绪前，手动录入渠道信息。
 
 设计原则：
 - **不在代码里写任何 api_key**（避免 commit 泄露）
-- 从环境变量读：DEEPSEEK_API_KEY / QWEN_API_KEY / GLM_API_KEY
+- 从环境变量读：DEEPSEEK_API_KEY / QWEN_API_KEY / GLM_API_KEY / KIMI_API_KEY / ...
 - 没填对应 env → 跳过该渠道（不创建占位 account）
 
+支持的渠道（9 个）:
+- 5 家直连: deepseek / qwen / glm / kimi / minimax
+- 1 个第三方聚合: siliconflow (推荐 1 个 key 通吃 5 家 + 多家国内 model)
+- 3 个国内直连官方平台: volcengine (字节方舟) / hunyuan (腾讯混元) / stepfun (阶跃)
+
 用法：
-    1. 编辑 .env，至少填一个厂商的 key：
-       DEEPSEEK_API_KEY=sk-...
-       QWEN_API_KEY=sk-...
-       GLM_API_KEY=...
+    1. 编辑 .env，至少填一个厂商的 key（推荐 SILICONFLOW_API_KEY 一码通）
     2. python scripts/manual_import.py
 
 借鉴 hermes-tray：env-first，避免在 .py 里出现任何 key 字面量。
@@ -36,7 +38,10 @@ from db import crud
 
 
 # 渠道元数据（不含 api_key）— 厂商 URL 公开信息
+# Phase 2E: 9 个渠道 (5 家直连 + 1 聚合 + 3 国内直连官方平台)
+#   2026-07-25 加: kimi, siliconflow, volcengine, hunyuan, stepfun
 CHANNELS = [
+    # ========== 5 家直连 (国内模型厂商官方) ==========
     {
         "key": "deepseek",
         "name": "deepseek_official",
@@ -78,6 +83,20 @@ CHANNELS = [
         ],
     },
     {
+        # Phase 2E: Kimi (Moonshot 官方) — 2026-07-25 补
+        "key": "kimi",
+        "name": "kimi_official",
+        "provider": "kimi",
+        "base_url": "https://api.moonshot.cn/v1",
+        "priority": 5,
+        "env_var": "KIMI_API_KEY",
+        "qpm": 30,
+        "prices": [
+            ("moonshot-v1-128k", "normal", "全天", 6.0, 6.0),
+            ("moonshot-v1-32k", "normal", "全天", 3.0, 3.0),
+        ],
+    },
+    {
         # Phase 2D-3: MiniMax 渠道 (2026-07-24)
         # OpenAI-compatible 代理 — base_url + model 名称需用户填 (留 placeholder)
         # 用 MINIMAX_BASE_URL + MINIMAX_MODEL 单独配（其他渠道用硬编码 base_url）
@@ -91,6 +110,73 @@ CHANNELS = [
         "prices": [
             # 价格 placeholder — 等用户填真实计费后改
             ("gpt-4o-mini", "normal", "全天", 0.0, 0.0),
+        ],
+    },
+
+    # ========== 1 个第三方聚合 (推荐 1 个 key 通吃) ==========
+    {
+        # Phase 2E: 硅基流动 SiliconFlow (2026-07-25)
+        # 国内最大的第三方 API 聚合平台, OpenAI-compatible
+        # 1 个 key 可以调: DeepSeek/Qwen/GLM/Kimi/MiniMax/Doubao/Hunyuan/StepFun/InternVL/MiniCPM/...
+        # 推荐: 个人国内使用首选, 一个 key 试通多家
+        "key": "siliconflow",
+        "name": "siliconflow_aggregator",
+        "provider": "siliconflow",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "priority": 1,  # 优先级最低 — 但有 fallback 价值
+        "env_var": "SILICONFLOW_API_KEY",
+        "qpm": 100,  # SiliconFlow 免费档 QPM 高
+        "prices": [
+            # 价格 placeholder — 聚合平台价格不固定, 实际从 SiliconFlow 定价页查
+            # 常用 model 已在 OpenCompass 4 榜上榜, 这里只列 1-2 个代表
+            ("deepseek-ai/DeepSeek-V3", "normal", "全天", 2.0, 2.0),
+            ("Qwen/Qwen2.5-72B-Instruct", "normal", "全天", 4.13, 4.13),
+        ],
+    },
+
+    # ========== 3 个国内直连官方平台 ==========
+    {
+        # Phase 2E: 火山方舟 VolcEngine Ark (字节官方) (2026-07-25)
+        # 字节 Doubao 官方 endpoint
+        "key": "volcengine",
+        "name": "volcengine_ark",
+        "provider": "volcengine",
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "priority": 5,
+        "env_var": "VOLCENGINE_API_KEY",
+        "qpm": 60,
+        "prices": [
+            ("doubao-seed-2-0-pro-260215", "normal", "全天", 0.8, 2.0),
+            ("doubao-seed-1-6-thinking-250615", "normal", "全天", 4.0, 16.0),
+        ],
+    },
+    {
+        # Phase 2E: 腾讯混元 Hunyuan (2026-07-25)
+        # 腾讯官方 endpoint
+        "key": "hunyuan",
+        "name": "hunyuan_official",
+        "provider": "hunyuan",
+        "base_url": "https://hunyuan.tencent.com/v1",  # 用户用实际 endpoint
+        "priority": 5,
+        "env_var": "HUNYUAN_API_KEY",
+        "qpm": 30,
+        "prices": [
+            ("hunyuan-pro", "normal", "全天", 0.0, 0.0),  # placeholder
+        ],
+    },
+    {
+        # Phase 2E: 阶跃 StepFun (2026-07-25)
+        # 阶跃官方 endpoint
+        "key": "stepfun",
+        "name": "stepfun_official",
+        "provider": "stepfun",
+        "base_url": "https://api.stepfun.com/v1",
+        "priority": 5,
+        "env_var": "STEPFUN_API_KEY",
+        "qpm": 30,
+        "prices": [
+            ("step-3.5-flash", "normal", "全天", 0.0, 0.0),  # placeholder
+            ("step-1o", "normal", "全天", 0.0, 0.0),  # placeholder
         ],
     },
 ]
