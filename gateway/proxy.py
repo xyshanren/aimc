@@ -199,11 +199,16 @@ def _schedule_alert(channel: dict, response: httpx.Response):
     触发条件: 5xx (上游挂) + 401/403 (key 失效)
     不触发: 200 (成功) / 4xx 业务错误 (如 400 prompt error) / 429 (rate limit, 临时的)
 
+    Phase 3 (#3): throttle key = "{channel_name}:{status}"
+    - 同 channel + 同 status 60s 内只发 1 次告警
+    - 防止硅基流动 1 key 反复 401 时飞书刷屏
+
     Args:
         channel: 渠道信息 (含 name)
         response: 上游响应
     """
     status = response.status_code
+    channel_name = channel.get("name", "?")
     # 提取错误信息 (前 200 字符)
     try:
         err_body = response.text[:200]
@@ -211,22 +216,31 @@ def _schedule_alert(channel: dict, response: httpx.Response):
         err_body = "<unreadable>"
 
     msg = (
-        f"[AIMC 网关告警] 上游 {channel.get('name', '?')} 返回 {status}\n"
+        f"[AIMC 网关告警] 上游 {channel_name} 返回 {status}\n"
         f"模型: {channel.get('model', '?')}\n"
         f"错误: {err_body}"
     )
+    # throttle key: 同 channel + 同 status 共用, 不同 status (401 vs 500) 独立告警
+    throttle_key = f"{channel_name}:{status}"
     try:
-        asyncio.get_event_loop().create_task(_send_alert_async(msg))
+        asyncio.get_event_loop().create_task(
+            _send_alert_async(msg, key=throttle_key)
+        )
     except RuntimeError:
         # 没 event loop (e.g. 关闭时), 同步发
         import logging
         logging.getLogger(__name__).warning(f"[alerter fallback] {msg}")
 
 
-async def _send_alert_async(message: str):
-    """异步调 alerter.send_alert, 失败不阻塞"""
+async def _send_alert_async(message: str, key: str | None = None):
+    """异步调 alerter.send_alert, 失败不阻塞
+
+    Args:
+        message: 告警文本
+        key: throttle key (Phase 3 #3), 透传给 send_alert
+    """
     try:
         from intelligence.alerter import send_alert
-        await send_alert(message)
+        await send_alert(message, key=key)
     except Exception as e:
         logger.warning(f"告警发送失败: {e}")

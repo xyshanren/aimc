@@ -12,9 +12,16 @@
 - ~~slack~~       国内不稳定
 
 借鉴：hermes-tray alerter 设计 — channel 路由 + 单一 send_alert 入口
-"""
 
+Phase 3 (#3): throttle 机制
+- 同 key 60s 内只发 1 次，防飞书刷屏
+- log 模式不 throttle（用户主动要 log 噪音）
+- 锁内一次性 check+mark, 防并发 race (3 个 401 同时来不会发 3 次)
+- 失败也占用槽位 60s, 防止飞书 webhook 暂时 503 时反复重试刷屏
+"""
 import logging
+import time
+import asyncio
 from typing import Optional
 
 import httpx
@@ -22,6 +29,33 @@ import httpx
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# Phase 3 (#3): throttle 状态
+# key (e.g. "siliconflow_aggregator:401") -> 最后一次发送成功的 monotonic 时间
+_throttle_state: dict[str, float] = {}
+_throttle_lock = asyncio.Lock()
+THROTTLE_SECONDS = 60.0
+
+
+async def _try_acquire_throttle(key: str) -> bool:
+    """尝试占用 throttle 槽位 (锁内检查+标记, 防并发 race)
+
+    Returns:
+        True  = 已成功标记 (可继续发)
+        False = 在窗口内, 已被占用 (跳过)
+    """
+    async with _throttle_lock:
+        last = _throttle_state.get(key)
+        if last is not None and (time.monotonic() - last) < THROTTLE_SECONDS:
+            return False
+        _throttle_state[key] = time.monotonic()
+        return True
+
+
+def reset_throttle() -> None:
+    """清空 throttle 状态 (测试用)"""
+    _throttle_state.clear()
 
 
 def _short(msg: str, limit: int = 200) -> str:
@@ -117,20 +151,33 @@ CHANNEL_HANDLERS = {
 }
 
 
-async def send_alert(message: str) -> bool:
+async def send_alert(message: str, key: Optional[str] = None) -> bool:
     """统一告警入口
 
     根据 settings.alert_channel 路由：
     - "log"        → 只 log（默认，dry-run）
     - 其他 channel  → 调对应 handler，失败时 fallback 到 log
 
+    Phase 3 (#3): throttle
+    - key 不为 None 且 channel 不是 log → 60s 内同 key 只发 1 次
+    - throttle 命中时返回 True (行为对齐"已发过")
+    - 锁内 check+mark 一次性原子完成, 防并发 race
+
     Args:
         message: 告警文本
+        key: throttle key (e.g. "channel_name:status_code")，None = 不 throttle
 
     Returns:
-        True = 成功推送；False = 只 log（channel 未配或发送失败）
+        True = 成功推送 / 被 throttle / log-only；False = 真正发送失败
     """
     channel = settings.alert_channel.lower().strip() or "log"
+
+    # Throttle: 仅非 log channel + key 非 None 时生效
+    # 用 lock 包住检查+标记, 防并发 race (3 个 401 同时来不会发 3 次)
+    if channel != "log" and key is not None:
+        if not await _try_acquire_throttle(key):
+            logger.debug(f"[ALERT throttled] key={key}, skip send")
+            return True
 
     if channel == "log":
         logger.warning(f"[ALERT] {message}")
@@ -146,4 +193,6 @@ async def send_alert(message: str) -> bool:
         )
         return True  # fallback log 算成功（跟"显式 log"行为对齐）
 
-    return await handler(message)
+    success = await handler(message)
+    # throttle 已在 _try_acquire_throttle 里 mark, 失败也占用槽位 60s
+    return success
