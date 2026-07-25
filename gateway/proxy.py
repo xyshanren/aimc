@@ -88,6 +88,10 @@ async def _forward_stream(
 
     response = await client.send(req, stream=True)
 
+    # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
+    if response.status_code in (401, 403, 500, 502, 503, 504):
+        _schedule_alert(channel, response)
+
     async def stream_generator():
         try:
             async for chunk in response.aiter_raw():
@@ -124,6 +128,10 @@ async def _forward_normal(
 
     latency_ms = int((time.time() - start_time) * 1000)
     logger.info(f"[Normal] {channel['name']} -> {response.status_code} ({latency_ms}ms)")
+
+    # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
+    if response.status_code in (401, 403, 500, 502, 503, 504):
+        _schedule_alert(channel, response)
 
     # 尝试记录用量（异步，不阻塞响应）
     _schedule_usage_log(channel, response, latency_ms)
@@ -183,3 +191,42 @@ async def _write_usage_log(
             await session.commit()
     except Exception as e:
         logger.warning(f"用量日志写入失败: {e}")
+
+
+def _schedule_alert(channel: dict, response: httpx.Response):
+    """Phase 2E: 上游错误时触发告警 (fire-and-forget, 不阻塞响应)
+
+    触发条件: 5xx (上游挂) + 401/403 (key 失效)
+    不触发: 200 (成功) / 4xx 业务错误 (如 400 prompt error) / 429 (rate limit, 临时的)
+
+    Args:
+        channel: 渠道信息 (含 name)
+        response: 上游响应
+    """
+    status = response.status_code
+    # 提取错误信息 (前 200 字符)
+    try:
+        err_body = response.text[:200]
+    except Exception:
+        err_body = "<unreadable>"
+
+    msg = (
+        f"[AIMC 网关告警] 上游 {channel.get('name', '?')} 返回 {status}\n"
+        f"模型: {channel.get('model', '?')}\n"
+        f"错误: {err_body}"
+    )
+    try:
+        asyncio.get_event_loop().create_task(_send_alert_async(msg))
+    except RuntimeError:
+        # 没 event loop (e.g. 关闭时), 同步发
+        import logging
+        logging.getLogger(__name__).warning(f"[alerter fallback] {msg}")
+
+
+async def _send_alert_async(message: str):
+    """异步调 alerter.send_alert, 失败不阻塞"""
+    try:
+        from intelligence.alerter import send_alert
+        await send_alert(message)
+    except Exception as e:
+        logger.warning(f"告警发送失败: {e}")
