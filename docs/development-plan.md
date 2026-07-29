@@ -202,6 +202,8 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 - ⬜ 组间 fallback chain 递归降级
 - ⬜ billing_mode 处理（free/subscription 价格视为 0）
 - ⬜ 响应头注入（X-AIMC-Actual-Model / X-AIMC-Actual-Channel）
+- ⬜ **渠道冷却机制**（借鉴 LiteLLM）：连续失败 N 次 → 进入冷却期 → 冷却期内跳过该渠道
+- ⬜ **weighted 加权路由**（借鉴 LiteLLM）：基于 model_group_members.weight 做加权随机分配
 
 ### 2.3 模型组管理器
 
@@ -209,13 +211,19 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 - ⬜ 组缓存定时刷新（与路由缓存同步）
 - ⬜ `/v1/models` 接口升级：返回模型 + 模型组
 
-### 2.4 Dashboard 扩展
+### 2.4 成本追踪增强（借鉴 LiteLLM Cost Tracking）
+
+- ⬜ 精确成本计算：响应返回后，用 price_snapshots 当前价格 × usage tokens 计算 cost_estimate
+- ⬜ usage_logs 写入时自动关联渠道价格（不再依赖外部估算）
+- ⬜ Dashboard 成本视图：按模型/按渠道/按日 聚合花费
+
+### 2.5 Dashboard 扩展
 
 - ⬜ 模型注册表管理页面（增删改查）
 - ⬜ 模型组配置页面（组成员管理、策略选择）
 - ⬜ 模型能力标签可视化（tier 分布图、能力雷达图）
 
-### 2.5 验证标准
+### 2.6 验证标准
 
 - [ ] `model="tier:balanced"` 请求能正确返回组内最便宜的模型响应
 - [ ] 组内全部渠道频限满时，自动降级到 `fallback_group`
@@ -223,6 +231,8 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 - [ ] 精确模型名请求行为不变（向后兼容）
 - [ ] Dashboard 可管理模型和组配置
 - [ ] `#5` cache refresh endpoint 也刷模型组缓存（避免改完 seed_models.py 要等 5 分钟）
+- [ ] 渠道连续失败 3 次后进入冷却，冷却期内不再被选中
+- [ ] usage_logs.cost_estimate 与 price_snapshots 价格一致
 
 ---
 
@@ -276,6 +286,8 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 - ⬜ Agent 偏好学习：记录哪些路由决策效果好
 - ⬜ Dashboard 成本报表：月度/周度花费趋势、节省金额估算
 - ⬜ 多渠道分散策略：避免单渠道频限，自动分散用量
+- ⬜ **参数兼容处理**（借鉴 LiteLLM drop_params）：跨模型转发时自动丢弃目标模型不支持的参数
+- ⬜ **按 Key 成本隔离**（借鉴 LiteLLM Virtual Key）：为不同 Agent 分配独立 Key，分别追踪花费和预算
 
 ---
 
@@ -290,6 +302,8 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 | `model_cards` vs `model_registry` | 9 张表 (`model_cards` 已实现) + 4 张表待加 | Phase 2 处理双轨关系（合并 or 保留） |
 | 并发安全 | 单进程无锁 | 足够（个人使用场景） |
 | Playwright 浏览器二进制 | 未装（采集功能不可用） | 个人用可接受，未来按需装 |
+| 渠道故障记忆 | 无（每次重新尝试） | Phase 2 增加冷却机制 |
+| 成本计算 | 简单估算 | Phase 2 用 price_snapshots 精确计算 |
 
 ---
 
