@@ -35,6 +35,7 @@ load_dotenv()
 from db.engine import async_session_factory
 from db.init_db import init_db
 from db import crud
+from config import settings  # API-Sec-1: 读 AIMC_MASTER_KEY
 
 
 # 渠道元数据（不含 api_key）— 厂商 URL 公开信息
@@ -195,14 +196,36 @@ def _clean_env_value(value: str) -> str:
 async def import_one_channel(session, cfg: dict) -> bool:
     """导入单个渠道（如果 env 有 api_key）
 
+    API-Sec-1: api_key 加密存 ciphertext, api_key 字段留空 (deprecated)
+
     Returns:
-        True = 创建了 account，False = 跳过（env 缺 key）
+        True = 创建了 account，False = 跳过（env 缺 key / channel 已存在 / master key 未配）
     """
     raw = os.getenv(cfg["env_var"], "")
     api_key = _clean_env_value(raw)
     if not api_key or api_key.startswith("sk-your-"):
         print(f"[skip] {cfg['name']}: {cfg['env_var']} 未配置")
         return False
+
+    # API-Sec-1: master key 校验
+    if not settings.aimc_master_key:
+        print(f"[skip] {cfg['name']}: AIMC_MASTER_KEY 未配置, 无法加密")
+        print(f"       运行: python scripts/gen_master_key.py, 把输出贴到 .env")
+        return False
+
+    # 幂等性: 同名 channel 已存在就 skip (老数据由 migrate_encrypt_keys.py 迁移)
+    from sqlalchemy import select
+    from db.models import Channel as ChannelModel
+    existing_ch = (await session.execute(
+        select(ChannelModel).where(ChannelModel.name == cfg["name"])
+    )).scalar_one_or_none()
+    if existing_ch is not None:
+        print(f"[skip] {cfg['name']}: channel 已存在 (id={existing_ch.id}), 如需更新 key 走 dashboard")
+        return False
+
+    # API-Sec-1: 加密明文 → ciphertext bytes
+    from security.crypto import encrypt
+    ciphertext = encrypt(api_key, settings.aimc_master_key)
 
     channel = await crud.create_channel(
         session,
@@ -217,11 +240,12 @@ async def import_one_channel(session, cfg: dict) -> bool:
         session,
         channel_id=channel.id,
         account_name=f"{cfg['key']}_01",
-        api_key=api_key,
+        api_key="",                # API-Sec-1: 空字符串占位 (NOT NULL 约束兼容, router 跳过空)
+        api_key_ciphertext=ciphertext,  # API-Sec-1: 存密文
         quota_total=None,
     )
     # ⚠️ 不打印 account.id/敏感字段（只 print 名字）
-    print(f"[+] 创建账号: {account.account_name}")
+    print(f"[+] 创建账号: {account.account_name} (key 已加密)")
 
     for model, price_type, time_range, in_p, out_p in cfg["prices"]:
         await crud.create_price_snapshot(
@@ -260,7 +284,10 @@ async def import_demo_data():
 
     print(f"\n[OK] 完成：{created} 个渠道已导入")
     if created == 0:
-        print("⚠️  没有渠道被创建 — 请在 .env 中至少填一个 API key：")
+        print("⚠️  没有渠道被创建 — 可能原因:")
+        print("  1. .env 中所有 channel key 都没填 / 填了占位符 (sk-your-...)")
+        print("  2. AIMC_MASTER_KEY 未配置 (运行 python scripts/gen_master_key.py)")
+        print("  3. 同名 channel 已存在, 如需迁移老明文数据跑 scripts/migrate_encrypt_keys.py")
         for cfg in CHANNELS:
             print(f"   {cfg['env_var']}=  ({cfg['name']})")
 

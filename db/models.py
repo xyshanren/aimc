@@ -14,7 +14,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, Integer, Text, Float, DateTime, ForeignKey, func
+    Column, Integer, Text, Float, DateTime, ForeignKey, LargeBinary, func
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -49,7 +49,8 @@ class Account(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
     account_name = Column(Text, nullable=False, comment="标识: deepseek_01/glm_02")
-    api_key = Column(Text, nullable=False, comment="API Key（建议加密存储）")
+    api_key = Column(Text, nullable=False, comment="API Key 明文 (deprecated, 迁移期保留, 新数据写空字符串占位)")
+    api_key_ciphertext = Column(LargeBinary, nullable=True, comment="API Key 密文 (Fernet, API-Sec-1)")
     status = Column(Text, default="active", comment="active/exhausted/expired/error")
     quota_total = Column(Integer, nullable=True, comment="总配额（tokens）")
     quota_used = Column(Integer, default=0, comment="已用配额")

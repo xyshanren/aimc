@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     port: int = 8080
     log_level: str = "INFO"
 
+    # === 加密 (API-Sec-1, 2026-07-29) ===
+    # Fernet master key (44 字符 url-safe base64, 32 bytes 原始)
+    # 生成: python scripts/gen_master_key.py
+    # 丢了 = 全部 ciphertext 不可解 = 永久性数据丢失, 务必存到密码管理器
+    aimc_master_key: str = ""
+
     # === 数据库 ===
     db_path: str = "./data/aimc.db"
 

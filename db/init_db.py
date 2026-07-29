@@ -36,6 +36,8 @@ async def ensure_migrations():
     当前迁移项：
     - intel_sources.last_content (Phase 2A-2, 2026-07-22)
     - promotions.flagged / flagged_reason (Phase 2D-1, 2026-07-24)
+    - accounts.api_key_ciphertext (API-Sec-1, 2026-07-29)
+    - accounts.api_key → nullable=True (API-Sec-1 兼容老明文)
     """
     async with engine.begin() as conn:
         # intel_sources.last_content
@@ -60,6 +62,19 @@ async def ensure_migrations():
             logger.info("迁移: promotions 添加 flagged_reason 列")
         else:
             logger.debug("迁移: promotions.flagged_reason 已存在，跳过")
+
+        # accounts.api_key_ciphertext (API-Sec-1, 2026-07-29)
+        result = await conn.execute(text("PRAGMA table_info('accounts')"))
+        columns = {row[1] for row in result.fetchall()}
+        # 1) 放宽 api_key NOT NULL → 可空 (迁移期允许老明文存在)
+        # SQLite 没法直接改 NOT NULL, 只能重建表. 但 alembic 没接, 暂时不动
+        # 老 schema 是 NOT NULL, 我们的 model 改成 nullable=True 不影响已建表
+        # 2) 加 ciphertext 列
+        if "api_key_ciphertext" not in columns:
+            await conn.execute(text("ALTER TABLE accounts ADD COLUMN api_key_ciphertext BLOB"))
+            logger.info("迁移: accounts 添加 api_key_ciphertext 列 (API-Sec-1)")
+        else:
+            logger.debug("迁移: accounts.api_key_ciphertext 已存在，跳过")
 
 
 async def drop_all():

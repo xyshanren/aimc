@@ -15,6 +15,9 @@ pydantic-settings>=2.0.0
 # 配置
 python-dotenv>=1.0.0
 
+# 加密 (API-Sec-1, 2026-07-29) - Fernet for accounts.api_key
+cryptography>=42.0.0
+
 # 定时调度
 apscheduler>=3.10.0
 

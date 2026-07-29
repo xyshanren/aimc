@@ -77,6 +77,15 @@ class RouteEngine:
                 ]
 
                 for acc in active_accounts:
+                    # API-Sec-1: 优先用 ciphertext 解密, fallback 到 api_key 明文 (迁移期)
+                    plaintext_key = self._resolve_account_key(acc)
+                    if plaintext_key is None:
+                        # 既无 ciphertext 也无明文, 跳过这个 account
+                        logger.warning(
+                            f"账号 {ch.name}/{acc.account_name} 既无 ciphertext 也无明文 key, 跳过"
+                        )
+                        continue
+
                     cache.append({
                         "id": ch.id,
                         "name": ch.name,
@@ -85,7 +94,7 @@ class RouteEngine:
                         "priority": ch.priority,
                         "account_id": acc.id,
                         "account_name": acc.account_name,
-                        "api_key": acc.api_key,
+                        "api_key": plaintext_key,
                         "quota_total": acc.quota_total,
                         "quota_used": acc.quota_used,
                         "quota_remaining": acc.quota_remaining,
@@ -96,6 +105,29 @@ class RouteEngine:
             self._channels_cache = cache
             self._last_refresh = datetime.now()
             logger.info(f"路由缓存已刷新: {len(cache)} 个可用渠道账号")
+
+    def _resolve_account_key(self, account) -> Optional[str]:
+        """API-Sec-1: 透明获取 account 的明文 api_key
+
+        优先用 ciphertext 解密 (Fernet), fallback 到明文 (仅迁移期)
+        都拿不到返回 None (调用方 skip 这个 account)
+        """
+        # 优先 ciphertext
+        if account.api_key_ciphertext is not None:
+            try:
+                from security.crypto import try_decrypt
+                from config import settings
+                plaintext = try_decrypt(account.api_key_ciphertext, settings.aimc_master_key)
+                if plaintext is not None:
+                    return plaintext
+            except Exception as e:
+                logger.error(f"账号 {account.account_name} ciphertext 解密失败: {e}")
+
+        # Fallback: 明文 (deprecated, 仅迁移期)
+        if account.api_key:
+            return account.api_key
+
+        return None
 
     def _is_price_effective(self, price) -> bool:
         """检查价格是否在有效期内"""
