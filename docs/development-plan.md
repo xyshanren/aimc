@@ -16,8 +16,8 @@
 | Phase 3 | 情报联动模型组 | ⬜ | AI 解析 → 自动入组/出组 |
 | Phase 4 | 智能优化 | ⬜ 远期 | 用量分析 / 延迟追踪 / 自动权重 |
 | **API-Sec-1** | **DB api_key 加密 (XOR+Base64 轻量化)** | **✅** | **DB 文件泄露 ≠ channel key 泄露；零外部依赖** |
-| **API-Sec-2** | **ALERT_CHANNEL runtime override** | **🔨 下一阶段** | **改告警 channel / webhook 不重启** |
-| **API-Sec-3** | **key 轮换提醒** | **🔨 下一阶段** | **30 天未轮换飞书告警** |
+| **API-Sec-2** | **ALERT_CHANNEL runtime override** | **✅** | **改告警 channel / webhook 不重启** |
+| **API-Sec-3** | **key 轮换提醒** | **✅** | **30 天未轮换飞书告警** |
 
 设计原则：**运维先于新功能**（新增"二、设计原则"）。Phase 2.5 在 Phase 2 实施前补的，让"日常运维不痛"先于"模型组新能力"。
 
@@ -116,7 +116,7 @@ ALTER TABLE accounts ADD COLUMN api_key_ciphertext BLOB;
 
 ---
 
-## API-Sec-2: ALERT_CHANNEL 改 DB 存储 + 不重启切换（待开发）
+## API-Sec-2: ALERT_CHANNEL 改 DB 存储 + 不重启切换（已完成, 2026-07-29）
 
 > 目标：dashboard 改 ALERT_CHANNEL / BARK_KEY / FEISHU_WEBHOOK_URL 后**不用重启**立即生效
 
@@ -156,7 +156,7 @@ CREATE TABLE settings_runtime (
 
 ---
 
-## API-Sec-3: Key 轮换提醒（可选，待开发）
+## API-Sec-3: Key 轮换提醒（已完成, 2026-07-29）
 
 > 目标：dashboard 看到 key 何时更新、30 天未轮换飞书告警
 
