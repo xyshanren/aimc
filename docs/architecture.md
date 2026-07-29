@@ -389,7 +389,7 @@ CREATE TABLE model_registry (
 - `capabilities`：能力标签枚举值为 `reasoning` / `code` / `math` / `general` / `creative` / `agent` / `vision` / `long_context`
 - `benchmark_scores`：仅用于 Dashboard 展示和人工参考，**不参与**路由决策
 
-**注意**：Phase 2D-4 已实现的 `model_cards` 表是过渡设计，Phase 2 模型组落地时应**合并/迁移**到 `model_registry`，避免双轨。
+**双轨设计**（2026-07-29 拍板）：`model_cards`（43 张，存 benchmark 引用分）**永久保留**，`model_registry` 存路由元信息（tier / capabilities / context_length / family）。两者用 `model_id` 字符串 soft join（不强制 FK，因为评测卡片可能下架但 registry 还在用，或反过来）。详细设计见 [phase2-design.md](phase2-design.md)。
 
 #### model_groups（模型组定义表）
 
