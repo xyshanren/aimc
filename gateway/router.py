@@ -359,11 +359,19 @@ class RouteEngine:
     # Phase 2.4: 模型组路由 (tier:/scene: 前缀 + fallback chain)
     # ===========================================================
 
-    def select_channel(self, model: str) -> Optional[dict]:
+    def select_channel(self, model: str, prefs: Optional[dict] = None) -> Optional[dict]:
         """Phase 2.4 入口: 按 model 字符串分发
 
         - "tier:xxx" / "scene:xxx" → _select_by_group (组路由 + fallback chain)
         - 其他 → select_best_channel (精确模型路由, 现有行为不变)
+
+        Args:
+            model: 请求的 model 字符串
+            prefs: Phase 2.6 Agent 偏好, 3 个字段:
+                - prefer_family: 同价时优先的 model family (e.g. "deepseek")
+                - exclude_providers: 排除的 channel provider 列表 (e.g. ["local"])
+                - max_input_price: 价格上限 (元/百万 tokens, 超过的排除)
+              只对组路由生效, 精确模型路由 Phase 2 不实现偏好
 
         返回的 channel 字典会带额外字段 (组路由时注入):
         - _actual_model: 实际命中的精确 model_id
@@ -371,10 +379,13 @@ class RouteEngine:
         - _registry_tier: 命中 model 的能力档
         """
         if model.startswith("tier:") or model.startswith("scene:"):
-            return self._select_by_group(model)
+            return self._select_by_group(model, prefs=prefs)
+        # 精确模型路由 Phase 2.6 不实现偏好 (跟 design §4.5 一致)
         return self.select_best_channel(model)
 
-    def _select_by_group(self, group_id: str) -> Optional[dict]:
+    def _select_by_group(
+        self, group_id: str, prefs: Optional[dict] = None
+    ) -> Optional[dict]:
         """模型组路由: 在 group 内选最优 (model, channel) 三元组
 
         流程:
@@ -389,7 +400,13 @@ class RouteEngine:
         路由策略 (Phase 2 只实现 cheapest + priority):
         - cheapest: input_price ASC (subscription/free 视为 0 元, 永远优先)
         - priority: channel.priority DESC
+
+        偏好 (Phase 2.6):
+        - exclude_providers: 排除 channel provider (candidates 阶段过滤)
+        - max_input_price: 价格上限 (candidates 阶段过滤)
+        - prefer_family: 同价时 tie-break (sort_key 阶段)
         """
+        prefs = prefs or {}
         visited: set[str] = set()
         current: Optional[str] = group_id
 
@@ -486,7 +503,34 @@ class RouteEngine:
 
                 # 取 input_price (用于跨 member 排序)
                 input_price = self._get_input_price(best, model_id)
-                candidates.append((best, model_id, input_price))
+
+                # Phase 2.6: Agent 偏好过滤
+                # 1) exclude_providers: 排除指定 provider 的 channel
+                exclude_providers = prefs.get("exclude_providers") or []
+                if exclude_providers and best["provider"] in exclude_providers:
+                    logger.debug(
+                        f"  [{current}] {model_id} via {best['name']}: "
+                        f"provider {best['provider']} 在 exclude_providers, 跳过"
+                    )
+                    skipped += 1
+                    continue
+                # 2) max_input_price: 价格上限
+                max_input_price = prefs.get("max_input_price")
+                if max_input_price is not None and input_price > max_input_price:
+                    logger.debug(
+                        f"  [{current}] {model_id} via {best['name']}: "
+                        f"input_price {input_price} > max_input_price {max_input_price}, 跳过"
+                    )
+                    skipped += 1
+                    continue
+                # 3) prefer_family: tie-break (0 = 优先, 1 = 兜底)
+                # 预计算, sort 时不查 cache
+                family_bonus = 1  # 默认 1 (非 prefer)
+                if prefs.get("prefer_family"):
+                    if registry.family == prefs["prefer_family"]:
+                        family_bonus = 0
+
+                candidates.append((best, model_id, input_price, family_bonus))
 
             if not candidates:
                 logger.warning(
@@ -500,20 +544,24 @@ class RouteEngine:
             # 3) 跨 member 排序 (按组策略)
             strategy = group.strategy or "cheapest"
             if strategy == "priority":
+                # priority 策略: channel.priority DESC (family_bonus 忽略)
                 candidates.sort(key=lambda x: x[0].get("priority", 0), reverse=True)
             else:
                 # cheapest (default): subscription/free 视为 0 元, 永远最便宜
-                # billing_mode 在 ch dict 里 (Phase 2.3 加的, refresh_cache 会注入)
-                # 但当前 cache.append 还没注入这 2 字段, 走 fallback: subscription=0, free=0, 其他按 price
+                # 排序 key: (price, family_bonus, -priority) — Phase 2.6 加 family_bonus tie-break
                 def sort_key(item):
-                    ch, _model_id, price = item
+                    ch, _model_id, price, family_bonus = item
                     billing = ch.get("billing_mode", "pay_per_token")
                     if billing in ("subscription", "free"):
-                        return (0.0, -ch.get("priority", 0))
-                    return (price if price is not None else 999.0, -ch.get("priority", 0))
+                        return (0.0, family_bonus, -ch.get("priority", 0))
+                    return (
+                        price if price is not None else 999.0,
+                        family_bonus,
+                        -ch.get("priority", 0),
+                    )
                 candidates.sort(key=sort_key)
 
-            best_ch, best_model, _ = candidates[0]
+            best_ch, best_model, _, _ = candidates[0]
 
             # 4) 注入调试字段 (Phase 2.5 响应头用)
             best_ch["_actual_model"] = best_model
@@ -527,7 +575,8 @@ class RouteEngine:
                 f"组路由: {group_id} -> {best_model} via {best_ch['name']} "
                 f"(strategy={strategy}, "
                 f"members={len(members)}, candidates={len(candidates)}, "
-                f"skipped={skipped})"
+                f"skipped={skipped}, "
+                f"prefs={prefs if prefs else '{}'})"
             )
             return best_ch
 

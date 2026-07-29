@@ -66,10 +66,23 @@ async def chat_completions(request: Request):
             content={"error": {"message": "model field is required", "type": "invalid_request_error"}},
         )
 
+    # Phase 2.6: 解析 Agent 偏好 (extra_body.aimc_preferences)
+    # 3 个字段: prefer_family / exclude_providers / max_input_price
+    # 只对组路由生效 (精确模型路由 Phase 2 不实现)
+    prefs = {}
+    extra_body = body_json.get("extra_body") or {}
+    if isinstance(extra_body, dict):
+        aimc_prefs = extra_body.get("aimc_preferences") or {}
+        if isinstance(aimc_prefs, dict):
+            prefs = {
+                k: v for k, v in aimc_prefs.items()
+                if k in ("prefer_family", "exclude_providers", "max_input_price")
+            }
+
     # 路由决策: select_channel (Phase 2.4 入口, 精确模型 + 模型组)
     # - "deepseek-chat" → 走原精确模型路由
     # - "tier:balanced" / "scene:code" → 走组路由 + fallback chain
-    channel = route_engine.select_channel(model)
+    channel = route_engine.select_channel(model, prefs=prefs)
     if channel is None:
         return JSONResponse(
             status_code=503,
