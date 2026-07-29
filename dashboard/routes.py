@@ -15,7 +15,10 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.engine import get_session
-from db.models import Channel, Promotion, UsageLog, PriceSnapshot
+from db.models import (
+    Channel, Promotion, UsageLog, PriceSnapshot,
+    ModelRegistry, ModelGroup, ModelGroupMember,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,4 +193,76 @@ async def refresh_route_cache():
         "status": "ok",
         "channels": channels,
         "models": models,
+    }
+
+
+# ============================================================
+# Phase 2.9: Model Registry + Model Group Dashboard (只读)
+# ============================================================
+
+@router.get("/api/registry/models")
+async def get_registry_models(session: AsyncSession = Depends(get_session)):
+    """Phase 2.9: 列出 model_registry (25 个 model 只读)
+
+    跟 model_cards (43 张) 双轨 (B 方案, model_id soft join)
+    """
+    rows = list((await session.execute(
+        select(ModelRegistry).order_by(ModelRegistry.family, ModelRegistry.tier, ModelRegistry.model_id)
+    )).scalars().all())
+    return {
+        "count": len(rows),
+        "models": [
+            {
+                "model_id": r.model_id,
+                "family": r.family,
+                "display_name": r.display_name,
+                "tier": r.tier,
+                "capabilities": r.capabilities,
+                "context_length": r.context_length,
+                "modality": r.modality,
+                "is_open_source": bool(r.is_open_source),
+                "release_date": r.release_date,
+                "status": r.status,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/api/registry/groups")
+async def get_registry_groups(session: AsyncSession = Depends(get_session)):
+    """Phase 2.9: 列出 model_group + members (6 group + 35 member 只读)
+    """
+    groups = list((await session.execute(
+        select(ModelGroup).order_by(ModelGroup.sort_order)
+    )).scalars().all())
+    members = list((await session.execute(
+        select(ModelGroupMember)
+    )).scalars().all())
+
+    # 倒排 member by group_id
+    members_by_group: dict[str, list] = {}
+    for m in members:
+        members_by_group.setdefault(m.group_id, []).append({
+            "model_id": m.model_id,
+            "priority": m.priority,
+        })
+
+    return {
+        "group_count": len(groups),
+        "member_count": len(members),
+        "groups": [
+            {
+                "group_id": g.group_id,
+                "display_name": g.display_name,
+                "tier": g.tier,
+                "capabilities": g.capabilities,
+                "min_context": g.min_context,
+                "strategy": g.strategy,
+                "fallback_group": g.fallback_group,
+                "enabled": bool(g.enabled),
+                "members": members_by_group.get(g.group_id, []),
+            }
+            for g in groups
+        ],
     }

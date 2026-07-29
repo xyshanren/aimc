@@ -44,6 +44,22 @@
             <h2>用量统计（近7天）</h2>
             <canvas id="usage-chart" width="600" height="200"></canvas>
         </section>
+
+        <!-- Phase 2.9: Model Registry (只读) -->
+        <section class="card" id="registry-models-section">
+            <h2>Model Registry <span class="subtitle">路由元信息 (tier / capabilities / ctx)</span></h2>
+            <div id="registry-models-list" hx-get="/dashboard/api/registry/models" hx-trigger="load, every 60s" hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
+
+        <!-- Phase 2.9: Model Groups (只读) -->
+        <section class="card" id="registry-groups-section">
+            <h2>Model Groups <span class="subtitle">能力档 / 场景 (tier:xxx / scene:xxx)</span></h2>
+            <div id="registry-groups-list" hx-get="/dashboard/api/registry/groups" hx-trigger="load, every 60s" hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
     </main>
 
     <footer>

@@ -21,6 +21,10 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
         renderPromotions(target);
     } else if (target.id === 'prices-list') {
         renderPrices(target);
+    } else if (target.id === 'registry-models-list') {
+        renderRegistryModels(target);
+    } else if (target.id === 'registry-groups-list') {
+        renderRegistryGroups(target);
     }
 });
 
@@ -96,8 +100,74 @@ function renderPrices(container) {
     }
 }
 
+// Phase 2.9: model_registry + model_group 渲染
+function renderRegistryModels(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+        if (!data || !data.models || data.models.length === 0) {
+            container.innerHTML = '<p class="loading">暂无 model registry 数据</p>';
+            return;
+        }
+        let html = `<p class="meta">共 ${esc(data.count)} 个 model (按 family + tier 排序)</p>`;
+        html += '<table><thead><tr><th>model_id</th><th>family</th><th>tier</th><th>capabilities</th><th>ctx</th><th>open</th><th>状态</th></tr></thead><tbody>';
+        let prevFamily = null;
+        for (const m of data.models) {
+            if (m.family !== prevFamily) {
+                // family 分组 (可选高亮, 这里仅逻辑分组, 视觉一致)
+                prevFamily = m.family;
+            }
+            const caps = m.capabilities ? JSON.parse(m.capabilities) : [];
+            const ctx = m.context_length ? (m.context_length >= 1024 ? Math.round(m.context_length / 1024) + 'k' : m.context_length) : '?';
+            html += `<tr>
+                <td><code>${esc(m.model_id)}</code></td>
+                <td>${esc(m.family)}</td>
+                <td>${esc(m.tier)}</td>
+                <td class="caps">${esc(caps.join(', '))}</td>
+                <td>${esc(ctx)}</td>
+                <td>${m.is_open_source ? '✓' : '·'}</td>
+                <td>${esc(m.status)}</td>
+            </tr>`;
+        }
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderRegistryModels failed:', e);
+        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+function renderRegistryGroups(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+        if (!data || !data.groups || data.groups.length === 0) {
+            container.innerHTML = '<p class="loading">暂无 model group 数据</p>';
+            return;
+        }
+        let html = `<p class="meta">共 ${esc(data.group_count)} 个 group, ${esc(data.member_count)} 个 member</p>`;
+        for (const g of data.groups) {
+            const caps = g.capabilities ? JSON.parse(g.capabilities) : [];
+            const tier = g.tier || '*';
+            const fallback = g.fallback_group || '(无降级)';
+            const ctxMin = g.min_context || 0;
+            html += `<div class="group-card">
+                <h3><code>${esc(g.group_id)}</code> <span class="tier">${esc(tier)}</span></h3>
+                <p class="desc">${esc(g.display_name || '')} | strategy=${esc(g.strategy)} | fallback=${esc(fallback)}</p>
+                ${caps.length ? `<p class="caps">要求 capabilities: ${esc(caps.join(', '))}</p>` : ''}
+                ${ctxMin ? `<p class="meta">min_context=${esc(ctxMin)}</p>` : ''}
+                <details><summary>members (${g.members.length})</summary><ul>`;
+            for (const m of g.members) {
+                html += `<li><code>${esc(m.model_id)}</code> <span class="meta">priority=${esc(m.priority)}</span></li>`;
+            }
+            html += '</ul></details></div>';
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderRegistryGroups failed:', e);
+        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+    }
+}
+
 // 用量统计图表
-async function loadUsageChart() {
     try {
         const resp = await fetch('/dashboard/api/usage/summary?days=7');
         const data = await resp.json();
