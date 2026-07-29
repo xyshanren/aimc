@@ -215,26 +215,42 @@ async def import_one_channel(session, cfg: dict) -> bool:
 
     # 幂等性: 同名 channel 已存在就 skip (老数据由 migrate_encrypt_keys.py 迁移)
     from sqlalchemy import select
-    from db.models import Channel as ChannelModel
+    from db.models import Channel as ChannelModel, Account as AccountModel
     existing_ch = (await session.execute(
         select(ChannelModel).where(ChannelModel.name == cfg["name"])
     )).scalar_one_or_none()
     if existing_ch is not None:
-        print(f"[skip] {cfg['name']}: channel 已存在 (id={existing_ch.id}), 如需更新 key 走 dashboard")
-        return False
+        # 检查该 channel 是否有 active account
+        existing_acc = (await session.execute(
+            select(AccountModel).where(
+                AccountModel.channel_id == existing_ch.id,
+                AccountModel.status == "active",
+            )
+        )).scalars().first()
+        if existing_acc is not None:
+            print(f"[skip] {cfg['name']}: channel + account 已存在 (channel_id={existing_ch.id}), 如需更新 key 走 dashboard")
+            return False
+        # channel 在但没 active account (老 data 残留) → 复用 channel 重建 account
+        print(f"[recover] {cfg['name']}: channel 存在但无 active account, 重建 account")
+        channel = existing_ch
+    else:
+        channel = None  # 下面会 create_channel
 
     # API-Sec-1: 加密明文 → ciphertext bytes
     from security.crypto import encrypt
     ciphertext = encrypt(api_key, settings.aimc_master_key)
 
-    channel = await crud.create_channel(
-        session,
-        name=cfg["name"],
-        provider=cfg["provider"],
-        base_url=cfg["base_url"],
-        priority=cfg["priority"],
-    )
-    print(f"[+] 创建渠道: {channel.name} (id={channel.id})")
+    if channel is None:
+        channel = await crud.create_channel(
+            session,
+            name=cfg["name"],
+            provider=cfg["provider"],
+            base_url=cfg["base_url"],
+            priority=cfg["priority"],
+        )
+        print(f"[+] 创建渠道: {channel.name} (id={channel.id})")
+    else:
+        print(f"[recover] 复用已有 channel: {channel.name} (id={channel.id})")
 
     account = await crud.create_account(
         session,
@@ -244,7 +260,7 @@ async def import_one_channel(session, cfg: dict) -> bool:
         api_key_ciphertext=ciphertext,  # API-Sec-1: 存密文
         quota_total=None,
     )
-    # ⚠️ 不打印 account.id/敏感字段（只 print 名字）
+    # 不打印 account.id/敏感字段（只 print 名字）
     print(f"[+] 创建账号: {account.account_name} (key 已加密)")
 
     for model, price_type, time_range, in_p, out_p in cfg["prices"]:
@@ -284,7 +300,7 @@ async def import_demo_data():
 
     print(f"\n[OK] 完成：{created} 个渠道已导入")
     if created == 0:
-        print("⚠️  没有渠道被创建 — 可能原因:")
+        print("! 没有渠道被创建 — 可能原因:")
         print("  1. .env 中所有 channel key 都没填 / 填了占位符 (sk-your-...)")
         print("  2. AIMC_MASTER_KEY 未配置 (运行 python scripts/gen_master_key.py)")
         print("  3. 同名 channel 已存在, 如需迁移老明文数据跑 scripts/migrate_encrypt_keys.py")

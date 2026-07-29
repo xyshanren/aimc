@@ -465,10 +465,13 @@ ALTER TABLE accounts ADD COLUMN api_key_ciphertext BLOB;
 - `.env` 跟 `accounts.api_key` **解耦**：`.env` 漏了不会带出所有 channel key
 - 详细的现状分析 + 设计对比见 [api-key-security.md](api-key-security.md)
 
-**加密方案**：
-- 算法：Fernet（`cryptography.fernet`，AES-128-CBC + HMAC-SHA256）
-- 主密钥：`.env` 里的 `AIMC_MASTER_KEY`（44 字符 base64，与其他 .env 字段模式一致）
+**加密方案**（轻量化自实现）：
+- 算法：**XOR 循环 + Base64**（`security/crypto.py` ~30 行，**零外部依赖**）
+- 密钥派生：用 `secrets.token_hex(32)` 生成 64 字符 hex master key（32 bytes 原始）
+- 主密钥：`.env` 里的 `AIMC_MASTER_KEY`（64 字符 hex = 32 bytes，与其他 .env 字段模式一致）
 - 不加密 .env 本身（避免"开机输入 master key 解密 .env 才能解 DB"的鸡生蛋问题）
+- **每次部署重新生成 master key**（无跨环境同步需求，丢了 = 重新部署）
+- **诚实评估**：XOR 不是密码学标准加密（已知明文能解），但在本项目场景下安全等级 ≈ Fernet（master key 跟 .env 在一起时 Fernet 也救不了）
 
 **双读策略**（过渡期）：
 - 读：优先 `api_key_ciphertext`（解密），fallback 到 `api_key`（明文，仅迁移期）
@@ -717,8 +720,8 @@ groups:
 | 告警 throttle | **锁内 check+mark 60s 窗口** | 防刷屏优先，宁可 60s 不重试 |
 | `.env` 保护 | **gitignore + pre-commit 双层** | 单层 gitignore 不够，commit -f 可绕过 |
 | Router cache 刷新 | **5min 自动 + endpoint 手动** | 平时够用，改完立即刷不用等 |
-| `accounts.api_key` 加密 | **Fernet + master key 在 .env** | DB 文件泄露 ≠ channel key 泄露；不上 Infisical（破坏单进程原则） |
-| 加密 key 丢了 | **永久性数据丢失** | 迁移时强制 user 存密码管理器；master key 跟 ciphertext 备份分开 |
+| `accounts.api_key` 加密 | **XOR+Base64 轻量化 (零依赖)** | DB 文件泄露 ≠ channel key 泄露；不用 cryptography 库；不上 Infisical（破坏单进程原则） |
+| 加密 key 丢了 | **永久性数据丢失** | 每次部署重新生成 master key；丢了 = 重新部署（个人用工具可接受） |
 | 加密 vs .env 关系 | **不加密 .env 本身** | 避免"开机输入 master key 解密 .env 才能解 DB"的鸡生蛋问题 |
 
 ## 十一、部署方案

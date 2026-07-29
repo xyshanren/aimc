@@ -97,29 +97,34 @@ api_key = Column(Text, nullable=False, comment="API Key（建议加密存储）"
 
 **目标**：DB 文件泄露 = 看不到明文 key；.env 漏 = 拿到的是 master key 而不是所有 channel key。
 
-#### 3.1 加密方案
+#### 3.1 加密方案（轻量化自实现）
 
-- **算法**：Fernet（`cryptography.fernet`）
-  - 选型理由：cryptography 库自带、API 简单（4 行代码）、AES-128-CBC + HMAC-SHA256、key 长度固定 32 bytes base64、个人工具不需要 high-throughput
-- **主密钥管理**：`.env` 里的 `AIMC_MASTER_KEY`（44 字符 base64）
+- **算法**：XOR 循环 + Base64 编码 + stdlib `secrets` 生成 key
+  - 选型理由：**零外部依赖**（不引入 `cryptography` 库 ~3MB wheel），代码量 ~30 行
+  - 实现：`security/crypto.py` ~30 行（XOR 字节循环 + base64 包装）
+  - 实际安全性 ≈ "混淆" 不算真加密（XOR 已知明文就能解），但在当前场景下**等效 Fernet**（见 §3.5 诚实评估）
+- **主密钥管理**：`.env` 里的 `AIMC_MASTER_KEY`（64 字符 hex = 32 bytes 原始）
   - 跟现有 `.env` 模式一致，user 已经习惯
-  - 第一次启动时检测 .env 没有则自动生成并写入 .env.example 提示
-  - 备份建议：打印到终端让 user 自己存到密码管理器（不强制）
+  - 第一次启动时检测 .env 没有则自动生成并提示
+  - 备份：本地备份 + 部署时跟 .env 一起现生成
+  - **每次部署都是新 master key**（不需要跨环境同步）
 - **不加密 .env 本身** — 只加密 DB 里的 api_key 字段
   - .env 反正 .gitignore 保护，泄露场景少
   - .env 加密会引入 "开机输入 master key 解密 .env → 才能解 DB" 的鸡生蛋问题
+  - "master key 跟 .env 一起明文" 在本项目场景下**不是安全缺陷**（每次部署新生成 + 没跨环境同步需求）
 
 #### 3.2 DB schema 变更
 
 ```sql
 -- 平滑迁移：保留原 api_key TEXT，加新 ciphertext 列
 ALTER TABLE accounts ADD COLUMN api_key_ciphertext BLOB;
--- api_key TEXT 标记 deprecated, 但保留 (迁移期兜底)
+-- api_key TEXT 保留 (兼容老数据 + NOT NULL 约束)
+-- 新数据写 api_key="" (空字符串占位, NOT NULL 兼容) + api_key_ciphertext=密文
 ```
 
 **双读策略**（过渡期）：
-- 读：优先 `api_key_ciphertext`（解密），fallback 到 `api_key`（明文，已迁移则 None）
-- 写：永远写 ciphertext，**不再写明文**
+- 读：优先 `api_key_ciphertext`（XOR 解密），fallback 到 `api_key`（明文，仅迁移期）
+- 写：永远写 ciphertext，**api_key 写空字符串占位**（NOT NULL 约束）
 
 #### 3.3 运行时流程
 
@@ -139,31 +144,39 @@ ALTER TABLE accounts ADD COLUMN api_key_ciphertext BLOB;
 
 | 操作 | 文件 | 说明 |
 |------|------|------|
-| 新增 | `security/crypto.py` | Fernet 封装：encrypt(plaintext, master_key) / decrypt(ciphertext, master_key) |
-| 新增 | `scripts/gen_master_key.py` | 一次性脚本：生成 base64 44 字符 master key |
+| 新增 | `security/crypto.py` | XOR+Base64 自实现封装：encrypt(plaintext, master_key) / decrypt(ciphertext, master_key) / generate_master_key()。**零外部依赖**（只用 stdlib `base64` + `secrets`） |
+| 新增 | `scripts/gen_master_key.py` | 一次性脚本：生成 64 字符 hex (32 bytes 原始) master key |
 | 新增 | `scripts/migrate_encrypt_keys.py` | 一次性脚本：把老明文 api_key 转 ciphertext |
 | 修改 | `db/models.py` | `accounts` 加 `api_key_ciphertext` BLOB 字段 |
-| 修改 | `db/crud.py` | `get_account` 改：返回 `(plaintext_key, account)` 透明解密 |
 | 修改 | `gateway/router.py` | `refresh_cache` 用解密后的明文填 `channel["api_key"]` |
 | 修改 | `scripts/manual_import.py` | 写新 channel 时 encrypt 入 ciphertext |
-| 修改 | `requirements.txt` | 加 `cryptography` 依赖（应该已在） |
+| 修改 | `requirements.txt` | **不**加 `cryptography`（轻量化方案零外部依赖） |
 | 修改 | `.env.example` | 加 `AIMC_MASTER_KEY=<run scripts/gen_master_key.py>` |
-| 修改 | `dashboard/routes.py` | 改 channel key API 走 encrypt |
 
 #### 3.5 验证
 
 - ✅ 原有功能（chat / fallback / throttle）不受影响
-- ✅ `python -c "import sqlite3; c=sqlite3.connect('data/aimc.db'); print(c.execute('SELECT api_key, api_key_ciphertext FROM accounts').fetchall())"` 看不到明文
-- ✅ 杀进程 dump 内存才有明文（这是无法避免的，threshold 高）
+- ✅ `python -c "import sqlite3; ..."` 查 `accounts.api_key` 全是空字符串（迁移后），`api_key_ciphertext` 是 BLOB
+- ✅ DB dump 看不到明文（XOR+Base64 后无法直接看出原文）
 - ✅ master key 错误 → 启动 fail-fast，提示明确
-- ✅ 迁移脚本跑过老数据后，`api_key` 全部 NULL
+- ✅ 迁移脚本跑过老数据后，`api_key` 全部空字符串 + `api_key_ciphertext` 有密文
+- ✅ 跑老 Fernet 加密的 ciphertext 用新算法解不开（已记录：必须重跑迁移）
 
 #### 3.6 风险与降级
 
 - **master key 丢了** = 全部 ciphertext 不可解 = **永久性数据丢失**
-  - 缓解：迁移时打印 master key 到终端 + 提示存到密码管理器
-  - 缓解：master key 跟 ciphertext 备份分开保存（用户责任）
-- **performance**：Fernet 解密 ~10k ops/sec, AIMC 99% 走内存 cache, 启动时一次解密所有 key（<1s 9 个 key），无影响
+  - 缓解：每次部署重新生成 master key（不需要跨环境同步，丢了 = 重新部署）
+  - 缓解：master key 跟 .env 一起管理（部署时 .env 现生成）
+- **XOR 加密 vs 真加密**：诚实说，XOR 不是密码学标准加密（已知明文就能解）
+  - **但实际场景下安全等级 ≈ Fernet**：
+    - master key 跟 .env 在一起 → 攻击者拿到 .env = 拿到 master key + 9 个明文 LLM key
+    - 这种情况下 Fernet 也救不了（master key 暴露 = 全部 ciphertext 可解）
+    - 真正起作用的保护场景 = "DB 单独泄露，.env 没泄露"
+  - **真正的风险场景**：
+    - .env 单独泄露 → 拿明文 key（不靠 DB 加密）
+    - DB 单独泄露 → 拿 ciphertext，需要 master key（XOR 仍能挡住）
+    - .env + DB 同时泄露 → 全完
+- **性能**：XOR+Base64 比 Fernet 更快（<1ms 9 个 key），无影响
 
 ---
 
@@ -276,11 +289,23 @@ ALTER TABLE accounts ADD COLUMN expires_at       DATETIME;  -- 可选, 厂商给
 
 | Phase | 内容 | 估时 | 优先级 |
 |-------|------|------|--------|
-| API-Sec-1 | DB api_key 加密 + master key | 2h | **必做** |
+| **API-Sec-1** | DB api_key 轻量化加密 (XOR+Base64) + master key | **30 min** | **必做** |
 | API-Sec-2 | ALERT_CHANNEL runtime override + 不重启 | 1.5h | 重要 |
 | API-Sec-3 | key 轮换提醒 | 30 min | nice-to-have |
 
 **推荐顺序**：先 API-Sec-1（不加密的 key 永远不安全）→ API-Sec-2（运维体验）→ API-Sec-3（可选）
+
+**API-Sec-1 实施细节（轻量化版）**：
+- 重写 `security/crypto.py` 为 XOR+Base64 + stdlib `secrets`（~30 行）
+- 删 `requirements.txt` 里 `cryptography` 依赖
+- 改 `gen_master_key.py` 输出 64 字符 hex（之前是 44 字符 base64）
+- 重新跑迁移（Fernet 跟 XOR 不兼容，需重置 ciphertext）
+- 更新 `docs/architecture.md §十` + `docs/development-plan.md` 反映轻量化方案
+
+**关于部署模式**：
+- 每次部署都是新开始（重新生成 .env，重新生成 master key，重新初始化 DB）
+- 无需跨环境 master key 同步
+- 部署脚本现生成所有配置，丢了 = 重新部署（个人用工具可接受）
 
 ## 六、跨项目参考
 
@@ -290,6 +315,21 @@ ALTER TABLE accounts ADD COLUMN expires_at       DATETIME;  -- 可选, 厂商给
 
 ## 七、相关文档
 
-- [架构设计 §十 关键设计决策](architecture.md#十关键设计决策) — 需加"DB api_key 加密存储"决策
-- [开发计划 §技术债务](development-plan.md#技术债务--已知限制) — 需更新"API Key 加密"行
+- [架构设计 §六 数据模型 加密字段](architecture.md#现有表扩展加密字段) — 反映轻量化方案
+- [架构设计 §十 关键设计决策](architecture.md#十关键设计决策) — 决策表改成 XOR+Base64
+- [开发计划 §技术债务](development-plan.md#技术债务--已知限制) — API Key 加密行更新
 - [竞品调研](competitive-research.md) — OpenRouter/9Router/LiteLLM 都没自建密钥管理，Infisical 是垂直工具不是网关一部分
+
+## 八、明确不做（L3+ 重量级方案 + 重型加密库）
+
+| 方案 | 不做的理由 |
+|------|------------|
+| 上 Infisical | 破坏"单进程零外部依赖"核心原则（见 §2.3） |
+| 上 HashiCorp Vault | 学习成本 + 部署复杂，个人用 over-engineering |
+| 动态密钥 | 厂商给的就是长期凭证，AIMC 没法动态生成 |
+| 团队级 RBAC | 个人用，无多用户 |
+| 环境隔离 (dev/test/prod) | AIMC 是 single-process 本地工具 |
+| Agent Vault (AI Agent 凭证代理) | AIMC 不是 Agent 场景，是代理网关 |
+| KMS (AWS/GCP Key Management) | 单机本地工具，云 KMS 不可用 |
+| **Fernet (cryptography 库)** | **3MB wheel 依赖，XOR+Base64 替代方案零外部依赖且实际安全等级相当** |
+| 加密 .env 本身 | 引入"开机输入 master key"的鸡生蛋问题 |

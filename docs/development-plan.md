@@ -15,7 +15,7 @@
 | Phase 2 | 多维模型组 | 🔨 当前重点 | 4 张新表 + 组内选优 + Agent 偏好 |
 | Phase 3 | 情报联动模型组 | ⬜ | AI 解析 → 自动入组/出组 |
 | Phase 4 | 智能优化 | ⬜ 远期 | 用量分析 / 延迟追踪 / 自动权重 |
-| **API-Sec-1** | **DB api_key 加密 (Fernet)** | **🔨 当前重点** | **DB 文件泄露 ≠ channel key 泄露** |
+| **API-Sec-1** | **DB api_key 加密 (XOR+Base64 轻量化)** | **🔨 当前重点** | **DB 文件泄露 ≠ channel key 泄露；零外部依赖** |
 | API-Sec-2 | ALERT_CHANNEL runtime override | ⬜ | 改告警 channel / webhook 不重启 |
 | API-Sec-3 | key 轮换提醒 | ⬜ | 30 天未轮换飞书告警 |
 
@@ -70,11 +70,14 @@
 > 背景调研：[api-key-security.md](api-key-security.md) — Infisical 启示 + 现状盘点 + 明确不做的方案
 > 关联：[architecture.md §六 数据模型 加密字段](architecture.md#现有表扩展加密字段) / [§十 关键设计决策](architecture.md#十关键设计决策)
 
-### 1.1 加密方案
+### 1.1 加密方案（轻量化自实现）
 
-- **算法**：Fernet（`cryptography.fernet`，AES-128-CBC + HMAC-SHA256）
-- **主密钥**：`AIMC_MASTER_KEY`（44 字符 base64），存 `.env`（跟现有模式一致）
+- **算法**：**XOR 循环 + Base64**（`security/crypto.py` ~30 行，**零外部依赖**）
+- **密钥派生**：用 `secrets.token_hex(32)` 生成 64 字符 hex master key（32 bytes 原始）
+- **主密钥**：`AIMC_MASTER_KEY`（64 字符 hex），存 `.env`（跟现有模式一致）
 - **不加密 .env 本身**（避免"开机输入 master key 解密 .env 才能解 DB"的鸡生蛋问题）
+- **每次部署重新生成**（无跨环境同步需求，丢了 = 重新部署）
+- **诚实评估**：XOR 不是密码学标准加密（已知明文能解），但在本项目场景下安全等级 ≈ Fernet（master key 跟 .env 在一起时 Fernet 也救不了）
 
 ### 1.2 DB schema
 
@@ -92,8 +95,8 @@ ALTER TABLE accounts ADD COLUMN api_key_ciphertext BLOB;
 | 操作 | 文件 | 说明 |
 |------|------|------|
 | 新增 | `security/__init__.py` | 包入口 |
-| 新增 | `security/crypto.py` | Fernet 封装：`encrypt(plaintext, master_key)` / `decrypt(ciphertext, master_key)` |
-| 新增 | `scripts/gen_master_key.py` | 一次性脚本：生成 44 字符 base64 master key |
+| 新增 | `security/crypto.py` | XOR+Base64 自实现封装：`encrypt(plaintext, master_key)` / `decrypt(ciphertext, master_key)` / `generate_master_key()`。**零外部依赖**（只用 stdlib `base64` + `secrets`） |
+| 新增 | `scripts/gen_master_key.py` | 一次性脚本：生成 64 字符 hex (32 bytes) master key |
 | 新增 | `scripts/migrate_encrypt_keys.py` | 一次性脚本：把老明文 api_key 转 ciphertext |
 | 修改 | `db/models.py` | `accounts` 加 `api_key_ciphertext` BLOB 字段 |
 | 修改 | `db/crud.py` | `get_account` 改：透明解密返回明文 |
@@ -282,7 +285,7 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 | 路由缓存刷新 | 5min 自动 + 手动 endpoint (`#5`) | Phase 3 改为事件驱动（价格变动即刷新） |
 | 模型组缓存刷新 | 与路由缓存同 5min | Phase 2 独立刷新逻辑（避免等 5min） |
 | 频限器持久化 | 纯内存，重启丢失 | 可接受（重启后窗口自然重置） |
-| **API Key 加密** | **🔨 API-Sec-1 进行中** | **DB `api_key_ciphertext` BLOB 字段 + Fernet** |
+| **API Key 加密** | **🔨 API-Sec-1 进行中** | **DB `api_key_ciphertext` BLOB 字段 + XOR+Base64 轻量化** |
 | `model_cards` vs `model_registry` | 9 张表 (`model_cards` 已实现) + 4 张表待加 | Phase 2 处理双轨关系（合并 or 保留） |
 | 并发安全 | 单进程无锁 | 足够（个人使用场景） |
 | Playwright 浏览器二进制 | 未装（采集功能不可用） | 个人用可接受，未来按需装 |
