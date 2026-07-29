@@ -38,6 +38,7 @@ async def ensure_migrations():
     - promotions.flagged / flagged_reason (Phase 2D-1, 2026-07-24)
     - accounts.api_key_ciphertext (API-Sec-1, 2026-07-29)
     - accounts.api_key → nullable=True (API-Sec-1 兼容老明文)
+    - accounts.last_rotated_at / expires_at (API-Sec-3, 2026-07-29)
     - channels.provider_type / billing_mode (Phase 2.3, 2026-07-29)
     - settings_runtime 表 (API-Sec-2, 2026-07-29) — 新建表, create_all 自动
     """
@@ -77,6 +78,19 @@ async def ensure_migrations():
             logger.info("迁移: accounts 添加 api_key_ciphertext 列 (API-Sec-1)")
         else:
             logger.debug("迁移: accounts.api_key_ciphertext 已存在，跳过")
+
+        # accounts.last_rotated_at / expires_at (API-Sec-3, 2026-07-29)
+        # 用同一份 columns (刚 query 过)
+        if "last_rotated_at" not in columns:
+            await conn.execute(text("ALTER TABLE accounts ADD COLUMN last_rotated_at DATETIME"))
+            logger.info("迁移: accounts 添加 last_rotated_at 列 (API-Sec-3)")
+        else:
+            logger.debug("迁移: accounts.last_rotated_at 已存在，跳过")
+        if "expires_at" not in columns:
+            await conn.execute(text("ALTER TABLE accounts ADD COLUMN expires_at DATETIME"))
+            logger.info("迁移: accounts 添加 expires_at 列 (API-Sec-3)")
+        else:
+            logger.debug("迁移: accounts.expires_at 已存在，跳过")
 
         # channels.provider_type / billing_mode (Phase 2.3, 2026-07-29)
         # ALTER ADD COLUMN NOT NULL 必须带 DEFAULT (SQLite 限制)

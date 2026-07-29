@@ -260,6 +260,10 @@ async def import_one_channel(session, cfg: dict) -> bool:
         api_key_ciphertext=ciphertext,  # API-Sec-1: 存密文
         quota_total=None,
     )
+    # API-Sec-3: 写 last_rotated_at (新建 account 视为刚轮换)
+    from datetime import datetime
+    account.last_rotated_at = datetime.now()
+    await session.commit()
     # 不打印 account.id/敏感字段（只 print 名字）
     print(f"[+] 创建账号: {account.account_name} (key 已加密)")
 

@@ -81,6 +81,15 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # API-Sec-3 (2026-07-29): 每天扫 1 次 key 轮换 (30 天阈值)
+    scheduler.add_job(
+        _check_key_rotation_task,
+        trigger=IntervalTrigger(hours=24),
+        id="check_key_rotation",
+        name="key 轮换检查",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         f"调度器已启动 (持久化模式), 共 {len(sources) + 1} 个定时任务, "
@@ -182,3 +191,13 @@ async def _refresh_route_cache():
         await route_engine.refresh_cache()
     except Exception as e:
         logger.error(f"路由缓存刷新失败: {e}")
+
+
+async def _check_key_rotation_task():
+    """API-Sec-3: 每天扫一次 key 轮换 (30 天阈值), 飞书告警超期 key"""
+    try:
+        from scripts.check_key_rotation import check_key_rotation
+        count = await check_key_rotation()
+        logger.info(f"key 轮换检查完成: {count} 个告警")
+    except Exception as e:
+        logger.error(f"key 轮换检查失败: {e}", exc_info=True)

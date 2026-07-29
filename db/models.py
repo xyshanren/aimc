@@ -63,6 +63,9 @@ class Account(Base):
     status = Column(Text, default="active", comment="active/exhausted/expired/error")
     quota_total = Column(Integer, nullable=True, comment="总配额（tokens）")
     quota_used = Column(Integer, default=0, comment="已用配额")
+    # API-Sec-3 (2026-07-29): key 轮换审计
+    last_rotated_at = Column(DateTime, nullable=True, comment="最后轮换时间 (manual_import.py 写入)")
+    expires_at = Column(DateTime, nullable=True, comment="用户自定过期时间 (NULL=无)")
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
