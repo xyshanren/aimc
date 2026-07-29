@@ -9,10 +9,14 @@ AIMC（AI Model Compass）是一款专为个人开发者设计的**轻量级 LLM
 ## 核心特性
 
 - **智能路由** — 基于时段/价格/配额/频限多维权重，自动选择最优渠道
+- **多维模型组 (Phase 2)** — 按 `tier:xxx` / `scene:xxx` 前缀调用，AIMC 在组内跨 model 选最便宜；支持 Agent 偏好 (prefer_family / exclude_providers / max_input_price)
 - **零侵入透传** — 兼容 OpenAI SDK，流式/非流式原样透传，不解析 SSE
 - **情报聚合** — 定时爬取厂商定价页+活动页，AI 结构化提取优惠信息
 - **频限管理** — 内存滑动窗口追踪 QPM/TPM/并发/日限额，自动切换
 - **多账号兜底** — 同厂商多账号轮询，配额耗尽自动切换
+- **响应头可观测 (Phase 2.5)** — `X-AIMC-Actual-Model/Channel/Group-Id` 头告诉 Agent 实际命中
+- **API Key 加密 (API-Sec-1)** — DB 文件泄露 ≠ channel key 泄露（XOR+Base64 轻量化，零外部依赖）
+- **告警 throttle (Phase 2.5)** — 同 key 60s 内只发 1 次，防止飞书刷屏
 - **自愈循环** — AI 解析置信度评估，高置信自动入库，低置信告警人工
 - **极简部署** — 单进程、单文件数据库、零外部依赖
 
@@ -53,8 +57,8 @@ AIMC（AI Model Compass）是一款专为个人开发者设计的**轻量级 LLM
 | 数据库 | SQLite (WAL) + SQLAlchemy 2.0 | 零运维，单文件 |
 | 定时调度 | APScheduler | 轻量，同进程 |
 | 爬虫引擎 | Playwright (async) | JS 渲染支持 |
-| AI 解析 | gpt-4o-mini | 成本极低 |
-| 告警推送 | Telegram Bot | 免费稳定 |
+| AI 解析 | gpt-4o-mini (or MiniMax/OpenAI 兼容) | 成本极低 |
+| 告警推送 | 飞书 / Bark / Server酱 | 国内首选，无需翻墙 |
 | Dashboard | htmx + Chart.js | 零构建 |
 
 ## 快速开始
@@ -121,9 +125,13 @@ aimc/
 
 ## 文档
 
-- [架构设计文档](docs/architecture.md) — 系统设计与数据模型
+- [架构设计文档](docs/architecture.md) — 系统设计与数据模型（含 Phase 2 多维模型组）
+- [开发计划](docs/development-plan.md) — 路线总览 (Phase 1/2.5/2/3/4 + API-Sec-1/2/3)
+- [Phase 2 设计文档](docs/phase2-design.md) — 模型组设计 + 实施步骤
+- [API Key 安全设计](docs/api-key-security.md) — 加密方案 + 现状盘点
 - [快速开始指南](docs/quickstart.md) — 安装、配置、部署
 - [API 接口文档](docs/api.md) — 网关接口说明
+- [竞品调研](docs/competitive-research.md) — OpenRouter/9Router/LiteLLM/RouteLLM 对比
 
 ## 设计原则
 
