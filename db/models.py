@@ -306,3 +306,27 @@ class ModelCapabilitiesLog(Base):
     confidence = Column(Float, nullable=True, comment="AI 推断时的置信度 (manual 时为 NULL)")
     approved = Column(Integer, default=0, comment="是否已人工确认 (0/1)")
     created_at = Column(DateTime, default=func.now())
+
+
+class SettingsRuntime(Base):
+    """Runtime settings override (API-Sec-2, 2026-07-29)
+
+    k-v 存储, 存运行时可改的配置 (e.g. ALERT_CHANNEL / BARK_KEY / FEISHU_WEBHOOK_URL).
+    dashboard PUT 即时生效, 不需要重启 uvicorn.
+
+    跟 .env 的关系 (跟 api-key-security.md §2 一致):
+    - .env: 启动时 Pydantic 加载 (immutable, 重启才变)
+    - settings_runtime: dashboard 可改, 优先于 .env
+    - alerter 读时: 先查 override, fallback env
+
+    设计决策 (2026-07-29):
+    - value 字段明文存, 跟 .env 模式一致
+    - 加密留 TODO (Phase 3 收尾) — master key 跟 .env 一起泄露时加密救不了,
+      加密主要是 "DB 单独泄露" 的 defense in depth
+    - 不在表里的 key 表示 "用 .env 的值" (NULL = 用 env)
+    """
+    __tablename__ = "settings_runtime"
+
+    key = Column(Text, primary_key=True, comment="设置名: alert_channel / bark_key / feishu_webhook_url / serverchan_key")
+    value = Column(Text, nullable=True, comment="override 值, NULL = 删除 override 回退 .env")
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())

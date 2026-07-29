@@ -15,9 +15,11 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.engine import get_session
+from db import crud
 from db.models import (
     Channel, Promotion, UsageLog, PriceSnapshot,
     ModelRegistry, ModelGroup, ModelGroupMember,
+    SettingsRuntime,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,17 +177,26 @@ async def refresh_route_cache():
     - 改了 .env 的 key 重新跑 manual_import.py
     - 跑了 refresh_siliconflow_models.py 加了新 model
     - 在 DB 里手动改了 priority
+    - API-Sec-2: 手动刷 alerter settings cache (虽然 PUT /api/settings/alert 已自动刷)
 
     Returns:
         200: { "status": "ok", "channels": N, "models": M }
     """
     from gateway.router import route_engine
+    from intelligence.alerter import refresh_settings_cache
 
     try:
         await route_engine.refresh_cache()
     except Exception as e:
         logger.error(f"路由缓存刷新失败: {e}")
-        raise HTTPException(status_code=500, detail=f"Refresh failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Refresh route failed: {e}")
+
+    try:
+        await refresh_settings_cache()
+    except Exception as e:
+        logger.error(f"告警 settings 缓存刷新失败: {e}")
+        # 不抛 500, alerter cache 不是关键路径
+        # (alerter 自己 fallback .env)
 
     channels = len(route_engine._channels_cache)
     models = len(route_engine.get_available_models())
@@ -265,4 +276,113 @@ async def get_registry_groups(session: AsyncSession = Depends(get_session)):
             }
             for g in groups
         ],
+    }
+
+
+# ============================================================
+# API-Sec-2: Runtime Settings (alert_channel / webhook) 不重启切换
+# ============================================================
+
+# 白名单: 允许的 runtime setting key
+ALLOWED_RUNTIME_KEYS = {
+    "alert_channel",
+    "bark_key",
+    "bark_server",
+    "serverchan_key",
+    "feishu_webhook_url",
+}
+
+
+@router.get("/api/settings/alert")
+async def get_alert_settings(session: AsyncSession = Depends(get_session)):
+    """API-Sec-2: 读当前告警 runtime override + .env 默认值
+
+    返回每个 key 的: current (生效值) / override (DB 存的) / env_default (.env 兜底)
+    - current 跟 override 一样 -> DB 有 override
+    - current 跟 env_default 一样 -> DB 没 override, 用 .env
+    """
+    from config import settings
+    env_defaults = {
+        "alert_channel": settings.alert_channel,
+        "bark_key": settings.bark_key,
+        "bark_server": settings.bark_server,
+        "serverchan_key": settings.serverchan_key,
+        "feishu_webhook_url": settings.feishu_webhook_url,
+    }
+    overrides = {r.key: r.value for r in await crud.list_runtime_settings(session)}
+    result = {}
+    for key in sorted(ALLOWED_RUNTIME_KEYS):
+        env_val = env_defaults.get(key, "")
+        override_val = overrides.get(key)
+        # 简化: key/webhook url 不暴露明文到 GET (避免 log 抓取), 只显示是否 override
+        is_secret = key.endswith("_key") or key.endswith("_url")
+        if is_secret:
+            current_display = "(已配置)" if (override_val or env_val) else "(未配置)"
+            override_display = "(已设置)" if override_val else None
+            env_display = "(已设置)" if env_val else "(未配置)"
+        else:
+            current_display = override_val or env_val
+            override_display = override_val
+            env_display = env_val
+        result[key] = {
+            "current": current_display,
+            "override": override_display,
+            "env_default": env_display,
+            "is_override": override_val is not None,
+        }
+    return result
+
+
+@router.put("/api/settings/alert")
+async def set_alert_settings(
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """API-Sec-2: 改告警 runtime override, 立即生效 (不重启)
+
+    body 格式:
+    {
+        "alert_channel": "feishu",            // 设为 feishu
+        "bark_key": null,                     // 删 override (回退 .env)
+        "feishu_webhook_url": "https://..."   // 设为新值
+    }
+
+    只接受白名单字段; value=null 表示删 override.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be dict")
+
+    # 白名单校验
+    invalid = set(payload.keys()) - ALLOWED_RUNTIME_KEYS
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid keys: {sorted(invalid)}. Allowed: {sorted(ALLOWED_RUNTIME_KEYS)}",
+        )
+
+    updated = []
+    cleared = []
+    for key, value in payload.items():
+        if value is None:
+            await crud.set_runtime_setting(session, key, None)
+            cleared.append(key)
+        else:
+            if not isinstance(value, str):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{key} must be string or null, got {type(value).__name__}",
+                )
+            await crud.set_runtime_setting(session, key, value)
+            updated.append(key)
+
+    # 立即刷 alerter cache (不依赖 POST /api/cache/refresh)
+    from intelligence.alerter import refresh_settings_cache
+    await refresh_settings_cache()
+
+    logger.info(f"API-Sec-2: 更新 runtime settings: +{updated} -{cleared}")
+    return {
+        "status": "ok",
+        "updated": updated,
+        "cleared": cleared,
+        "note": "立即生效, 不需要重启 uvicorn",
     }

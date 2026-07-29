@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import (
     Channel, Account, PriceSnapshot, Promotion,
     ChannelQuota, UsageLog, ParseRule, IntelSource,
-    ModelCard,
+    ModelCard, SettingsRuntime,
 )
 
 logger = logging.getLogger(__name__)
@@ -290,3 +290,46 @@ async def get_best_model_for_tier(session, tier: str) -> ModelCard | None:
         .limit(1)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+# === SettingsRuntime 操作 (API-Sec-2, 2026-07-29) ===
+# k-v 存储 runtime settings (alert_channel / bark_key / feishu_webhook_url)
+# dashboard PUT 即时生效, alerter 优先读这里, fallback 到 .env
+
+async def get_runtime_setting(session: AsyncSession, key: str) -> Optional[str]:
+    """读 runtime override value. None = 没 override (用 .env)"""
+    stmt = select(SettingsRuntime).where(SettingsRuntime.key == key)
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    return row.value if row else None
+
+
+async def set_runtime_setting(session: AsyncSession, key: str, value: Optional[str]) -> None:
+    """写 runtime override. value=None 表示删除 override 回退 .env
+
+    行为: 有则 update, 无则 insert (key 是主键)
+    """
+    from datetime import datetime
+    from sqlalchemy import delete
+
+    if value is None:
+        # 删 override
+        await session.execute(
+            delete(SettingsRuntime).where(SettingsRuntime.key == key)
+        )
+    else:
+        # 查存在否
+        existing = (await session.execute(
+            select(SettingsRuntime).where(SettingsRuntime.key == key)
+        )).scalar_one_or_none()
+        if existing:
+            existing.value = value
+            existing.updated_at = datetime.now()
+        else:
+            session.add(SettingsRuntime(key=key, value=value))
+    await session.commit()
+
+
+async def list_runtime_settings(session: AsyncSession) -> list[SettingsRuntime]:
+    """列所有 runtime override (供 dashboard 查看)"""
+    stmt = select(SettingsRuntime).order_by(SettingsRuntime.key)
+    return list((await session.execute(stmt)).scalars().all())

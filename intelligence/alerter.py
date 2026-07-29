@@ -18,6 +18,12 @@ Phase 3 (#3): throttle 机制
 - log 模式不 throttle（用户主动要 log 噪音）
 - 锁内一次性 check+mark, 防并发 race (3 个 401 同时来不会发 3 次)
 - 失败也占用槽位 60s, 防止飞书 webhook 暂时 503 时反复重试刷屏
+
+API-Sec-2 (2026-07-29): runtime override
+- 改 ALERT_CHANNEL / BARK_KEY / FEISHU_WEBHOOK_URL 不需要重启 uvicorn
+- 走 settings_runtime 表 (k-v 存储), dashboard PUT 即时生效
+- alerter 读时: 先查 runtime override, fallback .env
+- in-process cache (_settings_cache), POST /api/cache/refresh 同步刷
 """
 import logging
 import time
@@ -36,6 +42,49 @@ logger = logging.getLogger(__name__)
 _throttle_state: dict[str, float] = {}
 _throttle_lock = asyncio.Lock()
 THROTTLE_SECONDS = 60.0
+
+
+# API-Sec-2: runtime settings cache
+# key -> value (from settings_runtime table)
+_settings_cache: dict[str, str] = {}
+_settings_lock = asyncio.Lock()
+
+
+async def refresh_settings_cache() -> None:
+    """从 settings_runtime 表加载所有 override 到 in-process cache
+
+    调用时机:
+    - 应用启动时 (跟 router.refresh_cache 一起)
+    - POST /api/cache/refresh endpoint
+    - PUT /api/settings/alert 后 (dashboard 改完立即刷)
+    """
+    from db.engine import async_session_factory
+    from db import crud
+
+    try:
+        async with async_session_factory() as session:
+            rows = await crud.list_runtime_settings(session)
+            async with _settings_lock:
+                _settings_cache.clear()
+                for r in rows:
+                    _settings_cache[r.key] = r.value
+        logger.info(f"告警 runtime settings 缓存已刷新: {len(_settings_cache)} 个 override")
+    except Exception as e:
+        logger.error(f"告警 runtime settings 缓存刷新失败: {e}")
+
+
+def _get_setting(key: str, default: str = "") -> str:
+    """读 setting: 优先 runtime override, fallback default (来自 .env)
+
+    同步函数, 用于 _send_bark / _send_feishu / _send_serverchan 内部
+    (这些是 handler, 不是 async context, 不能 await refresh)
+    """
+    return _settings_cache.get(key, default)
+
+
+def _get_active_channel() -> str:
+    """读当前 channel: 优先 runtime override, fallback settings.alert_channel"""
+    return _get_setting("alert_channel", settings.alert_channel).lower().strip() or "log"
 
 
 async def _try_acquire_throttle(key: str) -> bool:
@@ -70,14 +119,17 @@ async def _send_bark(message: str) -> bool:
 
     配置：BARK_KEY=<你的 device_key>
     可选：BARK_SERVER=https://api.day.app (默认) 或自建 server URL
+
+    API-Sec-2: bark_key 优先读 runtime override, fallback .env
     """
-    if not settings.bark_key:
+    bark_key = _get_setting("bark_key", settings.bark_key)
+    if not bark_key:
         logger.warning(f"[ALERT-bark-no-config] {message}")
         return False
 
-    server = settings.bark_server.rstrip("/") or "https://api.day.app"
+    server = _get_setting("bark_server", settings.bark_server).rstrip("/") or "https://api.day.app"
     # Bark URL: {server}/{key}/{title}/{body}
-    url = f"{server}/{settings.bark_key}/AIMC 告警/{_short(message, 100)}"
+    url = f"{server}/{bark_key}/AIMC 告警/{_short(message, 100)}"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url)
@@ -91,12 +143,16 @@ async def _send_bark(message: str) -> bool:
 
 
 async def _send_serverchan(message: str) -> bool:
-    """Server 酱 push（推送到微信）"""
-    if not settings.serverchan_key:
+    """Server 酱 push（推送到微信）
+
+    API-Sec-2: serverchan_key 优先读 runtime override, fallback .env
+    """
+    serverchan_key = _get_setting("serverchan_key", settings.serverchan_key)
+    if not serverchan_key:
         logger.warning(f"[ALERT-serverchan-no-config] {message}")
         return False
 
-    url = f"https://sctapi.ftqq.com/{settings.serverchan_key}.send"
+    url = f"https://sctapi.ftqq.com/{serverchan_key}.send"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
@@ -118,15 +174,18 @@ async def _send_feishu(message: str) -> bool:
     配置：在飞书群里添加"自定义机器人" → 拿到 webhook URL → 填到 FEISHU_WEBHOOK_URL
 
     国内办公首选，签到/工作流通知都用这个
+
+    API-Sec-2: feishu_webhook_url 优先读 runtime override, fallback .env
     """
-    if not settings.feishu_webhook_url:
+    feishu_url = _get_setting("feishu_webhook_url", settings.feishu_webhook_url)
+    if not feishu_url:
         logger.warning(f"[ALERT-feishu-no-config] {message}")
         return False
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                settings.feishu_webhook_url,
+                feishu_url,
                 json={
                     "msg_type": "text",
                     "content": {"text": f"[AIMC] {_short(message, 500)}"},
@@ -154,7 +213,7 @@ CHANNEL_HANDLERS = {
 async def send_alert(message: str, key: Optional[str] = None) -> bool:
     """统一告警入口
 
-    根据 settings.alert_channel 路由：
+    根据 runtime override (API-Sec-2) 或 settings.alert_channel 路由：
     - "log"        → 只 log（默认，dry-run）
     - 其他 channel  → 调对应 handler，失败时 fallback 到 log
 
@@ -170,7 +229,8 @@ async def send_alert(message: str, key: Optional[str] = None) -> bool:
     Returns:
         True = 成功推送 / 被 throttle / log-only；False = 真正发送失败
     """
-    channel = settings.alert_channel.lower().strip() or "log"
+    # API-Sec-2: 优先 runtime override, fallback .env
+    channel = _get_active_channel()
 
     # Throttle: 仅非 log channel + key 非 None 时生效
     # 用 lock 包住检查+标记, 防并发 race (3 个 401 同时来不会发 3 次)

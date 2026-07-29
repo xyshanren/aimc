@@ -39,6 +39,7 @@ async def ensure_migrations():
     - accounts.api_key_ciphertext (API-Sec-1, 2026-07-29)
     - accounts.api_key → nullable=True (API-Sec-1 兼容老明文)
     - channels.provider_type / billing_mode (Phase 2.3, 2026-07-29)
+    - settings_runtime 表 (API-Sec-2, 2026-07-29) — 新建表, create_all 自动
     """
     async with engine.begin() as conn:
         # intel_sources.last_content

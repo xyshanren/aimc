@@ -39,6 +39,10 @@ async def lifespan(app: FastAPI):
     await route_engine.refresh_cache()
     logger.info("路由缓存加载完成")
 
+    # API-Sec-2: 加载告警 runtime settings cache
+    from intelligence.alerter import refresh_settings_cache
+    await refresh_settings_cache()
+
     # 启动情报采集调度器（Phase 2A 启用）
     # 注意：scheduler 启动是 fire-and-forget，第一次抓取会按 interval 触发
     # 如果未装 Playwright 浏览器二进制，第一次抓取会失败但不影响服务
