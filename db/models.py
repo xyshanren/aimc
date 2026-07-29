@@ -201,3 +201,99 @@ class ModelCard(Base):
     notes = Column(Text, nullable=True, comment="备注 (e.g. 'snapshot 2024-10')")
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class ModelRegistry(Base):
+    """模型注册表 (Phase 2.1, 2026-07-29)
+
+    存模型的 **路由元信息**（tier / capabilities / context_length），
+    跟 model_cards（存 benchmark 分数）双轨，model_id 字符串 soft join。
+
+    设计：
+    - tier/capabilities 是路由"硬"字段（决策依据）
+    - benchmark_scores 仅 Dashboard 展示用，不参与路由
+    - capabilities 是 JSON 字符串，SQLAlchemy 不解析，应用层 json.loads
+    - model_id 规范: {family}-{version}[-{variant}]，如 deepseek-v4-pro
+    """
+    __tablename__ = "model_registry"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_id = Column(Text, nullable=False, unique=True, comment="规范ID: deepseek-v4-pro / qwen3-235b")
+    family = Column(Text, nullable=False, comment="模型族: deepseek/qwen/glm/kimi")
+    display_name = Column(Text, nullable=True, comment="展示名: DeepSeek V4 Pro")
+    tier = Column(Text, nullable=False, default="T2", comment="能力档: T0/T1/T2/T3/T4")
+    capabilities = Column(Text, nullable=True, comment='JSON数组: ["reasoning","code","math"]')
+    context_length = Column(Integer, nullable=True, comment="最大上下文窗口")
+    modality = Column(Text, default="text", comment="text/vision/multimodal")
+    benchmark_scores = Column(Text, nullable=True, comment="JSON: 展示用, 不参与路由")
+    is_open_source = Column(Integer, default=1, comment="是否开源权重 (0/1)")
+    release_date = Column(Text, nullable=True, comment="发布日期")
+    status = Column(Text, default="active", comment="active/deprecated/preview")
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class ModelGroup(Base):
+    """模型组定义 (Phase 2.1, 2026-07-29)
+
+    Agent 请求 "tier:balanced" / "scene:code" 时，路由在组内选最优 (model, channel, account)。
+
+    组过滤条件：tier (限定能力档) / capabilities (能力交集) / min_context / require_vision
+    组策略：cheapest (默认) / priority / weighted (Phase 3) / latency (Phase 4)
+    降级：fallback_group 指向下一个组；visited set 防死循环
+    """
+    __tablename__ = "model_groups"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Text, nullable=False, unique=True, comment="组ID: tier:balanced / scene:code")
+    display_name = Column(Text, nullable=True, comment="展示名: 均衡性价比组")
+    tier = Column(Text, nullable=True, comment="限定能力档 (NULL=不限)")
+    capabilities = Column(Text, nullable=True, comment="JSON: 要求能力标签的交集")
+    min_context = Column(Integer, default=0, comment="最低上下文要求")
+    require_vision = Column(Integer, default=0, comment="是否要求视觉能力 (0/1)")
+    strategy = Column(Text, default="cheapest", comment="cheapest/priority/weighted/latency")
+    fallback_group = Column(Text, nullable=True, comment="降级目标组ID (NULL=无降级)")
+    enabled = Column(Integer, default=1, comment="0/1")
+    sort_order = Column(Integer, default=0, comment="Dashboard 展示排序")
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+class ModelGroupMember(Base):
+    """组成员关联 (Phase 2.1, 2026-07-29)
+
+    多对多: group_id ↔ model_id。
+    不强制 FK (model_id 用 soft join, 允许"还没入库的新 model"占位)。
+    """
+    __tablename__ = "model_group_members"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Text, nullable=False, comment="引用 model_groups.group_id (soft FK)")
+    model_id = Column(Text, nullable=False, comment="引用 model_registry.model_id (soft FK)")
+    priority = Column(Integer, default=100, comment="组内优先级 (越小越优先, 同价时生效)")
+    weight = Column(Float, default=1.0, comment="weighted 策略时的权重 (Phase 3)")
+    max_cost_ratio = Column(Float, nullable=True, comment="价格超过组内最低 N 倍时排除 (NULL=不限)")
+    added_by = Column(Text, default="manual", comment="manual/intel_auto")
+    created_at = Column(DateTime, default=func.now())
+
+
+class ModelCapabilitiesLog(Base):
+    """能力标签变更审计 (Phase 2.1, 2026-07-29)
+
+    tier 调整永远人工确认 (architecture.md §十)：
+    - AI 推断的变更 default approved=0，必须 dashboard 人工批准才生效
+    - manual 写入的变更直接 approved=1
+    - 完整 audit trail 留底
+    """
+    __tablename__ = "model_capabilities_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_id = Column(Text, nullable=False, comment="soft FK → model_registry.model_id")
+    field_changed = Column(Text, nullable=False, comment="tier / capabilities / status / benchmark_scores")
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    source = Column(Text, nullable=False, comment="manual / intel_crawler / ai_infer")
+    confidence = Column(Float, nullable=True, comment="AI 推断时的置信度 (manual 时为 NULL)")
+    approved = Column(Integer, default=0, comment="是否已人工确认 (0/1)")
+    created_at = Column(DateTime, default=func.now())
