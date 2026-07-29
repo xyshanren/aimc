@@ -33,6 +33,15 @@ class Channel(Base):
     base_url = Column(Text, nullable=False, comment="API 基础地址")
     status = Column(Text, default="active", comment="active/disabled/error")
     priority = Column(Integer, default=0, comment="手动优先级调整，越大越优先")
+    # Phase 2.3 (2026-07-29): 渠道类型 + 计费模式
+    provider_type = Column(
+        Text, nullable=False, server_default="official",
+        comment="official(厂商官方) / third_party(第三方托管) / aggregator(聚合) / local(本地)",
+    )
+    billing_mode = Column(
+        Text, nullable=False, server_default="pay_per_token",
+        comment="pay_per_token(按量) / subscription(订阅制) / free(免费)",
+    )
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

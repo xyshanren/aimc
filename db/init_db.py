@@ -38,6 +38,7 @@ async def ensure_migrations():
     - promotions.flagged / flagged_reason (Phase 2D-1, 2026-07-24)
     - accounts.api_key_ciphertext (API-Sec-1, 2026-07-29)
     - accounts.api_key → nullable=True (API-Sec-1 兼容老明文)
+    - channels.provider_type / billing_mode (Phase 2.3, 2026-07-29)
     """
     async with engine.begin() as conn:
         # intel_sources.last_content
@@ -75,6 +76,25 @@ async def ensure_migrations():
             logger.info("迁移: accounts 添加 api_key_ciphertext 列 (API-Sec-1)")
         else:
             logger.debug("迁移: accounts.api_key_ciphertext 已存在，跳过")
+
+        # channels.provider_type / billing_mode (Phase 2.3, 2026-07-29)
+        # ALTER ADD COLUMN NOT NULL 必须带 DEFAULT (SQLite 限制)
+        result = await conn.execute(text("PRAGMA table_info('channels')"))
+        columns = {row[1] for row in result.fetchall()}
+        if "provider_type" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE channels ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'official'"
+            ))
+            logger.info("迁移: channels 添加 provider_type 列 (Phase 2.3)")
+        else:
+            logger.debug("迁移: channels.provider_type 已存在，跳过")
+        if "billing_mode" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE channels ADD COLUMN billing_mode TEXT NOT NULL DEFAULT 'pay_per_token'"
+            ))
+            logger.info("迁移: channels 添加 billing_mode 列 (Phase 2.3)")
+        else:
+            logger.debug("迁移: channels.billing_mode 已存在，跳过")
 
 
 async def drop_all():
