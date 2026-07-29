@@ -451,6 +451,33 @@ CREATE TABLE model_capabilities_log (
 );
 ```
 
+### 现有表扩展（加密字段）
+
+#### `accounts.api_key_ciphertext`（API-Sec-1 已实现）
+
+```sql
+ALTER TABLE accounts ADD COLUMN api_key_ciphertext BLOB;
+-- api_key TEXT 字段保留, 标记 deprecated (双读兜底, 迁移期使用)
+```
+
+**为什么加密**：
+- DB 文件备份 / 误上传云盘 / 同步到其他设备 → 拿到的是 ciphertext，**看不到明文 key**
+- `.env` 跟 `accounts.api_key` **解耦**：`.env` 漏了不会带出所有 channel key
+- 详细的现状分析 + 设计对比见 [api-key-security.md](api-key-security.md)
+
+**加密方案**：
+- 算法：Fernet（`cryptography.fernet`，AES-128-CBC + HMAC-SHA256）
+- 主密钥：`.env` 里的 `AIMC_MASTER_KEY`（44 字符 base64，与其他 .env 字段模式一致）
+- 不加密 .env 本身（避免"开机输入 master key 解密 .env 才能解 DB"的鸡生蛋问题）
+
+**双读策略**（过渡期）：
+- 读：优先 `api_key_ciphertext`（解密），fallback 到 `api_key`（明文，仅迁移期）
+- 写：永远写 ciphertext，**不再写明文**到 `api_key` 字段
+
+**主密钥丢了 = 永久性数据丢失**（ciphertext 全部不可解）：
+- 缓解：`scripts/gen_master_key.py` 生成时强制让 user 存到密码管理器
+- 缓解：master key 跟 ciphertext 备份分开保存（用户责任）
+
 ### 现有表扩展
 
 #### channels 表新增字段
@@ -690,6 +717,9 @@ groups:
 | 告警 throttle | **锁内 check+mark 60s 窗口** | 防刷屏优先，宁可 60s 不重试 |
 | `.env` 保护 | **gitignore + pre-commit 双层** | 单层 gitignore 不够，commit -f 可绕过 |
 | Router cache 刷新 | **5min 自动 + endpoint 手动** | 平时够用，改完立即刷不用等 |
+| `accounts.api_key` 加密 | **Fernet + master key 在 .env** | DB 文件泄露 ≠ channel key 泄露；不上 Infisical（破坏单进程原则） |
+| 加密 key 丢了 | **永久性数据丢失** | 迁移时强制 user 存密码管理器；master key 跟 ciphertext 备份分开 |
+| 加密 vs .env 关系 | **不加密 .env 本身** | 避免"开机输入 master key 解密 .env 才能解 DB"的鸡生蛋问题 |
 
 ## 十一、部署方案
 

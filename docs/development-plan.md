@@ -15,6 +15,9 @@
 | Phase 2 | 多维模型组 | 🔨 当前重点 | 4 张新表 + 组内选优 + Agent 偏好 |
 | Phase 3 | 情报联动模型组 | ⬜ | AI 解析 → 自动入组/出组 |
 | Phase 4 | 智能优化 | ⬜ 远期 | 用量分析 / 延迟追踪 / 自动权重 |
+| **API-Sec-1** | **DB api_key 加密 (Fernet)** | **🔨 当前重点** | **DB 文件泄露 ≠ channel key 泄露** |
+| API-Sec-2 | ALERT_CHANNEL runtime override | ⬜ | 改告警 channel / webhook 不重启 |
+| API-Sec-3 | key 轮换提醒 | ⬜ | 30 天未轮换飞书告警 |
 
 设计原则：**运维先于新功能**（新增"二、设计原则"）。Phase 2.5 在 Phase 2 实施前补的，让"日常运维不痛"先于"模型组新能力"。
 
@@ -58,6 +61,118 @@
 未做：~~#2 router 503 告警~~（fallback 启用后几乎不返回 503，价值小，留作未来）。
 
 详细设计/验证/使用见 [architecture.md §八 运维加固](architecture.md#八运维加固phase-25-已完成)。
+
+---
+
+## API-Sec-1: DB api_key 加密存储（当前重点）
+
+> 目标：DB 文件泄露 ≠ channel key 泄露；`.env` 漏了不会带出所有 key
+> 背景调研：[api-key-security.md](api-key-security.md) — Infisical 启示 + 现状盘点 + 明确不做的方案
+> 关联：[architecture.md §六 数据模型 加密字段](architecture.md#现有表扩展加密字段) / [§十 关键设计决策](architecture.md#十关键设计决策)
+
+### 1.1 加密方案
+
+- **算法**：Fernet（`cryptography.fernet`，AES-128-CBC + HMAC-SHA256）
+- **主密钥**：`AIMC_MASTER_KEY`（44 字符 base64），存 `.env`（跟现有模式一致）
+- **不加密 .env 本身**（避免"开机输入 master key 解密 .env 才能解 DB"的鸡生蛋问题）
+
+### 1.2 DB schema
+
+```sql
+ALTER TABLE accounts ADD COLUMN api_key_ciphertext BLOB;
+-- api_key TEXT 保留, 标记 deprecated (双读兜底, 迁移期使用)
+```
+
+**双读策略**：
+- 读：优先 `api_key_ciphertext`（解密），fallback 到 `api_key`（明文，仅迁移期）
+- 写：永远写 ciphertext，**不再写明文**到 `api_key` 字段
+
+### 1.3 文件变更
+
+| 操作 | 文件 | 说明 |
+|------|------|------|
+| 新增 | `security/__init__.py` | 包入口 |
+| 新增 | `security/crypto.py` | Fernet 封装：`encrypt(plaintext, master_key)` / `decrypt(ciphertext, master_key)` |
+| 新增 | `scripts/gen_master_key.py` | 一次性脚本：生成 44 字符 base64 master key |
+| 新增 | `scripts/migrate_encrypt_keys.py` | 一次性脚本：把老明文 api_key 转 ciphertext |
+| 修改 | `db/models.py` | `accounts` 加 `api_key_ciphertext` BLOB 字段 |
+| 修改 | `db/crud.py` | `get_account` 改：透明解密返回明文 |
+| 修改 | `gateway/router.py` | `refresh_cache` 用解密后的明文填 `channel["api_key"]` |
+| 修改 | `scripts/manual_import.py` | 写新 channel 时 encrypt 入 ciphertext |
+| 修改 | `.env.example` | 加 `AIMC_MASTER_KEY=<run scripts/gen_master_key.py>` 占位 |
+
+### 1.4 验证标准
+
+- [ ] 启动时 `AIMC_MASTER_KEY` 缺失 → fail-fast 明确报错
+- [ ] 启动时 `AIMC_MASTER_KEY` 错误（base64 解码失败）→ fail-fast 明确报错
+- [ ] 启动后 chat / fallback / throttle 行为不变（功能不回归）
+- [ ] `python -c "import sqlite3; ..."` 查 `accounts.api_key` 全是 NULL，`api_key_ciphertext` 是 BLOB（看不到明文）
+- [ ] 跑迁移脚本后老数据成功转 ciphertext
+- [ ] 重跑迁移脚本 idempotent（已迁移的跳过）
+
+---
+
+## API-Sec-2: ALERT_CHANNEL 改 DB 存储 + 不重启切换（待开发）
+
+> 目标：dashboard 改 ALERT_CHANNEL / BARK_KEY / FEISHU_WEBHOOK_URL 后**不用重启**立即生效
+
+### 2.1 现状痛点
+
+`config.py` 用 Pydantic Settings 启动时一次性 load，`.env` 改了 `ALERT_CHANNEL` 必须重启 uvicorn。
+
+### 2.2 方案
+
+加 `settings_runtime` 表（k-v 存储）：
+
+```sql
+CREATE TABLE settings_runtime (
+    key        TEXT PRIMARY KEY,      -- "alert_channel" / "bark_key" / ...
+    value      TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+加 endpoint `POST /dashboard/api/settings/alert`，alerter 改读 `settings_runtime` 表（先看 override，fallback Pydantic）。
+
+### 2.3 文件变更
+
+| 文件 | 改动 |
+|------|------|
+| `db/models.py` | 加 `SettingsRuntime` ORM |
+| `db/crud.py` | `get_runtime_setting` / `set_runtime_setting` |
+| `intelligence/alerter.py` | 改读 `settings_runtime` 表（带 cache） |
+| `dashboard/routes.py` | 加 `GET/PUT /api/settings/alert` |
+| API-Sec-1 `security/crypto.py` | 扩展加密 `bark_key` / `serverchan_key` / `feishu_webhook_url` 等敏感字段 |
+
+### 2.4 验证标准
+
+- [ ] 改 .env 重启 vs dashboard 改不重启 → 行为一致
+- [ ] API-Sec-1 加密的 `bark_key` 通过 endpoint 写 → DB 存 ciphertext
+- [ ] cache refresh（已有 #5 endpoint）也刷 `settings_runtime` cache
+
+---
+
+## API-Sec-3: Key 轮换提醒（可选，待开发）
+
+> 目标：dashboard 看到 key 何时更新、30 天未轮换飞书告警
+
+### 3.1 schema 扩展
+
+```sql
+ALTER TABLE accounts ADD COLUMN last_rotated_at DATETIME;
+ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定的轮换周期
+```
+
+### 3.2 文件变更
+
+- `db/models.py` 2 个新列
+- `intelligence/healer.py` 或新文件 `scripts/check_key_rotation.py` 每天扫
+- `dashboard/static/index.html` 加 key 状态卡片
+
+### 3.3 验证标准
+
+- [ ] 30 天没轮换的 key → 飞书告警"建议轮换 SILICONFLOW_API_KEY"
+- [ ] dashboard 卡片显示每个 key 的 last_rotated_at / 距今天数
 
 ---
 
@@ -167,7 +282,7 @@
 | 路由缓存刷新 | 5min 自动 + 手动 endpoint (`#5`) | Phase 3 改为事件驱动（价格变动即刷新） |
 | 模型组缓存刷新 | 与路由缓存同 5min | Phase 2 独立刷新逻辑（避免等 5min） |
 | 频限器持久化 | 纯内存，重启丢失 | 可接受（重启后窗口自然重置） |
-| API Key 加密 | 明文存 SQLite | Phase 2 考虑 Fernet 对称加密 |
+| **API Key 加密** | **🔨 API-Sec-1 进行中** | **DB `api_key_ciphertext` BLOB 字段 + Fernet** |
 | `model_cards` vs `model_registry` | 9 张表 (`model_cards` 已实现) + 4 张表待加 | Phase 2 处理双轨关系（合并 or 保留） |
 | 并发安全 | 单进程无锁 | 足够（个人使用场景） |
 | Playwright 浏览器二进制 | 未装（采集功能不可用） | 个人用可接受，未来按需装 |
