@@ -29,16 +29,27 @@ def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
 
     用途: Agent 知道"我的 tier:balanced 实际打到哪个 model + channel",
     方便 hermes-tray v0.3.0 footer pill + stats page 消费。
+
+    注意 (2026-07-29 Phase 2.10 E2E 发现):
+    - _select_by_group 注入的 _actual_model / _group_id 是写在共享 channel dict 里
+      (select_best_channel 返回的是 _channels_cache 里的对象, 不是 copy)
+    - 后续精确路由命中**同一个 channel dict** 时, 这些字段仍残留, 污染响应头
+    - 修法: 只在请求带 "tier:" / "scene:" 前缀时才信任 _actual_model
     """
     headers = {}
-    # 优先用 _actual_model (Phase 2.4 _select_by_group 注入), fallback 到 requested_model
-    actual_model = channel.get("_actual_model") or requested_model
+    is_group_request = requested_model.startswith(("tier:", "scene:"))
+    if is_group_request and channel.get("_actual_model"):
+        # 组路由: 用 _actual_model (Phase 2.4 注入)
+        actual_model = channel["_actual_model"]
+    else:
+        # 精确路由: 用 requested_model (忽略 channel 里可能残留的 _actual_model 污染)
+        actual_model = requested_model
     if actual_model:
         headers["X-AIMC-Actual-Model"] = actual_model
     if channel.get("name"):
         headers["X-AIMC-Actual-Channel"] = channel["name"]
-    # group_id 仅组路由时存在, 精确路由时不发这个 header
-    if channel.get("_group_id"):
+    # group_id: 只在组路由请求 + channel 有 _group_id 时发
+    if is_group_request and channel.get("_group_id"):
         headers["X-AIMC-Group-Id"] = channel["_group_id"]
     return headers
 
