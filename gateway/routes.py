@@ -27,13 +27,32 @@ async def health_check():
 
 @router.get("/v1/models")
 async def list_models():
-    """列出可用模型（聚合所有渠道的模型）"""
+    """列出可用模型 (Phase 2.8: 升级, 加上 model group)
+
+    向后兼容: OpenAI 客户端只读 `data` 字段 (每个 model 有 id/object/owned_by)
+    AIMC 扩展: 额外 `data_groups` 字段, 含 6 个 model group (tier:xxx / scene:xxx)
+    """
     models = route_engine.get_available_models()
+    groups = route_engine.get_available_groups()
     return {
         "object": "list",
         "data": [
             {"id": m, "object": "model", "owned_by": "aimc"}
             for m in models
+        ],
+        # Phase 2.8 扩展: model group 列表 (AIMC 独有, OpenAI 客户端忽略)
+        "data_groups": [
+            {
+                "id": g["id"],
+                "type": g["type"],
+                "display_name": g["display_name"],
+                "tier": g["tier"],
+                "strategy": g["strategy"],
+                "fallback_group": g["fallback_group"],
+                "members": g["members"],
+                "member_count": g["member_count"],
+            }
+            for g in groups
         ],
     }
 

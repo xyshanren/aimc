@@ -341,6 +341,45 @@ class RouteEngine:
                 models.add(p["model"])
         return sorted(models)
 
+    def get_available_groups(self) -> list[dict]:
+        """Phase 2.8: 获取所有启用的 model group 列表 (含 members)
+
+        返回格式:
+        [
+            {
+                "id": "tier:balanced",
+                "type": "model_group",
+                "display_name": "均衡性价比组",
+                "tier": "T2",
+                "strategy": "cheapest",
+                "fallback_group": "tier:light",
+                "members": ["deepseek-v2.5", "qwen-plus", ...],
+                "member_count": 7,
+            },
+            ...
+        ]
+        按 sort_order 升序 (dashboard 展示顺序)
+        """
+        groups = []
+        # 按 sort_order 升序
+        sorted_groups = sorted(
+            self._groups_cache.values(),
+            key=lambda g: (g.sort_order or 0, g.group_id),
+        )
+        for g in sorted_groups:
+            members = self._group_members_cache.get(g.group_id, [])
+            groups.append({
+                "id": g.group_id,
+                "type": "model_group",
+                "display_name": g.display_name or g.group_id,
+                "tier": g.tier,
+                "strategy": g.strategy or "cheapest",
+                "fallback_group": g.fallback_group,
+                "members": members,
+                "member_count": len(members),
+            })
+        return groups
+
     def get_candidates(self, model: str) -> list[dict]:
         """获取指定模型的所有候选渠道（用于 fallback）"""
         current_hour = datetime.now().hour
