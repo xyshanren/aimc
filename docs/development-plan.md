@@ -15,7 +15,7 @@
 | Phase 2 | 多维模型组 | 🔨 当前重点 | 4 张新表 + 组内选优 + Agent 偏好 |
 | Phase 3 | 情报联动模型组 | ⬜ | AI 解析 → 自动入组/出组 |
 | Phase 4 | 智能优化 | ⬜ 远期 | 用量分析 / 延迟追踪 / 自动权重 |
-| **API-Sec-1** | **DB api_key 加密 (XOR+Base64 轻量化)** | **🔨 当前重点** | **DB 文件泄露 ≠ channel key 泄露；零外部依赖** |
+| **API-Sec-1** | **DB api_key 加密 (XOR+Base64 轻量化)** | **✅** | **DB 文件泄露 ≠ channel key 泄露；零外部依赖** |
 | API-Sec-2 | ALERT_CHANNEL runtime override | ⬜ | 改告警 channel / webhook 不重启 |
 | API-Sec-3 | key 轮换提醒 | ⬜ | 30 天未轮换飞书告警 |
 
@@ -64,7 +64,7 @@
 
 ---
 
-## API-Sec-1: DB api_key 加密存储（当前重点）
+## API-Sec-1: DB api_key 加密存储（已完成）
 
 > 目标：DB 文件泄露 ≠ channel key 泄露；`.env` 漏了不会带出所有 key
 > 背景调研：[api-key-security.md](api-key-security.md) — Infisical 启示 + 现状盘点 + 明确不做的方案
@@ -106,12 +106,13 @@ ALTER TABLE accounts ADD COLUMN api_key_ciphertext BLOB;
 
 ### 1.4 验证标准
 
-- [ ] 启动时 `AIMC_MASTER_KEY` 缺失 → fail-fast 明确报错
-- [ ] 启动时 `AIMC_MASTER_KEY` 错误（base64 解码失败）→ fail-fast 明确报错
-- [ ] 启动后 chat / fallback / throttle 行为不变（功能不回归）
-- [ ] `python -c "import sqlite3; ..."` 查 `accounts.api_key` 全是 NULL，`api_key_ciphertext` 是 BLOB（看不到明文）
-- [ ] 跑迁移脚本后老数据成功转 ciphertext
-- [ ] 重跑迁移脚本 idempotent（已迁移的跳过）
+- [x] 启动时 `AIMC_MASTER_KEY` 缺失 → fail-fast 明确报错
+- [x] 启动时 `AIMC_MASTER_KEY` 错误（hex 长度不对）→ fail-fast 明确报错
+- [x] 启动后 chat / fallback / throttle 行为不变（功能不回归，E2E pong 200）
+- [x] `python -c "import sqlite3; ..."` 查 `accounts.api_key` 全是空串，`api_key_ciphertext` 是 BLOB（看不到明文）
+- [x] 跑 `scripts/migrate_encrypt_keys.py` 后老数据成功转 ciphertext
+- [x] 重跑迁移脚本 idempotent（已迁移的跳过）
+- [x] 8/8 单元测试通过（`security/crypto.py` roundtrip / 空串 / None / 错 key / 1000 chars / 空 key / 错 hex / 大 plaintext）
 
 ---
 
@@ -285,7 +286,7 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 | 路由缓存刷新 | 5min 自动 + 手动 endpoint (`#5`) | Phase 3 改为事件驱动（价格变动即刷新） |
 | 模型组缓存刷新 | 与路由缓存同 5min | Phase 2 独立刷新逻辑（避免等 5min） |
 | 频限器持久化 | 纯内存，重启丢失 | 可接受（重启后窗口自然重置） |
-| **API Key 加密** | **🔨 API-Sec-1 进行中** | **DB `api_key_ciphertext` BLOB 字段 + XOR+Base64 轻量化** |
+| **API Key 加密** | **✅ API-Sec-1 完成** | **DB `api_key_ciphertext` BLOB 字段 + XOR+Base64 轻量化** |
 | `model_cards` vs `model_registry` | 9 张表 (`model_cards` 已实现) + 4 张表待加 | Phase 2 处理双轨关系（合并 or 保留） |
 | 并发安全 | 单进程无锁 | 足够（个人使用场景） |
 | Playwright 浏览器二进制 | 未装（采集功能不可用） | 个人用可接受，未来按需装 |
