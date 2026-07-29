@@ -12,12 +12,12 @@
 |------|------|------|------|
 | Phase 1 | 网关核心 | ✅ | FastAPI 路由/频限/透传/8 张表基础架构 |
 | **Phase 2.5** | **运维加固** | **✅** | **4 个日常痛点改进（详见下文）** |
-| Phase 2 | 多维模型组 | 🔨 当前重点 | 4 张新表 + 组内选优 + Agent 偏好 |
+| **Phase 2** | **多维模型组** | **✅** | **4 张新表 + 25 model + 6 group + 35 member + tier/scene 路由 + Agent 偏好 + 响应头** |
 | Phase 3 | 情报联动模型组 | ⬜ | AI 解析 → 自动入组/出组 |
 | Phase 4 | 智能优化 | ⬜ 远期 | 用量分析 / 延迟追踪 / 自动权重 |
 | **API-Sec-1** | **DB api_key 加密 (XOR+Base64 轻量化)** | **✅** | **DB 文件泄露 ≠ channel key 泄露；零外部依赖** |
-| API-Sec-2 | ALERT_CHANNEL runtime override | ⬜ | 改告警 channel / webhook 不重启 |
-| API-Sec-3 | key 轮换提醒 | ⬜ | 30 天未轮换飞书告警 |
+| **API-Sec-2** | **ALERT_CHANNEL runtime override** | **🔨 下一阶段** | **改告警 channel / webhook 不重启** |
+| **API-Sec-3** | **key 轮换提醒** | **🔨 下一阶段** | **30 天未轮换飞书告警** |
 
 设计原则：**运维先于新功能**（新增"二、设计原则"）。Phase 2.5 在 Phase 2 实施前补的，让"日常运维不痛"先于"模型组新能力"。
 
@@ -180,7 +180,7 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 ---
 
-## Phase 2: 多维模型组（当前重点）
+## Phase 2: 多维模型组（已完成，2026-07-29）
 
 > 目标：实现跨模型比价路由，Agent 请求"能力档"而非具体模型
 
