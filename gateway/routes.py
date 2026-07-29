@@ -66,8 +66,10 @@ async def chat_completions(request: Request):
             content={"error": {"message": "model field is required", "type": "invalid_request_error"}},
         )
 
-    # 路由决策：选择最优渠道
-    channel = route_engine.select_best_channel(model)
+    # 路由决策: select_channel (Phase 2.4 入口, 精确模型 + 模型组)
+    # - "deepseek-chat" → 走原精确模型路由
+    # - "tier:balanced" / "scene:code" → 走组路由 + fallback chain
+    channel = route_engine.select_channel(model)
     if channel is None:
         return JSONResponse(
             status_code=503,
@@ -79,5 +81,5 @@ async def chat_completions(request: Request):
             },
         )
 
-    # 透传请求到上游
-    return await forward_request(channel, body, request.headers)
+    # 透传请求到上游 (Phase 2.5: 传 requested_model 用于响应头 X-AIMC-Actual-Model)
+    return await forward_request(channel, body, request.headers, requested_model=model)
