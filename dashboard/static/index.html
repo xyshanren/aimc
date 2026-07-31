@@ -45,6 +45,19 @@
             <canvas id="usage-chart" width="600" height="200"></canvas>
         </section>
 
+        <!-- Phase 3.A: Group 路由命中率聚合 -->
+        <section class="card" id="group-routing-section">
+            <h2>组路由命中率 <span class="subtitle">近 7 天 · Agent 视角</span></h2>
+            <div class="summary-row" id="group-routing-summary">
+                <span class="summary-item">总请求: <strong id="gr-total">--</strong></span>
+                <span class="summary-item">组路由占比: <strong id="gr-grouped-pct">--</strong>%</span>
+                <span class="summary-item">精确路由: <strong id="gr-exact">--</strong></span>
+            </div>
+            <div id="group-routing-list" hx-get="/dashboard/api/stats/group_routing" hx-trigger="load, every 60s" hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
+
         <!-- Phase 2.9: Model Registry (只读) -->
         <section class="card" id="registry-models-section">
             <h2>Model Registry <span class="subtitle">路由元信息 (tier / capabilities / ctx)</span></h2>

@@ -192,7 +192,7 @@ async def _forward_normal(
         _schedule_alert(channel, response)
 
     # 尝试记录用量（异步，不阻塞响应）
-    _schedule_usage_log(channel, response, latency_ms)
+    _schedule_usage_log(channel, response, latency_ms, requested_model)
 
     return JSONResponse(
         status_code=response.status_code,
@@ -201,11 +201,28 @@ async def _forward_normal(
     )
 
 
-def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int):
-    """异步记录用量日志（fire-and-forget）"""
+def _extract_group_id(requested_model: str) -> str | None:
+    """Phase 3.A: 从 requested_model 提取 group_id
+
+    - tier:xxx / scene:xxx 前缀 → 返回 group_id (e.g. "tier:balanced")
+    - 精确模型名 → 返回 None (不需要记录 group)
+    """
+    if requested_model and requested_model.startswith(("tier:", "scene:")):
+        return requested_model
+    return None
+
+
+def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int, requested_model: str = ""):
+    """异步记录用量日志（fire-and-forget）
+
+    Phase 3.A: 接收 requested_model, 提取 group_id 写入 usage_logs
+    - 精确模型路由: group_id = NULL
+    - 组路由: group_id = "tier:xxx" / "scene:xxx"
+    """
     try:
         data = response.json()
         usage = data.get("usage", {})
+        group_id = _extract_group_id(requested_model)
         # 创建异步任务写入数据库
         asyncio.get_event_loop().create_task(
             _write_usage_log(
@@ -216,6 +233,7 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
                 output_tokens=usage.get("completion_tokens", 0),
                 status_code=response.status_code,
                 latency_ms=latency_ms,
+                group_id=group_id,
             )
         )
     except Exception:
@@ -230,8 +248,15 @@ async def _write_usage_log(
     output_tokens: int,
     status_code: int,
     latency_ms: int,
+    group_id: str | None = None,
 ):
-    """写入用量日志到数据库"""
+    """写入用量日志到数据库
+
+    Phase 3.A: group_id 参数
+    - 精确模型路由时为 None
+    - 组路由时为 "tier:xxx" / "scene:xxx"
+    - 供 Dashboard 命中率聚合 GROUP BY group_id, model
+    """
     try:
         from db.engine import async_session_factory
         from db.models import UsageLog
@@ -241,6 +266,7 @@ async def _write_usage_log(
                 channel_id=channel_id,
                 account_id=account_id,
                 model=model,
+                group_id=group_id,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 status_code=status_code,

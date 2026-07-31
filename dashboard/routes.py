@@ -280,6 +280,131 @@ async def get_registry_groups(session: AsyncSession = Depends(get_session)):
 
 
 # ============================================================
+# Phase 3.A: Group 路由命中率聚合 (Dashboard 唯一路径)
+# ============================================================
+
+@router.get("/api/stats/group_routing")
+async def get_group_routing_stats(days: int = 7, session: AsyncSession = Depends(get_session)):
+    """Phase 3.A: 按 group_id 聚合命中率分布
+
+    背景:
+    - Agent 改 model="tier:balanced" 后, AIMC 会按价格/可用性自动选最优具体 model
+    - 用户/人想看: 7 天内 tier:balanced 实际命中了哪些 model (deepseek/qwen/...)?
+    - 数据源: usage_logs.group_id (NULL 表示精确模型路由)
+
+    返回:
+    - groups[]: 每个 group 的请求数 + 实际 model 分布 + 渠道分布
+    - unmatched: 精确模型路由 (group_id NULL) 的请求
+    - summary: 总览数字
+    """
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    # 1) 按 group_id + model 聚合 (只统计 group_id 非 NULL)
+    stmt = (
+        select(
+            UsageLog.group_id,
+            UsageLog.model,
+            UsageLog.channel_id,
+            func.count(UsageLog.id).label("count"),
+            func.sum(UsageLog.cost_estimate).label("total_cost"),
+        )
+        .where(UsageLog.created_at >= cutoff)
+        .where(UsageLog.group_id.isnot(None))
+        .group_by(UsageLog.group_id, UsageLog.model, UsageLog.channel_id)
+    )
+    rows = (await session.execute(stmt)).all()
+
+    # 2) 反向 join channel name
+    ch_ids = {row.channel_id for row in rows if row.channel_id is not None}
+    ch_name_map: dict[int, str] = {}
+    if ch_ids:
+        ch_rows = (await session.execute(
+            select(Channel.id, Channel.name).where(Channel.id.in_(ch_ids))
+        )).all()
+        ch_name_map = {r.id: r.name for r in ch_rows}
+
+    # 3) 按 group_id 聚合
+    by_group: dict[str, dict] = {}
+    for row in rows:
+        g = by_group.setdefault(row.group_id, {
+            "group_id": row.group_id,
+            "request_count": 0,
+            "model_distribution": {},
+            "channels_used": set(),
+            "total_cost": 0.0,
+        })
+        g["request_count"] += row.count
+        g["model_distribution"][row.model] = g["model_distribution"].get(row.model, 0) + row.count
+        if row.channel_id and row.channel_id in ch_name_map:
+            g["channels_used"].add(ch_name_map[row.channel_id])
+        g["total_cost"] += (row.total_cost or 0.0)
+
+    # 4) 转 list + 算 percentage
+    groups_out = []
+    for g in by_group.values():
+        total = g["request_count"]
+        dist = sorted(
+            [
+                {
+                    "model": m,
+                    "count": c,
+                    "percentage": round(c / total * 100, 1) if total else 0.0,
+                }
+                for m, c in g["model_distribution"].items()
+            ],
+            key=lambda x: -x["count"],
+        )
+        groups_out.append({
+            "group_id": g["group_id"],
+            "request_count": total,
+            "model_distribution": dist,
+            "channels_used": sorted(g["channels_used"]),
+            "total_cost": round(g["total_cost"], 4),
+        })
+    groups_out.sort(key=lambda x: -x["request_count"])
+
+    # 5) unmatched: group_id 为 NULL 的精确模型路由
+    stmt2 = (
+        select(
+            UsageLog.model,
+            func.count(UsageLog.id).label("count"),
+        )
+        .where(UsageLog.created_at >= cutoff)
+        .where(UsageLog.group_id.is_(None))
+        .where(UsageLog.model.isnot(None))
+        .group_by(UsageLog.model)
+        .order_by(func.count(UsageLog.id).desc())
+        .limit(20)
+    )
+    unmatched_rows = (await session.execute(stmt2)).all()
+    unmatched_total = sum(r.count for r in unmatched_rows)
+
+    # 6) 总览 summary
+    total_requests = sum(g["request_count"] for g in groups_out) + unmatched_total
+
+    return {
+        "days": days,
+        "cutoff": cutoff.isoformat(),
+        "summary": {
+            "total_requests": total_requests,
+            "group_routed_requests": sum(g["request_count"] for g in groups_out),
+            "exact_model_requests": unmatched_total,
+            "group_routed_pct": round(
+                sum(g["request_count"] for g in groups_out) / total_requests * 100, 1
+            ) if total_requests else 0.0,
+        },
+        "groups": groups_out,
+        "unmatched": {
+            "request_count": unmatched_total,
+            "top_models": [
+                {"model": r.model, "count": r.count} for r in unmatched_rows
+            ],
+        },
+    }
+
+
+# ============================================================
 # API-Sec-2: Runtime Settings (alert_channel / webhook) 不重启切换
 # ============================================================
 

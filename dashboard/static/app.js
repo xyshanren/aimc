@@ -25,6 +25,8 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
         renderRegistryModels(target);
     } else if (target.id === 'registry-groups-list') {
         renderRegistryGroups(target);
+    } else if (target.id === 'group-routing-list') {
+        renderGroupRouting(target);
     }
 });
 
@@ -167,7 +169,83 @@ function renderRegistryGroups(container) {
     }
 }
 
+// Phase 3.A: Group 路由命中率渲染 (Dashboard 唯一路径)
+function renderGroupRouting(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+
+        // 1) 顶部 summary 填充
+        const summary = data.summary || {};
+        const grTotal = document.getElementById('gr-total');
+        const grPct = document.getElementById('gr-grouped-pct');
+        const grExact = document.getElementById('gr-exact');
+        if (grTotal) grTotal.textContent = summary.total_requests ?? 0;
+        if (grPct) grPct.textContent = summary.group_routed_pct ?? 0;
+        if (grExact) grExact.textContent = summary.exact_model_requests ?? 0;
+
+        const groups = data.groups || [];
+        const unmatched = data.unmatched || {};
+
+        if (groups.length === 0 && unmatched.request_count === 0) {
+            container.innerHTML = '<p class="loading">近 7 天无组路由请求 · 所有请求都是精确模型名</p>';
+            return;
+        }
+
+        let html = '';
+
+        // 2) 每个 group 一个卡片
+        for (const g of groups) {
+            const dist = g.model_distribution || [];
+            const channels = g.channels_used || [];
+            html += `<div class="gr-group-card">
+                <h4><code>${esc(g.group_id)}</code>
+                    <span class="meta">${esc(g.request_count)} 次 · 估 ${esc(g.total_cost ?? 0)} 元</span>
+                </h4>`;
+            if (dist.length === 0) {
+                html += '<p class="meta">无命中明细</p>';
+            } else {
+                html += '<table><thead><tr><th>实际 model</th><th>次数</th><th>占比</th><th>分布</th></tr></thead><tbody>';
+                for (const m of dist) {
+                    const pct = m.percentage || 0;
+                    html += `<tr>
+                        <td><code>${esc(m.model)}</code></td>
+                        <td>${esc(m.count)}</td>
+                        <td>${esc(pct.toFixed(1))}%</td>
+                        <td><div class="bar-track"><div class="bar-fill" style="width:${esc(pct)}%"></div></div></td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+            }
+            if (channels.length > 0) {
+                html += `<p class="meta">渠道: ${channels.map(c => `<span class="chip">${esc(c)}</span>`).join(' ')}</p>`;
+            }
+            html += '</div>';
+        }
+
+        // 3) unmatched (精确路由)
+        if (unmatched.request_count > 0) {
+            const top = unmatched.top_models || [];
+            html += `<div class="gr-group-card unmatched">
+                <h4>精确模型路由 <span class="meta">${esc(unmatched.request_count)} 次 (group_id 为 NULL)</span></h4>`;
+            if (top.length > 0) {
+                html += '<table><thead><tr><th>model</th><th>次数</th></tr></thead><tbody>';
+                for (const m of top) {
+                    html += `<tr><td><code>${esc(m.model)}</code></td><td>${esc(m.count)}</td></tr>`;
+                }
+                html += '</tbody></table>';
+            }
+            html += '</div>';
+        }
+
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderGroupRouting failed:', e);
+        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+    }
+}
+
 // 用量统计图表
+async function loadUsageChart() {
     try {
         const resp = await fetch('/dashboard/api/usage/summary?days=7');
         const data = await resp.json();

@@ -144,3 +144,91 @@ footer a {
     color: #1d9bf0;
     text-decoration: none;
 }
+
+/* Phase 3.A: 组路由命中率聚合 */
+.summary-row {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #2f3336;
+    flex-wrap: wrap;
+}
+
+.summary-item {
+    color: #71767b;
+    font-size: 0.9em;
+}
+
+.summary-item strong {
+    color: #1d9bf0;
+    font-weight: 600;
+    margin-left: 4px;
+}
+
+.gr-group-card {
+    background: #1a2530;
+    border: 1px solid #2f3336;
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 12px;
+}
+
+.gr-group-card h4 {
+    font-size: 0.95em;
+    color: #e7e9ea;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.gr-group-card h4 code {
+    color: #1d9bf0;
+    background: transparent;
+    font-size: 1em;
+}
+
+.gr-group-card h4 .meta {
+    font-size: 0.8em;
+    color: #71767b;
+    font-weight: normal;
+}
+
+.gr-group-card table {
+    font-size: 0.85em;
+}
+
+.bar-track {
+    background: #2f3336;
+    border-radius: 4px;
+    height: 8px;
+    overflow: hidden;
+    min-width: 80px;
+}
+
+.bar-fill {
+    background: linear-gradient(90deg, #1d9bf0 0%, #00ba7c 100%);
+    height: 100%;
+    transition: width 0.3s ease;
+}
+
+.chip {
+    display: inline-block;
+    background: #2f3336;
+    color: #e7e9ea;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75em;
+    margin-right: 4px;
+}
+
+.gr-group-card.unmatched {
+    border-left: 3px solid #ffad1f;
+}
+
+.gr-group-card.unmatched h4 {
+    color: #ffad1f;
+}

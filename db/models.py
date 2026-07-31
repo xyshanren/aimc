@@ -150,6 +150,11 @@ class UsageLog(Base):
     channel_id = Column(Integer, nullable=True)
     account_id = Column(Integer, nullable=True)
     model = Column(Text, nullable=True)
+    # Phase 3.A (2026-07-29): 记录请求时的 group_id
+    # - tier:xxx / scene:xxx 前缀时填 group_id (e.g. "tier:balanced")
+    # - 精确模型路由时为 NULL
+    # - 供 Dashboard 命中率聚合查询 GROUP BY group_id, model
+    group_id = Column(Text, nullable=True, comment="请求时的 group_id (NULL=精确模型路由)")
     input_tokens = Column(Integer, nullable=True)
     output_tokens = Column(Integer, nullable=True)
     cost_estimate = Column(Float, nullable=True, comment="估算费用（元）")
