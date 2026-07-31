@@ -168,19 +168,50 @@ models:
 
 ### 5.1 推荐的 Agent 配置（方案 C）
 
+**最小化配置（1 行）**：
+
 ```yaml
-# ~/.hermes/config.yaml
 models:
-  background: "scene:free"      # 后台任务 → 本地或免费档
-  think: "tier:strong"          # 推理任务 → 强档
-  longContext: "tier:flagship"  # 长上下文 → 旗舰
-  default: "tier:balanced"      # 默认 → 均衡
+  default: "tier:balanced"      # 跨模型比价的唯一变动点
+```
+
+**完整配置**（`~/.hermes/config.yaml`，CCR / Hermes Agent 风格）：
+
+```yaml
+# ========== AIMC 网关配置 ==========
+aimc:
+  base_url: http://localhost:8080/v1      # AIMC 网关地址
+  api_key: ${AIMC_API_KEY}                # 从环境变量读, 不明文写在 YAML
+  timeout: 120                            # 秒 (大模型响应慢)
+  max_retries: 2                          # AIMC 内部已有 fallback, Agent 这层不重复
+
+# ========== 模型 profile (任务分级) ==========
+# profile 名 → AIMC group 名 (tier:xxx / scene:xxx)
+# 改这里不重启 AIMC (Phase 2 已支持热刷缓存)
+models:
+  background: "scene:free"       # 后台任务 → 本地/免费档 (0 元)
+  think: "tier:strong"           # 推理任务 → 强档
+  longContext: "tier:flagship"   # 长上下文 → 旗舰
+  default: "tier:balanced"       # 默认 → 均衡
+  code: "scene:code"             # （可选）代码专用
+
+# ========== Agent 偏好 (Phase 2.6, 通过 extra_body 传给 AIMC) ==========
+aimc_preferences:
+  prefer_family: "deepseek"               # 同价时优先 deepseek
+  exclude_providers: []                   # 排除渠道 (e.g. ["local"])
+  max_input_price: 10.0                   # 元/百万 tokens, 超过的不选
+
+# ========== 启动校验 ==========
+validate_on_startup: true                 # Agent 启动时 GET /v1/models 验证 group 合法
 ```
 
 **为什么用 group（`tier:xxx`/`scene:xxx`）而不是具体 model**：
 - AIMC 已在 `tier:flagship` 组里准备好 4 个候选 model，路由 cheapest
 - 跨模型比价是 AIMC 的核心能力，Agent 不该重复实现
 - 模型注册表变动时，Agent 配置**零改动**
+
+**`api_key: ${AIMC_API_KEY}` 语法说明**：
+Hermes Agent / Claude Code Router 都支持 `${ENV_VAR}` 占位符，从进程环境变量读值。这样 YAML 文件可以安全提交到 git (不含明文 key)。Agent 启动前需要 export `AIMC_API_KEY=xxx`。
 
 ### 5.2 推荐的运行时机制（方案 A）
 
@@ -306,72 +337,81 @@ models:
 **适用场景**：个人编程 Agent，有明确的任务分级需求
 **优点**：简单可控，配置即用
 
-### 7.3 高级适配（被动观测，不动路由决策）
+### 7.3 高级适配（命中率报告）—— **实际上不需要 Agent 做**
 
-**重要**：这里的“学习”是**被动观测**——Agent 记录 AIMC 实际命中，**不**主动调整 AIMC 配置或路由决策。
+**重要发现**（2026-07-29）：命中率报告**不需要** Agent 侧记录/上报。AIMC 本身有 `usage_logs` 表（已记了实际命中的 model 字段），只要增补一个 `group_id` 列 + Dashboard 聚合视图，就能在 AIMC 侧完整展示命中率分布，**Agent 零代码改动**。
 
-Agent 加 3 个观测增强：
-1. **响应头记录**：每次请求读 `X-AIMC-Actual-Model`，累积"group → 实际 model"命中率（仅写入内存/日志，不写回任何配置）
-2. **统计报告生成**：周期或手动生成“最近 100 次 tier:balanced 命中分布”报告，**给人看**（不给 Agent 自己看）
-3. **fallback 事件记录**：当 `X-AIMC-Group-Id` 变了（如 tier:flagship 降级到 tier:strong），记录“降级事件”供 dashboard 展示
+**为什么不需要 Agent 做**：
+- ❌ Agent 内存累积：重启丢失、多 Agent 重复实现、历史不持久
+- ❌ Agent 上报 AIMC：违反铁律（AIMC 不听 Agent 反向推送）
+- ✅ **AIMC Dashboard 聚合**：数据本来就在 `usage_logs` 里，零搬运
 
-**具体代码示例**（~20 行）：
+**AIMC Dashboard 实现路径**（~半小时工作量，**推荐**）：
 
-```python
-import time
-from collections import defaultdict
+1. **Step 1**: `usage_logs` 表加 `group_id` 列
+   ```python
+   # db/models.py - UsageLog 增加一列
+   group_id = Column(Text, nullable=True, comment="请求时的 group_id (NULL=精确模型路由)")
+   ```
 
-# 纯内存累积，不需要持久化
-routing_log = []          # 全量原始记录 (group, model, channel, ts)
-group_distribution = defaultdict(lambda: defaultdict(int))  # group → {model: count}
+2. **Step 2**: `proxy.py` 写日志时同步记 group
+   ```python
+   # gateway/proxy.py - _write_usage_log 增加 group_id 参数
+   async def _write_usage_log(channel_id, account_id, model, ..., group_id=None):
+       log = UsageLog(channel_id=channel_id, account_id=account_id,
+                      model=model, group_id=group_id, ...)
+   ```
 
-def observe_routing(response, requested_group: str):
-    """从 AIMC 响应头读实际命中，仅记录不干预"""
-    actual_model = response.headers.get("X-AIMC-Actual-Model")
-    actual_channel = response.headers.get("X-AIMC-Actual-Channel")
-    actual_group = response.headers.get("X-AIMC-Group-Id", requested_group)
+3. **Step 3**: Dashboard 聚合查询 (`GROUP BY group_id, model`)
+   ```python
+   # dashboard/routes.py 新增 /api/stats/group_routing
+   @router.get("/api/stats/group_routing")
+   async def group_routing():
+       # SELECT group_id, model, COUNT(*) FROM usage_logs
+       # WHERE group_id IS NOT NULL
+       # GROUP BY group_id, model
+       # ORDER BY group_id, count DESC
+   ```
 
-    if not actual_model:
-        return  # 不是组路由，无观测价值
+4. **Step 4**: Dashboard 页面增加“模型组路由分布”卡片（Chart.js 饼图）
 
-    routing_log.append({
-        "group": actual_group, "model": actual_model,
-        "channel": actual_channel, "ts": time.time(),
-    })
-    group_distribution[actual_group][actual_model] += 1
+**架构对比**：
 
-def report(group_id: str) -> str:
-    """生成命中率报告（人读，不参与路由决策）"""
-    dist = group_distribution.get(group_id, {})
-    total = sum(dist.values())
-    if total == 0:
-        return f"  {group_id}: 暂无数据"
+| 方案 | 数据来源 | 历史持久化 | 多 Agent 共享 | Agent 代码量 | AIMC 代码量 |
+|------|---------|-----------|--------------|-------------|-------------|
+| ~~Agent 累积~~ | Agent 内存 | ❌ | ❌ | 20+ 行 | 0 |
+| **AIMC Dashboard** | `usage_logs` 表 | ✅ SQLite 永久 | ✅ 所有 Agent 共一份 | **0** | ~50 行 |
 
-    lines = [f"  {group_id} 最近 {total} 次命中分布:"]
-    for model, count in sorted(dist.items(), key=lambda x: -x[1]):
-        pct = count * 100 // total
-        lines.append(f"    {model:<30} {pct:>3}%")
-    return "\n".join(lines)
+**最终架构图**：
 
-# 调用方
-response = client.chat.completions.create(model="tier:balanced", messages=...)
-observe_routing(response, requested_group="tier:balanced")
-
-# 人手动查看
-print(report("tier:balanced"))
-# tier:balanced 最近 247 次命中分布:
-#   deepseek-v4-flash               62%
-#   qwen-plus                       21%
-#   glm-4-flash                     11%
-#   ... (fallback events)            6%
+```
+Agent                    AIMC                       Dashboard
+ │                         │                            │
+ │── POST /v1/chat ────→   │                            │
+ │   model="tier:balanced" │                            │
+ │                         │── usage_logs 写入 ─────────→│
+ │                         │   {group_id: "tier:balanced",│
+ │                         │    model: "deepseek-v4-flash"}│
+ │←────── response ────────│                            │
+ │   (Agent 不做任何事)    │                            │
+ │                         │                            │
+ │                         │  人打开 Dashboard           │
+ │                         │←──── 看 group 命中率分布 ──│
 ```
 
-**人根据报告做决策**（**不是 Agent 自动决策**）：
-- “tier:balanced 总跑 deepseek-v4-flash，要不要换成 deepseek-v4-pro 提升质量？” → **人**手动改 profile
-- “tier:strong 经常降级到 tier:balanced，是不是该扩 deepseek 的 quota？” → **人**手动加账号
+**价值**：
+- Agent 零改动（不需响应头解析、不需本地累积、不需上报）
+- AIMC Dashboard 侧闭环（数据本来就在 `usage_logs` 里）
+- 历史持久化（SQLite 永久保存）
+- 多 Agent 共享（所有走 AIMC 的 Agent 都被统计）
 
-**适用场景**：重度 Agent 用户，想做精细化成本/质量调优
-**缺点**：开发成本高（记录+报告 UI）
+**附（Agent 侧可选增强，仍然不需要记录实际命中）**：
+如果 Agent 想看到**请求上下文**（哪个 prompt 走哪个 group），仍然不需记录命中，只需要在请求代码加一行：
+```python
+# Agent 发起请求时
+logger.info(f"request: group={group}, prompt_chars={len(messages)}")
+```
+但这只是调试需要，不是命中率报告的一部分。
 
 ### 7.4 为什么 Agent 不主动学习、不反向调整
 
@@ -392,9 +432,17 @@ Phase 3 原本是"情报联动模型组"（自动入组/出组）。结合本文
 |------|--------|--------|------|
 | /v1/models 元信息增强（§6.1） | P0 | 4h | Phase 2 已完成 |
 | docs/agent-integration.md（本文档） | P0 | 2h | 无 |
+| **Dashboard 命中率聚合（§7.3 新发现）** | P1 | 0.5h | Phase 2 已完成 |
 | hermes-tray 集成 PR（§7.2 推荐适配） | P1 | 1d | hermes-tray 配合 |
-| /v1/models SSE 推送模型变动 | P3 | 4h | 不推荐，先不做 |
 | 响应头增强（§6.2） | P2 | 1h | Phase 2 已完成 |
+| /v1/models SSE 推送模型变动 | P3 | 4h | 不推荐，先不做 |
+
+**Dashboard 命中率聚合任务明细**：
+1. `db/models.py` UsageLog 加 `group_id` 列
+2. `scripts/migrate_add_group_id.py` 一次性迁移脚本（老数据 group_id 全 NULL）
+3. `gateway/proxy.py` `_write_usage_log` 增加 `group_id` 参数，`_schedule_usage_log` 从 `requested_model` 提取
+4. `dashboard/routes.py` 新增 `GET /api/stats/group_routing`
+5. `dashboard/static/index.html` 增加“模型组路由分布”卡片（Chart.js 饼图）
 
 ## 九、对比总结
 

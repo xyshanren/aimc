@@ -247,6 +247,10 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 - ✅ docs/agent-integration.md：3 方案对比 + 推荐 A+C 组合
 - ⬜ /v1/models 元信息增强（返回 `aimc_metadata` 字段含 family/tier/capabilities/modality/context_length/providers）
+- ⬜ **Dashboard 模型组路由分布（命中率聚合）**— 发现新需求 (2026-07-29)
+  - `usage_logs` 加 `group_id` 列 + proxy.py 同步记录
+  - Dashboard 新增 `GET /api/stats/group_routing` + Chart.js 饼图
+  - **半天工作量，Agent 零代码改动**
 - ⬜ hermes-tray 集成 PR（CCR profile 风格配置：background/think/longContext/default → group 名）
 - ⬜ 响应头增强（可选加 `X-AIMC-Actual-Tier` 和 `X-AIMC-Actual-Capabilities`）
 
