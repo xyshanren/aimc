@@ -201,15 +201,20 @@ def validate_profiles(aimc_url: str, config: dict):
         # 精确 model 名不验证 — AIMC fallback 会兜底
 ```
 
-### 5.3 推荐的动态适应机制
+### 5.3 推荐的动态适应机制（3 步纯观测）
 
-Agent 不需要"实时"知道 AIMC 模型变动。通过 3 个机制自然适应：
+Agent 不需要"实时"知道 AIMC 模型变动。通过 3 个观测机制自然适应：
 
-1. **启动时拉取**：Agent 启动时 GET /v1/models，验证 profile 合法
-2. **响应头反馈**：每次请求后看 `X-AIMC-Actual-Model`，Agent 可记录"最近 100 次 scene:code 跑出 deepseek-v4-flash"——这是**软信号**，不强制使用
+1. **启动时拉取**：Agent 启动时 GET /v1/models，验证 profile 合法（仅启动时，1 次）
+2. **响应头反馈**：每次请求后读 `X-AIMC-Actual-Model`，Agent 可记录“最近 100 次 tier:balanced 跑出 deepseek-v4-flash”——这是**软信号**，**不改变路由决策**，仅供人看
 3. **定期刷新**：Agent 启动时 + 每天 1 次（或手动触发）拉取 /v1/models，刷新 group 元信息
 
-**为什么不做"实时推送"**：AIMC 单进程 + 个人用，引入 WebSocket / SSE 推送复杂度太高。Agent 启动 + 定期拉是**足够好**的方案。
+**关键不变量**：
+- Agent **不写**任何 AIMC 配置
+- Agent **不反向调整**自己 profile（除非人手动改）
+- AIMC 路由决策**只**听 DB + 情报层，**不听** Agent
+
+**为什么不做“实时推送”**：AIMC 单进程 + 个人用，引入 WebSocket / SSE 推送复杂度太高。Agent 启动 + 定期拉是**足够好**的方案。
 
 ## 六、AIMC 侧的最小增强
 
@@ -301,15 +306,83 @@ models:
 **适用场景**：个人编程 Agent，有明确的任务分级需求
 **优点**：简单可控，配置即用
 
-### 7.3 高级适配（Pareto-style + 反馈学习）
+### 7.3 高级适配（被动观测，不动路由决策）
 
-Agent 加 3 个增强：
-1. **响应头解析**：每次请求记录 `X-AIMC-Actual-Model`，构建"group → 实际 model"命中率
-2. **软信号提示**：当 `tier:balanced` 连续 N 次都命中"贵 model"时，dashboard 提示"考虑换 profile"
-3. **fallback 提示**：当 AIMC 返回 fallback_group 时（`X-AIMC-Group-Id` 变了），Agent 记录"降级事件"
+**重要**：这里的“学习”是**被动观测**——Agent 记录 AIMC 实际命中，**不**主动调整 AIMC 配置或路由决策。
 
-**适用场景**：重度 Agent 用户，想做精细化优化
-**缺点**：开发成本高
+Agent 加 3 个观测增强：
+1. **响应头记录**：每次请求读 `X-AIMC-Actual-Model`，累积"group → 实际 model"命中率（仅写入内存/日志，不写回任何配置）
+2. **统计报告生成**：周期或手动生成“最近 100 次 tier:balanced 命中分布”报告，**给人看**（不给 Agent 自己看）
+3. **fallback 事件记录**：当 `X-AIMC-Group-Id` 变了（如 tier:flagship 降级到 tier:strong），记录“降级事件”供 dashboard 展示
+
+**具体代码示例**（~20 行）：
+
+```python
+import time
+from collections import defaultdict
+
+# 纯内存累积，不需要持久化
+routing_log = []          # 全量原始记录 (group, model, channel, ts)
+group_distribution = defaultdict(lambda: defaultdict(int))  # group → {model: count}
+
+def observe_routing(response, requested_group: str):
+    """从 AIMC 响应头读实际命中，仅记录不干预"""
+    actual_model = response.headers.get("X-AIMC-Actual-Model")
+    actual_channel = response.headers.get("X-AIMC-Actual-Channel")
+    actual_group = response.headers.get("X-AIMC-Group-Id", requested_group)
+
+    if not actual_model:
+        return  # 不是组路由，无观测价值
+
+    routing_log.append({
+        "group": actual_group, "model": actual_model,
+        "channel": actual_channel, "ts": time.time(),
+    })
+    group_distribution[actual_group][actual_model] += 1
+
+def report(group_id: str) -> str:
+    """生成命中率报告（人读，不参与路由决策）"""
+    dist = group_distribution.get(group_id, {})
+    total = sum(dist.values())
+    if total == 0:
+        return f"  {group_id}: 暂无数据"
+
+    lines = [f"  {group_id} 最近 {total} 次命中分布:"]
+    for model, count in sorted(dist.items(), key=lambda x: -x[1]):
+        pct = count * 100 // total
+        lines.append(f"    {model:<30} {pct:>3}%")
+    return "\n".join(lines)
+
+# 调用方
+response = client.chat.completions.create(model="tier:balanced", messages=...)
+observe_routing(response, requested_group="tier:balanced")
+
+# 人手动查看
+print(report("tier:balanced"))
+# tier:balanced 最近 247 次命中分布:
+#   deepseek-v4-flash               62%
+#   qwen-plus                       21%
+#   glm-4-flash                     11%
+#   ... (fallback events)            6%
+```
+
+**人根据报告做决策**（**不是 Agent 自动决策**）：
+- “tier:balanced 总跑 deepseek-v4-flash，要不要换成 deepseek-v4-pro 提升质量？” → **人**手动改 profile
+- “tier:strong 经常降级到 tier:balanced，是不是该扩 deepseek 的 quota？” → **人**手动加账号
+
+**适用场景**：重度 Agent 用户，想做精细化成本/质量调优
+**缺点**：开发成本高（记录+报告 UI）
+
+### 7.4 为什么 Agent 不主动学习、不反向调整
+
+如果 Agent 反向调整 AIMC 配置（比如“我看 tier:balanced 总跑 deepseek，那以后直接调 deepseek”），会存在 4 个问题：
+
+1. **破坏职责边界**：Agent 又当路由决策者了（违反“网关管渠道”原则）
+2. **失去跨模型比价**：AIMC 的核心价值没了，Agent 写死变成单渠道代理
+3. **价格变动失效**：AIMC 路由 cheapest，硟基流动降费时自动切；Agent 写死就丢了
+4. **复杂度爆炸**：需要双向通信、冲突解决、版本同步
+
+**铁律**：AIMC 只听 .env / DB 配置 + 情报层自动入组，**不听** Agent 反向推送。
 
 ## 八、Phase 3 协同任务
 
