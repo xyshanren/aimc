@@ -106,6 +106,10 @@ class RouteEngine:
                         "provider": ch.provider,
                         "base_url": ch.base_url,
                         "priority": ch.priority,
+                        # Phase 2.3 (补): provider_type / billing_mode 加载进 cache
+                        # 不加载会导致 proxy 不知道是否跳过 Authorization, router 不知道是否 0 元
+                        "provider_type": ch.provider_type,
+                        "billing_mode": ch.billing_mode,
                         "account_id": acc.id,
                         "account_name": acc.account_name,
                         "api_key": plaintext_key,

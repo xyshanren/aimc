@@ -71,6 +71,13 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
         "Content-Type": "application/json",
         "Authorization": f"Bearer {channel['api_key']}",
     }
+    # 本地模型 (Ollama / vllm / LM Studio / llama.cpp):
+    # - Ollama 完全忽略 Authorization, 多发一个 header 也不影响
+    # - vllm 严格: 多余的 "Bearer no-key-required" 可能被当作无效 token 拒绝
+    # - LM Studio: 同 Ollama, 容忍
+    # 稳妥做法: provider_type=local 时跳过 Authorization header
+    if channel.get("provider_type") == "local":
+        forward_headers.pop("Authorization", None)
 
     # 判断是否为流式请求
     try:
