@@ -182,7 +182,7 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 ## Phase 2: 多维模型组（已完成，2026-07-29）
 
-> 目标：实现跨模型比价路由，Agent 请求"能力档"而非具体模型
+> 目标：实现跨模型比价路由，hermes-agent-cn 请求"能力档"而非具体模型
 
 ### 2.1 数据层
 
@@ -198,7 +198,7 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 - ⬜ 模型组解析器：识别 `tier:`/`scene:` 前缀
 - ⬜ 组内跨模型全局选优逻辑
-- ⬜ Agent 偏好约束处理（`extra_body.aimc_preferences`）
+- ⬜ hermes-agent-cn 偏好约束处理（`extra_body.aimc_preferences`）
 - ⬜ 组间 fallback chain 递归降级
 - ⬜ billing_mode 处理（free/subscription 价格视为 0）
 - ⬜ 响应头注入（X-AIMC-Actual-Model / X-AIMC-Actual-Channel）
@@ -239,9 +239,9 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 ## Phase 3: 情报联动模型组
 
 > 目标：情报层自动维护模型注册表和组成员关系
-> 关联文档：[agent-integration.md](agent-integration.md) — Agent × AIMC 协同方案
+> 关联文档：[agent-integration.md](agent-integration.md) — hermes-agent-cn × AIMC 协同方案
 
-### 3.0 Agent 协同层（Phase 3 启动前先落地）— ✅
+### 3.0 hermes-agent-cn 协同层（Phase 3 启动前先落地）— ✅
 
 > 状态：文档已完成 (commit `639da89` 之后)，代码落地跟随 Phase 3 主任务
 
@@ -250,8 +250,8 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 - ⬜ **Dashboard 模型组路由分布（命中率聚合）**— 发现新需求 (2026-07-29)
   - `usage_logs` 加 `group_id` 列 + proxy.py 同步记录
   - Dashboard 新增 `GET /api/stats/group_routing` + Chart.js 饼图
-  - **半天工作量，Agent 零代码改动**
-- ⬜ hermes-tray 集成 PR（CCR profile 风格配置：background/think/longContext/default → group 名）
+  - **半天工作量，hermes-agent-cn 零代码改动**
+- ⬜ hermes-agent-cn 集成 PR（CCR profile 风格配置：background/think/longContext/default → group 名，集成 PR 草案见 [hermes-agent-cn-integration-pr.md](hermes-agent-cn-integration-pr.md)）
 - ⬜ 响应头增强（可选加 `X-AIMC-Actual-Tier` 和 `X-AIMC-Actual-Capabilities`）
 
 ### 3.1 采集源扩展
@@ -297,11 +297,11 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 - ⬜ 延迟追踪：记录各渠道历史延迟，支持 latency 策略
 - ⬜ 组内权重自动调整：基于成功率和延迟动态调权
 - ⬜ 价格趋势预测：基于历史快照预测峰谷，提前切换
-- ⬜ Agent 偏好学习：记录哪些路由决策效果好
+- ⬜ hermes-agent-cn 偏好学习：记录哪些路由决策效果好
 - ⬜ Dashboard 成本报表：月度/周度花费趋势、节省金额估算
 - ⬜ 多渠道分散策略：避免单渠道频限，自动分散用量
 - ⬜ **参数兼容处理**（借鉴 LiteLLM drop_params）：跨模型转发时自动丢弃目标模型不支持的参数
-- ⬜ **按 Key 成本隔离**（借鉴 LiteLLM Virtual Key）：为不同 Agent 分配独立 Key，分别追踪花费和预算
+- ⬜ **按 Key 成本隔离**（借鉴 LiteLLM Virtual Key）：为不同 hermes-agent-cn 分配独立 Key，分别追踪花费和预算
 
 ---
 
@@ -340,6 +340,6 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 ## 跨项目参考
 
-- **hermes-tray**（`D:\work\workspace\Qoder\hermes-tray`）的 v0.3.0 计划在 Phase 1 消费 aimc 注入的 SSE `routing_decision` 事件（footer pill + stats page）。
-- Phase 2 完成后，hermes-tray 可切换到 `model="tier:balanced"` 调用方式，跟"能力档"对齐。
+- **hermes-tray**（`D:\work\workspace\Qoder\hermes-tray`）的 v0.3.0 计划在 Phase 1 消费 aimc 注入的 SSE `routing_decision` 事件（footer pill + stats page）。注意：hermes-tray 是客户端，不直接调 AIMC, 应通过 hermes-agent-cn 中转。
+- Phase 2 完成后，**hermes-agent-cn** 可切换到 `model="tier:balanced"` 调用方式，跟"能力档"对齐；hermes-tray 通过 hermes-agent-cn 间接受益。
 - 两侧 commit 走各自仓库，联调在各自 phase 完成后做。

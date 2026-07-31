@@ -75,7 +75,7 @@
 - **同档多替代**：DeepSeek-V4-Flash、Qwen-Plus、GLM-4-Air 能力相近但价格不同
 - **第三方聚合**：硅基流动提供市面大部分开源模型；火山引擎/腾讯云/阿里云也代理第三方模型
 
-如果 Agent 只能写死 `model="deepseek-chat"`，则永远用不到更便宜的同级替代品。
+如果 hermes-agent-cn 只能写死 `model="deepseek-chat"`，则永远用不到更便宜的同级替代品。
 
 ### 4.2 三维模型组织
 
@@ -167,7 +167,7 @@ tier:flagship → tier:strong → tier:balanced → tier:light → tier:free
         6. 全部不可用 → fallback 到 priority 最低 channel（Phase 2E, 聚合平台兜底）
 ```
 
-### 4.5 Agent 侧接入协议
+### 4.5 hermes-agent-cn 侧接入协议
 
 ```python
 # 方式1: 精确模型名（向后兼容，行为不变）
@@ -738,7 +738,7 @@ groups:
 | tier 调整权限 | **仅人工确认** | 避免 AI 误判导致路由异常 |
 | 组内默认策略 | **cheapest** | 符合"省钱"核心定位 |
 | 订阅制渠道 | **价格视为 0** | 套餐内调用零边际成本 |
-| 本地模型 | **作为渠道（provider_type=local）** | 频限由 Agent 侧管理 |
+| 本地模型 | **作为渠道（provider_type=local）** | 频限由 hermes-agent-cn 侧管理 |
 | 模型组降级 | **组间 fallback chain** | 借鉴 9Router 三层 + LiteLLM fallback |
 | 精确模型无匹配时 | **fallback 到 priority 最低 channel** | 聚合平台 1 key 通吃兖底 (Phase 2E) |
 | 告警 throttle | **锁内 check+mark 60s 窗口** | 防刷屏优先，宁可 60s 不重试 |

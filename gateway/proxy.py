@@ -27,8 +27,8 @@ def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
     - X-AIMC-Actual-Channel: 实际命中的 channel name (e.g. siliconflow_aggregator)
     - X-AIMC-Group-Id: 命中的 model group (仅组路由时有, e.g. tier:balanced)
 
-    用途: Agent 知道"我的 tier:balanced 实际打到哪个 model + channel",
-    方便 hermes-tray v0.3.0 footer pill + stats page 消费。
+    用途: hermes-agent-cn 知道"我的 tier:balanced 实际打到哪个 model + channel",
+    方便 hermes-tray (通过 hermes-agent-cn) 在 footer pill + stats page 展示。
 
     注意 (2026-07-29 Phase 2.10 E2E 发现):
     - _select_by_group 注入的 _actual_model / _group_id 是写在共享 channel dict 里
