@@ -384,6 +384,152 @@ class RouteEngine:
             })
         return groups
 
+    def get_models_with_metadata(self) -> list[dict]:
+        """Phase 3.B: 获取带 aimc_metadata 的 model 列表 (Agent 协同场景)
+
+        返回每个 model 的:
+        - OpenAI 标准字段 (id/object/owned_by) — 向后兼容
+        - aimc_metadata 字段 (AIMC 扩展)：
+          - family / tier / capabilities / context_length / modality
+          - is_open_source / release_date / status
+          - providers: 在哪些 channel 中有价格 (siliconflow / deepseek_official / ...)
+          - groups: 属于哪些 model group (tier:balanced / scene:code / ...)
+
+        用途: hermes-agent-cn 启动时拉一次, 可以:
+        1. 验证 profile 合法 (group 名存在)
+        2. 看到 model 元信息, 不需额外查 model registry
+        3. 看到 "这个 model 在哪些 channel 可用" — 跨模型比价可见性
+        """
+        import json as _json
+
+        # 1) 反向索引: model -> [provider, ...]
+        model_providers: dict[str, set[str]] = {}
+        for ch in self._channels_cache:
+            provider = ch.get("provider", "")
+            for p in ch.get("prices", []):
+                model = p.get("model", "")
+                if model and provider:
+                    model_providers.setdefault(model, set()).add(provider)
+
+        # 2) 反向索引: model -> [group_id, ...]
+        model_groups: dict[str, set[str]] = {}
+        for gid, members in self._group_members_cache.items():
+            for m in members:
+                model_groups.setdefault(m, set()).add(gid)
+
+        # 3) 拼装结果
+        results = []
+        # 优先遍历 _registry_cache (有元信息的 model)
+        seen = set()
+        for model_id, reg in sorted(self._registry_cache.items()):
+            seen.add(model_id)
+            caps = []
+            if reg.capabilities:
+                try:
+                    caps = _json.loads(reg.capabilities)
+                except (ValueError, TypeError):
+                    caps = []
+
+            results.append({
+                "id": model_id,
+                "object": "model",
+                "owned_by": reg.family or "aimc",
+                "aimc_metadata": {
+                    "family": reg.family,
+                    "tier": reg.tier,
+                    "capabilities": caps,
+                    "context_length": reg.context_length,
+                    "modality": reg.modality or "text",
+                    "is_open_source": bool(reg.is_open_source),
+                    "release_date": reg.release_date,
+                    "status": reg.status or "active",
+                    "providers": sorted(model_providers.get(model_id, set())),
+                    "groups": sorted(model_groups.get(model_id, set())),
+                },
+            })
+
+        # 4) 补充: 仅在 channels 有价格但 registry 没有的 model
+        for model_id in sorted(model_providers.keys() - seen):
+            results.append({
+                "id": model_id,
+                "object": "model",
+                "owned_by": "aimc",
+                "aimc_metadata": {
+                    # registry 缺失, 只有 price 线索
+                    "family": None,
+                    "tier": None,
+                    "capabilities": [],
+                    "context_length": None,
+                    "modality": "text",
+                    "is_open_source": None,
+                    "release_date": None,
+                    "status": "active",
+                    "providers": sorted(model_providers.get(model_id, set())),
+                    "groups": sorted(model_groups.get(model_id, set())),
+                },
+            })
+        return results
+
+    def get_groups_with_metadata(self) -> list[dict]:
+        """Phase 3.B: 获取带 aimc_metadata 的 group 列表 (Agent 协同场景)
+
+        在 get_available_groups() 基础上加 aimc_metadata:
+        - fallback_chain: 降级链 (递归走 fallback_group, 最多 N 跳防环)
+        - member_tiers: 每个 member 的 tier 列表
+        - member_count / enabled / min_context / require_vision
+        """
+        sorted_groups = sorted(
+            self._groups_cache.values(),
+            key=lambda g: (g.sort_order or 0, g.group_id),
+        )
+        results = []
+        for g in sorted_groups:
+            members = self._group_members_cache.get(g.group_id, [])
+            member_tiers = []
+            for m in members:
+                reg = self._registry_cache.get(m)
+                if reg and reg.tier:
+                    member_tiers.append(reg.tier)
+            caps = []
+            if g.capabilities:
+                try:
+                    caps = json.loads(g.capabilities)
+                except (ValueError, TypeError):
+                    caps = []
+            # fallback chain 展开 (最多 5 跳防环)
+            chain = [g.group_id]
+            cur = g.fallback_group
+            visited = {g.group_id}
+            for _ in range(5):
+                if not cur or cur in visited:
+                    break
+                chain.append(cur)
+                visited.add(cur)
+                next_grp = self._groups_cache.get(cur)
+                if not next_grp:
+                    break
+                cur = next_grp.fallback_group
+            results.append({
+                "id": g.group_id,
+                "type": "model_group",
+                "display_name": g.display_name or g.group_id,
+                "tier": g.tier,
+                "capabilities": caps,
+                "strategy": g.strategy or "cheapest",
+                "fallback_group": g.fallback_group,
+                "enabled": bool(g.enabled),
+                "members": members,
+                "member_count": len(members),
+                "aimc_metadata": {
+                    "fallback_chain": chain,
+                    "member_tiers": member_tiers,
+                    "min_context": g.min_context or 0,
+                    "require_vision": bool(g.require_vision),
+                    "enabled": bool(g.enabled),
+                },
+            })
+        return results
+
     def get_candidates(self, model: str) -> list[dict]:
         """获取指定模型的所有候选渠道（用于 fallback）"""
         current_hour = datetime.now().hour
