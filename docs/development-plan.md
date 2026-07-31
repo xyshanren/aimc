@@ -239,6 +239,16 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 ## Phase 3: 情报联动模型组
 
 > 目标：情报层自动维护模型注册表和组成员关系
+> 关联文档：[agent-integration.md](agent-integration.md) — Agent × AIMC 协同方案
+
+### 3.0 Agent 协同层（Phase 3 启动前先落地）— ✅
+
+> 状态：文档已完成 (commit `639da89` 之后)，代码落地跟随 Phase 3 主任务
+
+- ✅ docs/agent-integration.md：3 方案对比 + 推荐 A+C 组合
+- ⬜ /v1/models 元信息增强（返回 `aimc_metadata` 字段含 family/tier/capabilities/modality/context_length/providers）
+- ⬜ hermes-tray 集成 PR（CCR profile 风格配置：background/think/longContext/default → group 名）
+- ⬜ 响应头增强（可选加 `X-AIMC-Actual-Tier` 和 `X-AIMC-Actual-Capabilities`）
 
 ### 3.1 采集源扩展
 
