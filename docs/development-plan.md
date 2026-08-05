@@ -243,16 +243,22 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 ### 3.0 hermes-agent-cn 协同层（Phase 3 启动前先落地）— ✅
 
-> 状态：文档已完成 (commit `639da89` 之后)，代码落地跟随 Phase 3 主任务
+> 状态：全部完成 (commit `c4b6f1e` 之后)
 
 - ✅ docs/agent-integration.md：3 方案对比 + 推荐 A+C 组合
-- ⬜ /v1/models 元信息增强（返回 `aimc_metadata` 字段含 family/tier/capabilities/modality/context_length/providers）
-- ⬜ **Dashboard 模型组路由分布（命中率聚合）**— 发现新需求 (2026-07-29)
+- ✅ /v1/models 元信息增强（返回 `aimc_metadata` 字段含 family/tier/capabilities/modality/context_length/providers）— commit `d72f65b`
+- ✅ **Dashboard 模型组路由分布（命中率聚合）**— commit `929e5fb`
   - `usage_logs` 加 `group_id` 列 + proxy.py 同步记录
   - Dashboard 新增 `GET /api/stats/group_routing` + Chart.js 饼图
   - **半天工作量，hermes-agent-cn 零代码改动**
-- ⬜ hermes-agent-cn 集成 PR（CCR profile 风格配置：background/think/longContext/default → group 名，集成 PR 草案见 [hermes-agent-cn-integration-pr.md](hermes-agent-cn-integration-pr.md)）
-- ⬜ 响应头增强（可选加 `X-AIMC-Actual-Tier` 和 `X-AIMC-Actual-Capabilities`）
+- ✅ hermes-agent-cn 集成 PR（CCR profile 风格配置：background/think/longContext/default → group 名, 集成 PR 草案见 [hermes-agent-cn-integration-pr.md](hermes-agent-cn-integration-pr.md)）— commit `9b965ed`，PR 已提给 hermes-agent-cn 仓库
+- ✅ **响应头增强** — commit `c4b6f1e` (Phase 3.E)
+  - `X-AIMC-Actual-Tier`: 实际命中 model 的能力档
+  - `X-AIMC-Actual-Capabilities`: 实际命中 model 的 capabilities (JSON)
+  - 让 hermes-agent-cn 一次请求拿到 tier/capabilities, 不必二次查 /v1/models
+- ✅ **PR 联调 E2E** — commit `c4b6f1e` (Phase 3.E)
+  - `tests/test_hermes_agent_cn_e2e.py` 4 个场景全过: 启动拉取 / 组路由头 / 精确路由头 / Profile 校验
+  - 验证 AIMC 侧准备就绪, hermes-agent-cn PR 可直接对接
 
 ### 3.1 采集源扩展
 
