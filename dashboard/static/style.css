@@ -232,3 +232,111 @@ footer a {
 .gr-group-card.unmatched h4 {
     color: #ffad1f;
 }
+
+/* Phase 4 E1: 待确认能力变更队列 */
+.pr-card {
+    background: #1a2530;
+    border: 1px solid #2f3336;
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 10px;
+    border-left: 3px solid #ffad1f;
+}
+
+.pr-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 0.9em;
+}
+
+.pr-model {
+    color: #1d9bf0;
+    font-size: 1em;
+    background: transparent;
+}
+
+.pr-field {
+    background: #2f3336;
+    color: #e7e9ea;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+
+.pr-old {
+    color: #71767b;
+    text-decoration: line-through;
+}
+
+.pr-arrow {
+    color: #71767b;
+}
+
+.pr-new {
+    color: #00ba7c;
+    font-weight: 600;
+}
+
+.pr-conf {
+    margin-left: auto;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.8em;
+    font-weight: 600;
+}
+
+.pr-conf.conf-high {
+    background: rgba(0, 186, 124, 0.15);
+    color: #00ba7c;
+}
+
+.pr-conf.conf-medium {
+    background: rgba(255, 173, 31, 0.15);
+    color: #ffad1f;
+}
+
+.pr-conf.conf-low {
+    background: rgba(244, 33, 46, 0.15);
+    color: #f4212e;
+}
+
+.pr-time {
+    color: #71767b;
+    font-size: 0.8em;
+    min-width: 130px;
+    text-align: right;
+}
+
+.pr-actions {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+}
+
+.btn-approve,
+.btn-reject {
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85em;
+    font-weight: 600;
+    transition: opacity 0.2s;
+}
+
+.btn-approve {
+    background: #00ba7c;
+    color: white;
+}
+
+.btn-reject {
+    background: #2f3336;
+    color: #f4212e;
+}
+
+.btn-approve:hover,
+.btn-reject:hover {
+    opacity: 0.85;
+}

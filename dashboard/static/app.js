@@ -27,6 +27,8 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
         renderRegistryGroups(target);
     } else if (target.id === 'group-routing-list') {
         renderGroupRouting(target);
+    } else if (target.id === 'pending-review-list') {
+        renderPendingReview(target);
     }
 });
 
@@ -240,6 +242,86 @@ function renderGroupRouting(container) {
         container.innerHTML = html;
     } catch (e) {
         console.error('renderGroupRouting failed:', e);
+        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+// Phase 4 E1: 待确认能力变更队列
+async function approvePendingReview(logId, btn) {
+    if (!confirm(`确定批准 log #${logId} ? Tier 会自动写入 ModelRegistry`)) return;
+    try {
+        const resp = await fetch(`/dashboard/api/pending-review/${logId}/approve`, { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            const card = btn.closest('.pr-card');
+            if (card) card.remove();
+            const summary = document.getElementById('pr-summary');
+            if (summary) {
+                const n = Math.max(0, parseInt(summary.textContent.replace(/\D/g, '') || '0', 10) - 1);
+                summary.textContent = `${n} 条待确认`;
+            }
+        } else {
+            alert('批准失败: ' + (data.detail || resp.statusText));
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+    }
+}
+
+async function rejectPendingReview(logId, btn) {
+    if (!confirm(`确定拒绝 log #${logId} ? 不会修改 ModelRegistry`)) return;
+    try {
+        const resp = await fetch(`/dashboard/api/pending-review/${logId}/reject`, { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            const card = btn.closest('.pr-card');
+            if (card) card.remove();
+            const summary = document.getElementById('pr-summary');
+            if (summary) {
+                const n = Math.max(0, parseInt(summary.textContent.replace(/\D/g, '') || '0', 10) - 1);
+                summary.textContent = `${n} 条待确认`;
+            }
+        } else {
+            alert('拒绝失败: ' + (data.detail || resp.statusText));
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+    }
+}
+
+function renderPendingReview(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+        const items = data.items || [];
+        if (items.length === 0) {
+            container.innerHTML = '<p class="loading">✓ 当前无待确认能力变更</p>';
+            return;
+        }
+        let html = `<p class="meta">共 <strong id="pr-summary">${esc(data.count)} 条待确认</strong>，按时间倒序</p>`;
+        for (const item of items) {
+            const conf = item.confidence || 0;
+            const confLabel = item.confidence_level || 'low';
+            const confClass = `conf-${confLabel}`;
+            const created = item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '?';
+            html += `<div class="pr-card">
+                <div class="pr-row">
+                    <code class="pr-model">${esc(item.model_id)}</code>
+                    <span class="pr-field">${esc(item.field_changed)}</span>
+                    <span class="pr-old">${esc(item.old_value ?? '(空)')}</span>
+                    <span class="pr-arrow">→</span>
+                    <span class="pr-new">${esc(item.new_value ?? '(空)')}</span>
+                    <span class="pr-conf ${confClass}">${esc(conf.toFixed(2))} · ${esc(confLabel)}</span>
+                    <span class="pr-time">${esc(created)}</span>
+                </div>
+                <div class="pr-actions">
+                    <button class="btn-approve" onclick="approvePendingReview(${item.id}, this)">批准</button>
+                    <button class="btn-reject" onclick="rejectPendingReview(${item.id}, this)">拒绝</button>
+                </div>
+            </div>`;
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderPendingReview failed:', e);
         container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
     }
 }

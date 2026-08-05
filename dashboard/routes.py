@@ -19,6 +19,7 @@ from db import crud
 from db.models import (
     Channel, Promotion, UsageLog, PriceSnapshot,
     ModelRegistry, ModelGroup, ModelGroupMember,
+    ModelCapabilitiesLog,
     SettingsRuntime,
 )
 
@@ -510,4 +511,103 @@ async def set_alert_settings(
         "updated": updated,
         "cleared": cleared,
         "note": "立即生效, 不需要重启 uvicorn",
+    }
+
+
+# ============================================================
+# Phase 4 E1: Dashboard 待确认队列 (model_capabilities_log.approved=0)
+# ============================================================
+
+@router.get("/api/pending-review")
+async def get_pending_review(
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+):
+    """Phase 4 E1: 列出 AI 推断但尚未人工确认的能力变更。
+
+    数据源: model_capabilities_log WHERE approved=0 AND source='ai_infer'
+    按创建时间倒序。
+
+    返回每条记录包含:
+    - id, model_id, field_changed, old_value, new_value
+    - confidence, created_at
+    - 待确认原因 (按 confidence 分级)
+    """
+    rows = await crud.list_pending_review(session, limit=limit)
+    return {
+        "count": len(rows),
+        "items": [
+            {
+                "id": r.id,
+                "model_id": r.model_id,
+                "field_changed": r.field_changed,
+                "old_value": r.old_value,
+                "new_value": r.new_value,
+                "confidence": r.confidence,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "confidence_level": (
+                    "high" if (r.confidence or 0) >= 0.8
+                    else "medium" if (r.confidence or 0) >= 0.6
+                    else "low"
+                ),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/api/pending-review/{log_id}/approve")
+async def approve_pending_review(
+    log_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """人工批准一条能力变更 (Phase 4 E1)。
+
+    行为:
+    - log.approved 置 1
+    - 若 field_changed == "tier": 同步更新 model_registry.tier (唯一被自动应用的字段)
+    - 其它字段 (capabilities / context_length / modality / metadata / create) 仅作记录
+
+    返回:
+    - 200: { status: "approved", log_id, field_changed, applied }
+    - 404: log 不存在
+    """
+    log = await crud.approve_capability_change(session, log_id)
+    if not log:
+        raise HTTPException(status_code=404, detail=f"Pending review {log_id} not found")
+    await session.commit()
+
+    applied = log.field_changed == "tier" and log.new_value is not None
+    return {
+        "status": "approved",
+        "log_id": log.id,
+        "field_changed": log.field_changed,
+        "applied": applied,
+        "model_id": log.model_id,
+    }
+
+
+@router.post("/api/pending-review/{log_id}/reject")
+async def reject_pending_review(
+    log_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """人工拒绝一条能力变更 (Phase 4 E1)。
+
+    行为:
+    - log.approved 置 1 (拒绝 = 不再待确认)
+    - 不动 model_registry (保留当前值)
+
+    返回:
+    - 200: { status: "rejected", log_id }
+    - 404: log 不存在
+    """
+    log = await crud.reject_capability_change(session, log_id)
+    if not log:
+        raise HTTPException(status_code=404, detail=f"Pending review {log_id} not found")
+    await session.commit()
+    return {
+        "status": "rejected",
+        "log_id": log.id,
+        "field_changed": log.field_changed,
     }

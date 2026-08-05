@@ -430,6 +430,94 @@ async def find_candidate_group_for_tier(tier: str) -> Optional[str]:
     return None  # 实现需在 model_sync 中用 session 调, 这里仅声明
 
 
+# === Phase 4 E1: Pending Review (人工确认队列) ===
+
+async def list_pending_review(
+    session: AsyncSession,
+    limit: int = 100,
+) -> list["ModelCapabilitiesLog"]:
+    """列出 approved=0 的能力变更 (Phase 4 待确认队列)。
+
+    仅显示 ai_infer 来源的变更 (manual 直接 approved=1 不需确认)。
+    按创建时间倒序 (最新在最上)。
+    """
+    from db.models import ModelCapabilitiesLog
+
+    stmt = (
+        select(ModelCapabilitiesLog)
+        .where(ModelCapabilitiesLog.approved == 0)
+        .where(ModelCapabilitiesLog.source == "ai_infer")
+        .order_by(ModelCapabilitiesLog.created_at.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def approve_capability_change(
+    session: AsyncSession,
+    log_id: int,
+) -> Optional["ModelCapabilitiesLog"]:
+    """人工批准能力变更 (Phase 4 E1)。
+
+    - 把 log 行 approved 置 1
+    - 若 field_changed == "tier", 同步更新 model_registry.tier (唯一被允许的自动应用项)
+    - 返回更新后的 log 行 (供 dashboard 二次确认)
+    """
+    from db.models import ModelCapabilitiesLog, ModelRegistry
+    from sqlalchemy import update
+
+    log = await session.get(ModelCapabilitiesLog, log_id)
+    if not log:
+        return None
+    if log.approved == 1:
+        return log  # 已批准, 幂等
+
+    log.approved = 1
+
+    if log.field_changed == "tier" and log.new_value:
+        # tier 是唯一被人工批准后可立即生效的字段
+        # 创建或更新 ModelRegistry 的 tier (registry 可能不存在 -> 跳过)
+        registry = await session.get(ModelRegistry, log.model_id)
+        if registry:
+            registry.tier = log.new_value
+            logger.info("人工批准: model=%s tier %s -> %s",
+                       log.model_id, registry.tier, log.new_value)
+    elif log.field_changed == "create":
+        # 首次创建: 不动 registry (已由 model_sync 创建, 此处仅确认 metadata)
+        pass
+    elif log.field_changed == "status" and log.new_value == "deprecated":
+        # 出组已被 L2 高置信度自动批准 (approved=1), 此路径通常不命中
+        registry = await session.get(ModelRegistry, log.model_id)
+        if registry:
+            registry.status = "deprecated"
+    # capabilities / context_length / modality 变更为参考项, 不直接覆盖 registry
+
+    await session.flush()
+    return log
+
+
+async def reject_capability_change(
+    session: AsyncSession,
+    log_id: int,
+) -> Optional["ModelCapabilitiesLog"]:
+    """人工拒绝能力变更 (Phase 4 E1)。
+
+    - 把 log 行 approved 置 1 (拒绝 = 不再待确认)
+    - 不动 model_registry (保留当前值)
+    """
+    from db.models import ModelCapabilitiesLog
+
+    log = await session.get(ModelCapabilitiesLog, log_id)
+    if not log:
+        return None
+    if log.approved == 1:
+        return log  # 已处理
+    log.approved = 1
+    await session.flush()
+    return log
+
+
 # === ModelCard 操作 (Phase 2D-4, 2026-07-24) ===
 
 async def upsert_model_card(session, model: str, benchmark: str, **kwargs) -> ModelCard:

@@ -73,6 +73,14 @@
                 <p class="loading">加载中...</p>
             </div>
         </section>
+
+        <!-- Phase 4 E1: 待确认能力变更队列 -->
+        <section class="card" id="pending-review-section">
+            <h2>待确认能力变更 <span class="subtitle">AI 推断 · tier 永久人工确认</span></h2>
+            <div id="pending-review-list" hx-get="/dashboard/api/pending-review" hx-trigger="load, every 30s" hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
     </main>
 
     <footer>
