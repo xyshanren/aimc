@@ -319,6 +319,117 @@ async def upsert_intel_source(
         return new
 
 
+# === ModelRegistry 操作 (Phase 3.3, 2026-07-29) ===
+
+async def get_model_registry(session: AsyncSession, model_id: str) -> Optional["ModelRegistry"]:
+    """按 model_id 查 ModelRegistry (Phase 3.3 消费者)"""
+    from db.models import ModelRegistry
+    return await session.get(ModelRegistry, model_id)
+
+
+async def upsert_model_registry(
+    session: AsyncSession,
+    model_id: str,
+    family: str,
+    tier: str = "T2",
+    **kwargs,
+) -> "ModelRegistry":
+    """按 model_id upsert ModelRegistry。
+
+    Phase 3.3: 自动入组时调用。
+    tier 字段永远走 human-approved 路径 (created/updated tier 仅当 changed=False 时写入)；
+    AI 推断的 tier 只能写 capabilities_log，待 dashboard 确认后才生效。
+    """
+    from db.models import ModelRegistry
+
+    existing = await session.get(ModelRegistry, model_id)
+    if existing:
+        for key, value in kwargs.items():
+            setattr(existing, key, value)
+        return existing
+    row = ModelRegistry(model_id=model_id, family=family, tier=tier, **kwargs)
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def add_model_group_member(
+    session: AsyncSession,
+    group_id: str,
+    model_id: str,
+    priority: int = 100,
+    weight: float = 1.0,
+    added_by: str = "manual",
+) -> bool:
+    """将 model 加入组 (Phase 3.3 自动入组)，已存在则跳过。
+
+    Returns:
+        True 新加入, False 已存在
+    """
+    from db.models import ModelGroupMember
+    from sqlalchemy import select
+
+    stmt = select(ModelGroupMember).where(
+        ModelGroupMember.group_id == group_id,
+        ModelGroupMember.model_id == model_id,
+    )
+    existing = (await session.execute(stmt)).scalar_one_or_none()
+    if existing:
+        return False
+    member = ModelGroupMember(
+        group_id=group_id,
+        model_id=model_id,
+        priority=priority,
+        weight=weight,
+        added_by=added_by,
+    )
+    session.add(member)
+    await session.flush()
+    return True
+
+
+async def log_capability_change(
+    session: AsyncSession,
+    model_id: str,
+    field_changed: str,
+    old_value: Optional[str],
+    new_value: Optional[str],
+    source: str = "ai_infer",
+    confidence: Optional[float] = None,
+    approved: int = 0,
+) -> None:
+    """写 model_capabilities_log (Phase 3.3 审计)。
+
+    approved 默认 0，dashboard 人工确认后才置 1。
+    """
+    from db.models import ModelCapabilitiesLog
+
+    row = ModelCapabilitiesLog(
+        model_id=model_id,
+        field_changed=field_changed,
+        old_value=old_value,
+        new_value=new_value,
+        source=source,
+        confidence=confidence,
+        approved=approved,
+    )
+    session.add(row)
+    await session.flush()
+
+
+async def find_candidate_group_for_tier(tier: str) -> Optional[str]:
+    """Phase 3.3: 按 tier 找一个候选 group_id。
+
+    策略: 找 group_id 以 'tier:' 开头 且 group.tier == target_tier 的组。
+    没有匹配返 None (caller 跳过自动入组)。
+    """
+    from db.models import ModelGroup
+    from sqlalchemy import select
+
+    # 暂时用同步路径, 供 Phase 3.3 消费: 加载 group 后比对
+    return None  # 实现需在 model_sync 中用 session 调, 这里仅声明
+
+
 # === ModelCard 操作 (Phase 2D-4, 2026-07-24) ===
 
 async def upsert_model_card(session, model: str, benchmark: str, **kwargs) -> ModelCard:
