@@ -18,6 +18,7 @@ Phase 2B-2 改造后的流程：
 import json
 import logging
 import re
+from typing import Optional
 
 from config import settings
 from schemas.intel import ParseResult
@@ -142,6 +143,10 @@ async def handle_parse_result(content: str, source):
     # 但当前是"半天最小可用版": 仍入 promotions, 加 source_type 标记让 3.3 消费者认出来
     # 后续可以加 model_registry_candidates / benchmark_snapshots 表分流 (但需要 schema 改动)
 
+    # === 1.6 Phase 3.4: price_aggregator 类型同步价格到 price_snapshots + 刷路由缓存 ===
+    if ai_result and source.source_type == "price_aggregator":
+        await _handle_price_aggregator_result(ai_result, source)
+
     # === 2. AI 成功 + 置信度足够 → 入库 ===
     if ai_result and (
         (ai_result.is_promotion and ai_result.confidence >= settings.parse_confidence_threshold)
@@ -182,6 +187,80 @@ async def handle_parse_result(content: str, source):
             f"非优惠或全部失败，跳过: {source.provider} "
             f"(ai={'failed' if ai_result is None else 'no_promotion'})"
         )
+
+
+async def _handle_price_aggregator_result(result: ParseResult, source):
+    """Phase 3.4: 把 price_aggregator 解析出的模型价格同步到 price_snapshots
+
+    期望 AI 在 content / summary / discount_desc 中给出 (model, input_price, output_price)
+    表。本实现采用保守的"key=value 行解析"，避免依赖结构化字段（Phase 3.2 未引入）。
+    未识别行被忽略，避免污染。
+    """
+    from intelligence.pricing_sync import apply_price_change_to_route_cache, sync_price_change
+
+    text = "\n".join(
+        part for part in (result.discount_desc, result.content, result.summary) if part
+    )
+    rows = _parse_price_lines(text)
+
+    synced = 0
+    refreshed = 0
+    for model, input_price, output_price in rows:
+        change = await sync_price_change(
+            source.provider,
+            model,
+            input_price,
+            output_price,
+            source="crawler",
+        )
+        if change is None:
+            continue
+        synced += 1
+        if change.changed and await apply_price_change_to_route_cache(change):
+            refreshed += 1
+
+    if synced:
+        logger.info(
+            "price_aggregator 同步: provider=%s synced=%s, refreshed=%s",
+            source.provider, synced, refreshed,
+        )
+
+
+_PRICE_LINE_RE = re.compile(
+    r"^(?P<model>[A-Za-z0-9_./\-:]{2,})\s*[=:]\s*"
+    r"(?:(?P<input>\d+(?:\.\d+)?)\s*/\s*)?"
+    r"(?P<output>\d+(?:\.\d+)?)\s*$"
+)
+
+
+def _parse_price_lines(text: Optional[str]) -> list[tuple[str, Optional[float], Optional[float]]]:
+    """Phase 3.4: 从纯文本中解析 (model, input, output) 价格行。
+
+    支持格式：
+    - `deepseek-v3: 2.0/3.0`        # input/output
+    - `qwen-plus = 0.8`             # 仅 output
+    - `Pro/deepseek-ai/DeepSeek-V3: 1.5/2.5`
+
+    未识别行被跳过，避免污染 price_snapshots。
+    """
+    if not text:
+        return []
+
+    rows: list[tuple[str, Optional[float], Optional[float]]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = _PRICE_LINE_RE.match(line)
+        if not match:
+            continue
+        input_price = float(match.group("input")) if match.group("input") else None
+        output_price = float(match.group("output"))
+        # input 缺失时沿用 output (保守处理, 1 元 1M tokens 是常见聚合定价)
+        if input_price is None:
+            input_price = output_price
+        rows.append((match.group("model"), input_price, output_price))
+    return rows
 
 
 async def _try_css_fallback(content: str, source) -> ParseResult | None:

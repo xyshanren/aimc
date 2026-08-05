@@ -3,6 +3,7 @@
 提供各表的增删改查操作。
 """
 
+from datetime import date
 import logging
 from typing import Optional
 
@@ -87,6 +88,82 @@ async def get_prices_by_model(session: AsyncSession, model: str) -> list[PriceSn
     stmt = select(PriceSnapshot).where(PriceSnapshot.model == model)
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+# Phase 3.4 (2026-07-29): 价格变动更新/upsert + 路由缓存刷新
+async def get_active_price_snapshots(
+    session: AsyncSession,
+    model: str,
+    channel_id: Optional[int] = None,
+) -> list[PriceSnapshot]:
+    """获取 model 有效期内价格快照, 供 3.4 对比基准"""
+    stmt = select(PriceSnapshot).where(PriceSnapshot.model == model)
+    if channel_id is not None:
+        stmt = stmt.where(PriceSnapshot.channel_id == channel_id)
+    result = await session.execute(stmt)
+    today = date.today().isoformat()
+    return [p for p in result.scalars().all() if _is_price_in_range(p, today)]
+
+
+def _is_price_in_range(price: PriceSnapshot, today: str) -> bool:
+    if price.effective_from and price.effective_from > today:
+        return False
+    if price.effective_to and price.effective_to < today:
+        return False
+    return True
+
+
+async def upsert_price_snapshot(
+    session: AsyncSession,
+    channel_id: int,
+    model: str,
+    input_price: Optional[float],
+    output_price: Optional[float],
+    source: str = "crawler",
+    price_type: str = "normal",
+    time_range: str = "全天",
+    effective_from: Optional[str] = None,
+    effective_to: Optional[str] = None,
+) -> tuple[PriceSnapshot, bool]:
+    """按 (channel, model, price_type, time_range) upsert 价椌快照
+
+    Returns:
+        (PriceSnapshot, created) created=True 表示新建, False 表示更新
+
+    Phase 3.4: 价椌变动会调用此函数, 以 source=crawler 标记便于区分手动录入.
+    """
+    stmt = select(PriceSnapshot).where(
+        PriceSnapshot.channel_id == channel_id,
+        PriceSnapshot.model == model,
+        PriceSnapshot.price_type == price_type,
+        PriceSnapshot.time_range == time_range,
+    )
+    result = await session.execute(stmt)
+    snapshot = result.scalar_one_or_none()
+
+    if snapshot:
+        snapshot.input_price = input_price
+        snapshot.output_price = output_price
+        snapshot.source = source
+        snapshot.effective_from = effective_from or snapshot.effective_from
+        snapshot.effective_to = effective_to or snapshot.effective_to
+        return snapshot, False
+
+    snapshot = PriceSnapshot(
+        channel_id=channel_id,
+        model=model,
+        price_type=price_type,
+        time_range=time_range,
+        input_price=input_price,
+        output_price=output_price,
+        unit="元/百万tokens",
+        effective_from=effective_from,
+        effective_to=effective_to,
+        source=source,
+    )
+    session.add(snapshot)
+    await session.flush()
+    return snapshot, True
 
 
 # === 优惠活动操作 ===
