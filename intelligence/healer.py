@@ -125,7 +125,9 @@ async def handle_parse_result(content: str, source):
     ai_result: ParseResult | None = None
     try:
         from intelligence.parser import parse_content
-        ai_result = await parse_content(content, source.provider, source.url)
+        ai_result = await parse_content(
+            content, source.provider, source.url, source.source_type
+        )
         logger.debug(
             f"AI 解析完成: provider={source.provider}, type={source.source_type}, "
             f"is_promotion={ai_result.is_promotion}, "
@@ -141,12 +143,22 @@ async def handle_parse_result(content: str, source):
     # 后续可以加 model_registry_candidates / benchmark_snapshots 表分流 (但需要 schema 改动)
 
     # === 2. AI 成功 + 置信度足够 → 入库 ===
-    if ai_result and ai_result.is_promotion and ai_result.confidence >= settings.parse_confidence_threshold:
+    if ai_result and (
+        (ai_result.is_promotion and ai_result.confidence >= settings.parse_confidence_threshold)
+        or ai_result.models
+    ):
         await _save_promotion(ai_result, source)
-        logger.info(
-            f"优惠入库(AI): [{ai_result.provider}] {ai_result.title} "
-            f"(置信度: {ai_result.confidence:.2f})"
-        )
+        if ai_result.models:
+            logger.info(
+                f"模型元信息候选(AI): [{ai_result.provider}] "
+                f"count={len(ai_result.models)}, "
+                f"confidence={ai_result.confidence:.2f}"
+            )
+        else:
+            logger.info(
+                f"优惠入库(AI): [{ai_result.provider}] {ai_result.title} "
+                f"(置信度: {ai_result.confidence:.2f})"
+            )
         return
 
     # === 3. 触发降级：AI 失败 OR AI 成功但低置信度 OR AI 判断非优惠 ===
@@ -224,9 +236,10 @@ async def _save_promotion(result: ParseResult, source):
         # sanity check（先于入库，但不影响入库）— Phase 3.1: 传 source_type
         flagged, flagged_reason = _sanity_check(result, source.source_type)
 
-        # Phase 3.1: raw_data 附加 source_type, 便于后续 3.3 消费
+        # Phase 3.2: 把 models 序列化进 raw_data, 供 Phase 3.3 自动入组消费
         raw_data_dict = result.model_dump()
         raw_data_dict["_source_type"] = source.source_type
+        raw_data_dict["_intelligence_kind"] = result.intelligence_kind
 
         async with async_session_factory() as session:
             await crud.create_promotion(
