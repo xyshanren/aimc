@@ -20,21 +20,27 @@ logger = logging.getLogger(__name__)
 
 
 def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
-    """Phase 2.5: 构造 X-AIMC-* 响应头
+    """Phase 3.E: 构造 X-AIMC-* 响应头
 
-    三个 header:
+    五个 header (Phase 2.5 加 3 个, Phase 3.E 加 2 个):
     - X-AIMC-Actual-Model: 实际命中的 model (组路由时被替换, 精确路由时 = requested_model)
     - X-AIMC-Actual-Channel: 实际命中的 channel name (e.g. siliconflow_aggregator)
     - X-AIMC-Group-Id: 命中的 model group (仅组路由时有, e.g. tier:balanced)
+    - X-AIMC-Actual-Tier: 实际命中 model 的能力档 (e.g. T2, 仅当 model 在 registry 时有)
+    - X-AIMC-Actual-Capabilities: 实际命中 model 的 capabilities (JSON 字符串,
+      e.g. '["reasoning","code"]', 仅当 model 在 registry 时有)
 
     用途: hermes-agent-cn 知道"我的 tier:balanced 实际打到哪个 model + channel",
-    方便 hermes-tray (通过 hermes-agent-cn) 在 footer pill + stats page 展示。
+    以及该 model 的能力档 / 能力标签, 方便 hermes-tray (通过 hermes-agent-cn)
+    在 footer pill + stats page 展示。
 
     注意 (2026-07-29 Phase 2.10 E2E 发现):
     - _select_by_group 注入的 _actual_model / _group_id 是写在共享 channel dict 里
       (select_best_channel 返回的是 _channels_cache 里的对象, 不是 copy)
     - 后续精确路由命中**同一个 channel dict** 时, 这些字段仍残留, 污染响应头
     - 修法: 只在请求带 "tier:" / "scene:" 前缀时才信任 _actual_model
+    - Phase 3.E 进一步: select_best_channel 返回前也写 _actual_model,
+      所以精确路由时 _actual_model = requested_model 也成立 (不污染)
     """
     headers = {}
     is_group_request = requested_model.startswith(("tier:", "scene:"))
@@ -51,6 +57,23 @@ def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
     # group_id: 只在组路由请求 + channel 有 _group_id 时发
     if is_group_request and channel.get("_group_id"):
         headers["X-AIMC-Group-Id"] = channel["_group_id"]
+    # Phase 3.E: tier / capabilities (从 channel._registry_* 读, 已在 router.py 注入)
+    # tier: 简单字符串, 直接发
+    if channel.get("_registry_tier"):
+        headers["X-AIMC-Actual-Tier"] = channel["_registry_tier"]
+    # capabilities: DB 存的是 JSON 字符串, 需要解析后重新序列化保证格式
+    # (避免 "[\"reasoning\"]" 这种双重转义问题, 直接给 hermes-agent-cn 一个干净 JSON)
+    caps_raw = channel.get("_registry_capabilities")
+    if caps_raw:
+        try:
+            caps_list = json.loads(caps_raw)
+            # 列表才有意义, 字典/字符串 fallback 成空
+            if isinstance(caps_list, list):
+                headers["X-AIMC-Actual-Capabilities"] = json.dumps(caps_list, ensure_ascii=False)
+            else:
+                headers["X-AIMC-Actual-Capabilities"] = "[]"
+        except (ValueError, TypeError):
+            headers["X-AIMC-Actual-Capabilities"] = "[]"
     return headers
 
 

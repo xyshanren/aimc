@@ -269,6 +269,15 @@ class RouteEngine:
             f"(price={best_price.get('input_price')}, priority={best_channel['priority']})"
         )
 
+        # Phase 3.E: 精确路由响应头增强 — 注入 _registry_* 字段
+        # 跟 _select_by_group 保持一致, 让 _build_aimc_headers 不用关心路由类型
+        best_channel["_actual_model"] = model
+        reg = self._registry_cache.get(model)
+        if reg:
+            best_channel["_registry_tier"] = reg.tier
+            best_channel["_registry_family"] = reg.family
+            best_channel["_registry_capabilities"] = reg.capabilities
+
         return best_channel
 
     def _get_current_price(self, channel: dict, model: str, current_hour: int) -> Optional[dict]:
@@ -759,6 +768,8 @@ class RouteEngine:
             if registry:
                 best_ch["_registry_tier"] = registry.tier
                 best_ch["_registry_family"] = registry.family
+                # Phase 3.E: 加 _registry_capabilities (JSON 字符串, _build_aimc_headers 会解析)
+                best_ch["_registry_capabilities"] = registry.capabilities
 
             logger.info(
                 f"组路由: {group_id} -> {best_model} via {best_ch['name']} "
