@@ -13,7 +13,7 @@
 | Phase 1 | 网关核心 | ✅ | FastAPI 路由/频限/透传/8 张表基础架构 |
 | **Phase 2.5** | **运维加固** | **✅** | **4 个日常痛点改进（详见下文）** |
 | **Phase 2** | **多维模型组** | **✅** | **4 张新表 + 25 model + 6 group + 35 member + tier/scene 路由 + Agent 偏好 + 响应头** |
-| Phase 3 | 情报联动模型组 | ⬜ | AI 解析 → 自动入组/出组 |
+| Phase 3 | 情报联动模型组 | 🔨 | 3.0/3.1/3.2/3.3/3.4 已完成，3.5 验证标准 + 国内服务商补齐中 |
 | Phase 4 | 智能优化 | ⬜ 远期 | 用量分析 / 延迟追踪 / 自动权重 |
 | **API-Sec-1** | **DB api_key 加密 (XOR+Base64 轻量化)** | **✅** | **DB 文件泄露 ≠ channel key 泄露；零外部依赖** |
 | **API-Sec-2** | **ALERT_CHANNEL runtime override** | **✅** | **改告警 channel / webhook 不重启** |
@@ -260,38 +260,56 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
   - `tests/test_hermes_agent_cn_e2e.py` 4 个场景全过: 启动拉取 / 组路由头 / 精确路由头 / Profile 校验
   - 验证 AIMC 侧准备就绪, hermes-agent-cn PR 可直接对接
 
-### 3.1 采集源扩展
+### 3.1 采集源扩展 — ✅ (commit `f1c3487`)
 
-- ⬜ 新增"模型列表页"采集源类型（发现新模型）
-- ⬜ 新增"第三方平台"采集源（硅基流动/火山引擎模型+价格）
-- ⬜ 新增"Benchmark 榜单"采集源（LMSYS Arena / SuperCLUE）
-- ⬜ 采集源调度策略优化（不同类型不同频率）
+- ✅ 新增"模型列表页"采集源类型（`model_lists.py`: SiliconFlow + VolcengineArk）— 发现新模型
+- ✅ 新增"第三方平台"采集源（`price_aggregator.py`: SiliconFlow + OpenRouter 价格聚合）— 价格对比
+- ✅ 新增"Benchmark 榜单"采集源（`benchmark.py`: LMSYS Arena + SuperCLUE）— 评测数据
+- ✅ 采集源调度策略优化（`base.py` `DEFAULT_POLL_INTERVALS` 表，按类型差异化：模型列表 1 天、价格聚合 6 小时、榜单 1 周）
 
-### 3.2 AI 解析器升级
+### 3.2 AI 解析器升级 — ✅ (commit `4666231`)
 
-- ⬜ 解析器支持提取模型元信息（model_id/family/context_length/capabilities）
-- ⬜ 新模型 tier 推断逻辑（基于参数规模、厂商定位、benchmark）
-- ⬜ 解析结果置信度分级处理
+- ✅ 解析器支持提取模型元信息（model_id/family/context_length/capabilities）
+- ✅ 新模型 tier 推断逻辑（基于参数规模、厂商定位、benchmark）
+- ✅ 解析结果置信度分级处理
 
-### 3.3 自动入组/出组
+### 3.3 自动入组/出组 — ✅ (commit `ccb231d` + `b6aec1a` + `122a979` + `6a7e1e7`)
 
-- ⬜ 新模型自动入组（confidence > 0.8）
-- ⬜ 模型下线自动移出（confidence > 0.9）
-- ⬜ 低置信度变更 → 飞书/Bark/Server酱 告警 + Dashboard 待确认队列
-- ⬜ tier 调整永远需人工确认（安全阀）
+- ✅ 新模型自动入组（confidence > 0.8）
+- ✅ 模型下线自动移出（confidence > 0.9，P1-2 软删除 + 路由 cache 不出现）
+- ✅ 低置信度变更 → 飞书/Bark/Server酱 告警 + Dashboard 待确认队列
+- ✅ tier 调整永远需人工确认（安全阀）
 
-### 3.4 价格联动
+### 3.4 价格联动 — ✅ (commit `01792a5` + `f76cb46` + `d9c04c0` + `a4fbde2`)
 
-- ⬜ 价格变动自动更新 `price_snapshots`
-- ⬜ 路由缓存刷新后组内排序自动变化（无需额外触发）
-- ⬜ 优惠活动影响渠道优先级（临时权重加成）
+- ✅ 价格变动自动更新 `price_snapshots`
+- ✅ 路由缓存精准刷新（I6：invalidate_channel/invalidate_price/invalidate_group 3 个接口）
+- ✅ 优惠活动影响渠道优先级（临时权重加成）
 
-### 3.5 验证标准
+### 3.5 验证标准 — ⬜ (本轮 P3 验证脚本完成后勾选)
 
 - [ ] 模拟新模型发现 → 自动出现在 `model_registry` 和对应组中
 - [ ] 模拟价格变动 → 下次请求路由到新最低价渠道
 - [ ] 模拟模型下线 → 自动从组中移除，不再被路由
 - [ ] 低置信度变更 → 收到告警
+
+### 3.6 国内服务商补齐 — 🔨 (本轮扩展, 阶段实现)
+
+> 背景: 原 Phase 3.1 只接了 2 个模型列表源 (硅基流动 + 火山方舟), 国内还有 5 个主流厂商未接.
+> 评测: 优先用各厂商提供的 `/v1/models` API 结构化抽取 (零 AI 成本, 100% 准确), HTML 抓取作为降级路径.
+
+- 🔨 阶跃星辰 (StepFun) — `https://api.stepfun.com/v1/models`
+- 🔨 商汤日日新 (SenseNova) — `https://api.sensenova.cn/v1/models` (备用 `https://token.sensenova.cn/v1/models`)
+- 🔨 腾讯混元 (Hunyuan) — `https://api.hunyuan.cloud.tencent.com/v1/models`
+- 🔨 月之暗面 (Moonshot / Kimi) — `https://api.moonshot.cn/v1/models`
+- 🔨 DeepSeek / Qwen / GLM (之前只有定价页, 补 model_list 源)
+
+### 3.7 潜在聚合源 — 🔍 评估中
+
+- 🔍 **千问 AI 平台** (`https://www.qianwenai.com/`): 阿里运营的 C 端 web 应用, 代理了 Kimi / DeepSeek / GLM 等多模型。
+  - **不建议接入**: 这是面向用户的前端应用, 无 OpenAI 兼容 API endpoint, HTML 结构常变。
+  - 价值: 与硅基流动重叠 (同是聚合平台), 不增覆盖。
+  - 评估结论: **不接入**, 价值低 + 维护成本高。
 
 ---
 
