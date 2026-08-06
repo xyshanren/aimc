@@ -283,6 +283,13 @@ class ModelGroupMember(Base):
 
     多对多: group_id ↔ model_id。
     不强制 FK (model_id 用 soft join, 允许"还没入库的新 model"占位)。
+
+    P1-2 (2026-08-06) 软删除设计:
+    - is_active=1 (默认) 参与路由; is_active=0 仍保留行, 仅路由跳过
+    - removed_at / removed_reason / removed_by 记录出组审计字段
+    - 业务查询 path (gateway/router._load_groups_cache, dashboard 等)
+      需主动 .where(is_active=1) 过滤, 否然会跳走 deprecated model
+    - 路由 cache 严格不应出现 is_active=0 行
     """
     __tablename__ = "model_group_members"
 
@@ -294,6 +301,17 @@ class ModelGroupMember(Base):
     max_cost_ratio = Column(Float, nullable=True, comment="价格超过组内最低 N 倍时排除 (NULL=不限)")
     added_by = Column(Text, default="manual", comment="manual/intel_auto")
     created_at = Column(DateTime, default=func.now())
+    # P1-2 软删除: 出组不改 DELETE, 设 is_active=0 + 记录审计
+    is_active = Column(Integer, default=1, nullable=False, comment="1=参与路由, 0=已出组 (软删除)")
+    removed_at = Column(DateTime, nullable=True, comment="出组时间")
+    removed_reason = Column(Text, nullable=True, comment="出组原因: deprecated+tier_change+manual")
+    removed_by = Column(Text, nullable=True, comment="出组执行人: intel_auto/manual_approve")
+
+    # 索引: 路由查询以 (group_id, is_active) 为主过滤, 顺序访问
+    __table_args__ = (
+        Index("idx_mgm_group_active", "group_id", "is_active"),
+        Index("idx_mgm_model_active", "model_id", "is_active"),
+    )
 
 
 class ModelCapabilitiesLog(Base):

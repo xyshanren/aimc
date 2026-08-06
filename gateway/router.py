@@ -182,9 +182,12 @@ class RouteEngine:
 
             self._groups_cache[group_id] = grp
 
+            # P1-2: 仅拉 is_active=1 的成员. inactive 行保留在表里作审计,
+            # 路由不能命中 (避免 cache 里出现 deprecated model).
             mem_result = await session.execute(
                 select(ModelGroupMember).where(
-                    ModelGroupMember.group_id == group_id
+                    ModelGroupMember.group_id == group_id,
+                    ModelGroupMember.is_active == 1,
                 )
             )
             self._group_members_cache[group_id] = [
@@ -311,7 +314,10 @@ class RouteEngine:
         )
 
         # 3) model_group_members: group_id → [model_id]
-        mem_result = await session.execute(select(ModelGroupMember))
+        # P1-2: 仅拉 is_active=1 的成员 (软删除的行不进路由 cache).
+        mem_result = await session.execute(
+            select(ModelGroupMember).where(ModelGroupMember.is_active == 1)
+        )
         self._group_members_cache = {}
         for m in mem_result.scalars().all():
             self._group_members_cache.setdefault(m.group_id, []).append(m.model_id)

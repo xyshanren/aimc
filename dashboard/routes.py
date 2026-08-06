@@ -246,12 +246,15 @@ async def get_registry_models(session: AsyncSession = Depends(get_session)):
 @router.get("/api/registry/groups")
 async def get_registry_groups(session: AsyncSession = Depends(get_session)):
     """Phase 2.9: 列出 model_group + members (6 group + 35 member 只读)
+
+    P1-2: 仅显示 is_active=1 的成员. 出组的 model 仍在表里 (审计),
+    但 UI/路由不出现, 避免误导运维/路由命中 deprecated 模型.
     """
     groups = list((await session.execute(
         select(ModelGroup).order_by(ModelGroup.sort_order)
     )).scalars().all())
     members = list((await session.execute(
-        select(ModelGroupMember)
+        select(ModelGroupMember).where(ModelGroupMember.is_active == 1)
     )).scalars().all())
 
     # 倒排 member by group_id

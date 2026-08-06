@@ -387,10 +387,15 @@ async def add_model_group_member(
     weight: float = 1.0,
     added_by: str = "manual",
 ) -> bool:
-    """将 model 加入组 (Phase 3.3 自动入组)，已存在则跳过。
+    """将 model 加入组 (Phase 3.3 自动入组)，已存在 (不论是否 active) 则跳过。
+
+    P1-2 fix: 返回 False 包含 2 种场景
+    - 是 active (已入组)
+    - 是 inactive (已被出组) -> 转为 active (覆盖之前的 removed_* 字段)
+    上面 2 种都可以看作"成员已存在", 不重复入。
 
     Returns:
-        True 新加入, False 已存在
+        True 新加入, False 已存在 (含 active 和 inactive 两种)
     """
     from db.models import ModelGroupMember
     from sqlalchemy import select
@@ -401,6 +406,13 @@ async def add_model_group_member(
     )
     existing = (await session.execute(stmt)).scalar_one_or_none()
     if existing:
+        # P1-2: 之前因 deprecated / tier 迁移被出组, 现重新入组 -> 打开 active
+        if not existing.is_active:
+            existing.is_active = 1
+            existing.removed_at = None
+            existing.removed_reason = None
+            existing.removed_by = None
+            await session.flush()
         return False
     member = ModelGroupMember(
         group_id=group_id,
@@ -417,21 +429,70 @@ async def add_model_group_member(
 async def remove_model_group_members_by_model(
     session: AsyncSession,
     model_id: str,
+    *,
+    reason: str = "manual",
+    removed_by: str = "manual_approve",
 ) -> int:
-    """删除 model_id 在所有组中的成员关系 (P1-1 fix)。
+    """软删除 model_id 在所有组中的成员关系 (P1-2 fix, 原 P1-1 是硬 DELETE)。
 
-    用于 E1 批准 tier 迁移时: model 从旧 tier 组全部踢出,
-    然后再 add_model_group_member 加入新 tier 组。
+    P1-2 改为软删除: 设 is_active=0 + 记录 removed_at/reason/removed_by, 保留行。
+    业务查询 path (路由 cache) 需主动 .where(is_active=1) 过滤。
+
+    Phase 4 v2 (P1-2) 进期设计:
+    - 架构 §5.4 描述 "DELETE FROM model_group_members" 的语义改为 "软出组"
+    - 审计/回滚更容易: 哪天改错了可以从 model_capabilities_log 查状态再 cover
+    - 需定期清理脚本 (delete_removed_members_older_than(90d)) 防表膨胀,
+      后续运维补 job
+
+    Args:
+        model_id: 被出组的 model_id
+        reason: 出组原因 (e.g. "deprecated+conf>=0.9", "tier_change_T2->T3")
+        removed_by: 执行人 (intel_auto / manual_approve / heater)
 
     Returns:
-        删除的行数
+        被软删的行数 (含原本就 active 但被设为 inactive)
     """
     from db.models import ModelGroupMember
-    from sqlalchemy import delete
+    from sqlalchemy import update
+    from datetime import datetime
 
-    stmt = delete(ModelGroupMember).where(ModelGroupMember.model_id == model_id)
+    stmt = (
+        update(ModelGroupMember)
+        .where(
+            ModelGroupMember.model_id == model_id,
+            ModelGroupMember.is_active == 1,
+        )
+        .values(
+            is_active=0,
+            removed_at=datetime.now(),
+            removed_reason=reason,
+            removed_by=removed_by,
+        )
+    )
     result = await session.execute(stmt)
     return result.rowcount or 0
+
+
+async def list_active_group_members_for_group(
+    session: AsyncSession,
+    group_id: str,
+) -> list:
+    """Phase 4 v2 (P1-2): 拉取某 group 下所有 active 成员。
+
+    路由 cache 加载专用, 业务路径需主动过滤 is_active=1.
+    """
+    from db.models import ModelGroupMember
+    from sqlalchemy import select
+
+    stmt = (
+        select(ModelGroupMember)
+        .where(
+            ModelGroupMember.group_id == group_id,
+            ModelGroupMember.is_active == 1,
+        )
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
 
 
 async def find_target_group_for_tier(

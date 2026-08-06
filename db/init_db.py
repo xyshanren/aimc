@@ -42,6 +42,7 @@ async def ensure_migrations():
     - channels.provider_type / billing_mode (Phase 2.3, 2026-07-29)
     - settings_runtime 表 (API-Sec-2, 2026-07-29) — 新建表, create_all 自动
     - usage_logs.group_id (Phase 3.A, 2026-07-29) — Dashboard 命中率聚合
+    - model_group_members.is_active / removed_at / removed_reason / removed_by (P1-2, 2026-08-06) — 软删除
     """
     async with engine.begin() as conn:
         # intel_sources.last_content
@@ -123,6 +124,39 @@ async def ensure_migrations():
             logger.info("迁移: usage_logs 添加 group_id 列 (Phase 3.A)")
         else:
             logger.debug("迁移: usage_logs.group_id 已存在，跳过")
+
+        # model_group_members 软删除 (P1-2, 2026-08-06)
+        # ALTER ADD COLUMN NOT NULL 必须带 DEFAULT (SQLite 限制)
+        result = await conn.execute(text("PRAGMA table_info('model_group_members')"))
+        columns = {row[1] for row in result.fetchall()}
+        if "is_active" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE model_group_members ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
+            ))
+            logger.info("迁移: model_group_members 添加 is_active 列 (P1-2)")
+        else:
+            logger.debug("迁移: model_group_members.is_active 已存在，跳过")
+        if "removed_at" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE model_group_members ADD COLUMN removed_at DATETIME"
+            ))
+            logger.info("迁移: model_group_members 添加 removed_at 列 (P1-2)")
+        else:
+            logger.debug("迁移: model_group_members.removed_at 已存在，跳过")
+        if "removed_reason" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE model_group_members ADD COLUMN removed_reason TEXT"
+            ))
+            logger.info("迁移: model_group_members 添加 removed_reason 列 (P1-2)")
+        else:
+            logger.debug("迁移: model_group_members.removed_reason 已存在，跳过")
+        if "removed_by" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE model_group_members ADD COLUMN removed_by TEXT"
+            ))
+            logger.info("迁移: model_group_members 添加 removed_by 列 (P1-2)")
+        else:
+            logger.debug("迁移: model_group_members.removed_by 已存在，跳过")
 
 
 async def drop_all():
