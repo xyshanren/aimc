@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AIMC - AI Model Compass</title>
     <link rel="stylesheet" href="/static/style.css">
-    <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZTOjDkG0eMq1vq9iF1K2g3H4j5L6m7N8o9P0q1R2s3T4u5V6w7X8y9Z0" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" integrity="sha384-k2G1V1M0mN4j5L6n7O8p9Q0r1S2t3U4v5W6x7Y8z9A0b1C2d3E4f5G6h7I8j9K0" crossorigin="anonymous"></script>
+    <!-- 第三方库本地化 (vendor/)：避免外网 CDN 不可达 + 移除不可信 SRI 哈希 -->
+    <script src="/static/vendor/htmx.min.js"></script>
+    <script src="/static/vendor/chart.umd.min.js"></script>
 </head>
 <body>
     <header>
