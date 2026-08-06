@@ -76,11 +76,9 @@ async def sync_price_change(
 
     try:
         async with async_session_factory() as session:
-            channels = await crud.list_channels(session, status="active")
-            channel = next(
-                (ch for ch in channels if ch.provider == provider),
-                None,
-            )
+            # Phase 4 v2 (I8 优化): 单查替代 list_channels + next 全表扫描.
+            # 多 channel 同 provider 场景下仍返回首个 (按 id 升序), 行为不变.
+            channel = await crud.get_channel_by_provider(session, provider)
             if not channel:
                 logger.warning("价格同步跳过: provider=%s 没有 active channel", provider)
                 return None

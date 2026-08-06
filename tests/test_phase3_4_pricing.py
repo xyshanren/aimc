@@ -230,6 +230,15 @@ def _install_mock_db():
     async def _list_channels(session, status="active"):
         return list(_state["channels"])
 
+    async def _get_channel_by_provider(session, provider, status="active"):
+        # Phase 4 v2 (I8): 替代 list_channels + next 全表扫描模式.
+        # 返回首个匹配 provider 的 active channel (按 id 升序)，与生产 crud 行为一致.
+        matched = [
+            ch for ch in _state["channels"]
+            if ch.provider == provider and ch.status == status
+        ]
+        return sorted(matched, key=lambda c: c.id)[0] if matched else None
+
     async def _get_active(session, model, channel_id=None):
         from datetime import date
         today = date.today().isoformat()
@@ -266,6 +275,7 @@ def _install_mock_db():
         return p, True
 
     crud.list_channels = _list_channels
+    crud.get_channel_by_provider = _get_channel_by_provider
     crud.get_active_price_snapshots = _get_active
     crud.upsert_price_snapshot = _upsert
 
@@ -324,18 +334,23 @@ def test_sync_price_change_first_write():
 
 def test_sync_price_change_no_channel():
     print("\n=== Test 7: sync_price_change 找不到 channel ===")
+    _install_mock_db()
     from intelligence.pricing_sync import sync_price_change
     import db.crud as crud
 
-    async def _empty(session, status="active"):
-        return []
+    # Phase 4 v2 (I8): 不再走 list_channels + next, 改为 get_channel_by_provider 单查
+    async def _no_channel(session, provider, status="active"):
+        return None
 
-    crud.list_channels = _empty
+    _orig = crud.get_channel_by_provider
+    crud.get_channel_by_provider = _no_channel
 
     async def _run():
         return await sync_price_change("nonexistent", "m", 1.0, 1.0)
 
     change = asyncio.run(_run())
+    # 还原 (避免污染后续 test, e.g. test 10 调真 crud 校验)
+    crud.get_channel_by_provider = _orig
     assert change is None, f"无 channel 应返 None, 实际 {change}"
     print("  [OK] 无 channel 返 None")
 
@@ -380,6 +395,176 @@ def test_sync_price_change_same_price_no_refresh():
 
 
 # ============================================================
+# Test 10: crud.get_channel_by_provider 基础正确性 (I8, 真SQLite in-memory)
+# ============================================================
+def test_get_channel_by_provider_basic():
+    print("\n=== Test 10: crud.get_channel_by_provider 基础正确性 (real SQLite) ===")
+    # 关键: _install_mock_db() 会 patch db.crud.get_channel_by_provider 为 mock,
+    # 测完后其它 test 也会间接污染. 这里 importlib.reload() 重新加载模块,
+    # 让 crud.get_channel_by_provider 回到真函数定义.
+    import importlib
+    import db.crud as crud_mod
+    importlib.reload(crud_mod)
+    from db.crud import get_channel_by_provider
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from sqlalchemy.pool import StaticPool
+
+    # 独立 in-memory SQLite engine + StaticPool (保证跨 session 同享一个连接,
+    # 否则 aiosqlite + NullPool 会让 :memory: 每个连接独立, 数据看不到)
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _run():
+        # Phase 1: 建表 (Channel 有 lazy="selectin" 关系, 一次建全表避免脏查询)
+        from db.models import Channel, Base
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        # Phase 2 + 3: 同 session 里 insert + 验证, 避免 aiosqlite + StaticPool 隔离问题
+        async with factory() as session:
+            session.add_all([
+                Channel(name="sf", provider="siliconflow", base_url="https://x",
+                        status="active"),
+                Channel(name="ds", provider="deepseek", base_url="https://x",
+                        status="active"),
+                Channel(name="sf_off", provider="siliconflow", base_url="https://x",
+                        status="deprecated"),
+            ])
+            await session.commit()
+
+            # 1) 命中 active siliconflow (返任 active 行, not deprecated sf_off)
+            ch = await get_channel_by_provider(session, "siliconflow")
+            assert ch is not None, "应命中 active siliconflow"
+            assert ch.provider == "siliconflow"
+            assert ch.status == "active", f"deprecated 行不应被返, 实际 {ch.status}"
+
+            # 2) miss
+            ch_none = await get_channel_by_provider(session, "nonexistent")
+            assert ch_none is None, f"miss 应返 None, 实际 {ch_none}"
+
+            # 3) deepseek 命中
+            ch_ds = await get_channel_by_provider(session, "deepseek")
+            assert ch_ds is not None and ch_ds.provider == "deepseek", \
+                f"deepseek 应命中, 实际 {ch_ds}"
+
+            # 4) status="deprecated" 能返 deprecated 行
+            ch_off = await get_channel_by_provider(session, "siliconflow", status="deprecated")
+            assert ch_off is not None and ch_off.name == "sf_off", \
+                f"status=deprecated 应命中 sf_off, 实际 {ch_off}"
+
+        await engine.dispose()
+
+    asyncio.run(_run())
+    print("  [OK] get_channel_by_provider 命中/miss/status 过滤 表现正确")
+
+
+# ============================================================
+# Test 11: sync_price_change 不再调用 list_channels (I8)
+# ============================================================
+def test_sync_price_change_uses_single_query():
+    print("\n=== Test 11: sync_price_change 调用次数验证 (不再走 N+1) ===")
+    _install_mock_db()
+    from intelligence.pricing_sync import sync_price_change
+    import db.crud as crud
+
+    call_log = []
+
+    _orig_get_channel_by_provider = crud.get_channel_by_provider
+    _orig_list_channels = crud.list_channels
+
+    async def _traced_get_channel_by_provider(session, provider, status="active"):
+        call_log.append(("get_channel_by_provider", provider))
+        return await _orig_get_channel_by_provider(session, provider, status)
+
+    async def _traced_list_channels(session, status="active"):
+        call_log.append(("list_channels", status))
+        return await _orig_list_channels(session, status)
+
+    crud.get_channel_by_provider = _traced_get_channel_by_provider
+    crud.list_channels = _traced_list_channels
+
+    async def _run():
+        return await sync_price_change("siliconflow", "deepseek-v3", 2.0, 3.0)
+
+    change = asyncio.run(_run())
+
+    crud.get_channel_by_provider = _orig_get_channel_by_provider
+    crud.list_channels = _orig_list_channels
+
+    list_call_count = sum(1 for n, _ in call_log if n == "list_channels")
+    single_call_count = sum(1 for n, _ in call_log if n == "get_channel_by_provider")
+
+    assert list_call_count == 0, \
+        f"I8 优化后 sync_price_change 不应调 list_channels, 实际调用 {list_call_count} 次"
+    assert single_call_count == 1, \
+        f"应调 1 次 get_channel_by_provider, 实际 {single_call_count}"
+    assert change is not None, f"应返 PriceChange, 实际 {change}"
+    print(f"  [OK] 单查调用: get_channel_by_provider x{single_call_count}, list_channels x{list_call_count}")
+
+
+# ============================================================
+# Test 12: 多 channel 同 provider 场景 (I8)
+# ============================================================
+def test_get_channel_by_provider_multiple_channels_same_provider():
+    print("\n=== Test 12: get_channel_by_provider 多 channel 同 provider ===")
+    # 同 Test 10: importlib.reload() 避免 mock 污染
+    import importlib
+    import db.crud as crud_mod
+    importlib.reload(crud_mod)
+    from db.crud import get_channel_by_provider
+
+    class _FakeChannel:
+        def __init__(self, cid, provider, status="active"):
+            self.id = cid
+            self.provider = provider
+            self.status = status
+
+    class _FakeResult:
+        def scalar_one_or_none(self_inner):
+            provider = captured.get("provider")
+            status = captured.get("status", "active")
+            candidates = sorted(
+                [c for c in _store if c.provider == provider and c.status == status],
+                key=lambda c: c.id,
+            )
+            return candidates[0] if candidates else None
+
+    class _FakeSession:
+        async def execute(self, stmt):
+            return _FakeResult()
+
+    captured = {}
+    # 3 个同 provider 的 active channel (id=5, 7, 10)，另一个不同 provider
+    _store = [
+        _FakeChannel(5, "siliconflow"),
+        _FakeChannel(7, "siliconflow"),
+        _FakeChannel(10, "siliconflow"),
+        _FakeChannel(20, "openai"),
+    ]
+
+    async def _run():
+        captured["provider"] = "siliconflow"
+        captured["status"] = "active"
+        ch = await get_channel_by_provider(_FakeSession(), "siliconflow")
+        assert ch.id == 5, f"多 channel 同 provider 应返 id 最小的, 实际 {ch.id}"
+        assert ch.provider == "siliconflow"
+
+        # status 过滤也能排斥 deprecated
+        _store.append(_FakeChannel(3, "siliconflow", "deprecated"))  # id 更小但是 deprecated
+        captured["provider"] = "siliconflow"
+        captured["status"] = "active"
+        ch = await get_channel_by_provider(_FakeSession(), "siliconflow", status="active")
+        assert ch.id == 5, f"应跳过 deprecated id=3, 返 id=5, 实际 {ch.id}"
+
+    asyncio.run(_run())
+    print("  [OK] 多 channel 同 provider 返 id 最小且 status 过滤正确")
+
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -396,9 +581,12 @@ def main():
     test_sync_price_change_no_channel()
     test_sync_price_change_no_price()
     test_sync_price_change_same_price_no_refresh()
+    test_get_channel_by_provider_basic()
+    test_sync_price_change_uses_single_query()
+    test_get_channel_by_provider_multiple_channels_same_provider()
 
     print("\n" + "=" * 60)
-    print("ALL 9 TESTS PASSED")
+    print("ALL 12 TESTS PASSED")
     print("=" * 60)
 
 

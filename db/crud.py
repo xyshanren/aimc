@@ -39,6 +39,31 @@ async def list_channels(session: AsyncSession, status: str = "active") -> list[C
     return list(result.scalars().all())
 
 
+async def get_channel_by_provider(
+    session: AsyncSession,
+    provider: str,
+    status: str = "active",
+) -> Optional[Channel]:
+    """按 provider 查首个 active channel。
+
+    Phase 3.4 N+1 优化 (I8): 替代 "list_channels 全表 + next find" 模式，
+    单条 SELECT 命中索引，避免在大规模 channel 下做无意义扫描。
+
+    多 channel 同 provider 场景 (e.g. 多个 regional endpoint 或多账号独立 channel)
+    时返回 id 最小的 (最先注册的那个)，与原 list_channels + next 实现保持一致。
+    返回 None 表示该 provider 没有 active channel。
+    """
+    stmt = (
+        select(Channel)
+        .where(Channel.provider == provider)
+        .where(Channel.status == status)
+        .order_by(Channel.id)
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
 async def update_channel_status(session: AsyncSession, channel_id: int, status: str):
     stmt = update(Channel).where(Channel.id == channel_id).values(status=status)
     await session.execute(stmt)
