@@ -44,120 +44,281 @@ class RouteEngine:
         self._group_members_cache: dict = {}   # group_id -> [model_id]
 
     async def refresh_cache(self):
-        """从数据库刷新渠道缓存到内存"""
+        """从数据库刷新渠道缓存到内存 (全量)
+
+        Phase 4 v2 (I6): 业务场景普遍不需要全量刷新 (启动/admin 手动):
+        - 价格变动 -> invalidate_price(channel_id)
+        - channel 启用/禁用 -> invalidate_channel(channel_id)
+        - model group 成员调整 -> invalidate_group(group_id)
+        全量刷新会重新加载所有 channels + accounts + prices + quotas + groups,
+        在 100+ channel 场景下 ~5s 阻塞窗口, 没必要.
+        """
         from db.engine import async_session_factory
+
+        async with async_session_factory() as session:
+            await self._load_channels_cache(session)
+            await self._load_groups_cache(session)
+
+        self._last_refresh = datetime.now()
+        logger.info(
+            f"路由缓存已全量刷新: {len(self._channels_cache)} 个可用渠道账号"
+        )
+
+    async def invalidate_channel(self, channel_id: int) -> None:
+        """Phase 4 v2 (I6): 精准刷新单个 channel
+
+        场景:
+        - channel 启用/禁用 (dashboard 切换 status)
+        - channel 账号增删 (admin 后台调)
+        - channel 配额调整 (频限重设)
+
+        不动 groups cache.
+        """
+        from db.engine import async_session_factory
+        from db.models import Channel
+
+        async with async_session_factory() as session:
+            ch = await session.get(Channel, channel_id)
+            if not ch:
+                # channel 不存在 (e.g. 被管理员删了), 从 cache 里也移除
+                self._channels_cache = [
+                    c for c in self._channels_cache if c["id"] != channel_id
+                ]
+                logger.info(
+                    f"invalidate_channel: channel {channel_id} 不存在, 从 cache 移除"
+                )
+                return
+
+            # 重新加载该 channel 的 cache 条目
+            new_entries = await self._build_channel_entries(session, ch)
+
+            # 替换: 先移除该 channel 的旧条目, 再插入新条目
+            self._channels_cache = [
+                c for c in self._channels_cache if c["id"] != channel_id
+            ] + new_entries
+
+            if not new_entries:
+                logger.info(
+                    f"invalidate_channel: channel {channel_id} "
+                    f"({ch.name}) 重新加载后 0 个可用账号"
+                )
+            else:
+                logger.info(
+                    f"invalidate_channel: channel {channel_id} "
+                    f"({ch.name}) 重新加载 {len(new_entries)} 个账号"
+                )
+
+    async def invalidate_price(self, channel_id: int) -> None:
+        """Phase 4 v2 (I6): 精准刷新单个 channel 的 prices
+
+        场景:
+        - pricing_sync.sync_price_change 调 -> 只变 price, 不动 accounts/quotas
+        - heal/refresh 脚本手动调
+
+        只重查 PriceSnapshot, 替换 cache 中该 channel 的 prices 字段.
+        """
+        from db.engine import async_session_factory
+        from db.models import Channel
+
+        async with async_session_factory() as session:
+            ch = await session.get(Channel, channel_id)
+            if not ch:
+                logger.warning(
+                    f"invalidate_price: channel {channel_id} 不存在, 跳过"
+                )
+                return
+
+            new_prices = [
+                {
+                    "model": p.model,
+                    "price_type": p.price_type,
+                    "time_range": p.time_range,
+                    "input_price": p.input_price,
+                    "output_price": p.output_price,
+                }
+                for p in ch.price_snapshots
+                if self._is_price_effective(p)
+            ]
+
+            # 替换该 channel 的 prices 字段 (所有账号公用一份 prices)
+            replaced = 0
+            for entry in self._channels_cache:
+                if entry["id"] == channel_id:
+                    entry["prices"] = new_prices
+                    replaced += 1
+
+            logger.info(
+                f"invalidate_price: channel {channel_id} ({ch.name}) "
+                f"重载 {len(new_prices)} 条 prices, 覆盖 {replaced} 个 cache 条目"
+            )
+
+    async def invalidate_group(self, group_id: str) -> None:
+        """Phase 4 v2 (I6): 精准刷新单个 model group
+
+        场景:
+        - dashboard 调整组成员 (member add/remove)
+        - admin 调整 group fallback_group/tier/capabilities
+
+        重查 ModelGroup + ModelGroupMember, 替换 _groups_cache 和 _group_members_cache.
+        """
+        from db.engine import async_session_factory
+        from sqlalchemy import select
         from db.models import (
-            Channel, Account, PriceSnapshot, ChannelQuota,
-            ModelRegistry, ModelGroup, ModelGroupMember,
+            ModelGroup, ModelGroupMember,
         )
 
         async with async_session_factory() as session:
-            # 查询所有活跃渠道及其关联数据
-            stmt = select(Channel).where(Channel.status == "active")
-            result = await session.execute(stmt)
-            channels = result.scalars().all()
-
-            cache = []
-            for ch in channels:
-                # 获取该渠道的活跃账号
-                active_accounts = [
-                    acc for acc in ch.accounts
-                    if acc.status == "active"
-                ]
-                if not active_accounts:
-                    continue
-
-                # 获取该渠道的价格快照
-                prices = [
-                    {
-                        "model": p.model,
-                        "price_type": p.price_type,
-                        "time_range": p.time_range,
-                        "input_price": p.input_price,
-                        "output_price": p.output_price,
-                    }
-                    for p in ch.price_snapshots
-                    if self._is_price_effective(p)
-                ]
-
-                # 获取频限配置
-                quotas = [
-                    {
-                        "quota_type": q.quota_type,
-                        "limit_value": q.limit_value,
-                        "account_id": q.account_id,
-                    }
-                    for q in ch.quotas
-                ]
-
-                for acc in active_accounts:
-                    # API-Sec-1: 优先用 ciphertext 解密, fallback 到 api_key 明文 (迁移期)
-                    plaintext_key = self._resolve_account_key(acc)
-                    if plaintext_key is None:
-                        # 既无 ciphertext 也无明文, 跳过这个 account
-                        logger.warning(
-                            f"账号 {ch.name}/{acc.account_name} 既无 ciphertext 也无明文 key, 跳过"
-                        )
-                        continue
-
-                    cache.append({
-                        "id": ch.id,
-                        "name": ch.name,
-                        "provider": ch.provider,
-                        "base_url": ch.base_url,
-                        "priority": ch.priority,
-                        # Phase 2.3 (补): provider_type / billing_mode 加载进 cache
-                        # 不加载会导致 proxy 不知道是否跳过 Authorization, router 不知道是否 0 元
-                        "provider_type": ch.provider_type,
-                        "billing_mode": ch.billing_mode,
-                        "account_id": acc.id,
-                        "account_name": acc.account_name,
-                        "api_key": plaintext_key,
-                        "quota_total": acc.quota_total,
-                        "quota_used": acc.quota_used,
-                        "quota_remaining": acc.quota_remaining,
-                        "prices": prices,
-                        "quotas": [q for q in quotas if q["account_id"] is None or q["account_id"] == acc.id],
-                    })
-
-            self._channels_cache = cache
-            self._last_refresh = datetime.now()
-            logger.info(f"路由缓存已刷新: {len(cache)} 个可用渠道账号")
-
-            # ========== Phase 2.4: 模型组路由元信息 (3 个新 cache) ==========
-            # 1) model_registry: model_id → ORM
-            reg_result = await session.execute(
-                select(ModelRegistry).where(ModelRegistry.status == "active")
+            grp = await session.execute(
+                select(ModelGroup).where(ModelGroup.group_id == group_id)
             )
-            self._registry_cache = {
-                r.model_id: r for r in reg_result.scalars().all()
+            grp = grp.scalar_one_or_none()
+            if not grp:
+                self._groups_cache.pop(group_id, None)
+                self._group_members_cache.pop(group_id, None)
+                logger.info(
+                    f"invalidate_group: group {group_id} 不存在, 从 cache 移除"
+                )
+                return
+
+            self._groups_cache[group_id] = grp
+
+            mem_result = await session.execute(
+                select(ModelGroupMember).where(
+                    ModelGroupMember.group_id == group_id
+                )
+            )
+            self._group_members_cache[group_id] = [
+                m.model_id for m in mem_result.scalars().all()
+            ]
+
+            logger.info(
+                f"invalidate_group: group {group_id} 重新加载, "
+                f"{len(self._group_members_cache[group_id])} 个 member"
+            )
+
+    async def _load_channels_cache(self, session) -> None:
+        """Phase 4 v2 (I6): 从给定 session 加载 channels cache (内部辅助)
+
+        复用逻辑从原 refresh_cache() 抽出, 给 refresh_cache() 和
+        invalidate_channel() 共享.
+        """
+        from db.models import Channel
+
+        # 查询所有活跃渠道及其关联数据
+        stmt = select(Channel).where(Channel.status == "active")
+        result = await session.execute(stmt)
+        channels = result.scalars().all()
+
+        cache = []
+        for ch in channels:
+            cache.extend(await self._build_channel_entries(session, ch))
+
+        self._channels_cache = cache
+
+    async def _build_channel_entries(self, session, ch) -> list[dict]:
+        """Phase 4 v2 (I6): 构造单个 channel 的 cache 条目列表
+
+        一个 channel 可能有多 active account, 每个 account 展开成一条 cache 条目.
+        如果 channel 没有 active account, 返回空列表.
+        """
+        active_accounts = [
+            acc for acc in ch.accounts
+            if acc.status == "active"
+        ]
+        if not active_accounts:
+            return []
+
+        prices = [
+            {
+                "model": p.model,
+                "price_type": p.price_type,
+                "time_range": p.time_range,
+                "input_price": p.input_price,
+                "output_price": p.output_price,
             }
-            logger.info(
-                f"路由缓存: {len(self._registry_cache)} 个 model registry "
-                f"(family: {set(r.family for r in self._registry_cache.values())})"
-            )
+            for p in ch.price_snapshots
+            if self._is_price_effective(p)
+        ]
 
-            # 2) model_groups: group_id → ORM
-            grp_result = await session.execute(
-                select(ModelGroup).where(ModelGroup.enabled == 1)
-            )
-            self._groups_cache = {
-                g.group_id: g for g in grp_result.scalars().all()
+        quotas = [
+            {
+                "quota_type": q.quota_type,
+                "limit_value": q.limit_value,
+                "account_id": q.account_id,
             }
-            logger.info(
-                f"路由缓存: {len(self._groups_cache)} 个 model group "
-                f"({list(self._groups_cache.keys())})"
-            )
+            for q in ch.quotas
+        ]
 
-            # 3) model_group_members: group_id → [model_id]
-            mem_result = await session.execute(select(ModelGroupMember))
-            self._group_members_cache = {}
-            for m in mem_result.scalars().all():
-                self._group_members_cache.setdefault(m.group_id, []).append(m.model_id)
-            logger.info(
-                f"路由缓存: {sum(len(v) for v in self._group_members_cache.values())} "
-                f"个 group members 跨 {len(self._group_members_cache)} 个组"
-            )
+        entries = []
+        for acc in active_accounts:
+            plaintext_key = self._resolve_account_key(acc)
+            if plaintext_key is None:
+                logger.warning(
+                    f"账号 {ch.name}/{acc.account_name} 既无 ciphertext 也无明文 key, 跳过"
+                )
+                continue
+
+            entries.append({
+                "id": ch.id,
+                "name": ch.name,
+                "provider": ch.provider,
+                "base_url": ch.base_url,
+                "priority": ch.priority,
+                "provider_type": ch.provider_type,
+                "billing_mode": ch.billing_mode,
+                "account_id": acc.id,
+                "account_name": acc.account_name,
+                "api_key": plaintext_key,
+                "quota_total": acc.quota_total,
+                "quota_used": acc.quota_used,
+                "quota_remaining": acc.quota_remaining,
+                "prices": prices,
+                "quotas": [
+                    q for q in quotas
+                    if q["account_id"] is None or q["account_id"] == acc.id
+                ],
+            })
+        return entries
+
+    async def _load_groups_cache(self, session) -> None:
+        """Phase 4 v2 (I6): 从给定 session 加载 groups cache (内部辅助)"""
+        from db.models import (
+            ModelRegistry, ModelGroup, ModelGroupMember,
+        )
+
+        # 1) model_registry: model_id → ORM
+        reg_result = await session.execute(
+            select(ModelRegistry).where(ModelRegistry.status == "active")
+        )
+        self._registry_cache = {
+            r.model_id: r for r in reg_result.scalars().all()
+        }
+        logger.info(
+            f"路由缓存: {len(self._registry_cache)} 个 model registry "
+            f"(family: {set(r.family for r in self._registry_cache.values())})"
+        )
+
+        # 2) model_groups: group_id → ORM
+        grp_result = await session.execute(
+            select(ModelGroup).where(ModelGroup.enabled == 1)
+        )
+        self._groups_cache = {
+            g.group_id: g for g in grp_result.scalars().all()
+        }
+        logger.info(
+            f"路由缓存: {len(self._groups_cache)} 个 model group "
+            f"({list(self._groups_cache.keys())})"
+        )
+
+        # 3) model_group_members: group_id → [model_id]
+        mem_result = await session.execute(select(ModelGroupMember))
+        self._group_members_cache = {}
+        for m in mem_result.scalars().all():
+            self._group_members_cache.setdefault(m.group_id, []).append(m.model_id)
+        logger.info(
+            f"路由缓存: {sum(len(v) for v in self._group_members_cache.values())} "
+            f"个 group members 跨 {len(self._group_members_cache)} 个组"
+        )
 
     def _resolve_account_key(self, account) -> Optional[str]:
         """API-Sec-1: 透明获取 account 的明文 api_key

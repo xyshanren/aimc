@@ -565,8 +565,133 @@ def test_get_channel_by_provider_multiple_channels_same_provider():
 
 
 # ============================================================
+# Test 13: pricing_sync 调精准接口而非 refresh_cache (I6)
+# ============================================================
+def test_apply_price_change_uses_invalidate_price():
+    print("\n=== Test 13: apply_price_change_to_route_cache 调 invalidate_price (I6) ===")
+    # _install_mock_db() 会用 types.ModuleType 替换 sys.modules['gateway.router'] 为
+    # _MockRouteEngine. 这里从 sys.modules 移除 mock 让 import 重新加载真路由.
+    import sys
+    import importlib
+    sys.modules.pop("gateway.router", None)
+    sys.modules.pop("gateway", None)
+    from gateway.router import route_engine
+    from intelligence.pricing_sync import apply_price_change_to_route_cache, PriceChange
+
+    call_log = []
+
+    _orig_invalidate_price = route_engine.invalidate_price
+    _orig_refresh_cache = route_engine.refresh_cache
+
+    async def _traced_invalidate_price(channel_id):
+        call_log.append(("invalidate_price", channel_id))
+        return None
+
+    async def _traced_refresh_cache():
+        call_log.append(("refresh_cache", None))
+        return None
+
+    route_engine.invalidate_price = _traced_invalidate_price
+    route_engine.refresh_cache = _traced_refresh_cache
+
+    try:
+        change = PriceChange(
+            provider="siliconflow",
+            channel_id=1,
+            model="deepseek-v3",
+            old_input_price=2.0,
+            new_input_price=3.0,
+            old_output_price=3.0,
+            new_output_price=4.0,
+            source="crawler",
+        )
+        applied = asyncio.run(apply_price_change_to_route_cache(change))
+    finally:
+        route_engine.invalidate_price = _orig_invalidate_price
+        route_engine.refresh_cache = _orig_refresh_cache
+
+    apply_calls = [n for n, _ in call_log if n == "invalidate_price"]
+    refresh_calls = [n for n, _ in call_log if n == "refresh_cache"]
+
+    assert applied is True, "价格变动应返 True"
+    assert len(apply_calls) == 1, \
+        f"I6: 应调 1 次 invalidate_price, 实际 {len(apply_calls)}"
+    assert len(refresh_calls) == 0, \
+        f"I6: 不应调 refresh_cache 全量, 实际 {len(refresh_calls)}"
+    print(f"  [OK] 精准刷新: invalidate_price x{len(apply_calls)}, refresh_cache x{len(refresh_calls)}")
+
+
+# ============================================================
+# Test 14: pricing_sync invalidate_price 调函数存在性 (I6 smoke)
+# ============================================================
+def test_router_invalidate_methods_exist():
+    print("\n=== Test 14: router 3 个 invalidate 接口存在 (I6) ===")
+    from gateway.router import route_engine
+
+    assert callable(getattr(route_engine, "invalidate_channel", None)), \
+        "缺少 invalidate_channel 接口"
+    assert callable(getattr(route_engine, "invalidate_price", None)), \
+        "缺少 invalidate_price 接口"
+    assert callable(getattr(route_engine, "invalidate_group", None)), \
+        "缺少 invalidate_group 接口"
+    assert callable(getattr(route_engine, "refresh_cache", None)), \
+        "refresh_cache 应保留（全量入口）"
+    print("  [OK] invalidate_channel / invalidate_price / invalidate_group / refresh_cache 都在")
+
+
+# ============================================================
+# Test 15: price_alert 不影响精准接口调用 (I6+price_alert 共存)
+# ============================================================
+def test_invalidate_price_tracing_after_price_change():
+    print("\n=== Test 15: 多次价格变动 -> 多次 invalidate_price (I6) ===")
+    # 同 Test 13: 从 sys.modules 移除 mock, 重新 import 真实路由
+    import sys
+    sys.modules.pop("gateway.router", None)
+    sys.modules.pop("gateway", None)
+    from intelligence.pricing_sync import apply_price_change_to_route_cache, PriceChange
+    from gateway.router import route_engine
+
+    call_log = []
+    _orig_invalidate_price = route_engine.invalidate_price
+
+    async def _traced(channel_id):
+        call_log.append(channel_id)
+        return None  # 不实际重查,测试只验证调用
+
+    route_engine.invalidate_price = _traced
+
+    try:
+        async def _run():
+            # 3 次价格变动 (构造 PriceChange, 跳过 sync_price_change 需 DB 的部分)
+            for i in range(3):
+                change = PriceChange(
+                    provider="siliconflow",
+                    channel_id=1,
+                    model="deepseek-v3",
+                    old_input_price=2.0 + i,
+                    new_input_price=3.0 + i,
+                    old_output_price=3.0 + i,
+                    new_output_price=4.0 + i,
+                    source="crawler",
+                )
+                await apply_price_change_to_route_cache(change)
+        asyncio.run(_run())
+    finally:
+        route_engine.invalidate_price = _orig_invalidate_price
+
+    assert len(call_log) == 3, f"应调用 3 次 invalidate_price, 实际 {len(call_log)}"
+    assert all(c == 1 for c in call_log), \
+        f"所有调用 channel_id 都应该是 1, 实际 {call_log}"
+    print(f"  [OK] 多次改动 -> {len(call_log)} 次 invalidate_price, channel_id={set(call_log)}")
+
+
+# ============================================================
 # Main
 # ============================================================
+class _尾声:
+    pass
+
+
 def main():
     print("=" * 60)
     print("Phase 3.4 — 价格联动 测试")
@@ -584,9 +709,12 @@ def main():
     test_get_channel_by_provider_basic()
     test_sync_price_change_uses_single_query()
     test_get_channel_by_provider_multiple_channels_same_provider()
+    test_apply_price_change_uses_invalidate_price()
+    test_router_invalidate_methods_exist()
+    test_invalidate_price_tracing_after_price_change()
 
     print("\n" + "=" * 60)
-    print("ALL 12 TESTS PASSED")
+    print("ALL 15 TESTS PASSED")
     print("=" * 60)
 
 

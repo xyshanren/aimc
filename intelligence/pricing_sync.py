@@ -141,18 +141,19 @@ async def sync_price_change(
 
 
 async def apply_price_change_to_route_cache(change: PriceChange) -> bool:
-    """价格变动触发路由缓存刷新。
+    """价格变动触发路由缓存精准刷新。
 
-    路由缓存里 prices 列表来自 price_snapshots，价格变动后缓存里仍是旧值。
-    refresh_cache 会重新查 DB 加载新价，让 next select 立即拿到新价。
+    Phase 4 v2 (I6): 价格变动只影响 cache 里该 channel 的 prices 字段,
+    调 route_engine.invalidate_price(change.channel_id) 精准刷新,
+    避免 refresh_cache() 全量重载 所有 channels + accounts + 3 个 group cache.
     """
     if not change.changed:
         return False
     try:
         from gateway.router import route_engine
-        await route_engine.refresh_cache()
-        logger.info("路由缓存已刷新: %s/%s", change.channel_id, change.model)
+        await route_engine.invalidate_price(change.channel_id)
+        logger.info("路由缓存精准刷新: channel_id=%s", change.channel_id)
         return True
     except Exception as e:
-        logger.error("路由缓存刷新失败: %s - %s", change, e)
+        logger.error("路由缓存精准刷新失败: %s - %s", change, e)
         return False
