@@ -235,13 +235,22 @@ async def _run_source_task(source):
                 error = f"API 失败, 降级 HTML: {e}"
 
         # HTML 路径 (fallback 或 api_endpoint 未设置)
-        if content is None:
+        # Phase 3.6 增强: 跳过空 url (新厂商 source 只配 api_endpoint 时)
+        if content is None and source.url:
             content, error = await fetch_page_with_error(source.url)
             if not content:
                 logger.warning(f"采集失败: {source.provider} - {error}")
                 # 调 handle_fetch_error：累加 error_count + 按规则告警
                 await handle_fetch_error(source, error or "未知错误")
                 return
+        elif content is None:
+            # api_endpoint 失败且没配 HTML url (新厂商 source 常见)
+            logger.warning(
+                f"采集失败: {source.provider} - API 失败且无 HTML url 配置, "
+                f"已跳过本次采集"
+            )
+            await handle_fetch_error(source, "API 失败且无 HTML url 配置")
+            return
 
         # 2. Diff 检测
         changed = await has_changed(source, content)

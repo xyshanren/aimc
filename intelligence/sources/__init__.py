@@ -4,13 +4,26 @@
 """
 
 from intelligence.sources.base import IntelSourceBase
-from intelligence.sources.deepseek import DeepSeekSource, DeepSeekAnnouncementSource
-from intelligence.sources.qwen import QwenSource, QwenActivitySource
-from intelligence.sources.glm import GLMSource, GLMActivitySource
+from intelligence.sources.deepseek import (
+    DeepSeekSource, DeepSeekAnnouncementSource, DeepSeekModelListSource,
+)
+from intelligence.sources.qwen import (
+    QwenSource, QwenActivitySource, QwenModelListSource,
+)
+from intelligence.sources.glm import (
+    GLMSource, GLMActivitySource, GLMModelListSource,
+)
 # Phase 3.1 (2026-07-29): 3 个新采集源类型
 from intelligence.sources.model_lists import (
     SiliconFlowModelListSource,
     VolcengineArkModelListSource,
+)
+# Phase 3.6 (2026-08-06): 4 个新国内厂商 model_list 源
+from intelligence.sources.model_lists_extra import (
+    StepFunModelListSource,
+    SenseNovaModelListSource,
+    HunyuanModelListSource,
+    MoonshotModelListSource,
 )
 from intelligence.sources.price_aggregator import (
     SiliconFlowPricingSource,
@@ -23,7 +36,14 @@ from intelligence.sources.benchmark import (
 
 
 def get_all_sources() -> list[IntelSourceBase]:
-    """获取所有已注册的采集源实例"""
+    """获取所有已注册的采集源实例
+
+    Phase 3.6 (2026-08-06): 共 18 个 source
+    - 6 个 web_page / announcement (Phase 2A: deepseek/qwen/glm 各 2 个)
+    - 9 个 model_list (Phase 3.1 + 3.6: siliconflow/volcengine + deepseek/qwen/glm + 4 新厂商)
+    - 2 个 price_aggregator
+    - 1 个 benchmark (实际 2 个 LMSYS + SuperCLUE)
+    """
     return [
         # Phase 2A 原有 (价格页/公告页)
         DeepSeekSource(),
@@ -32,11 +52,21 @@ def get_all_sources() -> list[IntelSourceBase]:
         QwenActivitySource(),
         GLMSource(),
         GLMActivitySource(),
-        # Phase 3.1 新增 3 个类型 × 2 个源 = 6 个
+        # Phase 3.1 model_list: 2 个 (HTML 优先, API 降级 — Commit 2 改造)
         SiliconFlowModelListSource(),
         VolcengineArkModelListSource(),
+        # Phase 3.6 model_list: 7 个新增 (全部 API 结构化抽取)
+        DeepSeekModelListSource(),
+        QwenModelListSource(),
+        GLMModelListSource(),
+        StepFunModelListSource(),
+        SenseNovaModelListSource(),
+        HunyuanModelListSource(),
+        MoonshotModelListSource(),
+        # Phase 3.1 price_aggregator
         SiliconFlowPricingSource(),
         OpenRouterPricingSource(),
+        # Phase 3.1 benchmark
         LMSYSArenaBenchmarkSource(),
         SuperCLUEBenchmarkSource(),
     ]

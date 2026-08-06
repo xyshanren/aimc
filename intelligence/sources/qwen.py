@@ -1,4 +1,7 @@
-"""Qwen (阿里云百炼) 采集源"""
+"""Qwen (阿里云百炼) 采集源
+
+Phase 3.6 (2026-08-06): 加 QwenModelListSource (百炼 OpenAI 兼容 /v1/models API)
+"""
 
 from intelligence.sources.base import IntelSourceBase
 
@@ -33,4 +36,26 @@ class QwenActivitySource(IntelSourceBase):
             wait_until="domcontentloaded",
             wait_for="article",
             wait_for_timeout=15000,  # 活动页加载慢，给 15s
+        )
+
+
+class QwenModelListSource(IntelSourceBase):
+    """阿里云百炼 model 列表 (Phase 3.6, 2026-08-06)
+
+    用途: 发现百炼上的 Qwen 全系模型 (qwen-turbo / qwen-plus / qwen-max / qwen-coder 等)
+    API: https://dashscope.aliyuncs.com/compatible-mode/v1/models (OpenAI 兼容)
+    频率: 1 天
+    """
+
+    def __init__(self):
+        super().__init__(
+            provider="qwen",
+            url="",  # 百炼文档页不易直接抽取, API 优先
+            source_type="model_list",
+            poll_interval=86400,
+            css_selector=None,
+            wait_until="domcontentloaded",
+            wait_for=None,
+            api_endpoint="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_key_from="qwen",
         )
