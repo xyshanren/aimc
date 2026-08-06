@@ -15,7 +15,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, Integer, Text, Float, DateTime, ForeignKey, LargeBinary, func,
-    Index,
+    Index, UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -342,6 +342,19 @@ class CrossSourceDiscrepancy(Base):
     resolved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # P0-7 fix: 防止并发扫描产生重复 pending 行.
+    # 业务语义是 “同 (model_id, field_changed, status) 只保留 1 条”,
+    # 抽到 schema 层补齐状态机不变量. SQLite / PostgreSQL 都支持该约束.
+    # (resolved / ignored 状态依然计入唯一键, 人为拍板后允许同 (model, field)
+    # 在不同 status 下各保留一行历史 — 如果业务上希望 resolved 后才能重新
+    # 入 pending, 后续可改为 partial unique 索引.)
+    __table_args__ = (
+        UniqueConstraint(
+            "model_id", "field_changed", "status",
+            name="uq_cross_source_key",
+        ),
+    )
 
 
 Index("idx_cross_source_status", CrossSourceDiscrepancy.status, CrossSourceDiscrepancy.model_id)

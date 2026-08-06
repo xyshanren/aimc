@@ -56,20 +56,22 @@ def should_auto_leave(item: ModelIntelItem) -> bool:
     )
 
 
-async def _find_target_group(session, tier: str) -> Optional[str]:
-    """按 tier 找一个 tier: 前缀的 group。"""
-    from db.models import ModelGroup
-    from sqlalchemy import select
+async def _find_target_group(session, inferred_tier: str) -> Optional[str]:
+    """按 inferred_tier 找一个 tier: 前缀的 group。
 
-    stmt = (
-        select(ModelGroup)
-        .where(ModelGroup.enabled == 1)
-        .where(ModelGroup.group_id.like("tier:%"))
-    )
-    result = await session.execute(stmt)
-    for g in result.scalars().all():
-        if g.tier == tier:
-            return g.group_id
+    P0-3 fix: 只有 T0 (旗舰) 可以免占路由。
+    - tier:flagship 组的 tier 列为 NULL (不限档, 以 min_context=64000 兑底),
+      按原来的 `g.tier == inferred_tier` 永远匹配不到 → 200B+ 旗舰 model 永远不会自动入组.
+    - 修法: T0 硬编码路由到 "tier:flagship", 跳过 tier 列判断.
+    - 其他档 (T1/T2/T3/T4) 不再自动入 tier:组, 改为走人工确认:
+      tier 变更仍写 model_capabilities_log (approved=0), dashboard 批后由 E1 approve path
+      (commit 5) 负责 DELETE + INSERT 到正确 group.
+    """
+    if inferred_tier == "T0":
+        # flagship 组的 group_id 是定义里的硬编码 (scripts/seed_model_groups.py),
+        # 不查库以免表名/列名变动导致路由脱纸.
+        return "tier:flagship"
+    # T1/T2/T3/T4: 等 dashboard 确认 tier log 后再路由.
     return None
 
 

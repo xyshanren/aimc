@@ -9,6 +9,7 @@
 6. resolve_cross_source_discrepancy: resolved + ignored 路径 + 幂等
 7. detect_and_record: 1 个 model 2 源一致 → 0 入库
 8. detect_and_record: 1 个 model 2 源 tier 不同 → 1 入库
+9. P0-7 fix: IntegrityError fallback (并发插入撞 UniqueConstraint → 重新 SELECT+UPDATE)
 
 跑法: python tests/test_phase4_e3_cross_source.py
 """
@@ -47,6 +48,12 @@ def _install_mock_env():
 
 
 _install_mock_env()
+
+# 保存真实的 upsert_cross_source_discrepancy 函数引用, 供 Test 11 (P0-7 fix)
+# 验证 IntegrityError fallback 路径使用. _patch_db_with_in_memory() 会覆写
+# 模块上的同名属性, 但我们保留 _ORIGINAL_UPSERT 指向原始函数.
+from db import crud as _crud_module
+_ORIGINAL_UPSERT = _crud_module.upsert_cross_source_discrepancy
 
 
 # ============================================================
@@ -456,6 +463,150 @@ def test_detect_sparse_skip():
 
 
 # ============================================================
+# Test 11 (P0-7 fix): 并发 INSERT 撞 UniqueConstraint → fallback 重新 SELECT+UPDATE
+# ============================================================
+def test_upsert_integrity_error_fallback():
+    """模拟 2 个 worker 同时 upsert 同一 (model, field, pending):
+    - worker A: SELECT None → INSERT 成功
+    - worker B: SELECT None → INSERT 撞 UniqueConstraint → IntegrityError
+    - worker B (real upsert): rollback → 重 SELECT 拿到 A 的行 → UPDATE
+
+    验证点: 不会产生 2 条 pending 行, worker B 拿到的是 A 的行 (id 相同).
+    """
+    print("\n=== Test 11: P0-7 IntegrityError fallback → 同一行 UPDATE ===")
+    from sqlalchemy.exc import IntegrityError
+
+    class _Row:
+        """模拟 winner 已 INSERT 成功的行."""
+        def __init__(self, did, model_id, field_changed):
+            self.id = did
+            self.model_id = model_id
+            self.field_changed = field_changed
+            self.status = "pending"
+            self.sources_json = "[]"
+            self.discrepancy_score = 0.0
+
+    # 控制 session 行为:
+    # 1) 第一次 SELECT → None (模拟 worker B 还没看到 winner)
+    # 2) session.flush() → 掊 IntegrityError (UniqueConstraint)
+    # 3) session.rollback() 调用
+    # 4) 第二次 SELECT → 返回 winner 行
+    # 5) 后面 session.flush() → 成功
+    winner_row = _Row(did=99, model_id="race-model", field_changed="tier")
+
+    flush_count = {"n": 0}
+    select_count = {"n": 0}
+    rollback_count = {"n": 0}
+
+    class _RacingSession:
+        async def execute(self, stmt):
+            select_count["n"] += 1
+            # 第一次 SELECT 看不到 winner, 第二次 SELECT 可看到
+            if select_count["n"] == 1:
+                return _MockResult([None])  # scalar_one_or_none() 返回 None
+            else:
+                return _MockResult([winner_row])  # 拿到 winner 的行
+
+        async def flush(self):
+            flush_count["n"] += 1
+            if flush_count["n"] == 1:
+                # 第一次 flush (INSERT) 撞 UniqueConstraint
+                raise IntegrityError("INSERT", {}, Exception("UNIQUE constraint failed"))
+
+        async def rollback(self):
+            rollback_count["n"] += 1
+
+        def add(self, _row):
+            # SQLAlchemy session.add 是同步的, real crud 函数也是同步调
+            pass
+
+        async def commit(self):
+            pass
+
+    class _MockResult:
+        def __init__(self, rows):
+            # rows 是 [Row] 或 [None]
+            self._rows = rows
+
+        def scalars(self):
+            return self
+
+        def scalar_one_or_none(self):
+            return self._rows[0] if self._rows else None
+
+    async def _run():
+        # 调用原始函数 (不走 mock upsert)
+        from db import crud
+        # 恢复原始函数: crud.upsert_cross_source_discrepancy 已被 mock 覆盖,
+        # 调用 _ORIGINAL_UPSERT 走原始逻辑
+        return await _ORIGINAL_UPSERT(
+            _RacingSession(),
+            model_id="race-model",
+            field_changed="tier",
+            sources_json='[{"source":"b","value":"T2"}]',
+            discrepancy_score=0.5,
+        )
+
+    row = asyncio.run(_run())
+    # 验证 fallback 路线被走到
+    assert rollback_count["n"] == 1, (
+        f"IntegrityError 后应 rollback 1 次, 实际 {rollback_count['n']}"
+    )
+    assert select_count["n"] == 2, (
+        f"SELECT 应 2 次 (1+1 fallback), 实际 {select_count['n']}"
+    )
+    assert flush_count["n"] == 2, (
+        f"flush 应 2 次 (1 INSERT撞错 + 1 UPDATE), 实际 {flush_count['n']}"
+    )
+    # 拿到的是 winner 的 id (99), 不是新建的
+    assert row.id == 99, (
+        f"fallback 后应拿到 winner 行 (id=99), 实际 id={row.id}"
+    )
+    # UPDATE 应覆盖了 sources_json / score
+    assert row.sources_json == '[{"source":"b","value":"T2"}]'
+    assert row.discrepancy_score == 0.5
+    print("  [OK] 并发 INSERT 撞 UniqueConstraint → rollback + re-SELECT + UPDATE 同 winner")
+
+    # Test 11b: 极小概率 case — INSERT 撞错但 winner 已 resolve,
+    # fallback 重新 SELECT 也找不到 pending → 函数返 None
+    class _GoneWinRacingSession:
+        async def execute(self, stmt):
+            select_count["n"] += 1
+            return _MockResult([None])  # 两次都看不到
+
+        async def flush(self):
+            flush_count["n"] += 1
+            if flush_count["n"] == 1:
+                raise IntegrityError("INSERT", {}, Exception("UNIQUE constraint failed"))
+
+        async def rollback(self):
+            rollback_count["n"] += 1
+
+        def add(self, _row):
+            pass
+
+        async def commit(self):
+            pass
+
+    # 重置计数
+    flush_count["n"] = 0
+    select_count["n"] = 0
+    rollback_count["n"] = 0
+
+    result = asyncio.run(_ORIGINAL_UPSERT(
+        _GoneWinRacingSession(),
+        model_id="gone-model",
+        field_changed="tier",
+        sources_json="[]",
+        discrepancy_score=0.3,
+    ))
+    assert result is None, (
+        f"winner 已 resolve 时 fallback SELECT 也找不到, 应返 None, 实际 {result}"
+    )
+    print("  [OK] 极小概率: winner 已 resolve → fallback 返 None, 不崩溃")
+
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -473,9 +624,11 @@ def main():
     test_resolve_ignored()
     test_resolve_idempotent()
     test_detect_sparse_skip()
+    # P0-7 新增: IntegrityError fallback
+    test_upsert_integrity_error_fallback()
 
     print("\n" + "=" * 60)
-    print("ALL 10 TESTS PASSED")
+    print("ALL 11 TESTS PASSED")
     print("=" * 60)
 
 

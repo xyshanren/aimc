@@ -183,15 +183,28 @@ async def detect_and_record() -> dict:
                         })
 
                 try:
-                    await crud.upsert_cross_source_discrepancy(
+                    row = await crud.upsert_cross_source_discrepancy(
                         session,
                         model_id=model_id,
                         field_changed=field,
                         sources_json=json.dumps(sources_flat, ensure_ascii=False),
                         discrepancy_score=score,
                     )
+                    if row is None:
+                        # 极小概率: 并发 INSERT 撞 UniqueConstraint,
+                        # 但 winner 紧接着 resolve 掉同一个 pending 行,
+                        # 导致 fallback 重新 SELECT 也找不到东西.
+                        # 不计入 recorded, 但不阻塞后续字段.
+                        logger.warning(
+                            "跨源分歧 upsert 跑空: model=%s field=%s (并发 winner 已 resolve)",
+                            model_id, field,
+                        )
+                        continue
                     recorded += 1
                 except Exception as e:
+                    # P0-7 fix: IntegrityError 已在 crud.upsert_cross_source_discrepancy
+                    # 内部捕获 + 回滚 + fallback UPDATE, 这里只是防御性兜底
+                    # (例如 DB 连接异常 / 网络超时). 不影响其他字段循环.
                     logger.warning(
                         "跨源分歧落库失败: model=%s field=%s err=%s",
                         model_id, field, e,

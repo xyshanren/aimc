@@ -133,10 +133,11 @@ def _install_mock_db():
         async def __aexit__(self, *a):
             return False
 
+    # P0-3 fix: 模型同步的 _find_target_group 现在只认 T0 硬编码路由到 "tier:flagship",
+    # 其他 tier 走人工确认. mock 跟 real logic 同步。
     async def _find_target_group(session, tier):
-        for g in _state["groups"].values():
-            if g["enabled"] and g["group_id"].startswith("tier:") and g["tier"] == tier:
-                return g["group_id"]
+        if tier == "T0":
+            return "tier:flagship"
         return None
 
     model_sync._find_target_group = _find_target_group
@@ -264,10 +265,20 @@ def test_process_auto_join_new():
         pass
 
     result = asyncio.run(process_model_item(_S(), item))
+    # P0-3 fix: T2 不是 T0, _find_target_group 返 None → action=auto_joined 但不入 group。
+    # 等 dashboard 批准 tier log 后由 E1 approve path 负责碓入正确 group。
     assert result.action == "auto_joined", f"应 auto_joined, 实际 {result.action}"
-    assert result.target_group == "tier:balanced", f"应 tier:balanced, 实际 {result.target_group}"
+    assert result.target_group is None, (
+        f"T2 不应硬路由到 tier:balanced, 实际 {result.target_group}"
+    )
     assert "Pro/deepseek-ai/DeepSeek-V3" in state["registry"]
-    assert ("tier:balanced", "Pro/deepseek-ai/DeepSeek-V3") in state["members"]
+    # 不应加入任何 tier: 组
+    members_for_model = [
+        k for k in state["members"].keys() if k[1] == "Pro/deepseek-ai/DeepSeek-V3"
+    ]
+    assert members_for_model == [], (
+        f"T2 不应入组, 实际 members={members_for_model}"
+    )
     # log: create + tier (永远不直接落库)
     field_changes = [l["field_changed"] for l in state["logs"]]
     assert "create" in field_changes
@@ -275,7 +286,8 @@ def test_process_auto_join_new():
     # tier log approved=0 (人工确认)
     tier_log = next(l for l in state["logs"] if l["field_changed"] == "tier")
     assert tier_log["approved"] == 0, "tier 永远人工确认"
-    print(f"  [OK] 新建 registry + 入组 {result.target_group} + log create/tier")
+    assert tier_log["new_value"] == "T2"
+    print(f"  [OK] T2 新建 registry + 不入 group + 写 tier log (等人工确认)")
 
 
 class _MockSessionShim:
@@ -363,8 +375,10 @@ def test_process_idempotent():
     from intelligence.model_sync import process_model_item
     from schemas.intel import ModelIntelItem
 
+    # P0-3 fix: 用 T0 才能走到自动入组, 才能验证幂等 "写 1 条 member"。
+    # T1/T2/T3/T4 不入组, 幂等性在 tier log 重复上体现 (Test 14) 而不是 member 上。
     item = ModelIntelItem(
-        model_id="dup-model", family="qwen", inferred_tier="T2",
+        model_id="dup-model", family="qwen", inferred_tier="T0",
         confidence=0.9, confidence_level="high",
     )
     r1 = asyncio.run(process_model_item(_MockSessionShim(), item))
@@ -374,12 +388,15 @@ def test_process_idempotent():
     assert r2.action == "auto_joined"
     # registry 应只有 1 条
     assert "dup-model" in state["registry"]
-    # member 应只有 1 条
+    # member 应只有 1 条 (进入 tier:flagship)
     members_for_model = [
         m for (g, m), v in state["members"].items() if m == "dup-model"
     ]
     assert len(members_for_model) == 1, f"应 1 条 member, 实际 {len(members_for_model)}"
-    print(f"  [OK] 重复调用幂等, members={len(members_for_model)}")
+    assert ("tier:flagship", "dup-model") in state["members"], (
+        "T0 旗舰应入 tier:flagship"
+    )
+    print(f"  [OK] T0 重复调用幂等, members={len(members_for_model)} (tier:flagship)")
 
 
 # ============================================================
@@ -420,13 +437,15 @@ def test_process_promotion_end_to_end():
     from intelligence.model_sync import process_promotion
     import json
 
+    # P0-3 fix: 第一个 model 改为 T0 (旗舰) - 走 flagship 路由,
+    # 第二个 model 为 T2 (均衡) - 不入组, “queried tier log 后人工确认”。
     raw = json.dumps({
         "_intelligence_kind": "model_metadata",
         "models": [
             {
-                "model_id": "Qwen/Qwen2.5-72B-Instruct", "family": "qwen",
-                "inferred_tier": "T3", "capabilities": ["reasoning", "code"],
-                "context_length": 32768, "confidence": 0.92,
+                "model_id": "Pro/Qwen/Qwen3-235B", "family": "qwen",
+                "inferred_tier": "T0", "capabilities": ["reasoning", "code"],
+                "context_length": 128000, "confidence": 0.95,
             },
             {
                 "model_id": "deepseek-v2.5", "family": "deepseek",
@@ -440,17 +459,22 @@ def test_process_promotion_end_to_end():
             },
         ],
     })
-
+    
     results = asyncio.run(process_promotion(42, raw))
     assert len(results) == 3, f"应 3 个结果, 实际 {len(results)}"
+    # T0 旗舰 → 路由到 tier:flagship
     assert results[0].action == "auto_joined"
-    # explicit_tier=T3 (轻量档) 路由到 tier:light (seed 里 light.tier=T3)
-    assert results[0].target_group == "tier:light", f"应 tier:light, 实际 {results[0].target_group}"
+    assert results[0].target_group == "tier:flagship", (
+        f"T0 旗舰应路由到 tier:flagship, 实际 {results[0].target_group}"
+    )
     assert results[1].action == "pending_review"
     assert results[2].action == "rejected"
+    # 不应有任何 T3/tier:light 路由
+    light_routes = [r for r in results if r.target_group == "tier:light"]
+    assert light_routes == [], "T1/T2/T3/T4 不应被碓路由"
     print(f"  [OK] 3 model 各自正确处理:")
     for r in results:
-        print(f"        {r.action:20s}  {r.model_id}  conf={r.confidence:.2f}")
+        print(f"        {r.action:20s}  {r.model_id}  conf={r.confidence:.2f}  group={r.target_group}")
 
 
 # ============================================================
@@ -594,6 +618,83 @@ def test_process_repeat_join_no_tier_log_dedup():
 
 
 # ============================================================
+# Test 15 (P0-3 fix): T0 (旗舰) 硬编码路由到 tier:flagship
+# ============================================================
+def test_process_t0_routes_to_flagship():
+    print("\n=== Test 15: P0-3 T0 旗舰 → tier:flagship ===")
+    state = _install_mock_db()
+    from intelligence.model_sync import process_model_item
+    from schemas.intel import ModelIntelItem
+
+    # 235B 旗舰 model
+    item = ModelIntelItem(
+        model_id="Pro/Qwen/Qwen3-235B-Instruct", family="qwen",
+        inferred_tier="T0", capabilities=["reasoning", "code"],
+        context_length=128000, confidence=0.95, confidence_level="high",
+    )
+    result = asyncio.run(process_model_item(_MockSessionShim(), item))
+    # T0 唯一能免占路由的 tier
+    assert result.action == "auto_joined"
+    assert result.target_group == "tier:flagship", (
+        f"T0 应路由到 tier:flagship, 实际 {result.target_group}"
+    )
+    # 确实写入 member
+    assert ("tier:flagship", "Pro/Qwen/Qwen3-235B-Instruct") in state["members"], (
+        "T0 旗舰应被加入 tier:flagship 组"
+    )
+    # 其他 tier: 组不应被碰到
+    other_groups = [
+        k for k in state["members"].keys()
+        if k[0] in {"tier:strong", "tier:balanced", "tier:light"}
+    ]
+    assert other_groups == [], f"T0 只应入 flagship, 实际入 {other_groups}"
+    print(f"  [OK] T0 旗舰 → tier:flagship, 不碰其他 tier: 组")
+
+
+# ============================================================
+# Test 16 (P0-3 fix): T1/T2/T3/T4 不再免占路由, action=auto_joined 但 target_group=None
+# ============================================================
+def test_process_non_t0_no_auto_route():
+    print("\n=== Test 16: P0-3 T1/T2/T3/T4 不自动入 tier: 组 ===")
+    state = _install_mock_db()
+    from intelligence.model_sync import process_model_item
+    from schemas.intel import ModelIntelItem
+
+    for tier in ("T1", "T2", "T3", "T4"):
+        state = _install_mock_db()  # 每个 tier 重置 state
+        item = ModelIntelItem(
+            model_id=f"model-{tier}", family="qwen",
+            inferred_tier=tier, capabilities=["code"],
+            confidence=0.9, confidence_level="high",
+        )
+        result = asyncio.run(process_model_item(_MockSessionShim(), item))
+        # action 仍是 auto_joined (高置信度 + 有 tier + 有 family)
+        assert result.action == "auto_joined", (
+            f"{tier} 应 auto_joined (高置信度), 实际 {result.action}"
+        )
+        # 但 target_group 必须是 None (免占路由)
+        assert result.target_group is None, (
+            f"{tier} 不应自动路由, 实际 {result.target_group}"
+        )
+        # 任何 tier: 组都不应被加入
+        tier_members = [
+            k for k in state["members"].keys()
+            if k[0].startswith("tier:") and k[1] == f"model-{tier}"
+        ]
+        assert tier_members == [], (
+            f"{tier} 不应入组, 实际 members={tier_members}"
+        )
+        # 但 tier log 必须写 (dashboard 批准后会负责入组)
+        tier_logs = [l for l in state["logs"] if l["field_changed"] == "tier"]
+        assert len(tier_logs) == 1, (
+            f"{tier} 应写 1 条 tier log (等人工确认), 实际 {len(tier_logs)}"
+        )
+        assert tier_logs[0]["new_value"] == tier
+        assert tier_logs[0]["approved"] == 0
+    print(f"  [OK] T1/T2/T3/T4 均不动加 tier: 组, 只写 tier log 等待人工")
+
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -616,9 +717,12 @@ def main():
     test_process_auto_leave_registry_absent()
     test_process_context_length_modality_audit_log()
     test_process_repeat_join_no_tier_log_dedup()
+    # P0-3 新增用例
+    test_process_t0_routes_to_flagship()
+    test_process_non_t0_no_auto_route()
 
     print("\n" + "=" * 60)
-    print("ALL 14 TESTS PASSED")
+    print("ALL 16 TESTS PASSED")
     print("=" * 60)
 
 

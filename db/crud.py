@@ -8,6 +8,7 @@ import logging
 from typing import Optional
 
 from sqlalchemy import select, update, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import (
@@ -534,6 +535,11 @@ async def upsert_cross_source_discrepancy(
     唯一键 (model_id, field_changed, status=pending)：pending 状态下同 model+field 只保留 1 条。
     若已有 pending 行：覆盖 sources_json + score + updated_at。
     若 resolved/ignored：不再覆盖（保留历史决策）。
+
+    P0-7 fix: 并发扫描时两个 worker 都会走到 SELECT → None 分支,
+    然后都尝试 INSERT, 后者会撞 UniqueConstraint(model_id, field_changed, status).
+    修法: 捕获 IntegrityError 后回滚 + 重新 SELECT 已有 pending 行 + UPDATE,
+    避免产生 “孤儿 pending 行” (重复扫描结果仍是 1 行而非 2 行).
     """
     from db.models import CrossSourceDiscrepancy
 
@@ -550,7 +556,9 @@ async def upsert_cross_source_discrepancy(
         row.discrepancy_score = discrepancy_score
         row.updated_at = func.now()
         return row
-    else:
+
+    # INSERT path: 可能在并发下撞 UniqueConstraint.
+    try:
         row = CrossSourceDiscrepancy(
             model_id=model_id,
             field_changed=field_changed,
@@ -561,6 +569,30 @@ async def upsert_cross_source_discrepancy(
         session.add(row)
         await session.flush()
         return row
+    except IntegrityError:
+        # 并发 winner 已先 INSERT, 回滚后重新 SELECT 同一行做 UPDATE.
+        await session.rollback()
+        existing2 = await session.execute(
+            select(CrossSourceDiscrepancy)
+            .where(CrossSourceDiscrepancy.model_id == model_id)
+            .where(CrossSourceDiscrepancy.field_changed == field_changed)
+            .where(CrossSourceDiscrepancy.status == "pending")
+        )
+        row2 = existing2.scalar_one_or_none()
+        if row2 is None:
+            # 极端情况: 并发 winner 立即 resolve, 唯一键冲突但 pending 已被覆盖.
+            # 此时直接放弃本轮 upsert, 返回 None 让上层日志知晓.
+            logger.warning(
+                "upsert_cross_source_discrepancy 并发冲突但 pending 已消失: "
+                "model=%s field=%s",
+                model_id, field_changed,
+            )
+            return None
+        row2.sources_json = sources_json
+        row2.discrepancy_score = discrepancy_score
+        row2.updated_at = func.now()
+        await session.flush()
+        return row2
 
 
 async def resolve_cross_source_discrepancy(
