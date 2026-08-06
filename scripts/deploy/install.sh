@@ -86,10 +86,14 @@ info "装 Python 依赖 (可能 1-3 min)..."
 if [[ ! -f "$AIMC_HOME/.env" ]]; then
     info "复制 env.template -> .env"
     cp "$AIMC_HOME/scripts/deploy/env.template" "$AIMC_HOME/.env"
+    chmod 600 "$AIMC_HOME/.env"
+    info "设 .env 权限为 600 (仅 owner 可读写, 保护 API key)"
     warn "请现在编辑 $AIMC_HOME/.env 填入 9 个厂商 API key + AIMC_MASTER_KEY"
     warn "  生成 master_key: python3 $AIMC_HOME/scripts/gen_master_key.py"
 else
     info ".env 已存在 — 跳过 (如需重置请手动 rm)"
+    # 即使已存在, 也确保权限 (防止 user 误操作改宽)
+    chmod 600 "$AIMC_HOME/.env" 2>/dev/null && info "已加固 .env 权限为 600" || true
 fi
 
 # === 5. 准备数据目录 ===
