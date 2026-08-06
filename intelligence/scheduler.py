@@ -106,9 +106,18 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # Phase 4 E3 (2026-07-29): 每天跑 1 次跨源交叉验证
+    scheduler.add_job(
+        _cross_source_detection_task,
+        trigger=IntervalTrigger(hours=24),
+        id="cross_source_detection",
+        name="跨源交叉验证",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
-        f"调度器已启动 (持久化模式), 共 {len(sources) + 2} 个定时任务, "
+        f"调度器已启动 (持久化模式), 共 {len(sources) + 3} 个定时任务, "
         f"jobstore={settings.db_path}"
     )
 
@@ -217,3 +226,16 @@ async def _check_key_rotation_task():
         logger.info(f"key 轮换检查完成: {count} 个告警")
     except Exception as e:
         logger.error(f"key 轮换检查失败: {e}", exc_info=True)
+
+
+async def _cross_source_detection_task():
+    """Phase 4 E3: 每天 1 次跨源交叉验证，检测后入库到 cross_source_discrepancies"""
+    try:
+        from intelligence.cross_source_validator import detect_and_record
+        summary = await detect_and_record()
+        logger.info(
+            f"跨源验证完成: models={summary['total_models']} "
+            f"分歧={summary['with_discrepancy']} 入库={summary['recorded']}"
+        )
+    except Exception as e:
+        logger.error(f"跨源验证失败: {e}", exc_info=True)

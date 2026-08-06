@@ -81,6 +81,18 @@
                 <p class="loading">加载中...</p>
             </div>
         </section>
+
+        <!-- Phase 4 E3: 跨源分歧 -->
+        <section class="card" id="cross-source-section">
+            <h2>跨源分歧 <span class="subtitle">同一 model 多源 tier/capabilities 不一致</span></h2>
+            <div class="cross-source-toolbar">
+                <button id="run-detection-btn" onclick="runCrossSourceDetection(this)">立即检测</button>
+                <span id="detection-result" class="meta"></span>
+            </div>
+            <div id="cross-source-list" hx-get="/dashboard/api/cross-source/discrepancies" hx-trigger="load, every 60s" hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
     </main>
 
     <footer>

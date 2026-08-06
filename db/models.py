@@ -14,7 +14,8 @@
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, Integer, Text, Float, DateTime, ForeignKey, LargeBinary, func
+    Column, Integer, Text, Float, DateTime, ForeignKey, LargeBinary, func,
+    Index,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -314,6 +315,36 @@ class ModelCapabilitiesLog(Base):
     confidence = Column(Float, nullable=True, comment="AI 推断时的置信度 (manual 时为 NULL)")
     approved = Column(Integer, default=0, comment="是否已人工确认 (0/1)")
     created_at = Column(DateTime, default=func.now())
+
+
+class CrossSourceDiscrepancy(Base):
+    """跨源交叉验证不一致记录 (Phase 4 E3, 2026-07-29)
+
+    同一个 model_id 在多个采集源 (model_list / price_aggregator / benchmark) 中
+    出现 tier / capabilities / context_length 等关键字段不一致时落库，供人工确认。
+
+    设计：
+    - 每个 (model_id, field_changed) 在 status='pending' 时只保留 1 条 (upsert)
+    - resolved 后保留 audit trail (resolved_at / resolved_value / resolved_note)
+    - sources_json 存各源值: [{"source": "siliconflow", "value": "T3", "ts": "..."},
+                              {"source": "openrouter", "value": "T2", "ts": "..."}]
+    """
+    __tablename__ = "cross_source_discrepancies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_id = Column(Text, nullable=False, comment="被对比的 model_id")
+    field_changed = Column(Text, nullable=False, comment="tier / capabilities / context_length / modality")
+    sources_json = Column(Text, nullable=False, comment='JSON: [{"source":..., "value":..., "ts":..., "confidence":...}]')
+    discrepancy_score = Column(Float, default=0.0, comment="不一致程度 (字段差异量化, 越高越值得注意)")
+    status = Column(Text, default="pending", comment="pending / resolved / ignored")
+    resolved_value = Column(Text, nullable=True, comment="人工拍板后的最终值 (JSON for capabilities)")
+    resolved_note = Column(Text, nullable=True, comment="人工备注: 取信源X / 忽略 / 其他")
+    resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+Index("idx_cross_source_status", CrossSourceDiscrepancy.status, CrossSourceDiscrepancy.model_id)
 
 
 class SettingsRuntime(Base):

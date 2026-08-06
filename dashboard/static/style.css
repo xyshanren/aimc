@@ -340,3 +340,92 @@ footer a {
 .btn-reject:hover {
     opacity: 0.85;
 }
+
+/* Phase 4 E3: 跨源分歧 */
+.cross-source-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.cross-source-toolbar button {
+    background: #1d9bf0;
+    color: white;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85em;
+    font-weight: 600;
+}
+
+.cross-source-toolbar button:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+
+.cross-source-toolbar button:hover:not(:disabled) {
+    opacity: 0.85;
+}
+
+.cs-card {
+    background: #1a2530;
+    border: 1px solid #2f3336;
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 10px;
+    border-left: 3px solid #f4212e;
+}
+
+.cs-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 0.9em;
+    margin-bottom: 8px;
+}
+
+.cs-model {
+    color: #1d9bf0;
+    background: transparent;
+    font-size: 1em;
+}
+
+.cs-field {
+    background: #2f3336;
+    color: #e7e9ea;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+
+.cs-sources {
+    margin-left: 12px;
+    margin-bottom: 8px;
+}
+
+.cs-value-row {
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.cs-value-row code {
+    background: #2f3336;
+    color: #00ba7c;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    min-width: 60px;
+    text-align: center;
+}
+
+.conf-mini {
+    color: #71767b;
+    font-size: 0.85em;
+    margin-left: 2px;
+}

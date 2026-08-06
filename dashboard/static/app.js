@@ -29,6 +29,8 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
         renderGroupRouting(target);
     } else if (target.id === 'pending-review-list') {
         renderPendingReview(target);
+    } else if (target.id === 'cross-source-list') {
+        renderCrossSource(target);
     }
 });
 
@@ -322,6 +324,114 @@ function renderPendingReview(container) {
         container.innerHTML = html;
     } catch (e) {
         console.error('renderPendingReview failed:', e);
+        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+// Phase 4 E3: 跨源分歧
+async function resolveCrossSource(discrepancyId, btn, ignored) {
+    const action = ignored ? '忽略' : '拍板';
+    if (!confirm(`确定${action} discrepancy #${discrepancyId} ?`)) return;
+    let resolvedValue = '';
+    if (!ignored) {
+        resolvedValue = prompt('请输入最终值 (capabilities 请用 JSON 数组)', 'T3');
+        if (resolvedValue === null) return;
+    } else {
+        resolvedValue = '(ignored)';
+    }
+    const note = prompt('备注 (可空)', '');
+    try {
+        const resp = await fetch(`/dashboard/api/cross-source/discrepancies/${discrepancyId}/resolve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                resolved_value: resolvedValue,
+                resolved_note: note || null,
+                ignored: ignored,
+            }),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            const card = btn.closest('.cs-card');
+            if (card) card.remove();
+            const summary = document.getElementById('cs-summary');
+            if (summary) {
+                const n = Math.max(0, parseInt(summary.textContent.replace(/\D/g, '') || '0', 10) - 1);
+                summary.textContent = `${n} 条待处理`;
+            }
+        } else {
+            alert('操作失败: ' + (data.detail || resp.statusText));
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+    }
+}
+
+async function runCrossSourceDetection(btn) {
+    btn.disabled = true;
+    const result = document.getElementById('detection-result');
+    result.textContent = '检测中...';
+    try {
+        const resp = await fetch('/dashboard/api/cross-source/run-detection', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            result.textContent = `本次: ${data.total_models} 个 model · ${data.with_discrepancy} 个分歧 · ${data.recorded} 条入库`;
+            // 触发刷新列表
+            htmx.trigger('#cross-source-list', 'load');
+        } else {
+            result.textContent = '失败: ' + (data.detail || resp.statusText);
+        }
+    } catch (e) {
+        result.textContent = '网络错误: ' + e.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function renderCrossSource(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+        const items = data.items || [];
+        if (items.length === 0) {
+            container.innerHTML = '<p class="loading">✓ 当前无跨源分歧</p>';
+            return;
+        }
+        let html = `<p class="meta">共 <strong id="cs-summary">${esc(data.count)} 条待处理</strong>，按分歧程度排序</p>`;
+        for (const item of items) {
+            const score = item.discrepancy_score || 0;
+            const scoreLabel = score >= 0.9 ? '高' : score >= 0.6 ? '中' : '低';
+            const scoreClass = score >= 0.9 ? 'conf-high' : score >= 0.6 ? 'conf-medium' : 'conf-low';
+            const sources = item.sources || [];
+            // 按 value 分组显示
+            const byValue = {};
+            for (const s of sources) {
+                const v = String(s.value ?? '(空)');
+                if (!byValue[v]) byValue[v] = [];
+                byValue[v].push(s);
+            }
+            let sourcesHtml = '';
+            for (const [v, entries] of Object.entries(byValue)) {
+                const chips = entries.map(e =>
+                    `<span class="chip">${esc(e.source)}<span class="conf-mini">${e.confidence != null ? '·' + esc(e.confidence.toFixed(2)) : ''}</span></span>`
+                ).join(' ');
+                sourcesHtml += `<div class="cs-value-row"><code>${esc(v)}</code>${chips}</div>`;
+            }
+            html += `<div class="cs-card">
+                <div class="cs-row">
+                    <code class="cs-model">${esc(item.model_id)}</code>
+                    <span class="cs-field">${esc(item.field_changed)}</span>
+                    <span class="pr-conf ${scoreClass}">分歧 ${esc(score.toFixed(2))} · ${esc(scoreLabel)}</span>
+                </div>
+                <div class="cs-sources">${sourcesHtml}</div>
+                <div class="pr-actions">
+                    <button class="btn-approve" onclick="resolveCrossSource(${item.id}, this, false)">拍板</button>
+                    <button class="btn-reject" onclick="resolveCrossSource(${item.id}, this, true)">忽略</button>
+                </div>
+            </div>`;
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderCrossSource failed:', e);
         container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
     }
 }

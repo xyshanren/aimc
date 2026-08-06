@@ -7,7 +7,7 @@ from datetime import date
 import logging
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import select, update, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import (
@@ -495,6 +495,106 @@ async def approve_capability_change(
 
     await session.flush()
     return log
+
+
+# === Phase 4 E3: 跨源交叉验证 (Cross-Source Discrepancy) ===
+
+async def list_cross_source_discrepancies(
+    session: AsyncSession,
+    status: str = "pending",
+    limit: int = 100,
+) -> list["CrossSourceDiscrepancy"]:
+    """列出跨源分歧记录 (Phase 4 E3)。
+
+    Args:
+        status: pending / resolved / ignored (默认只显示待处理)
+        limit: 最多返回条数
+    """
+    from db.models import CrossSourceDiscrepancy
+
+    stmt = (
+        select(CrossSourceDiscrepancy)
+        .where(CrossSourceDiscrepancy.status == status)
+        .order_by(CrossSourceDiscrepancy.discrepancy_score.desc(), CrossSourceDiscrepancy.created_at.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def upsert_cross_source_discrepancy(
+    session: AsyncSession,
+    model_id: str,
+    field_changed: str,
+    sources_json: str,
+    discrepancy_score: float = 0.0,
+) -> "CrossSourceDiscrepancy":
+    """Upsert 跨源分歧。
+
+    唯一键 (model_id, field_changed, status=pending)：pending 状态下同 model+field 只保留 1 条。
+    若已有 pending 行：覆盖 sources_json + score + updated_at。
+    若 resolved/ignored：不再覆盖（保留历史决策）。
+    """
+    from db.models import CrossSourceDiscrepancy
+
+    existing = await session.execute(
+        select(CrossSourceDiscrepancy)
+        .where(CrossSourceDiscrepancy.model_id == model_id)
+        .where(CrossSourceDiscrepancy.field_changed == field_changed)
+        .where(CrossSourceDiscrepancy.status == "pending")
+    )
+    row = existing.scalar_one_or_none()
+
+    if row:
+        row.sources_json = sources_json
+        row.discrepancy_score = discrepancy_score
+        row.updated_at = func.now()
+        return row
+    else:
+        row = CrossSourceDiscrepancy(
+            model_id=model_id,
+            field_changed=field_changed,
+            sources_json=sources_json,
+            discrepancy_score=discrepancy_score,
+            status="pending",
+        )
+        session.add(row)
+        await session.flush()
+        return row
+
+
+async def resolve_cross_source_discrepancy(
+    session: AsyncSession,
+    discrepancy_id: int,
+    resolved_value: str,
+    resolved_note: Optional[str] = None,
+    ignored: bool = False,
+) -> Optional["CrossSourceDiscrepancy"]:
+    """人工处理跨源分歧 (Phase 4 E3)。
+
+    Args:
+        discrepancy_id: CrossSourceDiscrepancy.id
+        resolved_value: 人工拍板的值 (JSON 字符串 for capabilities)
+        resolved_note: 备注
+        ignored: True 时 status='ignored' (区别于 'resolved')
+
+    Returns:
+        更新后的行 / None (不存在)
+    """
+    from datetime import datetime
+    from db.models import CrossSourceDiscrepancy
+
+    row = await session.get(CrossSourceDiscrepancy, discrepancy_id)
+    if not row:
+        return None
+    if row.status != "pending":
+        return row  # 已处理，幂等
+    row.status = "ignored" if ignored else "resolved"
+    row.resolved_value = resolved_value
+    row.resolved_note = resolved_note
+    row.resolved_at = datetime.now()
+    await session.flush()
+    return row
 
 
 async def reject_capability_change(

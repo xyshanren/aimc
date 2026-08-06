@@ -6,6 +6,7 @@
 - /api/dashboard/sources/run-now -> 手动触发情报采集 (Phase 2A-4)
 """
 
+import json
 import logging
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from db.models import (
     Channel, Promotion, UsageLog, PriceSnapshot,
     ModelRegistry, ModelGroup, ModelGroupMember,
     ModelCapabilitiesLog,
+    CrossSourceDiscrepancy,
     SettingsRuntime,
 )
 
@@ -612,3 +614,97 @@ async def reject_pending_review(
         "log_id": log.id,
         "field_changed": log.field_changed,
     }
+
+
+# ============================================================
+# Phase 4 E3: Dashboard 跨源分歧 (cross_source_discrepancies)
+# ============================================================
+
+@router.get("/api/cross-source/discrepancies")
+async def get_cross_source_discrepancies(
+    status: str = Query("pending", pattern="^(pending|resolved|ignored)$"),
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+):
+    """Phase 4 E3: 列出跨源分歧记录。
+
+    Returns 每条:
+    - id, model_id, field_changed, sources_json (parsed), discrepancy_score
+    - status, resolved_value, resolved_at
+    """
+    rows = await crud.list_cross_source_discrepancies(session, status=status, limit=limit)
+    return {
+        "count": len(rows),
+        "items": [
+            {
+                "id": r.id,
+                "model_id": r.model_id,
+                "field_changed": r.field_changed,
+                "sources": json.loads(r.sources_json) if r.sources_json else [],
+                "discrepancy_score": r.discrepancy_score,
+                "status": r.status,
+                "resolved_value": r.resolved_value,
+                "resolved_note": r.resolved_note,
+                "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/api/cross-source/discrepancies/{discrepancy_id}/resolve")
+async def resolve_cross_source_discrepancy(
+    discrepancy_id: int,
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """Phase 4 E3: 人工拍板跨源分歧。
+
+    body: {
+        "resolved_value": "<最终值>" 或 JSON 字符串 for capabilities,
+        "resolved_note": "可选备注",
+        "ignored": false  # true 时状态为 ignored
+    }
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be dict")
+    resolved_value = payload.get("resolved_value")
+    if not resolved_value:
+        raise HTTPException(status_code=400, detail="resolved_value required")
+    resolved_note = payload.get("resolved_note")
+    ignored = bool(payload.get("ignored", False))
+
+    row = await crud.resolve_cross_source_discrepancy(
+        session,
+        discrepancy_id=discrepancy_id,
+        resolved_value=resolved_value,
+        resolved_note=resolved_note,
+        ignored=ignored,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Discrepancy {discrepancy_id} not found")
+    await session.commit()
+    return {
+        "status": "ignored" if ignored else "resolved",
+        "discrepancy_id": row.id,
+        "model_id": row.model_id,
+        "field_changed": row.field_changed,
+        "resolved_value": row.resolved_value,
+    }
+
+
+@router.post("/api/cross-source/run-detection")
+async def run_cross_source_detection():
+    """手动触发跨源分歧检测 (Phase 4 E3)。
+
+    Returns: { total_models, with_discrepancy, recorded }
+    """
+    from intelligence.cross_source_validator import detect_and_record
+    try:
+        summary = await detect_and_record()
+    except Exception as e:
+        logger.error(f"跨源检测失败: {e}")
+        raise HTTPException(status_code=500, detail=f"Detection failed: {e}")
+    return summary
