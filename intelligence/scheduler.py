@@ -12,6 +12,7 @@
 import asyncio
 import logging
 from pathlib import Path
+from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -172,6 +173,12 @@ async def _run_source_task(source):
     Phase 2D-2: 加 crawl_enabled 总开关
     - 试用阶段关掉 → _run_source_task 第一行 short-circuit
     - 避免刷 retry 日志 + 节省 playwright 资源
+
+    Phase 3.6 (2026-08-06): API 结构化抽取
+    - 如 source.api_endpoint 设置: 优先用 fetch_models_via_api
+    - 4xx (401/403/404) → 视为不可重试, 降级到 HTML 路径 (保留 fallback)
+    - 5xx/timeout → 重试 3 次后降级 HTML
+    - API 成功 → 写入 promotions.raw_data (kind="model_metadata", models=[{model_id, ...}])
     """
     # Phase 2D-2: 总开关（试用阶段可关）
     if not settings.crawl_enabled:
@@ -182,14 +189,59 @@ async def _run_source_task(source):
         from intelligence.fetcher import fetch_page_with_error
         from intelligence.differ import has_changed
         from intelligence.healer import handle_parse_result, handle_fetch_error
+        from intelligence.sources.api_models import fetch_models_via_api, FetchApiError
 
-        # 1. 抓取页面（Phase 2C-1: 用 _with_error 版本拿错误原因）
-        content, error = await fetch_page_with_error(source.url)
-        if not content:
-            logger.warning(f"采集失败: {source.provider} - {error}")
-            # 调 handle_fetch_error：累加 error_count + 按规则告警
-            await handle_fetch_error(source, error or "未知错误")
-            return
+        content = None
+        error = None
+
+        # Phase 3.6: 优先 API 结构化抽取 (如配置了)
+        if getattr(source, "api_endpoint", None):
+            api_key = await _resolve_api_key(source)
+            try:
+                model_ids = await fetch_models_via_api(
+                    base_url=source.api_endpoint,
+                    api_key=api_key,
+                )
+                # 把 model_ids 包装成 model_sync 期望的 raw_data JSON 格式
+                # (Phase 3.3 已实现的 process_promotion 消费)
+                import json as _json
+                models_meta = [
+                    {
+                        "model_id": mid,
+                        "family": source.provider,
+                        "source": "api_models",
+                        # confidence=1.0 因 API 抽取是 100% 确定性
+                        "confidence": 1.0,
+                        "confidence_level": "high",
+                    }
+                    for mid in model_ids
+                ]
+                content = _json.dumps({
+                    "_intelligence_kind": "model_metadata",
+                    "provider": source.provider,
+                    "models": models_meta,
+                }, ensure_ascii=False)
+                logger.info(
+                    f"API 抽取成功: {source.provider} → {len(model_ids)} 个 model"
+                )
+            except FetchApiError as e:
+                # 401/403/404 → 不可重试, 降级 HTML
+                # 5xx/timeout → 已重试完仍失败, 降级 HTML
+                logger.warning(
+                    f"API 抽取失败 ({source.provider}, status={e.status_code}): "
+                    f"{e} → 降级 HTML 抓取"
+                )
+                # 让 content/error 走下面 HTML 分支
+                error = f"API 失败, 降级 HTML: {e}"
+
+        # HTML 路径 (fallback 或 api_endpoint 未设置)
+        if content is None:
+            content, error = await fetch_page_with_error(source.url)
+            if not content:
+                logger.warning(f"采集失败: {source.provider} - {error}")
+                # 调 handle_fetch_error：累加 error_count + 按规则告警
+                await handle_fetch_error(source, error or "未知错误")
+                return
 
         # 2. Diff 检测
         changed = await has_changed(source, content)
@@ -207,6 +259,47 @@ async def _run_source_task(source):
         # 外层 Exception 是代码 bug，开发者排查用
         # 不发 Telegram 避免刷屏（设计选择）
         logger.error(f"采集任务异常: {source.provider} - {e}", exc_info=True)
+
+
+async def _resolve_api_key(source) -> Optional[str]:
+    """从 channels 表读 api_key (解密), 给 api_endpoint 鉴权用
+
+    Phase 3.6: 优先用 source.api_key_from 对应 provider 的 active channel 的 api_key
+    - 如果 provider 没 channel → 返回 None (按公开 endpoint 走)
+    - API-Sec-1: api_key 在 DB 是 XOR+Base64 加密的, 通过 decrypt_api_key 拿明文
+    """
+    if not getattr(source, "api_key_from", None):
+        return None
+
+    try:
+        from db.engine import async_session_factory
+        from db.crud import list_active_channels_by_provider
+        from security.crypto import try_decrypt
+
+        provider = source.api_key_from
+        async with async_session_factory() as session:
+            channels = await list_active_channels_by_provider(session, provider)
+
+        if not channels:
+            logger.debug(f"{provider} 无 active channel, 走公开 endpoint")
+            return None
+
+        # 取第一个 active channel 的 key (通常个人用只有 1 个)
+        ch = channels[0]
+        if isinstance(ch, dict):
+            api_key_ciphertext = ch.get("api_key_ciphertext")
+        else:
+            api_key_ciphertext = getattr(ch, "api_key_ciphertext", None)
+
+        if not api_key_ciphertext:
+            return None
+
+        # API-Sec-1: XOR+Base64 解密 (master_key 从 settings.aimc_master_key 读)
+        plaintext = try_decrypt(api_key_ciphertext, settings.aimc_master_key)
+        return plaintext
+    except Exception as e:
+        logger.warning(f"读取 {source.api_key_from} api_key 失败: {e}, 走公开 endpoint")
+        return None
 
 
 async def _refresh_route_cache():

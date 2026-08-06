@@ -64,6 +64,26 @@ async def get_channel_by_provider(
     return result.scalar_one_or_none()
 
 
+async def list_active_channels_by_provider(
+    session: AsyncSession,
+    provider: str,
+) -> list[Channel]:
+    """按 provider 查所有 active channels。
+
+    Phase 3.6 (2026-08-06): 供 scheduler._resolve_api_key 使用,
+    拿该 provider 的所有 active channel 的 api_key (一般个人用只有 1 个,
+    多 channel 场景返回 id 升序, 取第一个 key 鉴权)。
+    """
+    stmt = (
+        select(Channel)
+        .where(Channel.provider == provider)
+        .where(Channel.status == "active")
+        .order_by(Channel.id)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def update_channel_status(session: AsyncSession, channel_id: int, status: str):
     stmt = update(Channel).where(Channel.id == channel_id).values(status=status)
     await session.execute(stmt)

@@ -89,6 +89,14 @@ class IntelSourceBase:
     wait_for_timeout: int = 10000
     # 是否启用
     enabled: bool = True
+    # === Phase 3.6 (2026-08-06): 结构化抽取 (API) ===
+    # api_endpoint: 如设置, scheduler 优先用 /v1/models API 结构化抽取 (fetch_models_via_api)
+    #              不设置则走 HTML 抓取 + AI 解析路径 (向后兼容)
+    # 示例: "https://api.siliconflow.cn/v1"
+    api_endpoint: Optional[str] = None
+    # api_key_from: 从 channels 表读 api_key 的 provider 标识 (e.g. "siliconflow" / "deepseek")
+    #              None 表示该 endpoint 无需鉴权 (公开 list)
+    api_key_from: Optional[str] = None
 
     def get_fetch_url(self) -> str:
         """获取实际抓取的 URL（子类可覆盖）"""
