@@ -54,6 +54,14 @@ def _patch_crud_with_in_memory_db():
         },
         "logs": {},  # log_id -> dict
         "next_log_id": 1,
+        # P1-1: 模型组状态
+        "groups": {
+            "tier:flagship": {"group_id": "tier:flagship", "tier": None, "enabled": 1},
+            "tier:strong":   {"group_id": "tier:strong",   "tier": "T1", "enabled": 1},
+            "tier:balanced": {"group_id": "tier:balanced", "tier": "T2", "enabled": 1},
+            "tier:light":    {"group_id": "tier:light",    "tier": "T3", "enabled": 1},
+        },
+        "members": {},  # (group_id, model_id) -> dict
     }
 
     def _add_log(model_id, field_changed, old_value, new_value,
@@ -124,7 +132,17 @@ def _patch_crud_with_in_memory_db():
         if log["field_changed"] == "tier" and log["new_value"]:
             reg = _state["registry"].get(log["model_id"])
             if reg:
+                # P1-7 fix: 先捕获旧值, 再 mutate, 最后 logger 顺序
+                old_tier = reg["tier"]
                 reg["tier"] = log["new_value"]
+                # P1-1 fix: tier 迁移, 从旧组踢出 + 加入新组
+                removed = await remove_model_group_members_by_model(session, log["model_id"])
+                new_group = await find_target_group_for_tier(session, log["new_value"])
+                if new_group:
+                    await add_model_group_member(
+                        session, new_group, log["model_id"],
+                        priority=100, weight=1.0, added_by="manual_approve",
+                    )
         elif log["field_changed"] == "status" and log["new_value"] == "deprecated":
             reg = _state["registry"].get(log["model_id"])
             if reg:
@@ -141,9 +159,38 @@ def _patch_crud_with_in_memory_db():
         # 拒绝: 不动 registry
         return _LogShim(log)
 
+    # P1-1 fix: 迁移用 td crud 辅助
+    async def remove_model_group_members_by_model(session, model_id):
+        keys_to_remove = [k for k in _state["members"] if k[1] == model_id]
+        for k in keys_to_remove:
+            del _state["members"][k]
+        return len(keys_to_remove)
+
+    async def find_target_group_for_tier(session, tier):
+        if tier == "T0":
+            return "tier:flagship"
+        for g in _state["groups"].values():
+            if g["enabled"] and g["group_id"].startswith("tier:") and g["tier"] == tier:
+                return g["group_id"]
+        return None
+
+    async def add_model_group_member(session, group_id, model_id,
+                                       priority=100, weight=1.0, added_by="manual"):
+        key = (group_id, model_id)
+        if key in _state["members"]:
+            return False
+        _state["members"][key] = {
+            "group_id": group_id, "model_id": model_id,
+            "priority": priority, "weight": weight, "added_by": added_by,
+        }
+        return True
+
     crud.list_pending_review = list_pending_review
     crud.approve_capability_change = approve_capability_change
     crud.reject_capability_change = reject_capability_change
+    crud.remove_model_group_members_by_model = remove_model_group_members_by_model
+    crud.find_target_group_for_tier = find_target_group_for_tier
+    crud.add_model_group_member = add_model_group_member
 
     return _state
 
@@ -373,6 +420,134 @@ def test_workflow_list_then_approve():
 
 
 # ============================================================
+# Test 10 (P1-1 fix): approve tier T2→T0 → 从 balanced 转到 flagship
+# ============================================================
+def test_approve_tier_migrate_to_flagship():
+    print("\n=== Test 10: P1-1 tier 迁移 T2 → T0, 入 flagship 踢出 balanced ===")
+    state = _patch_crud_with_in_memory_db()
+    from db import crud
+
+    # 预填: test-model-1 已在 tier:balanced (模拟 register 状态)
+    state["members"][("tier:balanced", "test-model-1")] = {
+        "group_id": "tier:balanced", "model_id": "test-model-1",
+        "priority": 100, "weight": 1.0, "added_by": "intel_auto",
+    }
+    # 新增一条 tier log: T2 → T0
+    state["next_log_id"] = 100
+    state["logs"][100] = {
+        "id": 100, "model_id": "test-model-1", "field_changed": "tier",
+        "old_value": "T2", "new_value": "T0",
+        "source": "ai_infer", "confidence": 0.9, "approved": 0,
+    }
+    # 预填 registry tier 同步表示是 T2
+    state["registry"]["test-model-1"]["tier"] = "T2"
+
+    async def _run():
+        class _S:
+            pass
+
+        return await crud.approve_capability_change(_S(), 100)
+
+    log = asyncio.run(_run())
+    assert log.approved == 1
+    # registry.tier 同步为 T0
+    assert state["registry"]["test-model-1"]["tier"] == "T0"
+    # 应该从 tier:balanced 踢出
+    assert ("tier:balanced", "test-model-1") not in state["members"], (
+        "应从 tier:balanced 踢出, 实际仍存在"
+    )
+    # 应该加入 tier:flagship
+    assert ("tier:flagship", "test-model-1") in state["members"], (
+        "T0 应入 tier:flagship"
+    )
+    # 迁移一行加, 一行减, 净不应有 tier:balanced
+    tier_members = [
+        (g, m) for (g, m) in state["members"].keys() if m == "test-model-1"
+    ]
+    assert tier_members == [("tier:flagship", "test-model-1")], (
+        f"test-model-1 只应入 flagship, 实际 {tier_members}"
+    )
+    print(f"  [OK] T2 → T0 迁移: balanced 踢出, flagship 加入")
+
+
+# ============================================================
+# Test 11 (P1-1 fix): approve tier T3→T1 → 从 light 转到 strong
+# ============================================================
+def test_approve_tier_migrate_balanced_to_strong():
+    print("\n=== Test 11: P1-1 tier 迁移 T3 → T1, 从 light 转到 strong ===")
+    state = _patch_crud_with_in_memory_db()
+    from db import crud
+
+    # 预填: test-model-2 已在 tier:light (T3)
+    state["members"][("tier:light", "test-model-2")] = {
+        "group_id": "tier:light", "model_id": "test-model-2",
+        "priority": 100, "weight": 1.0, "added_by": "intel_auto",
+    }
+    state["next_log_id"] = 101
+    state["logs"][101] = {
+        "id": 101, "model_id": "test-model-2", "field_changed": "tier",
+        "old_value": "T3", "new_value": "T1",
+        "source": "ai_infer", "confidence": 0.9, "approved": 0,
+    }
+    state["registry"]["test-model-2"]["tier"] = "T3"
+
+    async def _run():
+        class _S:
+            pass
+
+        return await crud.approve_capability_change(_S(), 101)
+
+    log = asyncio.run(_run())
+    assert log.approved == 1
+    assert state["registry"]["test-model-2"]["tier"] == "T1"
+    # 从 light 踢出
+    assert ("tier:light", "test-model-2") not in state["members"]
+    # 加入 strong
+    assert ("tier:strong", "test-model-2") in state["members"], (
+        "T1 应入 tier:strong"
+    )
+    print(f"  [OK] T3 → T1 迁移: light 踢出, strong 加入")
+
+
+# ============================================================
+# Test 12 (P1-1 fix): approve tier 迁移幂等 — 重复批准不重复迁移
+# ============================================================
+def test_approve_tier_migrate_idempotent():
+    print("\n=== Test 12: P1-1 tier 迁移幂等 ===")
+    state = _patch_crud_with_in_memory_db()
+    from db import crud
+
+    state["members"][("tier:balanced", "test-model-1")] = {
+        "group_id": "tier:balanced", "model_id": "test-model-1",
+        "priority": 100, "weight": 1.0, "added_by": "intel_auto",
+    }
+    state["next_log_id"] = 102
+    state["logs"][102] = {
+        "id": 102, "model_id": "test-model-1", "field_changed": "tier",
+        "old_value": "T2", "new_value": "T0",
+        "source": "ai_infer", "confidence": 0.9, "approved": 0,
+    }
+    state["registry"]["test-model-1"]["tier"] = "T2"
+
+    async def _run():
+        class _S:
+            pass
+
+        await crud.approve_capability_change(_S(), 102)
+        return await crud.approve_capability_change(_S(), 102)  # 重复
+
+    asyncio.run(_run())
+    # 重复调不应叠加迁移 (第二次打 approved=1 早返回)
+    tier_members = [
+        (g, m) for (g, m) in state["members"].keys() if m == "test-model-1"
+    ]
+    assert tier_members == [("tier:flagship", "test-model-1")], (
+        f"幂等后只应 1 条 member, 实际 {tier_members}"
+    )
+    print(f"  [OK] 重复 approve 幂等, members={tier_members}")
+
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -389,9 +564,13 @@ def main():
     test_reject_keeps_registry()
     test_reject_idempotent()
     test_workflow_list_then_approve()
+    # P1-1 新增: tier 迁移
+    test_approve_tier_migrate_to_flagship()
+    test_approve_tier_migrate_balanced_to_strong()
+    test_approve_tier_migrate_idempotent()
 
     print("\n" + "=" * 60)
-    print("ALL 9 TESTS PASSED")
+    print("ALL 12 TESTS PASSED")
     print("=" * 60)
 
 

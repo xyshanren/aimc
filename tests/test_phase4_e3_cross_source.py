@@ -10,6 +10,9 @@
 7. detect_and_record: 1 个 model 2 源一致 → 0 入库
 8. detect_and_record: 1 个 model 2 源 tier 不同 → 1 入库
 9. P0-7 fix: IntegrityError fallback (并发插入撞 UniqueConstraint → 重新 SELECT+UPDATE)
+10. P1-10 fix: resolve tier 路由 → 写 registry.tier + log + 刷路由缓存
+11. P1-10 fix: resolve capabilities 路由 → 写 registry.capabilities + log
+12. P1-10 fix: resolve ignored 路由 → 不写 registry, 只刷缓存
 
 跑法: python tests/test_phase4_e3_cross_source.py
 """
@@ -48,6 +51,61 @@ def _install_mock_env():
 
 
 _install_mock_env()
+
+
+def _install_fake_fastapi():
+    """P1-10 路由测试需要 dashboard.routes, 但 fastapi 不一定装了.
+    这里造一个足够轻量的 fake fastapi 避免 import 崩溃.
+    """
+    import sys
+    import types
+    if "fastapi" in sys.modules:
+        return
+    fake = types.ModuleType("fastapi")
+
+    class _APIRouter:
+        def __init__(self, *a, **kw):
+            pass
+        def get(self, *a, **kw):
+            def _d(f): return f
+            return _d
+        def post(self, *a, **kw):
+            def _d(f): return f
+            return _d
+        def put(self, *a, **kw):
+            def _d(f): return f
+            return _d
+        def delete(self, *a, **kw):
+            def _d(f): return f
+            return _d
+        def websocket(self, *a, **kw):
+            def _d(f): return f
+            return _d
+
+    def _Depends(dep):
+        return dep
+    class _HTTPException(Exception):
+        def __init__(self, status_code, detail):
+            self.status_code = status_code
+            self.detail = detail
+    def _Query(default=None, **kw):
+        return default
+    class _HTMLResponse:
+        def __init__(self, content=""):
+            self.content = content
+
+    fake.APIRouter = _APIRouter
+    fake.Depends = _Depends
+    fake.HTTPException = _HTTPException
+    fake.Query = _Query
+    fake.HTMLResponse = _HTMLResponse
+    sys.modules["fastapi"] = fake
+    responses = types.ModuleType("fastapi.responses")
+    responses.HTMLResponse = _HTMLResponse
+    sys.modules["fastapi.responses"] = responses
+
+
+_install_fake_fastapi()
 
 # 保存真实的 upsert_cross_source_discrepancy 函数引用, 供 Test 11 (P0-7 fix)
 # 验证 IntegrityError fallback 路径使用. _patch_db_with_in_memory() 会覆写
@@ -607,6 +665,296 @@ def test_upsert_integrity_error_fallback():
 
 
 # ============================================================
+# Test 12 (P1-10 fix): resolve tier 拍板 → 写 registry.tier + 写 log + 刷缓存
+# ============================================================
+def test_resolve_tier_updates_registry_and_log():
+    """P1-10 fix: 验证 resolve_cross_source_discrepancy 路由处理 tier 分歧时:
+    - 更新 model_registry.tier
+    - 写一条 model_capabilities_log (source="human_resolve", approved=1)
+    - 调 route_engine.refresh_cache()
+    - 路由响应里 applied=True
+    """
+    print("\n=== Test 12: P1-10 resolve tier → registry + log + refresh_cache ===")
+    state = _patch_db_with_in_memory()
+    from db import crud
+
+    # 预填: discrepancy tier 分歧 (T3 vs T2)
+    state["discrepancies"][1] = {
+        "id": 1, "model_id": "qwen-plus", "field_changed": "tier",
+        "sources_json": '[{"source":"a","value":"T3"},{"source":"b","value":"T2"}]',
+        "discrepancy_score": 1.0, "status": "pending",
+        "resolved_value": None, "resolved_note": None, "resolved_at": None,
+        "created_at": "2026-08-01T00:00:00", "updated_at": "2026-08-01T00:00:00",
+    }
+    # 预填: registry 有 qwen-plus, tier=T3
+    state["registry"] = {
+        "qwen-plus": {
+            "model_id": "qwen-plus", "family": "qwen", "tier": "T3",
+            "capabilities": "[\"code\"]", "context_length": 32768, "modality": "text",
+        },
+    }
+
+    # patch 路由需要用到的东西
+    refresh_calls = {"n": 0}
+
+    class _MockRouteEngine:
+        async def refresh_cache(self):
+            refresh_calls["n"] += 1
+
+    state["route_engine"] = _MockRouteEngine()
+
+    # 覆盖 log_capability_change (路由会调)
+    log_writes = []
+    orig_log = crud.log_capability_change if hasattr(crud, "log_capability_change") else None
+    # crud 可能没 patch log_capability_change, 路由调用会走真函数 — 这里手动 mock
+    async def fake_log(session, model_id, field_changed, old_value, new_value,
+                        source="ai_infer", confidence=None, approved=0):
+        log_writes.append({
+            "model_id": model_id, "field_changed": field_changed,
+            "old_value": old_value, "new_value": new_value,
+            "source": source, "confidence": confidence, "approved": approved,
+        })
+    crud.log_capability_change = fake_log
+
+    # 提供一个能送 ModelRegistry 的 session shim
+    class _MockSessionForResolve:
+        def __init__(self):
+            self.commits = 0
+            self.registry_row = state["registry"]["qwen-plus"]
+        async def get(self, model_cls, model_id):
+            from db.models import ModelRegistry
+            if model_cls is ModelRegistry and model_id == "qwen-plus":
+                r = self.registry_row
+                # 返回一个属性可读写的 shim
+                class _RegShim:
+                    pass
+                shim = _RegShim()
+                shim.tier = r["tier"]
+                shim.capabilities = r["capabilities"]
+                shim.context_length = r["context_length"]
+                shim.modality = r["modality"]
+                # 跟踪变更
+                self._shim = shim
+                self._r = r
+                return shim
+            return None
+        async def commit(self):
+            self.commits += 1
+            # 同步 shim → 字典
+            shim = getattr(self, "_shim", None)
+            r = getattr(self, "_r", None)
+            if shim and r:
+                r["tier"] = shim.tier
+                r["capabilities"] = shim.capabilities
+                r["context_length"] = shim.context_length
+                r["modality"] = shim.modality
+
+    # patch 路由模块里的 route_engine
+    import sys
+    import types
+    fake_router_module = types.ModuleType("gateway.router")
+    fake_router_module.route_engine = state["route_engine"]
+    sys.modules["gateway.router"] = fake_router_module
+
+    # 延迟导入路由, 令其走 sys.modules 中的 fake router
+    if "dashboard.routes" in sys.modules:
+        del sys.modules["dashboard.routes"]
+    from dashboard import routes as dashboard_routes
+    # 同时确保 route_engine 是同一对象
+    dashboard_routes.route_engine = state["route_engine"]
+
+    # 调路由
+    sess = _MockSessionForResolve()
+    payload = {"resolved_value": "T2", "resolved_note": "取信源 b"}
+    result = asyncio.run(
+        dashboard_routes.resolve_cross_source_discrepancy(
+            discrepancy_id=1,
+            payload=payload,
+            session=sess,
+        )
+    )
+    # 验证响应
+    assert result["status"] == "resolved", f"应 resolved, 实际 {result['status']}"
+    assert result["applied"] is True, f"tier 分歧应 applied=True, 实际 {result['applied']}"
+    assert result["field_changed"] == "tier"
+    # 验证 registry 同步
+    assert state["registry"]["qwen-plus"]["tier"] == "T2", (
+        f"registry.tier 应同步为 T2, 实际 {state['registry']['qwen-plus']['tier']}"
+    )
+    # 验证写了 1 条 log
+    assert len(log_writes) == 1, f"应写 1 条 log, 实际 {len(log_writes)}"
+    lw = log_writes[0]
+    assert lw["field_changed"] == "tier"
+    assert lw["old_value"] == "T3" and lw["new_value"] == "T2"
+    assert lw["source"] == "human_resolve"
+    assert lw["approved"] == 1
+    assert lw["confidence"] == 1.0
+    # 验证刷了缓存
+    assert refresh_calls["n"] == 1, f"应调 1 次 refresh_cache, 实际 {refresh_calls['n']}"
+    # 验证 discrepancy 本身被 resolve
+    assert state["discrepancies"][1]["status"] == "resolved"
+    assert state["discrepancies"][1]["resolved_value"] == "T2"
+    print(f"  [OK] tier resolve: registry={state['registry']['qwen-plus']['tier']}, "
+          f"log 1 条, refresh_cache={refresh_calls['n']}")
+
+
+# ============================================================
+# Test 13 (P1-10 fix): resolve capabilities 拍板 → 写 registry + log
+# ============================================================
+def test_resolve_capabilities_updates_registry():
+    print("\n=== Test 13: P1-10 resolve capabilities → registry.capabilities + log ===")
+    state = _patch_db_with_in_memory()
+    from db import crud
+
+    state["discrepancies"][2] = {
+        "id": 2, "model_id": "deepseek-v3", "field_changed": "capabilities",
+        "sources_json": '[]', "discrepancy_score": 0.8, "status": "pending",
+        "resolved_value": None, "resolved_note": None, "resolved_at": None,
+        "created_at": "2026-08-01", "updated_at": "2026-08-01",
+    }
+    state["registry"] = {
+        "deepseek-v3": {
+            "model_id": "deepseek-v3", "family": "deepseek", "tier": "T2",
+            "capabilities": "[\"code\"]", "context_length": 32768, "modality": "text",
+        },
+    }
+
+    refresh_calls = {"n": 0}
+
+    class _MockRouteEngine:
+        async def refresh_cache(self):
+            refresh_calls["n"] += 1
+
+    state["route_engine"] = _MockRouteEngine()
+
+    log_writes = []
+    async def fake_log(session, model_id, field_changed, old_value, new_value,
+                        source="ai_infer", confidence=None, approved=0):
+        log_writes.append({"field_changed": field_changed, "old_value": old_value,
+                            "new_value": new_value, "source": source, "approved": approved})
+    crud.log_capability_change = fake_log
+
+    class _MockSessionForResolve:
+        def __init__(self):
+            self.commits = 0
+        async def get(self, model_cls, model_id):
+            from db.models import ModelRegistry
+            if model_cls is ModelRegistry and model_id == "deepseek-v3":
+                r = state["registry"]["deepseek-v3"]
+                class _S:
+                    pass
+                shim = _S()
+                shim.tier = r["tier"]
+                shim.capabilities = r["capabilities"]
+                shim.context_length = r["context_length"]
+                shim.modality = r["modality"]
+                self._shim = shim
+                self._r = r
+                return shim
+            return None
+        async def commit(self):
+            self.commits += 1
+            if hasattr(self, "_shim") and hasattr(self, "_r"):
+                self._r["capabilities"] = self._shim.capabilities
+
+    import sys, types
+    sys.modules["gateway.router"] = types.ModuleType("gateway.router")
+    sys.modules["gateway.router"].route_engine = state["route_engine"]
+    if "dashboard.routes" in sys.modules:
+        del sys.modules["dashboard.routes"]
+    from dashboard import routes as dashboard_routes
+    dashboard_routes.route_engine = state["route_engine"]
+
+    sess = _MockSessionForResolve()
+    payload = {"resolved_value": "[\"code\",\"reasoning\"]", "resolved_note": "取信源 a"}
+    result = asyncio.run(
+        dashboard_routes.resolve_cross_source_discrepancy(
+            discrepancy_id=2, payload=payload, session=sess,
+        )
+    )
+    assert result["status"] == "resolved"
+    assert result["applied"] is True
+    # registry capabilities 同步
+    import json as _json
+    caps = _json.loads(state["registry"]["deepseek-v3"]["capabilities"])
+    assert caps == ["code", "reasoning"], f"capabilities 未同步, 实际 {caps}"
+    # log 写
+    assert len(log_writes) == 1
+    assert log_writes[0]["field_changed"] == "capabilities"
+    assert log_writes[0]["source"] == "human_resolve"
+    assert log_writes[0]["approved"] == 1
+    # 刷缓存
+    assert refresh_calls["n"] == 1
+    print(f"  [OK] capabilities resolve: capabilities={caps}, log 1 条, refresh_cache={refresh_calls['n']}")
+
+
+# ============================================================
+# Test 14 (P1-10 fix): resolve ignored → 不写 registry, 只标 ignored
+# ============================================================
+def test_resolve_ignored_no_registry_write():
+    print("\n=== Test 14: P1-10 resolve ignored → 不写 registry ===")
+    state = _patch_db_with_in_memory()
+    from db import crud
+
+    state["discrepancies"][3] = {
+        "id": 3, "model_id": "qwen-plus", "field_changed": "tier",
+        "sources_json": "[]", "discrepancy_score": 0.5, "status": "pending",
+        "resolved_value": None, "resolved_note": None, "resolved_at": None,
+        "created_at": "2026-08-01", "updated_at": "2026-08-01",
+    }
+    state["registry"] = {
+        "qwen-plus": {
+            "model_id": "qwen-plus", "family": "qwen", "tier": "T3",
+            "capabilities": "[]", "context_length": 32768, "modality": "text",
+        },
+    }
+
+    refresh_calls = {"n": 0}
+
+    class _MockRouteEngine:
+        async def refresh_cache(self):
+            refresh_calls["n"] += 1
+
+    state["route_engine"] = _MockRouteEngine()
+
+    log_writes = []
+    async def fake_log(session, **kw):
+        log_writes.append(kw)
+    crud.log_capability_change = fake_log
+
+    class _MockSession:
+        async def get(self, model_cls, model_id):
+            return None  # 不关心
+        async def commit(self):
+            pass
+
+    import sys, types
+    sys.modules["gateway.router"] = types.ModuleType("gateway.router")
+    sys.modules["gateway.router"].route_engine = state["route_engine"]
+    if "dashboard.routes" in sys.modules:
+        del sys.modules["dashboard.routes"]
+    from dashboard import routes as dashboard_routes
+    dashboard_routes.route_engine = state["route_engine"]
+
+    result = asyncio.run(
+        dashboard_routes.resolve_cross_source_discrepancy(
+            discrepancy_id=3,
+            payload={"resolved_value": "(ignored)", "ignored": True},
+            session=_MockSession(),
+        )
+    )
+    assert result["status"] == "ignored"
+    assert result["applied"] is False, "ignored 时不应 applied"
+    # 不应写 log
+    assert log_writes == [], f"ignored 不应写 log, 实际 {log_writes}"
+    # 但仍要刷缓存 (P1-10 行为: 忽略误报也刷缓存让路由重新检查)
+    assert refresh_calls["n"] == 1, f"仍应刷缓存, 实际 {refresh_calls['n']}"
+    # registry 不变
+    assert state["registry"]["qwen-plus"]["tier"] == "T3"
+    print("  [OK] ignored: 不写 registry / 不写 log, 但刷缓存")
+
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -626,9 +974,13 @@ def main():
     test_detect_sparse_skip()
     # P0-7 新增: IntegrityError fallback
     test_upsert_integrity_error_fallback()
+    # P1-10 新增: resolve 路由回流
+    test_resolve_tier_updates_registry_and_log()
+    test_resolve_capabilities_updates_registry()
+    test_resolve_ignored_no_registry_write()
 
     print("\n" + "=" * 60)
-    print("ALL 11 TESTS PASSED")
+    print("ALL 14 TESTS PASSED")
     print("=" * 60)
 
 

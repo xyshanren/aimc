@@ -568,11 +568,12 @@ async def approve_pending_review(
 
     行为:
     - log.approved 置 1
-    - 若 field_changed == "tier": 同步更新 model_registry.tier (唯一被自动应用的字段)
+    - 若 field_changed == "tier": 同步更新 model_registry.tier + 从旧 tier 组踢出 + 加入新 tier 组
     - 其它字段 (capabilities / context_length / modality / metadata / create) 仅作记录
+    - P1-1 fix: commit 后调 route_engine.refresh_cache() 让路由立即拿到新 tier/成员
 
     返回:
-    - 200: { status: "approved", log_id, field_changed, applied }
+    - 200: { status: "approved", log_id, field_changed, applied, model_id, new_group }
     - 404: log 不存在
     """
     log = await crud.approve_capability_change(session, log_id)
@@ -580,13 +581,24 @@ async def approve_pending_review(
         raise HTTPException(status_code=404, detail=f"Pending review {log_id} not found")
     await session.commit()
 
+    # P1-1 fix: 路由缓存即刻刷新. 失败只 logger 警告, 不让 dashboard 5xx.
+    try:
+        await route_engine.refresh_cache()
+    except Exception as e:
+        logger.warning("approve 后刷新路由缓存失败: log_id=%s err=%s", log_id, e)
+
     applied = log.field_changed == "tier" and log.new_value is not None
+    # 若 tier 迁移, 报上新 group_id (供 dashboard UI 反馈)
+    new_group = None
+    if log.field_changed == "tier" and log.new_value:
+        new_group = await crud.find_target_group_for_tier(session, log.new_value)
     return {
         "status": "approved",
         "log_id": log.id,
         "field_changed": log.field_changed,
         "applied": applied,
         "model_id": log.model_id,
+        "new_group": new_group,
     }
 
 
@@ -667,6 +679,13 @@ async def resolve_cross_source_discrepancy(
         "resolved_note": "可选备注",
         "ignored": false  # true 时状态为 ignored
     }
+
+    P1-10 fix: 拍板后调 route_engine.refresh_cache() 并回流 model_registry:
+    - tier / capabilities / context_length / modality 字段拍板后, 将结果写一条
+      model_capabilities_log (source="human_resolve", confidence=1.0, approved=1)
+      并同步更新 model_registry 对应字段. 下一个请求路由能拿到新值.
+    - ignored=true 时不写 registry (表示误报, 只改 discrepancy 状态).
+    - 其它字段 (e.g. benchmark_scores) 仅动 discrepancy, 不写 registry.
     """
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be dict")
@@ -685,13 +704,67 @@ async def resolve_cross_source_discrepancy(
     )
     if not row:
         raise HTTPException(status_code=404, detail=f"Discrepancy {discrepancy_id} not found")
+
+    # P1-10 fix: 人工拍板后, 同步更新 model_registry 字段 (tier/capabilities/context_length/modality)
+    applied = False
+    if not ignored and row.field_changed in ("tier", "capabilities", "context_length", "modality"):
+        from db.models import ModelRegistry
+
+        registry = await session.get(ModelRegistry, row.model_id)
+        if registry:
+            old_value = getattr(registry, row.field_changed, None)
+            # P1-7 fix: 先捕获旧值, 再 mutate, 最后 logger
+            registry_updates = {
+                "tier": resolved_value,
+                "capabilities": resolved_value,
+                "context_length": int(resolved_value) if row.field_changed == "context_length" else None,
+                "modality": resolved_value,
+            }
+            new_field_value = registry_updates[row.field_changed]
+            if row.field_changed == "context_length" and new_field_value is None:
+                logger.warning(
+                    "resolve context_length 解析失败: model=%s_value=%s",
+                    row.model_id, resolved_value,
+                )
+            else:
+                setattr(registry, row.field_changed, new_field_value)
+                # 同步写一条 audit log (source="human_resolve", approved=1, 永久生效)
+                await crud.log_capability_change(
+                    session,
+                    model_id=row.model_id,
+                    field_changed=row.field_changed,
+                    old_value=str(old_value) if old_value is not None else None,
+                    new_value=str(new_field_value),
+                    source="human_resolve",
+                    confidence=1.0,
+                    approved=1,
+                )
+                logger.info(
+                    "resolve 同源: model=%s %s %s -> %s (discrepancy_id=%d)",
+                    row.model_id, row.field_changed, old_value, new_field_value, discrepancy_id,
+                )
+                applied = True
+        else:
+            logger.warning(
+                "resolve 时 registry 缺失: model=%s (discrepancy_id=%d)",
+                row.model_id, discrepancy_id,
+            )
+
     await session.commit()
+
+    # P1-10 fix: 路由缓存即刻刷新. 失败只 logger 警告, 不让 dashboard 5xx.
+    try:
+        await route_engine.refresh_cache()
+    except Exception as e:
+        logger.warning("resolve 后刷新路由缓存失败: discrepancy_id=%s err=%s", discrepancy_id, e)
+
     return {
         "status": "ignored" if ignored else "resolved",
         "discrepancy_id": row.id,
         "model_id": row.model_id,
         "field_changed": row.field_changed,
         "resolved_value": row.resolved_value,
+        "applied": applied,
     }
 
 

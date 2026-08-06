@@ -389,6 +389,58 @@ async def add_model_group_member(
     return True
 
 
+async def remove_model_group_members_by_model(
+    session: AsyncSession,
+    model_id: str,
+) -> int:
+    """删除 model_id 在所有组中的成员关系 (P1-1 fix)。
+
+    用于 E1 批准 tier 迁移时: model 从旧 tier 组全部踢出,
+    然后再 add_model_group_member 加入新 tier 组。
+
+    Returns:
+        删除的行数
+    """
+    from db.models import ModelGroupMember
+    from sqlalchemy import delete
+
+    stmt = delete(ModelGroupMember).where(ModelGroupMember.model_id == model_id)
+    result = await session.execute(stmt)
+    return result.rowcount or 0
+
+
+async def find_target_group_for_tier(
+    session: AsyncSession,
+    tier: str,
+) -> Optional[str]:
+    """按 tier 找候选 group_id (P1-1 fix, 供 E1 approve 迁移用)。
+
+    策略与 model_sync._find_target_group 保持一致:
+    - T0 (旗舰) 硬编码路由到 "tier:flagship" (group.tier=NULL, 优先匹配旗舰)
+    - 其他 tier 找 group.tier == tier 的组
+    - 找不到返 None, caller 跳过 join
+
+    为什么 model_sync 跟 crud 各一份: model_sync 走 ai_infer 路径不能
+    改 model_group_members, 这里走人工 approve 路径可以走. 逻辑同源
+    (不动 flagship 路由的硬编码) 避免总是从 model_sync 透出.
+    """
+    if tier == "T0":
+        # flagship 组的 group_id 是定义里的硬编码, 不查表准上层可追踪
+        return "tier:flagship"
+    from db.models import ModelGroup
+    from sqlalchemy import select
+
+    stmt = (
+        select(ModelGroup.group_id)
+        .where(ModelGroup.group_id.startswith("tier:"))
+        .where(ModelGroup.tier == tier)
+        .where(ModelGroup.enabled == 1)
+        .limit(1)
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    return row
+
+
 async def log_capability_change(
     session: AsyncSession,
     model_id: str,
@@ -463,10 +515,10 @@ async def approve_capability_change(
 
     - 把 log 行 approved 置 1
     - 若 field_changed == "tier", 同步更新 model_registry.tier (唯一被允许的自动应用项)
-    - 返回更新后的 log 行 (供 dashboard 二次确认)
+    - 上层 dashboard route 会在 commit 后调 route_engine.refresh_cache() 让路由
+      下次请求拿到新 tier + 新 group 成员表.
     """
     from db.models import ModelCapabilitiesLog, ModelRegistry
-    from sqlalchemy import update
 
     log = await session.get(ModelCapabilitiesLog, log_id)
     if not log:
@@ -481,9 +533,33 @@ async def approve_capability_change(
         # 创建或更新 ModelRegistry 的 tier (registry 可能不存在 -> 跳过)
         registry = await session.get(ModelRegistry, log.model_id)
         if registry:
+            # P1-7 fix: 先捕获旧值, 再 mutate, 最后 logger,
+            # 避免 logger 输出 "old=old" 错日志。
+            old_tier = registry.tier
             registry.tier = log.new_value
-            logger.info("人工批准: model=%s tier %s -> %s",
-                       log.model_id, registry.tier, log.new_value)
+            logger.info(
+                "人工批准 tier 迁移: model=%s %s -> %s (log_id=%d)",
+                log.model_id, old_tier, log.new_value, log_id,
+            )
+            # P1-1 fix: tier 迁移后, 要从旧 tier 组 move 到新 tier 组.
+            # _find_target_group 同 model_sync._find_target_group 逻辑:
+            # T0 → tier:flagship 硬编码, 其他 → 查 group.tier == new_value.
+            removed = await remove_model_group_members_by_model(session, log.model_id)
+            new_group = await find_target_group_for_tier(session, log.new_value)
+            if new_group:
+                joined = await add_model_group_member(
+                    session, new_group, log.model_id,
+                    priority=100, weight=1.0, added_by="manual_approve",
+                )
+                logger.info(
+                    "tier 迁移后入组: model=%s -> group=%s (removed=%d, joined=%s)",
+                    log.model_id, new_group, removed, joined,
+                )
+            else:
+                logger.warning(
+                    "tier 迁移后未找到目标组: model=%s tier=%s (路由不会命中)",
+                    log.model_id, log.new_value,
+                )
     elif log.field_changed == "create":
         # 首次创建: 不动 registry (已由 model_sync 创建, 此处仅确认 metadata)
         pass
@@ -491,7 +567,12 @@ async def approve_capability_change(
         # 出组已被 L2 高置信度自动批准 (approved=1), 此路径通常不命中
         registry = await session.get(ModelRegistry, log.model_id)
         if registry:
+            old_status = registry.status
             registry.status = "deprecated"
+            logger.info(
+                "人工批准 status 迁移: model=%s %s -> deprecated (log_id=%d)",
+                log.model_id, old_status, log_id,
+            )
     # capabilities / context_length / modality 变更为参考项, 不直接覆盖 registry
 
     await session.flush()
