@@ -59,11 +59,11 @@ def _install_mock_db():
         "registry": {},   # model_id -> dict
         "members": {},    # (group_id, model_id) -> dict
         "logs": [],       # list[dict]
-        "groups": {       # group_id -> dict
-            "tier:flagship": {"group_id": "tier:flagship", "tier": "T4", "enabled": 1},
-            "tier:strong": {"group_id": "tier:strong", "tier": "T3", "enabled": 1},
+        "groups": {       # group_id -> dict (同步 seed_model_groups.py 的 tier 语义：T0=旗舰, T4=微型)
+            "tier:flagship": {"group_id": "tier:flagship", "tier": None,  "enabled": 1},  # 不限档，用 min_context 兑底
+            "tier:strong":   {"group_id": "tier:strong",   "tier": "T1", "enabled": 1},
             "tier:balanced": {"group_id": "tier:balanced", "tier": "T2", "enabled": 1},
-            "tier:light": {"group_id": "tier:light", "tier": "T1", "enabled": 1},
+            "tier:light":    {"group_id": "tier:light",    "tier": "T3", "enabled": 1},
         },
     }
 
@@ -444,7 +444,8 @@ def test_process_promotion_end_to_end():
     results = asyncio.run(process_promotion(42, raw))
     assert len(results) == 3, f"应 3 个结果, 实际 {len(results)}"
     assert results[0].action == "auto_joined"
-    assert results[0].target_group == "tier:strong"  # T3 → tier:strong
+    # explicit_tier=T3 (轻量档) 路由到 tier:light (seed 里 light.tier=T3)
+    assert results[0].target_group == "tier:light", f"应 tier:light, 实际 {results[0].target_group}"
     assert results[1].action == "pending_review"
     assert results[2].action == "rejected"
     print(f"  [OK] 3 model 各自正确处理:")

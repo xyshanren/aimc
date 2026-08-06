@@ -70,7 +70,7 @@ SYSTEM_PROMPT = """你是一个 AI 大模型情报分析助手。
 
 规则：
 - source_type=model_list 时重点提取 models，即使没有优惠也必须返回模型列表。
-- tier 表示综合能力：T0 基础/嵌入，T1 轻量，T2 均衡，T3 强能力，T4 旗舰前沿。
+- tier 表示综合能力（参考 architecture.md §4.2）：T0 旗舰前沿（如 DeepSeek-V4-Pro、Qwen3-235B），T1 强力（如 DeepSeek-V3），T2 均衡（如 Qwen-Plus），T3 轻量（如 Qwen2.5-7B），T4 微型/嵌入（如 Qwen2.5-1.5B）。
 - 不确定的 tier 设 null，禁止无依据猜测；每个模型 confidence 独立评分。
 - capabilities 只能使用给定标签；无法确定的字段设为 null 或空数组。
 - confidence 必须在 0.0-1.0；日期统一 YYYY-MM-DD。
@@ -101,15 +101,16 @@ def infer_tier(model_id: str, explicit_tier: Optional[str] = None) -> tuple[Opti
         return None, "缺少可靠参数规模或能力依据"
 
     size = float(match.group(1))
+    # 语义以 architecture.md §4.2 为准：T0=旗舰/参数最大，T4=微型/参数最小。
     if size >= 200:
-        return "T4", f"参数规模约 {size:g}B"
+        return "T0", f"参数规模约 {size:g}B (旗舰档)"
     if size >= 70:
-        return "T3", f"参数规模约 {size:g}B"
+        return "T1", f"参数规模约 {size:g}B (强力档)"
     if size >= 20:
-        return "T2", f"参数规模约 {size:g}B"
+        return "T2", f"参数规模约 {size:g}B (均衡档)"
     if size >= 7:
-        return "T1", f"参数规模约 {size:g}B"
-    return "T0", f"参数规模约 {size:g}B"
+        return "T3", f"参数规模约 {size:g}B (轻量档)"
+    return "T4", f"参数规模约 {size:g}B (微型/嵌入档)"
 
 
 def normalize_model_item(data: dict) -> ModelIntelItem:

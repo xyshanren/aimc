@@ -95,9 +95,10 @@ def test_infer_tier_invalid_falls_back_to_size():
     from intelligence.parser import infer_tier
 
     tier, reason = infer_tier("Qwen-72B-Chat", "T9")
-    assert tier == "T3", f"非法 T9 应回退, 应=T3, 实际 {tier}"
+    # 70B → T1 (强力档) per architecture.md §4.2
+    assert tier == "T1", f"非法 T9 应回退, 应=T1, 实际 {tier}"
     assert "72" in reason
-    print(f"  [OK] 非法 T9 回退到 T3, reason={reason!r}")
+    print(f"  [OK] 非法 T9 回退到 T1 (强力档), reason={reason!r}")
 
 
 # ============================================================
@@ -117,17 +118,17 @@ def test_infer_tier_unknown_returns_none():
 # Test 5: infer_tier 按参数规模保守分级
 # ============================================================
 def test_infer_tier_by_size():
-    print("\n=== Test 5: 参数规模保守分级 ===")
+    print("\n=== Test 5: 参数规模保守分级 (T0=旗舰, T4=微型) ===")
     from intelligence.parser import infer_tier
 
     cases = [
-        ("Qwen3-235B-A22B", "T4"),
-        ("DeepSeek-V3-671B", "T4"),
-        ("Qwen-72B", "T3"),
-        ("Qwen-32B", "T2"),
-        ("Qwen-7B", "T1"),
-        ("bge-small-1.5b", "T0"),  # 1.5B
-        ("Qwen3-1.7B", "T0"),
+        ("Qwen3-235B-A22B", "T0"),  # 235B → 旗舰
+        ("DeepSeek-V3-671B", "T0"),  # 671B → 旗舰
+        ("Qwen-72B", "T1"),          # 72B → 强力
+        ("Qwen-32B", "T2"),          # 32B → 均衡
+        ("Qwen-7B", "T3"),           # 7B → 轻量
+        ("bge-small-1.5b", "T4"),    # 1.5B → 微型
+        ("Qwen3-1.7B", "T4"),        # 1.7B → 微型
     ]
     for model_id, expected in cases:
         tier, _ = infer_tier(model_id)
@@ -146,7 +147,7 @@ def test_normalize_model_item_cleans():
         "model_id": "DeepSeek-V3-671B",
         "family": "deepseek",
         "display_name": "DeepSeek V3",
-        "inferred_tier": "T4",
+        "inferred_tier": "T0",  # 671B 调上参数推断也是 T0, 顺带验证 “显式 tier 与推断一致”
         "capabilities": ["reasoning", "code", "魔改能力", "HACKING"],
         "context_length": "64000",
         "modality": "multimodal",
@@ -156,7 +157,7 @@ def test_normalize_model_item_cleans():
     }
     item = normalize_model_item(raw)
     assert item.model_id == "DeepSeek-V3-671B"
-    assert item.inferred_tier == "T4"
+    assert item.inferred_tier == "T0"
     assert "reasoning" in item.capabilities
     assert "code" in item.capabilities
     assert "魔改能力" not in item.capabilities  # 受限枚举

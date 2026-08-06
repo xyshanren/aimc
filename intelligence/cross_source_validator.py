@@ -28,7 +28,7 @@ MIN_SOURCES = 2
 # 需要做交叉验证的字段
 COMPARED_FIELDS = ("tier", "capabilities", "context_length", "modality")
 
-# Tier 顺序表（T0 最低，T4 最高）
+# Tier 顺序表（T0 最高=旗舰，T4 最低=微型/嵌入，与 architecture.md §4.2 一致）
 _TIER_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3, "T4": 4}
 
 
