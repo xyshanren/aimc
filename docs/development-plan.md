@@ -13,7 +13,7 @@
 | Phase 1 | 网关核心 | ✅ | FastAPI 路由/频限/透传/8 张表基础架构 |
 | **Phase 2.5** | **运维加固** | **✅** | **4 个日常痛点改进（详见下文）** |
 | **Phase 2** | **多维模型组** | **✅** | **4 张新表 + 25 model + 6 group + 35 member + tier/scene 路由 + Agent 偏好 + 响应头** |
-| Phase 3 | 情报联动模型组 | 🔨 | 3.0/3.1/3.2/3.3/3.4 已完成，3.5 验证标准 + 国内服务商补齐中 |
+| Phase 3 | 情报联动模型组 | ✅ | 3.0/3.1/3.2/3.3/3.4 已完成，3.5 验证 4/4 PASS, 3.6 国内服务商补齐中 |
 | Phase 4 | 智能优化 | ⬜ 远期 | 用量分析 / 延迟追踪 / 自动权重 |
 | **API-Sec-1** | **DB api_key 加密 (XOR+Base64 轻量化)** | **✅** | **DB 文件泄露 ≠ channel key 泄露；零外部依赖** |
 | **API-Sec-2** | **ALERT_CHANNEL runtime override** | **✅** | **改告警 channel / webhook 不重启** |
@@ -286,12 +286,12 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 - ✅ 路由缓存精准刷新（I6：invalidate_channel/invalidate_price/invalidate_group 3 个接口）
 - ✅ 优惠活动影响渠道优先级（临时权重加成）
 
-### 3.5 验证标准 — ⬜ (本轮 P3 验证脚本完成后勾选)
+### 3.5 验证标准 — ✅ (tests/test_phase3_5_verification.py 4/4 PASS)
 
-- [ ] 模拟新模型发现 → 自动出现在 `model_registry` 和对应组中
-- [ ] 模拟价格变动 → 下次请求路由到新最低价渠道
-- [ ] 模拟模型下线 → 自动从组中移除，不再被路由
-- [ ] 低置信度变更 → 收到告警
+- [x] 模拟新模型发现 → 自动出现在 `model_registry` 和对应组中
+- [x] 模拟价格变动 → 下次请求路由到新最低价渠道
+- [x] 模拟模型下线 → 自动从组中移除，不再被路由
+- [x] 低置信度变更 → 收到告警
 
 ### 3.6 国内服务商补齐 — 🔨 (本轮扩展, 阶段实现)
 
