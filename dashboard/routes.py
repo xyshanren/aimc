@@ -416,6 +416,7 @@ ALLOWED_RUNTIME_KEYS = {
     "bark_server",
     "serverchan_key",
     "feishu_webhook_url",
+    "price_alert_threshold",  # Phase 4 E2: 价格波动告警阈值 (百分比字符串)
 }
 
 

@@ -118,6 +118,16 @@ async def sync_price_change(
                 "价格变动: %s/%s input %s->%s, output %s->%s (source=%s)",
                 provider, model, old_input, input_price, old_output, output_price, source,
             )
+
+            # Phase 4 E2 (2026-07-29): 价格大幅波动告警
+            # 输入价或输出价变动 ≥ 阈值 (默认 30%) → 推 bark/feishu
+            # 异常被 maybe_alert_price_change 吞掉，不会阻断主流程
+            try:
+                from intelligence.price_alert import maybe_alert_price_change
+                await maybe_alert_price_change(change)
+            except Exception as e:
+                logger.error("价格告警调用失败 (非阻断): %s", e)
+
             return change
     except Exception as e:
         logger.error("价格同步失败: %s/%s - %s", provider, model, e)

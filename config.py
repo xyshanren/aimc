@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     parse_confidence_threshold: float = 0.8  # 自愈置信度阈值
     crawl_enabled: bool = True  # 总开关：False = 跳过所有采集（试用阶段省心）
 
+    # === 价格波动告警 (Phase 4 E2, 2026-07-29) ===
+    # input_price 或 output_price 任一方向变动 ≥ 此百分比即触发告警
+    # 可被 SettingsRuntime 表 key="price_alert_threshold" 覆盖 (无需重启)
+    price_alert_threshold_pct: float = 30.0
+
     @property
     def db_url(self) -> str:
         """SQLAlchemy 异步连接 URL"""
