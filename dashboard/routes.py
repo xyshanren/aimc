@@ -690,10 +690,12 @@ async def resolve_cross_source_discrepancy(
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be dict")
     resolved_value = payload.get("resolved_value")
-    if not resolved_value:
-        raise HTTPException(status_code=400, detail="resolved_value required")
     resolved_note = payload.get("resolved_note")
     ignored = bool(payload.get("ignored", False))
+    # P1-12 fix: ignored=true 时允许 resolved_value 为空 (仅作误报标记, 不需拍板值).
+    # 非 ignored 才校验 resolved_value 必填, 避免上游调用方误传空值被 400 拒掉.
+    if not ignored and resolved_value is None:
+        raise HTTPException(status_code=400, detail="resolved_value required")
 
     row = await crud.resolve_cross_source_discrepancy(
         session,

@@ -21,8 +21,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PriceChange:
-    """价格变动记录，供 caller 决定是否触发额外动作"""
+    """价格变动记录，供 caller 决定是否触发额外动作
 
+    Phase 4 E2 fix (P1-8, 2026-07-29): 新增 provider 字段, 用于:
+    - alert message 标识渠道 (e.g. "渠道: siliconflow" 让用户一眼看出哪家厂商)
+    - throttle key 用 (provider, model) 避免不同厂商同名 model 互相抑制告警
+      (e.g. qwen-plus 在 siliconflow 和 aliyun 同时变动时分别告警)
+    """
+
+    provider: str
     channel_id: int
     model: str
     old_input_price: Optional[float]
@@ -98,6 +105,7 @@ async def sync_price_change(
             await session.commit()
 
             change = PriceChange(
+                provider=provider,
                 channel_id=channel.id,
                 model=model,
                 old_input_price=old_input,

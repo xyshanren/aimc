@@ -13,11 +13,14 @@
 10. P1-10 fix: resolve tier 路由 → 写 registry.tier + log + 刷路由缓存
 11. P1-10 fix: resolve capabilities 路由 → 写 registry.capabilities + log
 12. P1-10 fix: resolve ignored 路由 → 不写 registry, 只刷缓存
+13. P1-12 fix: resolve ignored=True 时允许 resolved_value 为空 (不被 400 拒掉)
+14. P2-13 fix: _group_models_by_id 是同步函数 (不是 coroutine, 也不依赖 await)
 
 跑法: python tests/test_phase4_e3_cross_source.py
 """
 
 import asyncio
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -309,7 +312,8 @@ def test_group_models_by_id():
          "model": {"model_id": "qwen-plus", "tier": "T3",
                     "capabilities": ["code", "math"], "context_length": 32768, "confidence": 0.85}},
     ]
-    grouped = asyncio.run(_group_models_by_id(records))
+    # P2-13 fix: 函数改为同步, 直接调用不走 asyncio.run
+    grouped = _group_models_by_id(records)
     assert "qwen-plus" in grouped
     fields = grouped["qwen-plus"]
     # tier: 2 个值 (T2 / T3)
@@ -955,6 +959,95 @@ def test_resolve_ignored_no_registry_write():
 
 
 # ============================================================
+# Test 13 (P1-12 fix): resolve ignored=True 允许 resolved_value 为空
+# ============================================================
+def test_resolve_ignored_allows_empty_resolved_value():
+    print("\n=== Test 13: P1-12 ignored=True 允许 resolved_value 为空 ===")
+    state = _patch_db_with_in_memory()
+    from db import crud
+
+    state["discrepancies"][4] = {
+        "id": 4, "model_id": "qwen-turbo", "field_changed": "tier",
+        "sources_json": "[]", "discrepancy_score": 0.3, "status": "pending",
+        "resolved_value": None, "resolved_note": None, "resolved_at": None,
+        "created_at": "2026-08-01", "updated_at": "2026-08-01",
+    }
+
+    refresh_calls = {"n": 0}
+
+    class _MockRouteEngine:
+        async def refresh_cache(self):
+            refresh_calls["n"] += 1
+
+    state["route_engine"] = _MockRouteEngine()
+
+    log_writes = []
+    async def fake_log(session, **kw):
+        log_writes.append(kw)
+    crud.log_capability_change = fake_log
+
+    class _MockSession:
+        async def get(self, model_cls, model_id):
+            return None
+        async def commit(self):
+            pass
+
+    import sys, types
+    sys.modules["gateway.router"] = types.ModuleType("gateway.router")
+    sys.modules["gateway.router"].route_engine = state["route_engine"]
+    if "dashboard.routes" in sys.modules:
+        del sys.modules["dashboard.routes"]
+    from dashboard import routes as dashboard_routes
+    dashboard_routes.route_engine = state["route_engine"]
+
+    # P1-12 fix: ignored=True 且不传 resolved_value 不应报 400
+    # 修前会报 HTTPException(400, 'resolved_value required').
+    result = asyncio.run(
+        dashboard_routes.resolve_cross_source_discrepancy(
+            discrepancy_id=4,
+            payload={"ignored": True},  # 不传 resolved_value
+            session=_MockSession(),
+        )
+    )
+    assert result["status"] == "ignored"
+    assert result["applied"] is False
+    # 不写 log
+    assert log_writes == [], f"ignored 不应写 log, 实际 {log_writes}"
+    # 仍刷缓存
+    assert refresh_calls["n"] == 1, f"仍应刷缓存, 实际 {refresh_calls['n']}"
+    # DB row 应被标 ignored (resolved_value 可为 None)
+    assert state["discrepancies"][4]["status"] == "ignored"
+    print("  [OK] ignored=True 无 resolved_value → 不报 400, status=ignored")
+
+
+# ============================================================
+# Test 14 (P2-13 fix): _group_models_by_id 是同步函数
+# ============================================================
+def test_group_models_by_id_is_sync():
+    print("\n=== Test 14: P2-13 _group_models_by_id 是同步函数 ===")
+    from intelligence.cross_source_validator import _group_models_by_id
+
+    # P2-13 fix: 去掉 async 装饰器, 改为 def. 函数不应是 coroutine function.
+    assert not inspect.iscoroutinefunction(_group_models_by_id), (
+        "_group_models_by_id 不应仍是 async (去除 async 装饰器后才是 def)"
+    )
+
+    # 验证可以同步调用并返回结果 (不需 asyncio.run)
+    records = [
+        {"provider": "siliconflow", "source_type": "model_list",
+         "model": {"model_id": "test-sync", "tier": "T3", "capabilities": ["code"],
+                    "context_length": 8192, "confidence": 0.9}},
+        {"provider": "openrouter", "source_type": "price_aggregator",
+         "model": {"model_id": "test-sync", "tier": "T3", "capabilities": ["code"],
+                    "context_length": 8192, "confidence": 0.85}},
+    ]
+    result = _group_models_by_id(records)
+    assert "test-sync" in result
+    assert isinstance(result, dict)
+    print(f"  [OK] _group_models_by_id 是 sync 函数, 返回 {len(result)} 个 model 分组")
+
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -978,6 +1071,10 @@ def main():
     test_resolve_tier_updates_registry_and_log()
     test_resolve_capabilities_updates_registry()
     test_resolve_ignored_no_registry_write()
+    # P1-12 新增: ignored 允许空 resolved_value
+    test_resolve_ignored_allows_empty_resolved_value()
+    # P2-13 新增: _group_models_by_id 是同步函数
+    test_group_models_by_id_is_sync()
 
     print("\n" + "=" * 60)
     print("ALL 14 TESTS PASSED")

@@ -54,14 +54,14 @@ def test_price_change_changed_flag():
     from intelligence.pricing_sync import PriceChange
 
     ch = PriceChange(
-        channel_id=1, model="m",
+        provider="siliconflow", channel_id=1, model="m",
         old_input_price=1.0, new_input_price=2.0,
         old_output_price=3.0, new_output_price=3.0,
     )
     assert ch.changed, "input 价 1->2 应判定为变动"
 
     no_change = PriceChange(
-        channel_id=1, model="m",
+        provider="siliconflow", channel_id=1, model="m",
         old_input_price=1.0, new_input_price=1.0,
         old_output_price=3.0, new_output_price=3.0,
     )
@@ -69,7 +69,7 @@ def test_price_change_changed_flag():
 
     # None 视为 0 (新增行)
     new_only = PriceChange(
-        channel_id=1, model="m",
+        provider="siliconflow", channel_id=1, model="m",
         old_input_price=None, new_input_price=1.0,
         old_output_price=None, new_output_price=None,
     )
@@ -85,14 +85,14 @@ def test_price_change_cheaper():
     from intelligence.pricing_sync import PriceChange
 
     down = PriceChange(
-        channel_id=1, model="m",
+        provider="siliconflow", channel_id=1, model="m",
         old_input_price=2.0, new_input_price=1.0,
         old_output_price=3.0, new_output_price=3.0,
     )
     assert down.cheaper
 
     up = PriceChange(
-        channel_id=1, model="m",
+        provider="siliconflow", channel_id=1, model="m",
         old_input_price=1.0, new_input_price=2.0,
         old_output_price=3.0, new_output_price=3.0,
     )
@@ -100,7 +100,7 @@ def test_price_change_cheaper():
 
     # old=None 视为首次记录，不算降价
     first = PriceChange(
-        channel_id=1, model="m",
+        provider="siliconflow", channel_id=1, model="m",
         old_input_price=None, new_input_price=0.5,
         old_output_price=None, new_output_price=None,
     )

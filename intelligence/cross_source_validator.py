@@ -108,8 +108,8 @@ async def _scan_promotions_with_models(session) -> list:
     return results
 
 
-async def _group_models_by_id(records: list) -> dict:
-    """按 model_id 分组聚合。
+def _group_models_by_id(records: list) -> dict:
+    """按 model_id 分组聚合 (P2-13 fix: 同步函数, 不依赖 await).
 
     Returns: {model_id: {field: {value: [{source, provider, confidence, ts}]}}}
     """
@@ -146,7 +146,7 @@ async def detect_and_record() -> dict:
     """
     async with async_session_factory() as session:
         records = await _scan_promotions_with_models(session)
-        grouped = await _group_models_by_id(records)
+        grouped = _group_models_by_id(records)
 
         total = len(grouped)
         with_discrepancy = 0

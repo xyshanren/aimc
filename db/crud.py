@@ -7,7 +7,7 @@ from datetime import date
 import logging
 from typing import Optional
 
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -633,9 +633,11 @@ async def upsert_cross_source_discrepancy(
     row = existing.scalar_one_or_none()
 
     if row:
+        # P2-17 fix: 不再手动赋值 updated_at. CrossSourceDiscrepancy.updated_at 已有
+        # onupdate=func.now() (db/models.py), flush 时 ORM 自动更新, 跟手工赋值等价
+        # 且避免 SQLAlchemy session.identity map 跟 onupdate 双重写入 (后者覆盖前者反而慢).
         row.sources_json = sources_json
         row.discrepancy_score = discrepancy_score
-        row.updated_at = func.now()
         return row
 
     # INSERT path: 可能在并发下撞 UniqueConstraint.
@@ -671,7 +673,7 @@ async def upsert_cross_source_discrepancy(
             return None
         row2.sources_json = sources_json
         row2.discrepancy_score = discrepancy_score
-        row2.updated_at = func.now()
+        # P2-17 fix: updated_at 走 ORM onupdate 自动更新 (同上注释)
         await session.flush()
         return row2
 

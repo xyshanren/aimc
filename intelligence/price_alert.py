@@ -51,17 +51,30 @@ def calc_change_pct(old: Optional[float], new: Optional[float]) -> Optional[floa
 
 
 def _get_threshold() -> float:
-    """读告警阈值：优先 SettingsRuntime 覆盖, fallback config 默认 30%。"""
+    """读告警阈值：优先 SettingsRuntime 覆盖, fallback config 默认 30%。
+
+    P2-15 fix: 走 alerter.get_runtime_override public accessor, 不再 import 私有 _settings_cache.
+    P2-16 fix: runtime override 转 float 失败时 logger.warning + 走 fallback, 不静默吞掉异常.
+    """
     from config import settings
 
-    # 同步读 in-process cache (alerter 维护的 _settings_cache)
     try:
-        from intelligence.alerter import _settings_cache
-        runtime_val = _settings_cache.get(SETTINGS_RUNTIME_KEY)
+        from intelligence.alerter import get_runtime_override
+        runtime_val = get_runtime_override(SETTINGS_RUNTIME_KEY)
         if runtime_val:
-            return float(runtime_val)
-    except Exception:
-        pass
+            try:
+                return float(runtime_val)
+            except (TypeError, ValueError) as e:
+                # 覆盖值被人手动设成 "abc" / "30%" 之类, 不阻断主流程, 走 fallback
+                logger.warning(
+                    "价格告警阈值 override 解析失败: key=%s value=%r err=%s, fallback 默认 %.1f%%",
+                    SETTINGS_RUNTIME_KEY, runtime_val, e, DEFAULT_THRESHOLD_PCT,
+                )
+    except Exception as e:
+        # alerter 模块本身异常 (e.g. import 失败), 同样走 fallback
+        logger.warning(
+            "价格告警阈值读取异常: err=%s, fallback 默认 %.1f%%", e, DEFAULT_THRESHOLD_PCT,
+        )
     return getattr(settings, "price_alert_threshold_pct", DEFAULT_THRESHOLD_PCT)
 
 
@@ -104,6 +117,8 @@ async def maybe_alert_price_change(change: PriceChange) -> bool:
     # 构造告警消息
     parts = [f"🔔 价格波动告警 (≥{threshold:.0f}%)"]
     parts.append(f"模型: {change.model}")
+    if change.provider:
+        parts.append(f"渠道: {change.provider}")
     if "input" in [t[0] for t in triggered]:
         old = change.old_input_price or 0
         new = change.new_input_price or 0
@@ -121,8 +136,11 @@ async def maybe_alert_price_change(change: PriceChange) -> bool:
     parts.append(f"来源: {change.source}")
 
     message = "\n".join(parts)
-    # throttle key 用 model 自身，60s 内同 model 多次变动只发 1 次
-    throttle_key = f"price_{change.model}"
+    # P1-8 fix: throttle key 包含 provider, 不同渠道同名 model 互不抑制.
+    # e.g. qwen-plus 在 siliconflow 涨价 → 发告警; aliyun 涨价 → 另发告警.
+    # 没 provider 补 "__" 避免 key 空拼接 (e.g. price___qwen-plus).
+    provider_key = change.provider or "__"
+    throttle_key = f"price_{provider_key}_{change.model}"
 
     try:
         await send_alert(message, key=throttle_key)

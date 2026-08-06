@@ -82,6 +82,20 @@ def _get_setting(key: str, default: str = "") -> str:
     return _settings_cache.get(key, default)
 
 
+# P2-15 fix: 公开 accessor, 让 price_alert 等其他模块以 public API 读 runtime override.
+# 之前 price_alert 直接 import _settings_cache 走私有属性, 耦合度太高且
+# 模块重命名/重构时会静默失效. 该函数返 raw value (可能为 None / 字符串), caller
+# 决定怎么用 (e.g. price_alert 走 float() 容错 + fallback).
+def get_runtime_override(key: str) -> Optional[str]:
+    """读 SettingsRuntime 表的 override 值 (同步读 in-process cache).
+
+    Returns:
+        override 字符串值; 若无 override 返 None (区别于空字符串).
+        注意: 该返值可能为空串 (settings_runtime 里 value='') 也算有 override.
+    """
+    return _settings_cache.get(key)
+
+
 def _get_active_channel() -> str:
     """读当前 channel: 优先 runtime override, fallback settings.alert_channel"""
     return _get_setting("alert_channel", settings.alert_channel).lower().strip() or "log"
