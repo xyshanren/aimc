@@ -1,0 +1,30 @@
+# Phase 4 v4.3 (2026-08-06): 锁定行尾格式, 防止 Windows CRLF 污染 Linux 部署
+# AIMC 是 Linux-first 项目, 但开发可能在 Windows / Mac / WSL 多平台
+# 显式声明避免 CRLF 误转换 (bash 脚本 / systemd unit 必须 LF)
+
+# Bash 脚本 (install.sh / backup.sh 等)
+*.sh            text eol=lf
+
+# systemd unit (Linux 标准, 不能有 CRLF)
+*.service       text eol=lf
+
+# .env 类 (虽然内容随意, 但跨平台避免奇怪差异)
+.env.template   text eol=lf
+*.env           text eol=lf
+
+# Python (保持 LF, 跟 PEP 8 一致)
+*.py            text eol=lf
+
+# Markdown / YAML / TOML / JSON
+*.md            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.toml          text eol=lf
+*.json          text eol=lf
+
+# 二进制
+*.db            binary
+*.png           binary
+*.jpg           binary
+*.gif           binary
+*.ico           binary

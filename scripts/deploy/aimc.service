@@ -1,0 +1,35 @@
+[Unit]
+Description=AIMC - AI Model Compass Gateway (user instance)
+Documentation=https://github.com/<your-repo>
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/aimc
+Environment="PATH=%h/aimc/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile=%h/aimc/.env
+ExecStart=%h/aimc/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# 日志走 journald (journalctl --user -u aimc)
+StandardOutput=journal
+StandardError=journal
+
+# 资源限制 (AIMC 轻量, 给些余量)
+LimitNOFILE=65536
+MemoryMax=2G
+
+# 安全 (Phase 4 v4.3 加, 但保持简单)
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+# 注意: ProtectHome=read-only 会让 ~/aimc 写入失败 — 用 ReadWritePaths 显式放行
+ReadWritePaths=%h/aimc/data %h/aimc/.venv
+
+[Install]
+WantedBy=default.target
