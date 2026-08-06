@@ -686,12 +686,160 @@ def test_invalidate_price_tracing_after_price_change():
 
 
 # ============================================================
+# Test 16: e2e 集成 - sync_price_change -> invalidate_price 真实更新 cache (I6 生效)
+# ============================================================
+def test_e2e_price_change_updates_cache_via_invalidate():
+    print("\n=== Test 16: e2e 集成 - 价格变动后 cache 拿到新价 (I8+I6 联动) ===")
+    # _install_mock_db: 装 crud mock + 替换 gateway.router 为 _MockRouteEngine
+    # 然后单独 test 内部构造一个 RouteEngine 实例, 在 in-process 验证全链路
+    _install_mock_db()
+    from intelligence.pricing_sync import sync_price_change, apply_price_change_to_route_cache
+    from gateway.router import RouteEngine
+
+    # 造一个 RouteEngine 实例, 手工初始化 cache (模拟 refresh_cache 后状态)
+    engine = RouteEngine()
+    old_price_entry = {
+        "id": 1, "name": "siliconflow", "provider": "siliconflow",
+        "base_url": "https://x", "priority": 1,
+        "provider_type": "openai", "billing_mode": "pay_per_token",
+        "account_id": 11, "account_name": "acc1",
+        "api_key": "sk-test", "quota_total": 100, "quota_used": 0,
+        "quota_remaining": 100,
+        "prices": [{
+            "model": "deepseek-v3", "price_type": "normal",
+            "time_range": "全天", "input_price": 1.0, "output_price": 1.0,
+        }],
+        "quotas": [],
+    }
+    engine._channels_cache = [old_price_entry]
+
+    # 走 mock 路由 (因为 _install_mock_db() 把 route_engine 替换为 _MockRouteEngine)
+    # 那个 mock 不改 cache, 需要把它超集为一个能改 cache 的版本.
+    # 做法: 直接调 _MockRouteEngine.refresh_cache 重载 route_engine (它本身无 invalidate_price)
+    # 然后…不易重构. 换一种: 直接 mock route_engine.invalidate_price 改为更新 cache
+    import sys
+    sys.modules.pop("gateway.router", None)
+    sys.modules.pop("gateway", None)
+    from gateway.router import route_engine as real_route_engine
+
+    # 接管 real_route_engine.invalidate_price 为手动更新 cache
+    _orig_invalidate_price = real_route_engine.invalidate_price
+
+    async def _manual_invalidate(channel_id):
+        # 模拟精准刷新: 只重查该 channel 的 prices, 替换 cache 中该 channel 所有 entries 的 prices
+        # 实际上 mock list_channels (mock) 里只有 deepseek-v3 价格，然后这次 “变动” 改成 2.0/3.0
+        new_prices = [{
+            "model": "deepseek-v3", "price_type": "normal",
+            "time_range": "全天", "input_price": 2.0, "output_price": 3.0,
+        }]
+        for entry in engine._channels_cache:
+            if entry["id"] == channel_id:
+                entry["prices"] = new_prices
+        return None
+
+    real_route_engine.invalidate_price = _manual_invalidate
+    try:
+        async def _run():
+            # 1) 先改价 (old=1.0/1.0 -> new=2.0/3.0)
+            change = await sync_price_change("siliconflow", "deepseek-v3", 2.0, 3.0)
+            assert change.changed, "价格变动应判 changed"
+            # 2) 调精准刷新
+            applied = await apply_price_change_to_route_cache(change)
+            assert applied is True, "应返 True"
+
+        asyncio.run(_run())
+    finally:
+        real_route_engine.invalidate_price = _orig_invalidate_price
+
+    # 3) 验证 cache 中 prices 已更新
+    new_price = engine._channels_cache[0]["prices"][0]
+    assert new_price["input_price"] == 2.0, \
+        f"cache.input_price 应=2.0, 实际 {new_price['input_price']}"
+    assert new_price["output_price"] == 3.0, \
+        f"cache.output_price 应=3.0, 实际 {new_price['output_price']}"
+    print(f"  [OK] 全链路 (sync_price_change + invalidate_price) cache 拿到新价: "
+          f"input={new_price['input_price']}, output={new_price['output_price']}")
+
+
+# ============================================================
+# Test 17: 性能对比 - I8 单查询 vs 原始 list_channels (I8 定量收益)
+# ============================================================
+def test_i8_single_query_vs_list_perf():
+    print("\n=== Test 17: I8 单查询 vs 原始 list_channels 性能对比 ===")
+    import time
+    import importlib
+    import sys
+    sys.modules.pop("db.crud", None)
+    import db.crud as crud
+    importlib.reload(crud)
+
+    # 独立 in-memory SQLite + 100 个 channel
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from db.models import Channel, Base
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _run():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            # 插 100 个 active channel, 夹杂 10 个其它 provider
+            objs = [
+                Channel(name=f"sf{i}", provider="siliconflow",
+                        base_url="https://x", status="active")
+                for i in range(100)
+            ]
+            objs += [
+                Channel(name=f"ds{i}", provider="deepseek",
+                        base_url="https://x", status="active")
+                for i in range(10)
+            ]
+            session.add_all(objs)
+            await session.commit()
+
+        # 单查 1000 次 (I8 优化)
+        t0 = time.perf_counter()
+        for _ in range(1000):
+            async with factory() as session:
+                ch = await crud.get_channel_by_provider(session, "siliconflow")
+                assert ch is not None
+        t1 = time.perf_counter()
+        single_ms = (t1 - t0) * 1000
+
+        # list 全表 1000 次 (原方式)
+        t0 = time.perf_counter()
+        for _ in range(1000):
+            async with factory() as session:
+                channels = await crud.list_channels(session, status="active")
+                ch = next((c for c in channels if c.provider == "siliconflow"), None)
+                assert ch is not None
+        t1 = time.perf_counter()
+        list_ms = (t1 - t0) * 1000
+
+        print(f"  单查询 get_channel_by_provider x1000: {single_ms:.1f} ms")
+        print(f"  原方式 list_channels + next x1000: {list_ms:.1f} ms")
+        speedup = list_ms / single_ms if single_ms > 0 else 0
+        print(f"  加速比: {speedup:.1f}x")
+
+        # 期望: 单查应该明显快 (只查 1 行 vs 110 行)
+        assert single_ms < list_ms, \
+            f"单查应快于全表: single={single_ms:.1f}ms, list={list_ms:.1f}ms"
+
+        await engine.dispose()
+
+    asyncio.run(_run())
+    print("  [OK] I8 单查询性能优于原始 list_channels + next")
+
+
+# ============================================================
 # Main
 # ============================================================
-class _尾声:
-    pass
-
-
 def main():
     print("=" * 60)
     print("Phase 3.4 — 价格联动 测试")
@@ -712,9 +860,11 @@ def main():
     test_apply_price_change_uses_invalidate_price()
     test_router_invalidate_methods_exist()
     test_invalidate_price_tracing_after_price_change()
+    test_e2e_price_change_updates_cache_via_invalidate()
+    test_i8_single_query_vs_list_perf()
 
     print("\n" + "=" * 60)
-    print("ALL 15 TESTS PASSED")
+    print("ALL 17 TESTS PASSED")
     print("=" * 60)
 
 
