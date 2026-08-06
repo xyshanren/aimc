@@ -368,6 +368,32 @@ def test_process_auto_leave():
     state["registry"]["old-model"] = {
         "model_id": "old-model", "family": "qwen", "tier": "T2", "status": "active",
     }
+    # 预存 group_member (该 model 在 tier:balanced 组中, P1-2 schema)
+    state["members"][("tier:balanced", "old-model")] = {
+        "group_id": "tier:balanced", "model_id": "old-model",
+        "priority": 100, "weight": 1.0, "added_by": "intel_auto",
+        "is_active": 1, "removed_at": None, "removed_reason": None, "removed_by": None,
+    }
+
+    # Phase 4 v4.1: model_sync.auto_left 路径中同步调 remove_model_group_members_by_model
+    # (之前只在 P1-2 cleanup 脚本里才调). 测试需 mock 该 crud 函数.
+    removed_calls = []
+
+    async def remove_model_group_members_by_model(session, model_id, *,
+                                                   reason="manual", removed_by="manual_approve"):
+        removed_calls.append({"model_id": model_id, "reason": reason, "removed_by": removed_by})
+        affected = 0
+        for m in state["members"].values():
+            if m["model_id"] == model_id and m["is_active"] == 1:
+                m["is_active"] = 0
+                m["removed_at"] = __import__("datetime").datetime.now()
+                m["removed_reason"] = reason
+                m["removed_by"] = removed_by
+                affected += 1
+        return affected
+
+    import db.crud as crud
+    crud.remove_model_group_members_by_model = remove_model_group_members_by_model
 
     item = ModelIntelItem(
         model_id="old-model", family="qwen", inferred_tier="T2",
@@ -376,12 +402,31 @@ def test_process_auto_leave():
     result = asyncio.run(process_model_item(_MockSessionShim(), item))
     assert result.action == "auto_left", f"应 auto_left, 实际 {result.action}"
     assert state["registry"]["old-model"]["status"] == "deprecated"
+
     # log: status 变更 approved=1 (auto_left 阈值 0.9, 自动生效)
     status_log = next(l for l in state["logs"] if l["field_changed"] == "status")
     assert status_log["approved"] == 1
     assert status_log["old_value"] == "active"
     assert status_log["new_value"] == "deprecated"
-    print(f"  [OK] 自动出组 status=deprecated, approved=1")
+
+    # Phase 4 v4.1 新增验证: member 一步软删 (不依赖 cleanup 任务)
+    member = state["members"][("tier:balanced", "old-model")]
+    assert member["is_active"] == 0, (
+        f"v4.1 后 model_sync 应同步软删 member, 实际 is_active={member['is_active']}"
+    )
+    assert member["removed_reason"] == "deprecated+conf>=0.9"
+    assert member["removed_by"] == "intel_auto"
+    assert member["removed_at"] is not None
+
+    # 验证 remove_model_group_members_by_model 被调用了, 且参数正确
+    assert len(removed_calls) == 1, (
+        f"应调用 1 次 remove_model_group_members_by_model, 实际 {len(removed_calls)}"
+    )
+    assert removed_calls[0]["model_id"] == "old-model"
+    assert removed_calls[0]["reason"] == "deprecated+conf>=0.9"
+    assert removed_calls[0]["removed_by"] == "intel_auto"
+
+    print(f"  [OK] 自动出组 status=deprecated + 一步软删 member + reason=deprecated+conf>=0.9")
 
 
 # ============================================================

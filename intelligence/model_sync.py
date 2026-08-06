@@ -92,9 +92,11 @@ async def process_model_item(
     # registry 没有该 model, 都会 fallthrough 跳到入组判定 → deprecated model 被重新入组.
     if should_auto_leave(item):
         existing = await crud.get_model_registry(session, model_id)
+        registry_changed = False
         if existing and existing.status != "deprecated":
             old_status = existing.status
             existing.status = "deprecated"
+            registry_changed = True
             await crud.log_capability_change(
                 session,
                 model_id=model_id,
@@ -116,6 +118,32 @@ async def process_model_item(
                 model_id, item.confidence,
                 "deprecated" if existing else "absent",
             )
+
+        # Phase 4 v4.1 hotfix (2026-08-06): auto_left 直接软删 group_members.
+        # 之前只改 registry.status, member 仍 is_active=1, 路由 cache 可能选到.
+        # 现在一步走: status=deprecated + member.is_active=0 同步完成.
+        # 与 P1-2 cleanup 脚本幂等 (重复执行无副作用).
+        # 幂等性保证: remove_model_group_members_by_model WHERE is_active=1 AND model_id=?
+        # 已 is_active=0 的行不被重设.
+        removed_count = await crud.remove_model_group_members_by_model(
+            session,
+            model_id,
+            reason="deprecated+conf>=0.9",
+            removed_by="intel_auto",
+        )
+        if removed_count > 0:
+            logger.info(
+                "auto_left 软删 group_members: model=%s 受影响 %d 条",
+                model_id, removed_count,
+            )
+
+        # dashboard 提示 (不论有否变动)
+        if registry_changed or removed_count > 0:
+            logger.debug(
+                "auto_left 闭环: model=%s registry_changed=%s members_removed=%d",
+                model_id, registry_changed, removed_count,
+            )
+
         return SyncResult(
             model_id=model_id, action="auto_left",
             confidence=item.confidence, reason="deprecated + conf>=0.9",

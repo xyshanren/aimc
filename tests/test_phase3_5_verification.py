@@ -426,40 +426,19 @@ def test_deprecated_model_soft_delete():
     # === 验证 2: registry.status=deprecated ===
     assert state["registry"]["old-model"]["status"] == "deprecated"
 
-    # === 验证 3: member 软删除 (is_active=0 + 审计字段) ===
-    # 说明: model_sync 当前仅改 registry.status + 写 log,
-    # member 的物理 (软) 删除交由后续 P1-2 cleanup 任务执行
-    # (scripts/cleanup_inactive_members.py). 本测试验证 model_sync 部分.
-    assert state["registry"]["old-model"]["status"] == "deprecated"
-    member_after_model_sync = state["members"][("tier:flagship", "old-model")]
-    # model_sync 未调 remove_model_group_members_by_model,
-    # 此步骤 member 仍 is_active=1 (需后续 cleanup 任务清理)
-    assert member_after_model_sync["is_active"] == 1, (
-        "model_sync 不直接软删 member (P1-2 cleanup 任务处理)"
-    )
-
-    # === 验证 4: 调度手 P1-2 cleanup (scheduler 后清理阶段) ===
-    # 模拟 cleanup_inactive_group_members 脚本, 根据 deprecated status 触发软删
-    async def _cleanup_after_deprecated():
-        affected = 0
-        for key, m in state["members"].items():
-            if m["model_id"] == "old-model" and m["is_active"] == 1:
-                m["is_active"] = 0
-                m["removed_at"] = datetime.now()
-                m["removed_reason"] = "deprecated_via_registry_status"
-                m["removed_by"] = "cleanup_inactive_members_script"
-                affected += 1
-        return affected
-
-    affected = asyncio.run(_cleanup_after_deprecated())
-    assert affected == 1, "cleanup 应处理 1 条"
-
+    # === 验证 3: member 一步走软删除 (is_active=0 + 审计字段) ===
+    # Phase 4 v4.1 (2026-08-06): model_sync.auto_left 路径中
+    # 同步调 crud.remove_model_group_members_by_model, 不再依赖 P1-2 cleanup 任务.
+    # 测试期望: process_promotion 返回后 member 已被软删.
     member = state["members"][("tier:flagship", "old-model")]
     assert member["is_active"] == 0, (
         f"软删除 is_active 应 0, 实际 {member['is_active']}"
     )
-    assert member["removed_reason"] == "deprecated_via_registry_status"
-    assert member["removed_by"] == "cleanup_inactive_members_script"
+    assert member["removed_reason"] == "deprecated+conf>=0.9", (
+        f"removed_reason 应为 model_sync 传的 'deprecated+conf>=0.9', "
+        f"实际 {member['removed_reason']}"
+    )
+    assert member["removed_by"] == "intel_auto"
     assert member["removed_at"] is not None
 
     # === 验证 4: 路由 cache (P1-2 list_active) 不出现 ===
@@ -478,7 +457,7 @@ def test_deprecated_model_soft_delete():
     assert status_logs[0]["new"] == "deprecated"
     assert status_logs[0]["approved"] == 1
 
-    print(f"  [OK] old-model deprecated → 软删除 + 路由 cache 不出现")
+    print(f"  [OK] old-model deprecated → 一步软删 + 路由 cache 不出现")
 
 
 # ============================================================
