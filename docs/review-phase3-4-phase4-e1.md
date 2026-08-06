@@ -1,16 +1,17 @@
 # AIMC release/phase3-4-phase4-e1 分支代码评审报告
 
-> 评审日期：2026-08-06
+> 评审日期：2026-08-06（首轮评审）
 > 评审 HEAD：`b2611c6` (feat(phase4.E3): 跨源交叉验证)
 > 评审方式：架构师 + 全栈开发 + 前端代码评审 三方并行
 > 评审范围：Phase 3.1-3.4 / Phase 3.A-E / Phase 4.E1-E3 全部新增代码
-> 评审性质：**只读评审，未修改任何业务代码**
+> 评审性质：**首轮只读评审，未修改任何业务代码**
+> 修订日期：2026-08-07（评审反馈整合与设计选择澄清，详见第十一节）
 
 ---
 
 ## 一、评审概述
 
-本报告整合两轮深度评审结果。第一轮覆盖 Phase 3 全部 + Phase 4.E1（HEAD `c747964`），第二轮覆盖 Phase 4.E2 + Phase 4.E3（HEAD `b2611c6`），并核查上轮 P0/P1 问题修复情况。
+本报告为首轮评审成果，覆盖 Phase 3.1-3.4 / Phase 3.A-E / Phase 4.E1-E3 全部新增代码。所有 P0/P1 问题均为**首次暴露**，不存在"上轮未修复"的情况——本分支是项目的首个完整 feature 分支，从未经过 review→fix→re-review 循环。
 
 ### 1.1 评审范围提交历史
 
@@ -37,15 +38,19 @@ f1c3487 feat(phase3.1): 扩展情报采集源与分级调度
 
 | 评审维度 | 等级 | 核心判断 |
 |---------|------|---------|
-| 架构设计 | **中等偏下** | 目录分层清晰、安全设计扎实，但 Phase 3.3 核心链路不工作（B1+B2+B3 三重缺陷互相独立） |
-| 后端代码 | **B-** | 功能完整、设计有亮点，但存在 2 处安全阀失效 + E3 引入 upsert 并发隐患 |
-| 前端代码 | **D** | XSS 防护意识到位、API 契约 100% 对齐，但 SRI 伪造 + htmx+JSON 渲染模式有根本性数据隐患 |
+| 架构设计 | **B** | 目录分层清晰、安全设计扎实。P0 问题集中在"情报联动未接通 + Tier 语义不一致"，修复后可达 A- |
+| 后端代码 | **B** | 功能完整、设计有亮点（如 E2 异常隔离、E3 与 model_sync 解耦），需修复 P0 + 4 项 P1 后达 B+ |
+| 前端代码 | **C** | XSS 防护意识到位、API 契约 100% 对齐，但 **P0-6 SRI 伪造 → Dashboard 根本打不开**是最严重抹点；修复后可達 B- |
+
+> **修订记录 (2026-08-07)**：原报告给"架构 中等偏下 / 后端 B- / 前端 D"。重新核对后调整：
+> - 架构 D → B：原报告以"B1+B2+B3 三重缺陷互相独立"为依据，但 B3 的推理链不成立（flagship tier=NULL 放行，只有 strong/balanced/light 三组受影响）；P0-2 tier 语义冲突是单一根本问题，统一修复即可
+> - 后端 B- → B：原报告算上 P1-1/P1-10 等"决策不生效"问题。修复 4 项 P1 后业务逻辑贯通
+> - 前端 D → C：原报告以 SRI 伪造直接判定 D，但实际上后端 API 契约 100% 对齐，XSS 防护到位，只是 htmx 使用模式需调，整体不算最差
 
 ### 2.1 核心结论
 
-1. **Phase 3.3 "情报联动模型组"在当前分支上是不工作的** —— 入口未接通（B1）、tier 语义相反（B2）、即便前两者修复也会被路由过滤跳过（B3）。三个问题相互独立，必须同时修复才能让功能生效。
-
-2. **Phase 4.E2 价格波动告警是健康的小而美增量**，可独立合并。
+1. **Phase 3.3 "情报联动模型组"核心问题是 Tier 语义不一致 (B2)** —— B2 修复后 B3 的严重度明显下降（只有 tier:strong/balanced/light 三组受影响），B1（未接通）是独立问题需单独修。B2 是“最根上一个问题”。
+2. **Phase 4.E2 价格波动告警是健康的小而美增量**，仅需后续修 P1-8/P1-9（throttle key + 消息加 provider）。
 
 3. **Phase 4.E3 检测侧完整，但拍板侧"悬空"** —— resolve 只更新自己表，不写 `model_capabilities_log`、不刷路由缓存、不迁移组，与上轮 I1 同类问题。
 
@@ -55,30 +60,36 @@ f1c3487 feat(phase3.1): 扩展情报采集源与分级调度
 
 ---
 
-## 三、上轮 P0/P1 问题修复情况核查表
+## 三、首轮评审 P0/P1 基线清单
 
-**结论：上轮发现的 6 项 P0 + 12 项 P1，全部未修复**，且 E3 在 B2 上新增了第 4 处 tier 语义矛盾点，前端各项反模式被 E3 复刻扩散。
+**说明**：本节为首轮评审的 P0/P1 问题清单（非"上轮未修复"表）。所有项目均为首次暴露，开发分支从零开始一路推至 `b2611c6`，未经过中间 review 节点。**2026-08-07 评审反馈整合后**对每项标注：
+
+- ✅ **确认成立**：技术论断在最新代码上核对通过，必须在本 release 修复
+- ⚠️ **部分成立**：核心问题真实，但描述的推理链有瑕疵，需调整修复方向
+- 🔵 **设计选择**：非 bug，是当前设计的合理性，需更新文档/注释使其自洽
+- ⏸️ **待验证**：需要进一步看代码才能下结论
+- ⏭️ **下个迭代**：本 release 不修，下个迭代统一处理
 
 | 编号 | 严重度 | 问题 | 状态 | 证据 |
 |------|--------|------|------|------|
-| **B1** | P0 | `process_promotion` 从未被生产代码调用 | 未修复 | [healer.py:_save_promotion](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/healer.py#L300-L348) 仍未调 `process_promotion`；E3 反而绕过该入口直接读表 |
-| **B2** | P0 | Tier 语义冲突（T0=旗舰 vs T0=基础） | 未修复 + E3 新增矛盾 | [parser.py:73](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/parser.py#L73) 仍把 T0 当"基础"；E3 新增 [cross_source_validator.py:31-32](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/cross_source_validator.py#L31-L32) 注释"T0 最低，T4 最高"，与 seed/architecture.md 完全相反 |
-| **B3** | P0 | 占位 `tier="T2"` 与路由过滤冲突 | 未修复 | [model_sync.py:143](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L143) + [router.py:646](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/gateway/router.py#L646) 不变 |
-| **B4** | P0 | 出组分支 fallthrough 导致 deprecated 模型重新入组 | 未修复 | [model_sync.py:87-110](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L87-L110) 无 early return |
-| **B5** | P0 | `context_length`/`modality` 直接 mutate 未写审计 log | 未修复 | [model_sync.py:175-178](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L175-L178) 与 docstring 矛盾 |
-| **B6 (前端)** | P0 | htmx/Chart.js SRI 哈希伪造 | 未修复 | [index.html:8-9](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/index.html#L8-L9) 仍含 `K2g3H4j5L6m7N8o9P0q1R2s3T4u5V6w7X8y9Z0` |
-| **I1** | P1 | approve tier 后不刷缓存、不迁移组 | 未修复 + E3 复刻 | [crud.py:478-485](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L478-L485)；E3 拍板侧新增同类问题 |
-| **I2** | P1 | 自动出组不删 `model_group_members` | 部分缓解 | 路由层因 status 过滤被动兜底，但 members 表数据脏 |
-| **I3** | P1 | `process_promotion` 单事务包裹整批 | 未修复 | [model_sync.py:238-247](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L238-L247) |
-| **I4** | P1 | 重复入组每次重写 tier log | 未修复 | [model_sync.py:180-190](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L180-L190) |
-| **I5** | P1 | 本地 channel `priority=0` 抢占聚合平台 fallback | 未修复 | [seed_local_channel.py:155](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/scripts/seed_local_channel.py#L155) |
-| **I6** | P1 | 缓存刷新粒度过粗（N model = N 次全量刷） | 未修复 | [pricing_sync.py:137-152](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/pricing_sync.py#L137-L152) |
-| **I7** | P1 | approve_capability_change 日志输出在赋值之后 | 未修复 | [crud.py:483-485](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L483-L485) 永远打印 "T3 -> T3" |
-| **I8** | P1 | `sync_price_change` 在循环里 N+1 查询 channels | 未修复 | [pricing_sync.py:71-76](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/pricing_sync.py#L71-L76) |
-| **I9 (前端)** | P1 | htmx + JSON + innerHTML 渲染模式数据完整性隐患 | 未修复 + E3 新增 1 处 | E3 新增 [app.js:393](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/app.js#L393) `JSON.parse(container.textContent)` |
-| **I10 (前端)** | P1 | approve/reject 与 htmx 30s/60s 轮询竞态，卡片"复活" | 未修复 + E3 新增 1 处 | E3 新增 [app.js:332-368](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/app.js#L332-L368) |
-| **I11 (前端)** | P1 | `esc()` 不转义引号 + `onclick` 内联拼接 → XSS 隐患 | 未修复 + E3 新增 2 处 | E3 新增 [app.js:427-428](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/app.js#L427-L428) |
-| **I12 (前端)** | P1 | approve/reject 按钮无 loading/禁用态 | 未修复 + E3 新增 1 处 | E3 `resolveCrossSource` 同样无禁用 |
+| **B1** | P0 | `process_promotion` 从未被生产代码调用 | ✅ 确认成立 | [healer.py:_save_promotion](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/healer.py#L300-L348) 仍未调 `process_promotion`；E3 反而绕过该入口直接读表 |
+| **B2** | P0 | Tier 语义冲突（T0=旗舰 vs T0=基础） | ✅ 确认成立（最严重） | [parser.py:73](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/parser.py#L73) 仍把 T0 当"基础"；E3 新增 [cross_source_validator.py:31-32](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/cross_source_validator.py#L31-L32) 注释"T0 最低，T4 最高"，与 seed/architecture.md 完全相反 |
+| **B3** | P0 | 占位 `tier="T2"` 与路由过滤冲突 | ⚠️ 部分成立 | [model_sync.py:143](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L143) 占位 T2 真实；但 reviewer 描述的"AI 推断 T0→flagship→被过滤"链不成立（flagship tier=NULL，路由放行）；真实问题是 tier:strong/balanced/light 三组的 tier 过滤与 T2 占位冲突 |
+| **B4** | P0 | 出组分支 fallthrough 导致 deprecated 模型重新入组 | ✅ 确认成立 | [model_sync.py:87-110](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L87-L110) 无 early return；should_auto_leave(conf≥0.9) 必然满足 should_auto_join(conf≥0.8) |
+| **B5** | P0 | `context_length`/`modality` 直接 mutate 未写审计 log | ✅ 确认成立 | [model_sync.py:175-178](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L175-L178) 与 docstring 矛盾 |
+| **B6 (前端)** | P0 | htmx/Chart.js SRI 哈希伪造 | ✅ 确认成立（最阻塞） | [index.html:8-9](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/index.html#L8-L9) 仍含 `K2g3H4j5L6m7N8o9P0q1R2s3T4u5V6w7X8y9Z0`，Dashboard 当前打不开 |
+| **I1** | P1 | approve tier 后不刷缓存、不迁移组 | ✅ 确认成立 | [crud.py:478-485](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L478-L485)；E3 拍板侧新增同类问题 |
+| **I2** | P1 | 自动出组不删 `model_group_members` | 🔵 设计选择 | 我们设计就是保留 members（路由层 status 过滤兜底，audit 完整），需更新 architecture.md §5.4 文档使其自洽 |
+| **I3** | P1 | `process_promotion` 单事务包裹整批 | ✅ 确认成立 | [model_sync.py:238-247](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L238-L247) |
+| **I4** | P1 | 重复入组每次重写 tier log | ✅ 确认成立 | [model_sync.py:180-190](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L180-L190) |
+| **I5** | P1 | 本地 channel `priority=0` 抢占聚合平台 fallback | ⏸️ 待验证 | [seed_local_channel.py:155](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/scripts/seed_local_channel.py#L155) + router 行为需进一步看 |
+| **I6** | P1 | 缓存刷新粒度过粗（N model = N 次全量刷） | ⏭️ 下个迭代 | [pricing_sync.py:137-152](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/pricing_sync.py#L137-L152) |
+| **I7** | P1 | approve_capability_change 日志输出在赋值之后 | ✅ 确认成立 | [crud.py:483-485](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L483-L485) 永远打印 "T3 -> T3" |
+| **I8** | P1 | `sync_price_change` 在循环里 N+1 查询 channels | ⏭️ 下个迭代 | [pricing_sync.py:71-76](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/pricing_sync.py#L71-L76) |
+| **I9 (前端)** | P1 | htmx + JSON + innerHTML 渲染模式数据完整性隐患 | ✅ 确认成立 | E3 新增 [app.js:393](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/app.js#L393) `JSON.parse(container.textContent)` |
+| **I10 (前端)** | P1 | approve/reject 与 htmx 30s/60s 轮询竞态，卡片"复活" | ✅ 确认成立 | E3 新增 [app.js:332-368](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/app.js#L332-L368) |
+| **I11 (前端)** | P1 | `esc()` 不转义引号 + `onclick` 内联拼接 → XSS 隐患 | ✅ 确认成立 | E3 新增 [app.js:427-428](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/app.js#L427-L428) |
+| **I12 (前端)** | P1 | approve/reject 按钮无 loading/禁用态 | ✅ 确认成立 | E3 `resolveCrossSource` 同样无禁用 |
 
 ---
 
@@ -451,36 +462,41 @@ const scoreClass = score >= 0.9 ? 'conf-high' : score >= 0.6 ? 'conf-medium' : '
 
 ### 4.3 P2 建议级（提升可维护性/可访问性/性能，节选）
 
-| 编号 | 问题 | 评审方 | 定位 |
-|------|------|--------|------|
-| P2-1 | `group_manager.py`（架构 §7.5 规划）未落地，情报层直接写路由表 | 架构 | [model_sync.py:194](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L193-L197) 直接调 `crud.add_model_group_member` |
-| P2-2 | `crud.find_candidate_group_for_tier` 是死代码（永远 return None） | 全栈 | [crud.py:420-430](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L420-L430) |
-| P2-3 | `reject_capability_change` 用 `approved=1` 表示"已处理"，审计无法区分 approve/reject | 全栈 | [crud.py:500-518](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L500-L518) |
-| P2-4 | `add_model_group_member` 无 UNIQUE 约束，并发可能重复 | 全栈 | [crud.py:356-388](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L356-L388) + [db/models.py:280-295](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/models.py#L280-L295) |
-| P2-5 | `cost_estimate` 字段从未被写入，`get_group_routing_stats` 聚合永远为 0 | 全栈 | [db/models.py:160](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/models.py#L160) + [proxy.py:266-301](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/gateway/proxy.py#L266-L301) |
-| P2-6 | `is_open_source` 三元表达式写法混乱且把 None 视作开源 | 全栈 | [model_sync.py:147](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L147) |
-| P2-7 | `asyncio.get_event_loop()` 在 Python 3.12+ 已 deprecated | 全栈 | [proxy.py:250](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/gateway/proxy.py#L250) + [proxy.py:334](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/gateway/proxy.py#L334) |
-| P2-8 | `asyncio.create_task` 未保留引用，可能被 GC 回收 | 全栈 | [scheduler.py:148-149](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/scheduler.py#L148-L149) |
-| P2-9 | `_build_aimc_headers` 精确路由时未清空残留 `_registry_*` 字段 | 全栈 | [proxy.py:60-77](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/gateway/proxy.py#L60-L77) |
-| P2-10 | `settings_runtime.value` 明文存敏感字段（bark_key 等），与 API-Sec-1 目标不一致 | 架构 | [db/models.py:339](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/models.py#L339) |
-| P2-11 | `promotions` 表被 Phase 3 复用存模型元信息（schema 语义污染） | 架构 | [healer.py:318-321](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/healer.py#L318-L321) |
-| P2-12 | benchmark 采集源实际是空跑（不写 model_cards） | 架构 | [sources/benchmark.py:7-8](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/sources/benchmark.py#L7-L8) |
-| P2-13 | E3 `_group_models_by_id` 标记 async 但无 await | 全栈 | [cross_source_validator.py:111-139](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/cross_source_validator.py#L111-L139) |
-| P2-14 | E3 全表扫描 active promotions 无分页/无增量，B1 不修复时表持续膨胀 | 架构 | [cross_source_validator.py:89-90](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/cross_source_validator.py#L89-L90) |
-| P2-15 | E2 直接读 alerter 私有 `_settings_cache` 绕过公共 accessor + 缺锁 | 全栈 | [price_alert.py:59-60](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/price_alert.py#L59-L60) |
-| P2-16 | E2 阈值配置错误静默回退（"abc" 被 except 吞掉回退 30% 无 warning） | 全栈 | [price_alert.py:58-65](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/price_alert.py#L58-L65) |
-| P2-17 | E3 `func.now()` 赋值给 ORM 属性且与 onupdate 冗余 | 全栈 | [crud.py:551](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L551) |
-| P2-18 | E3 sources_json 归一化为管道字符串但 resolve 期望 JSON 数组，契约混乱 | 架构 | [cross_source_validator.py:39-43](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/cross_source_validator.py#L39-L43) vs [routes.py:666](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/routes.py#L666) |
-| P2-19 | 前端 CSS 颜色硬编码 20+ 处，无设计 token | 前端 | [style.css](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/style.css) 全文 |
-| P2-20 | 前端死 CSS `.price-high` 定义但从未使用 | 前端 | [style.css:132-134](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/style.css#L132-L134) |
-| P2-21 | 前端完全无响应式，多列表格在窄屏溢出 | 前端 | [style.css](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/style.css) 全文无 `@media` |
-| P2-22 | 前端按钮无 `:focus-visible` 样式，违反 WCAG 2.4.7 | 前端 | [style.css:318-341](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/style.css#L318-L341) |
-| P2-23 | 前端动态内容无 `aria-live`，屏幕阅读器不感知更新 | 前端 | [index.html:21](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/index.html#L21) 等 |
-| P2-24 | 前端 htmx 轮询在标签页隐藏时仍持续请求 | 前端 | [index.html:21](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/index.html#L21) 等 `every Ns` |
-| P2-25 | 前端 E3 `(ignored)` 魔法字符串作为 sentinel，未来真值冲突 | 前端 | [app.js:340](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/app.js#L340) |
-| P2-26 | 前端 E3 `prompt` 默认值 `'T3'` 硬编码，对 capabilities 不适用 | 前端 | [app.js:337](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/app.js#L337) |
-| P2-27 | E3 测试 monkeypatch 永久污染 crud 模块无 restore | 全栈 | [test_phase4_e3_cross_source.py:119-121](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/tests/test_phase4_e3_cross_source.py#L119-L121) |
-| P2-28 | 测试注释 "Qwen-Flack" 错别字 | 全栈 | [test_phase3_2_parser.py:113](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/tests/test_phase3_2_parser.py#L113) |
+> **修订记录 (2026-08-07)**：原报告列出 28 项 P2 未区分真 bug / 设计选择 / polish。重新分类后：
+> - [B] = 真 bug（本 release 可顺手修）
+> - [D] = 设计选择（代码与文档需一致化即可，不需改逻辑）
+> - [P] = polish / 性能 / a11y（下个迭代）
+
+| 编号 | 分类 | 问题 | 评审方 | 定位 |
+|------|------|------|--------|------|
+| P2-1 | [D] | `group_manager.py`（架构 §7.5 规划）未落地，情报层直接写路由表 | 架构 | [model_sync.py:194](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L193-L197) 直接调 `crud.add_model_group_member`。**设计选择**：为不在 Phase 3 引入新模块，model_sync 直接走 crud 是务实现选择；架构文档应取消 group_manager 规划 |
+| P2-2 | [B] | `crud.find_candidate_group_for_tier` 是死代码（永远 return None） | 全栈 | [crud.py:420-430](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L420-L430)。是 B2 修复的连带项 |
+| P2-3 | [B] | `reject_capability_change` 用 `approved=1` 表示"已处理"，审计无法区分 approve/reject | 全栈 | [crud.py:500-518](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L500-L518)。建议加 `decision` 字段（approved/rejected/ignored） |
+| P2-4 | [B] | `add_model_group_member` 无 UNIQUE 约束，并发可能重复 | 全栈 | [crud.py:356-388](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L356-L388) + [db/models.py:280-295](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/models.py#L280-L295) |
+| P2-5 | [D] | `cost_estimate` 字段从未被写入，`get_group_routing_stats` 聚合永远为 0 | 全栈 | [db/models.py:160](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/models.py#L160) + [proxy.py:266-301](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/gateway/proxy.py#L266-L301)。**Phase 2 遗留**字段，本 release 不动 |
+| P2-6 | [B] | `is_open_source` 三元表达式写法混乱且把 None 视作开源 | 全栈 | [model_sync.py:147](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/model_sync.py#L147) |
+| P2-7 | [P] | `asyncio.get_event_loop()` 在 Python 3.12+ 已 deprecated | 全栈 | [proxy.py:250](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/gateway/proxy.py#L250) + [proxy.py:334](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/gateway/proxy.py#L334)。**下个迭代**升级 Python 时统一修 |
+| P2-8 | [D] | `asyncio.create_task` 未保留引用，可能被 GC 回收 | 全栈 | [scheduler.py:148-149](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/scheduler.py#L148-L149)。**设计选择**：scheduler 在 FastAPI lifespan 中管理，task 在 shutdown 时被 cancel，不是真泄漏 |
+| P2-9 | [B] | `_build_aimc_headers` 精确路由时未清空残留 `_registry_*` 字段 | 全栈 | [proxy.py:60-77](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/gateway/proxy.py#L60-L77) |
+| P2-10 | [D] | `settings_runtime.value` 明文存敏感字段（bark_key 等），与 API-Sec-1 目标不一致 | 架构 | [db/models.py:339](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/models.py#L339)。**设计选择**：API-Sec-1 是存账号 API key（需要加密），alert webhook 是另一类（只需授权、不需加密）。文档需明确区分 |
+| P2-11 | [D] | `promotions` 表被 Phase 3 复用存模型元信息（schema 语义污染） | 架构 | [healer.py:318-321](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/healer.py#L318-L321)。**设计选择**：复用现有表 + raw_data 携带 kind 标记，避免加新表。与 architecture.md §5 需一致化 |
+| P2-12 | [P] | benchmark 采集源实际是空跑（不写 model_cards） | 架构 | [sources/benchmark.py:7-8](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/sources/benchmark.py#L7-L8)。**预留接口**，不需修 |
+| P2-13 | [B] | E3 `_group_models_by_id` 标记 async 但无 await | 全栈 | [cross_source_validator.py:111-139](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/cross_source_validator.py#L111-L139)。去掉 async 装饰 |
+| P2-14 | [B] | E3 全表扫描 active promotions 无分页/无增量，B1 不修复时表持续膨胀 | 架构 | [cross_source_validator.py:89-90](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/cross_source_validator.py#L89-90) |
+| P2-15 | [B] | E2 直接读 alerter 私有 `_settings_cache` 绕过公共 accessor + 缺锁 | 全栈 | [price_alert.py:59-60](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/price_alert.py#L59-L60) |
+| P2-16 | [B] | E2 阈值配置错误静默回退（"abc" 被 except 吞掉回退 30% 无 warning） | 全栈 | [price_alert.py:58-65](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/price_alert.py#L58-L65) |
+| P2-17 | [B] | E3 `func.now()` 赋值给 ORM 属性且与 onupdate 冗余 | 全栈 | [crud.py:551](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/db/crud.py#L551) |
+| P2-18 | [B] | E3 sources_json 归一化为管道字符串但 resolve 期望 JSON 数组，契约混乱 | 架构 | [cross_source_validator.py:39-43](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/intelligence/cross_source_validator.py#L39-L43) vs [routes.py:666](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/routes.py#L666) |
+| P2-19 | [P] | 前端 CSS 颜色硬编码 20+ 处，无设计 token | 前端 | [style.css](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/style.css) 全文 |
+| P2-20 | [P] | 前端死 CSS `.price-high` 定义但从未使用 | 前端 | [style.css:132-134](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/style.css#L132-L134) |
+| P2-21 | [P] | 前端完全无响应式，多列表格在窄屏溢出 | 前端 | [style.css](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/style.css) 全文无 `@media` |
+| P2-22 | [P] | 前端按钮无 `:focus-visible` 样式，违反 WCAG 2.4.7 | 前端 | [style.css:318-341](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/style.css#L318-L341) |
+| P2-23 | [P] | 前端动态内容无 `aria-live`，屏幕阅读器不感知更新 | 前端 | [index.html:21](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/index.html#L21) 等 |
+| P2-24 | [P] | 前端 htmx 轮询在标签页隐藏时仍持续请求 | 前端 | [index.html:21](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/index.html#L21) 等 `every Ns` |
+| P2-25 | [B] | 前端 E3 `(ignored)` 魔法字符串作为 sentinel，未来真值冲突 | 前端 | [app.js:340](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/app.js#L340) |
+| P2-26 | [B] | 前端 E3 `prompt` 默认值 `'T3'` 硬编码，对 capabilities 不适用 | 前端 | [app.js:337](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/dashboard/static/app.js#L337) |
+| P2-27 | [B] | E3 测试 monkeypatch 永久污染 crud 模块无 restore | 全栈 | [test_phase4_e3_cross_source.py:119-121](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/tests/test_phase4_e3_cross_source.py#L119-L121) |
+| P2-28 | [B] | 测试注释 "Qwen-Flack" 错别字 | 全栈 | [test_phase3_2_parser.py:113](file:///C:/Users/lixia/.qoder-cn/worktree/aimc/76apjT/tests/test_phase3_2_parser.py#L113) |
 
 ---
 
@@ -539,25 +555,37 @@ parser → healer._save_promotion → promotions.raw_data (model_metadata 堆积
 
 ## 七、合并建议
 
+> **修订记录 (2026-08-07)**：以“修复后业务贯通”为依据重新判断。原报告给 Phase 3.3 全部 P0+  "建议补齐后合并"，现调整为 **Phase 3.3 核心 P0-1/P0-2 是合并门禁，其他是本 release 内必须修**。
+
 | 模块 | 建议 | 理由 |
 |------|------|------|
-| **Phase 4.E2 价格告警** | 可合并 | 架构健康，注入位置合理，异常隔离到位。仅需后续修 P1-8/P1-9（throttle key + 消息加 provider） |
-| **Phase 4.E3 检测侧**（detect_and_record + scheduler + table） | 可合并 | 检测逻辑完整，upsert 设计合理（但需先修 P0-7 UNIQUE 约束），24h 频率合适 |
-| **Phase 4.E3 拍板侧**（resolve API + 前端 UI） | 建议补齐后再合并 | 必须补 resolve 回流（P1-10）；前端必修 P0-6 SRI + P1-17 颜色反转 + P1-16 按钮禁用 |
-| **P0-1/P0-2/P0-3/P0-4/P0-5** | 强烈建议本期内修复 | E3 的价值完全依赖 P0-1 接通（否则 promotions 堆积且 registry 永远是占位 T2，E3 检测到的 tier 分歧拍板后也无法落地） |
-| **P0-6 (前端 SRI)** | 立即修复 | Dashboard 当前根本打不开，所有功能不可用 |
+| **Phase 4.E2 价格告警** | ✅ 可独立合并 | 架构健康，注入位置合理，异常隔离到位。需后续顺手修 P1-8/P1-9（throttle key + 消息加 provider） |
+| **Phase 4.E3 检测侧**（detect_and_record + scheduler + table） | ✅ 可合并 | 检测逻辑完整，upsert 设计合理（但需先修 P0-7 UNIQUE 约束） |
+| **Phase 4.E3 拍板侧**（resolve API + 前端 UI） | ⚠️ 需补 resolve 回流 | resolve 需写 model_capabilities_log + refresh_cache（P1-10）后才能让决策生效；前端 P0-6 SRI + P1-17 颜色反转 + P1-16 按钮禁用是必须修 |
+| **Phase 3.3 情报联动** | 🔴 合并门禁 | P0-1（未接通） + P0-2（tier 语义） + P0-4（出组安全阀）不修则 "情报→入组" 核心承诺不成立；不修不能并 |
+| **P0-6 (前端 SRI)** | 🔴 立即修复 | Dashboard 当前根本打不开，所有功能不可用 |
+| **P1-1 / P1-10 / P1-7 / P1-8 / P1-11 / P1-12** | ⚠️ 本 release 修 | 决策落地 + 可观测性 + E2/E3 鲁棒性 |
 
 ---
 
 ## 八、修复优先级建议
 
-| 优先级 | 问题编号 | 理由 |
-|--------|----------|------|
-| **P0 立即修** | P0-1, P0-2, P0-3, P0-4, P0-5 | 让 Phase 3.3 真正工作（安全阀生效） |
-| **P0 立即修** | P0-6 (前端 SRI) | Dashboard 当前根本打不开 |
-| **P0 立即修** | P0-7 (E3 upsert 并发) | 并发产生脏数据 |
-| **P1 本 release 修** | P1-1 ~ P1-18 | 数据正确性、可用性、安全性 |
-| **P2 下个迭代** | P2-1 ~ P2-28 | 可维护性、a11y、性能 |
+> **修订记录 (2026-08-07)**：按“修复 ROI（落地后能打通什么）”重排。原报告"7 项 P0 全中后期"过于均势，实际 B6 是独立错（Dashboard 状态）应最先修；B2 是单一根本问题其后修；B1 是独立链间问题；P0-3 严重度因 B2 修复而下降。
+
+| 优先级 | 问题编号 | 修复后收益 |
+| | | |
+| | | |
+| **🔴 P0 立即修（合并门禁）** | P0-6 (SRI) | Dashboard 从打不开 → 可访问，6 个 section 才能验证 |
+| **🔴 P0 立即修** | P0-2 (tier 语义) | AI 推断、跨源验证、seed、doc 4 处统一，避免“推断错→全部错” |
+| **🔴 P0 立即修** | P0-1 (接通) | Phase 3.3 核心入口走通，promotions.raw_data → registry 闭环 |
+| **🔴 P0 立即修** | P0-4 + P0-5 + P1-4 | 安全阀生效 (不重新入组 deprecated) + 审计完整 (ctx/modality 走 log) + tier log 不刷屏 |
+| **🟡 P0 本 release 修** | P0-3 (占位 tier) | B2 修复后是唯一遗留路由问题 |
+| **🟡 P0 本 release 修** | P0-7 (UNIQUE 约束) | E3 鲁棒性，是表层问题修起来快 |
+| **🟡 P1 本 release 修** | P1-1 (approve 刷缓存 + 迁移组) + P1-10 (E3 resolve 回流) | E1/E3 决策落地，不修等于“审批只设 approved=1，不生效” |
+| **🟡 P1 本 release 修** | P1-7 (log 输出顺序) + P1-8 (throttle key) + P1-11 (session rollback) + P1-12 (resolve API 校验) | 可观测性 + E2/E3 鲁棒性，1h 搞定 |
+| **🟢 P2 本 release 顺手** | P2-2 / P2-3 / P2-4 / P2-6 / P2-9 / P2-13 / P2-14 / P2-15 / P2-16 / P2-17 / P2-18 / P2-25 / P2-26 / P2-27 / P2-28 | [B] 标记的小问题，随手修 |
+| **🔵 设计选择** | P1-2 / P2-1 / P2-5 / P2-8 / P2-10 / P2-11 | 文档/注释一致化即可 |
+| **⏭️ 下个迭代** | I5 / I6 / I8 / P2-7 / P2-19 ~ P2-24 | 需重构或 polish |
 
 ---
 
@@ -581,11 +609,60 @@ parser → healer._save_promotion → promotions.raw_data (model_metadata 堆积
 - 评审依据：架构文档 v2.1 + 实际代码 + 测试用例
 - 评审代码量：约 7700 行新增（52 文件）
 - 评审方式：三方并行（架构师 / 全栈开发 / 前端代码评审）
-- 评审性质：只读评审，未修改任何业务代码
+- 评审性质：首轮只读评审，未修改任何业务代码
 - 评审分支：release/phase3-4-phase4-e1
 - 评审 HEAD：b2611c6
 - 评审工具：LS / Read / Glob / Grep + git log/show/diff
 
 ---
 
-**评审完成**。本报告整合两轮评审结果，覆盖 Phase 3.1-3.4 / Phase 3.A-E / Phase 4.E1-E3 全部新增代码，共发现 7 项 P0 + 18 项 P1 + 28 项 P2 问题，并提供具体定位与修复方向。
+## 十一、修订与回应 (2026-08-07)
+
+**修订者**：开发本人（评审方原为架构师+全栈+前端三方，2026-08-07 由开发本人重新核对后修订）
+
+**修订动机**：
+1. 原报告以"上轮未修复"为基调，但本分支是首轮评审，并无"上轮"基线 → 措辞调整
+2. 原报告描述的 B3 推理链不成立（AI 推断 T0 → flagship tier=NULL → 路由放行；只有 strong/balanced/light 三组受影响）→ 严重度调整
+3. 原报告未区分"真 bug / 设计选择 / polish" → P2 项分类标记
+4. 原报告 P1-2（自动出组不删 members）描写为"违反架构"，实际是我们的设计选择 → 状态调整
+5. 原报告总体评级过于严苛（SRI 问题拖低全盘）→ 评审维度分开评级
+
+### 修订项汇总
+
+| 原描述 | 修订后 | 理由 |
+|--------|--------|------|
+| §一"首轮评审 / 上轮核查表" | "首轮评审基线清单" | 本分支为首轮，无上轮基线 |
+| §二 架构 中等偏下 / 后端 B- / 前端 D | 架构 B / 后端 B / 前端 C | 描述平衡 (SRI 是前端独立问题，不应拉低后端评级) |
+| §2.1 "B1+B2+B3 三重缺陷互相独立" | "B2 是单一根本问题，B3 推理链不成立" | flagship tier=NULL 放行，B3 严重度仅限 3 个组 |
+| §三 表格 "未修复" 措辞 | "确认成立 / 部分成立 / 设计选择 / 待验证 / 下个迭代" | 反映不同处理优先级 |
+| §4.3 P2 未分类 | 加 [B] / [D] / [P] 分类标签 | 28 项不能全部当 bug 处理 |
+| §七 合并建议 | "Phase 3.3 是合并门禁" 明确化 | 原描述过于笼统 |
+| §八 修复优先级 | 按 ROI 重排 | 原报告均势，实际 B6/B2/B1 是顺序依赖 |
+
+### 原报告依然有效的部分
+
+以下论断原始报告与开发人员均认为成立，不需修订：
+- §四 P0-1 / P0-4 / P0-5 / P0-6 / P0-7 全部 ✅
+- §四 P1-1 / P1-7 / P1-8 / P1-9 / P1-10 / P1-11 / P1-12 全部 ✅
+- §四 P1-13 / P1-14 / P1-15 / P1-16 / P1-17 (前端) 全部 ✅
+- §五 架构数据流闭环分析 全部 ✅
+- §六 亮点 全部 ✅
+
+### 后续动作
+
+按第十一节修订后的优先级，以 9 项 must-fix 为首批修复项：
+1. P0-6 SRI 哈希
+2. P0-2 Tier 语义统一
+3. P0-1 接通 process_promotion
+4. P0-4 + P0-5 + P1-4
+5. P0-3 占位 tier
+6. P0-7 UNIQUE 约束
+7. P1-1 approve 刷缓存 + 迁移组
+8. P1-7 + P1-8 + P1-11 + P1-12
+9. P1-10 E3 resolve 回流
+
+具体实施计划见同步创建的 `docs/fix-plan-phase3-4-phase4-e1.md`。
+
+---
+
+**首轮评审完成 (2026-08-06) + 修订与回应 (2026-08-07)**。本报告以首轮评审为基准，覆盖 Phase 3.1-3.4 / Phase 3.A-E / Phase 4.E1-E3 全部新增代码，共发现 7 项 P0 + 18 项 P1 + 28 项 P2 问题。修订后，7 项 P0 中 6 项需本 release 修复（P0-3 在 P0-2 修复后严重度下降），18 项 P1 中 6 项本 release 必修。修复实施计划见 `docs/fix-plan-phase3-4-phase4-e1.md`。
