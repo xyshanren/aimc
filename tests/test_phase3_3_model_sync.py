@@ -126,6 +126,24 @@ def _install_mock_db():
         async def commit(self):
             pass
 
+        async def flush(self):
+            pass
+
+        # P1-3 fix: begin_nested 返回 savepoint context manager
+        # 让 process_promotion 的 savepoint 路径能在 mock 下跑
+        def begin_nested(self):
+            class _Savepoint:
+                async def __aenter__(self_inner):
+                    return self_inner
+
+                async def __aexit__(self_inner, *exc):
+                    # 如果有异常, 自动 rollback savepoint
+                    if exc and exc[0] is not None:
+                        # 模拟 rollback 行为: 只回滚本 savepoint 修改
+                        pass
+                    return False  # 不吞异常, 让外层 catch
+            return _Savepoint()
+
     class _MockSessionCtx:
         async def __aenter__(self):
             return _MockSession()
@@ -695,6 +713,142 @@ def test_process_non_t0_no_auto_route():
 
 
 # ============================================================
+# Test 17 (P1-3 fix): process_promotion 单条 model 抛错不影响其他
+# ============================================================
+def test_process_promotion_single_failure_isolated():
+    print("\n=== Test 17: P1-3 process_promotion 单条失败不影响其他 ===")
+    state = _install_mock_db()
+    from intelligence.model_sync import process_promotion, process_model_item
+    from schemas.intel import ModelIntelItem
+    import db.crud as crud
+
+    # 在 state["registry"] 预置 model_3 的存在, 然后通过 patch 让 process_model_item
+    # 在 model_3 时抛错 (测 savepoint 隔离 + 后续 model 仍 continue).
+    _orig_process_model_item = process_model_item
+
+    call_count = {"n": 0}
+
+    async def _flaky_model_3(session, item):
+        call_count["n"] += 1
+        if item.model_id == "model-3":
+            # 模拟 SQLAlchemy 异常 (IntegrityError / OperationalError 等)
+            raise RuntimeError("simulated DB failure for model-3")
+        return await _orig_process_model_item(session, item)
+
+    # 替换 process_model_item 在 model_sync 模块内的引用
+    import intelligence.model_sync as model_sync
+    _orig_in_module = model_sync.process_model_item
+    model_sync.process_model_item = _flaky_model_3
+
+    try:
+        # 5 个 model, 第 3 个会抛错
+        raw_data = json.dumps({
+            "_intelligence_kind": "model_metadata",
+            "models": [
+                {"model_id": "model-1", "family": "qwen", "inferred_tier": "T0",
+                 "confidence": 0.95, "confidence_level": "high"},
+                {"model_id": "model-2", "family": "qwen", "inferred_tier": "T0",
+                 "confidence": 0.95, "confidence_level": "high"},
+                {"model_id": "model-3", "family": "qwen", "inferred_tier": "T0",
+                 "confidence": 0.95, "confidence_level": "high"},  # 这条会失败
+                {"model_id": "model-4", "family": "qwen", "inferred_tier": "T0",
+                 "confidence": 0.95, "confidence_level": "high"},
+                {"model_id": "model-5", "family": "qwen", "inferred_tier": "T0",
+                 "confidence": 0.95, "confidence_level": "high"},
+            ],
+        })
+
+        results = asyncio.run(process_promotion(1, raw_data))
+    finally:
+        model_sync.process_model_item = _orig_in_module
+
+    # P1-3 验证: 5 次调用, 第 3 次失败, 4 个 SyncResult 返回
+    assert call_count["n"] == 5, f"应调用 5 次, 实际 {call_count['n']}"
+    assert len(results) == 4, f"应返 4 条 (失败 1 条 skip), 实际 {len(results)}"
+
+    # 验证成功 4 条都已写入 registry
+    success_ids = [r.model_id for r in results]
+    assert success_ids == ["model-1", "model-2", "model-4", "model-5"], \
+        f"成功顺序应为 1,2,4,5, 实际 {success_ids}"
+
+    # 失败的 model-3 不在 registry
+    for mid in ["model-1", "model-2", "model-4", "model-5"]:
+        assert mid in state["registry"], f"model {mid} 应在 registry"
+    assert "model-3" not in state["registry"], \
+        "失败的 model-3 不应在 registry"
+
+    # 4 条都加入 tier:flagship (T0 硬编码路由)
+    for mid in ["model-1", "model-2", "model-4", "model-5"]:
+        assert ("tier:flagship", mid) in state["members"], \
+            f"model {mid} 应入 tier:flagship"
+    assert ("tier:flagship", "model-3") not in state["members"], \
+        "失败的 model-3 不应入 group"
+    print("  [OK] 单条失败 savepoint rollback, 后续 4 条正常处理")
+
+
+# ============================================================
+# Test 18 (P1-3 fix): Pydantic 失败已在 sync 阶段 skip, 不进入 savepoint
+# ============================================================
+def test_process_promotion_pydantic_skip_before_savepoint():
+    print("\n=== Test 18: P1-3 Pydantic 验证失败 sync 阶段 skip ===")
+    state = _install_mock_db()
+    from intelligence.model_sync import process_promotion
+
+    # confidence 是 string (非 float) -> Pydantic 验证失败 (sync 阶段 skip)
+    raw_data = json.dumps({
+        "_intelligence_kind": "model_metadata",
+        "models": [
+            {"model_id": "good-1", "family": "qwen", "inferred_tier": "T0",
+             "confidence": 0.9, "confidence_level": "high"},
+            {"model_id": "bad-1", "family": "qwen",
+             "confidence": "not_a_number",
+             "confidence_level": "high"},  # type error -> Pydantic fail
+            {"model_id": "good-2", "family": "qwen", "inferred_tier": "T0",
+             "confidence": 0.9, "confidence_level": "high"},
+        ],
+    })
+
+    results = asyncio.run(process_promotion(1, raw_data))
+
+    # 2 条 good, 1 条 bad pydantic-skipped
+    assert len(results) == 2, f"应 2 条 (1 条 pydantic skip), 实际 {len(results)}"
+    assert [r.model_id for r in results] == ["good-1", "good-2"], \
+        f"顺序应为 good-1, good-2, 实际 {[r.model_id for r in results]}"
+    assert "bad-1" not in state["registry"]
+    assert "good-1" in state["registry"]
+    assert "good-2" in state["registry"]
+    print("  [OK] Pydantic 失败 sync skip, 后续 model 正常处理")
+
+
+# ============================================================
+# Test 19 (P1-3 fix): 全部成功 (控制对比)
+# ============================================================
+def test_process_promotion_all_success_baseline():
+    print("\n=== Test 19: P1-3 全部成功 baseline (控制对比) ===")
+    state = _install_mock_db()
+    from intelligence.model_sync import process_promotion
+
+    raw_data = json.dumps({
+        "_intelligence_kind": "model_metadata",
+        "models": [
+            {"model_id": f"m{i}", "family": "qwen", "inferred_tier": "T0",
+             "confidence": 0.9, "confidence_level": "high"}
+            for i in range(5)
+        ],
+    })
+
+    results = asyncio.run(process_promotion(1, raw_data))
+
+    assert len(results) == 5
+    assert len(state["registry"]) == 5, f"5 条全入 registry, 实际 {len(state['registry'])}"
+    print("  [OK] 全部 5 条成功, savepoint 不影响 happy path")
+
+
+# 引入 json (Test 17 用)
+import json
+
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -720,9 +874,13 @@ def main():
     # P0-3 新增用例
     test_process_t0_routes_to_flagship()
     test_process_non_t0_no_auto_route()
+    # P1-3 新增用例
+    test_process_promotion_single_failure_isolated()
+    test_process_promotion_pydantic_skip_before_savepoint()
+    test_process_promotion_all_success_baseline()
 
     print("\n" + "=" * 60)
-    print("ALL 16 TESTS PASSED")
+    print("ALL 19 TESTS PASSED")
     print("=" * 60)
 
 

@@ -271,12 +271,29 @@ async def process_promotion(
     results: list[SyncResult] = []
     async with async_session_factory() as session:
         for raw in models:
+            # 1) Pydantic 验证是 sync 阶段, 失败 skip 后续不写表
             try:
                 item = ModelIntelItem(**raw)
             except Exception as e:
                 logger.warning("跳过无效 model 项: %s", e)
                 continue
-            result = await process_model_item(session, item)
-            results.append(result)
+            # 2) P1-3 fix: 每个 model 独立 SAVEPOINT (begin_nested).
+            # 原实现整个 for 循环包在一个 transaction 里, 任何一条 model 报
+            # SQLAlchemy 异常 (e.g. IntegrityError, OperationalError) 都会
+            # 污染 session 状态, 外层 commit 一起 rollback 掉所有前面的 model.
+            # 改为 savepoint 后, 单条失败只 rollback 该 savepoint, 后续 model
+            # 继续处理, 成功的正常 commit.
+            try:
+                async with session.begin_nested():
+                    result = await process_model_item(session, item)
+                results.append(result)
+            except Exception as e:
+                logger.error(
+                    "model %s 处理失败 (savepoint rollback, 继续下一条): %s",
+                    item.model_id, e,
+                )
+                # 关键: SQLAlchemy 异常后 session 进入 "errored" 状态, 必须 rollback
+                # 但 begin_nested() 自动 rollback 了 savepoint, 主事务还在.
+                # 接下来 next iteration 仍可正常使用 session.
         await session.commit()
     return results
