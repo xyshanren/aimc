@@ -14,7 +14,8 @@
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, Integer, Text, Float, DateTime, ForeignKey, LargeBinary, func
+    Column, Integer, Text, Float, DateTime, ForeignKey, LargeBinary, func,
+    Index, UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -150,6 +151,11 @@ class UsageLog(Base):
     channel_id = Column(Integer, nullable=True)
     account_id = Column(Integer, nullable=True)
     model = Column(Text, nullable=True)
+    # Phase 3.A (2026-07-29): 记录请求时的 group_id
+    # - tier:xxx / scene:xxx 前缀时填 group_id (e.g. "tier:balanced")
+    # - 精确模型路由时为 NULL
+    # - 供 Dashboard 命中率聚合查询 GROUP BY group_id, model
+    group_id = Column(Text, nullable=True, comment="请求时的 group_id (NULL=精确模型路由)")
     input_tokens = Column(Integer, nullable=True)
     output_tokens = Column(Integer, nullable=True)
     cost_estimate = Column(Float, nullable=True, comment="估算费用（元）")
@@ -309,6 +315,49 @@ class ModelCapabilitiesLog(Base):
     confidence = Column(Float, nullable=True, comment="AI 推断时的置信度 (manual 时为 NULL)")
     approved = Column(Integer, default=0, comment="是否已人工确认 (0/1)")
     created_at = Column(DateTime, default=func.now())
+
+
+class CrossSourceDiscrepancy(Base):
+    """跨源交叉验证不一致记录 (Phase 4 E3, 2026-07-29)
+
+    同一个 model_id 在多个采集源 (model_list / price_aggregator / benchmark) 中
+    出现 tier / capabilities / context_length 等关键字段不一致时落库，供人工确认。
+
+    设计：
+    - 每个 (model_id, field_changed) 在 status='pending' 时只保留 1 条 (upsert)
+    - resolved 后保留 audit trail (resolved_at / resolved_value / resolved_note)
+    - sources_json 存各源值: [{"source": "siliconflow", "value": "T3", "ts": "..."},
+                              {"source": "openrouter", "value": "T2", "ts": "..."}]
+    """
+    __tablename__ = "cross_source_discrepancies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_id = Column(Text, nullable=False, comment="被对比的 model_id")
+    field_changed = Column(Text, nullable=False, comment="tier / capabilities / context_length / modality")
+    sources_json = Column(Text, nullable=False, comment='JSON: [{"source":..., "value":..., "ts":..., "confidence":...}]')
+    discrepancy_score = Column(Float, default=0.0, comment="不一致程度 (字段差异量化, 越高越值得注意)")
+    status = Column(Text, default="pending", comment="pending / resolved / ignored")
+    resolved_value = Column(Text, nullable=True, comment="人工拍板后的最终值 (JSON for capabilities)")
+    resolved_note = Column(Text, nullable=True, comment="人工备注: 取信源X / 忽略 / 其他")
+    resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # P0-7 fix: 防止并发扫描产生重复 pending 行.
+    # 业务语义是 “同 (model_id, field_changed, status) 只保留 1 条”,
+    # 抽到 schema 层补齐状态机不变量. SQLite / PostgreSQL 都支持该约束.
+    # (resolved / ignored 状态依然计入唯一键, 人为拍板后允许同 (model, field)
+    # 在不同 status 下各保留一行历史 — 如果业务上希望 resolved 后才能重新
+    # 入 pending, 后续可改为 partial unique 索引.)
+    __table_args__ = (
+        UniqueConstraint(
+            "model_id", "field_changed", "status",
+            name="uq_cross_source_key",
+        ),
+    )
+
+
+Index("idx_cross_source_status", CrossSourceDiscrepancy.status, CrossSourceDiscrepancy.model_id)
 
 
 class SettingsRuntime(Base):

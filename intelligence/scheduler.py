@@ -54,23 +54,39 @@ async def start_scheduler():
     Phase 2C-2: jobs 持久化到 SQLite
     - 启动时自动 reload 上次未执行的 jobs
     - 重启服务后任务不丢（如果服务挂了，apscheduler_jobs 表里 next_run_time 仍存着）
+
+    Phase 3.1: 调度策略优化
+    - 按 source_type 推荐频率 (DEFAULT_POLL_INTERVALS) 作为 fallback
+    - source.poll_interval 优先, 未填则按 type 取默认值
+    - 不同 type 错开时间 (避免同时 fetch 撞限流)
     """
     from intelligence.sources import get_all_sources
+    from intelligence.sources.base import DEFAULT_POLL_INTERVALS
 
     sources = get_all_sources()
 
     for source in sources:
+        # Phase 3.1: poll_interval fallback (按 source_type 默认频率)
+        poll_interval = source.poll_interval or DEFAULT_POLL_INTERVALS.get(
+            source.source_type, 900
+        )
         # 用 provider + source_type 作为 job id 后缀
         job_id = f"crawl_{source.provider}_{source.source_type}"
         scheduler.add_job(
             _run_source_task,
-            trigger=IntervalTrigger(seconds=source.poll_interval),
+            trigger=IntervalTrigger(
+                seconds=poll_interval,
+                jitter=min(300, max(1, poll_interval // 20)),
+            ),
             args=[source],
             id=job_id,
-            name=f"采集: {source.provider}/{source.source_type}",
+            name=f"采集: {source.provider}/{source.source_type} ({poll_interval}s)",
             replace_existing=True,
         )
-        logger.info(f"注册采集任务: {source.provider}/{source.source_type} (间隔 {source.poll_interval}s)")
+        logger.info(
+            f"注册采集任务: {source.provider}/{source.source_type} "
+            f"(间隔 {poll_interval}s, {poll_interval // 3600}h, 带随机错峰)"
+        )
 
     # 路由缓存定时刷新
     scheduler.add_job(
@@ -90,9 +106,18 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # Phase 4 E3 (2026-07-29): 每天跑 1 次跨源交叉验证
+    scheduler.add_job(
+        _cross_source_detection_task,
+        trigger=IntervalTrigger(hours=24),
+        id="cross_source_detection",
+        name="跨源交叉验证",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
-        f"调度器已启动 (持久化模式), 共 {len(sources) + 1} 个定时任务, "
+        f"调度器已启动 (持久化模式), 共 {len(sources) + 3} 个定时任务, "
         f"jobstore={settings.db_path}"
     )
 
@@ -201,3 +226,16 @@ async def _check_key_rotation_task():
         logger.info(f"key 轮换检查完成: {count} 个告警")
     except Exception as e:
         logger.error(f"key 轮换检查失败: {e}", exc_info=True)
+
+
+async def _cross_source_detection_task():
+    """Phase 4 E3: 每天 1 次跨源交叉验证，检测后入库到 cross_source_discrepancies"""
+    try:
+        from intelligence.cross_source_validator import detect_and_record
+        summary = await detect_and_record()
+        logger.info(
+            f"跨源验证完成: models={summary['total_models']} "
+            f"分歧={summary['with_discrepancy']} 入库={summary['recorded']}"
+        )
+    except Exception as e:
+        logger.error(f"跨源验证失败: {e}", exc_info=True)

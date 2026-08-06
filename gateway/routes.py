@@ -27,33 +27,24 @@ async def health_check():
 
 @router.get("/v1/models")
 async def list_models():
-    """列出可用模型 (Phase 2.8: 升级, 加上 model group)
+    """列出可用模型 (Phase 3.B 增强, 加 aimc_metadata)
 
-    向后兼容: OpenAI 客户端只读 `data` 字段 (每个 model 有 id/object/owned_by)
-    AIMC 扩展: 额外 `data_groups` 字段, 含 6 个 model group (tier:xxx / scene:xxx)
+    演进历史:
+    - Phase 2.8: 加上 data_groups 字段
+    - Phase 3.B: 每个 model 加 aimc_metadata (family/tier/capabilities/...)
+      每个 group 加 aimc_metadata (fallback_chain/member_tiers/...)
+
+    向后兼容: OpenAI 客户端只读 data[].id, AIMC 扩展字段全部在 aimc_metadata 嵌套对象里
+
+    用途:
+    - hermes-agent-cn 启动时拉一次, 验证 profile 合法
+    - 看 model 元信息, 不需额外查 model registry
+    - 看 model 在哪些 channel 可用
     """
-    models = route_engine.get_available_models()
-    groups = route_engine.get_available_groups()
     return {
         "object": "list",
-        "data": [
-            {"id": m, "object": "model", "owned_by": "aimc"}
-            for m in models
-        ],
-        # Phase 2.8 扩展: model group 列表 (AIMC 独有, OpenAI 客户端忽略)
-        "data_groups": [
-            {
-                "id": g["id"],
-                "type": g["type"],
-                "display_name": g["display_name"],
-                "tier": g["tier"],
-                "strategy": g["strategy"],
-                "fallback_group": g["fallback_group"],
-                "members": g["members"],
-                "member_count": g["member_count"],
-            }
-            for g in groups
-        ],
+        "data": route_engine.get_models_with_metadata(),
+        "data_groups": route_engine.get_groups_with_metadata(),
     }
 
 

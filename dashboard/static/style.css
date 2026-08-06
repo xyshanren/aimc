@@ -144,3 +144,288 @@ footer a {
     color: #1d9bf0;
     text-decoration: none;
 }
+
+/* Phase 3.A: 组路由命中率聚合 */
+.summary-row {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #2f3336;
+    flex-wrap: wrap;
+}
+
+.summary-item {
+    color: #71767b;
+    font-size: 0.9em;
+}
+
+.summary-item strong {
+    color: #1d9bf0;
+    font-weight: 600;
+    margin-left: 4px;
+}
+
+.gr-group-card {
+    background: #1a2530;
+    border: 1px solid #2f3336;
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 12px;
+}
+
+.gr-group-card h4 {
+    font-size: 0.95em;
+    color: #e7e9ea;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.gr-group-card h4 code {
+    color: #1d9bf0;
+    background: transparent;
+    font-size: 1em;
+}
+
+.gr-group-card h4 .meta {
+    font-size: 0.8em;
+    color: #71767b;
+    font-weight: normal;
+}
+
+.gr-group-card table {
+    font-size: 0.85em;
+}
+
+.bar-track {
+    background: #2f3336;
+    border-radius: 4px;
+    height: 8px;
+    overflow: hidden;
+    min-width: 80px;
+}
+
+.bar-fill {
+    background: linear-gradient(90deg, #1d9bf0 0%, #00ba7c 100%);
+    height: 100%;
+    transition: width 0.3s ease;
+}
+
+.chip {
+    display: inline-block;
+    background: #2f3336;
+    color: #e7e9ea;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.75em;
+    margin-right: 4px;
+}
+
+.gr-group-card.unmatched {
+    border-left: 3px solid #ffad1f;
+}
+
+.gr-group-card.unmatched h4 {
+    color: #ffad1f;
+}
+
+/* Phase 4 E1: 待确认能力变更队列 */
+.pr-card {
+    background: #1a2530;
+    border: 1px solid #2f3336;
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 10px;
+    border-left: 3px solid #ffad1f;
+}
+
+.pr-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 0.9em;
+}
+
+.pr-model {
+    color: #1d9bf0;
+    font-size: 1em;
+    background: transparent;
+}
+
+.pr-field {
+    background: #2f3336;
+    color: #e7e9ea;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+
+.pr-old {
+    color: #71767b;
+    text-decoration: line-through;
+}
+
+.pr-arrow {
+    color: #71767b;
+}
+
+.pr-new {
+    color: #00ba7c;
+    font-weight: 600;
+}
+
+.pr-conf {
+    margin-left: auto;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.8em;
+    font-weight: 600;
+}
+
+.pr-conf.conf-high {
+    background: rgba(0, 186, 124, 0.15);
+    color: #00ba7c;
+}
+
+.pr-conf.conf-medium {
+    background: rgba(255, 173, 31, 0.15);
+    color: #ffad1f;
+}
+
+.pr-conf.conf-low {
+    background: rgba(244, 33, 46, 0.15);
+    color: #f4212e;
+}
+
+.pr-time {
+    color: #71767b;
+    font-size: 0.8em;
+    min-width: 130px;
+    text-align: right;
+}
+
+.pr-actions {
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+}
+
+.btn-approve,
+.btn-reject {
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85em;
+    font-weight: 600;
+    transition: opacity 0.2s;
+}
+
+.btn-approve {
+    background: #00ba7c;
+    color: white;
+}
+
+.btn-reject {
+    background: #2f3336;
+    color: #f4212e;
+}
+
+.btn-approve:hover,
+.btn-reject:hover {
+    opacity: 0.85;
+}
+
+/* Phase 4 E3: 跨源分歧 */
+.cross-source-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.cross-source-toolbar button {
+    background: #1d9bf0;
+    color: white;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85em;
+    font-weight: 600;
+}
+
+.cross-source-toolbar button:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+
+.cross-source-toolbar button:hover:not(:disabled) {
+    opacity: 0.85;
+}
+
+.cs-card {
+    background: #1a2530;
+    border: 1px solid #2f3336;
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 10px;
+    border-left: 3px solid #f4212e;
+}
+
+.cs-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 0.9em;
+    margin-bottom: 8px;
+}
+
+.cs-model {
+    color: #1d9bf0;
+    background: transparent;
+    font-size: 1em;
+}
+
+.cs-field {
+    background: #2f3336;
+    color: #e7e9ea;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+
+.cs-sources {
+    margin-left: 12px;
+    margin-bottom: 8px;
+}
+
+.cs-value-row {
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.cs-value-row code {
+    background: #2f3336;
+    color: #00ba7c;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.85em;
+    min-width: 60px;
+    text-align: center;
+}
+
+.conf-mini {
+    color: #71767b;
+    font-size: 0.85em;
+    margin-left: 2px;
+}

@@ -6,6 +6,7 @@
 - /api/dashboard/sources/run-now -> 手动触发情报采集 (Phase 2A-4)
 """
 
+import json
 import logging
 from pathlib import Path
 
@@ -19,6 +20,8 @@ from db import crud
 from db.models import (
     Channel, Promotion, UsageLog, PriceSnapshot,
     ModelRegistry, ModelGroup, ModelGroupMember,
+    ModelCapabilitiesLog,
+    CrossSourceDiscrepancy,
     SettingsRuntime,
 )
 
@@ -280,6 +283,131 @@ async def get_registry_groups(session: AsyncSession = Depends(get_session)):
 
 
 # ============================================================
+# Phase 3.A: Group 路由命中率聚合 (Dashboard 唯一路径)
+# ============================================================
+
+@router.get("/api/stats/group_routing")
+async def get_group_routing_stats(days: int = 7, session: AsyncSession = Depends(get_session)):
+    """Phase 3.A: 按 group_id 聚合命中率分布
+
+    背景:
+    - Agent 改 model="tier:balanced" 后, AIMC 会按价格/可用性自动选最优具体 model
+    - 用户/人想看: 7 天内 tier:balanced 实际命中了哪些 model (deepseek/qwen/...)?
+    - 数据源: usage_logs.group_id (NULL 表示精确模型路由)
+
+    返回:
+    - groups[]: 每个 group 的请求数 + 实际 model 分布 + 渠道分布
+    - unmatched: 精确模型路由 (group_id NULL) 的请求
+    - summary: 总览数字
+    """
+    from datetime import datetime, timedelta
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    # 1) 按 group_id + model 聚合 (只统计 group_id 非 NULL)
+    stmt = (
+        select(
+            UsageLog.group_id,
+            UsageLog.model,
+            UsageLog.channel_id,
+            func.count(UsageLog.id).label("count"),
+            func.sum(UsageLog.cost_estimate).label("total_cost"),
+        )
+        .where(UsageLog.created_at >= cutoff)
+        .where(UsageLog.group_id.isnot(None))
+        .group_by(UsageLog.group_id, UsageLog.model, UsageLog.channel_id)
+    )
+    rows = (await session.execute(stmt)).all()
+
+    # 2) 反向 join channel name
+    ch_ids = {row.channel_id for row in rows if row.channel_id is not None}
+    ch_name_map: dict[int, str] = {}
+    if ch_ids:
+        ch_rows = (await session.execute(
+            select(Channel.id, Channel.name).where(Channel.id.in_(ch_ids))
+        )).all()
+        ch_name_map = {r.id: r.name for r in ch_rows}
+
+    # 3) 按 group_id 聚合
+    by_group: dict[str, dict] = {}
+    for row in rows:
+        g = by_group.setdefault(row.group_id, {
+            "group_id": row.group_id,
+            "request_count": 0,
+            "model_distribution": {},
+            "channels_used": set(),
+            "total_cost": 0.0,
+        })
+        g["request_count"] += row.count
+        g["model_distribution"][row.model] = g["model_distribution"].get(row.model, 0) + row.count
+        if row.channel_id and row.channel_id in ch_name_map:
+            g["channels_used"].add(ch_name_map[row.channel_id])
+        g["total_cost"] += (row.total_cost or 0.0)
+
+    # 4) 转 list + 算 percentage
+    groups_out = []
+    for g in by_group.values():
+        total = g["request_count"]
+        dist = sorted(
+            [
+                {
+                    "model": m,
+                    "count": c,
+                    "percentage": round(c / total * 100, 1) if total else 0.0,
+                }
+                for m, c in g["model_distribution"].items()
+            ],
+            key=lambda x: -x["count"],
+        )
+        groups_out.append({
+            "group_id": g["group_id"],
+            "request_count": total,
+            "model_distribution": dist,
+            "channels_used": sorted(g["channels_used"]),
+            "total_cost": round(g["total_cost"], 4),
+        })
+    groups_out.sort(key=lambda x: -x["request_count"])
+
+    # 5) unmatched: group_id 为 NULL 的精确模型路由
+    stmt2 = (
+        select(
+            UsageLog.model,
+            func.count(UsageLog.id).label("count"),
+        )
+        .where(UsageLog.created_at >= cutoff)
+        .where(UsageLog.group_id.is_(None))
+        .where(UsageLog.model.isnot(None))
+        .group_by(UsageLog.model)
+        .order_by(func.count(UsageLog.id).desc())
+        .limit(20)
+    )
+    unmatched_rows = (await session.execute(stmt2)).all()
+    unmatched_total = sum(r.count for r in unmatched_rows)
+
+    # 6) 总览 summary
+    total_requests = sum(g["request_count"] for g in groups_out) + unmatched_total
+
+    return {
+        "days": days,
+        "cutoff": cutoff.isoformat(),
+        "summary": {
+            "total_requests": total_requests,
+            "group_routed_requests": sum(g["request_count"] for g in groups_out),
+            "exact_model_requests": unmatched_total,
+            "group_routed_pct": round(
+                sum(g["request_count"] for g in groups_out) / total_requests * 100, 1
+            ) if total_requests else 0.0,
+        },
+        "groups": groups_out,
+        "unmatched": {
+            "request_count": unmatched_total,
+            "top_models": [
+                {"model": r.model, "count": r.count} for r in unmatched_rows
+            ],
+        },
+    }
+
+
+# ============================================================
 # API-Sec-2: Runtime Settings (alert_channel / webhook) 不重启切换
 # ============================================================
 
@@ -290,6 +418,7 @@ ALLOWED_RUNTIME_KEYS = {
     "bark_server",
     "serverchan_key",
     "feishu_webhook_url",
+    "price_alert_threshold",  # Phase 4 E2: 价格波动告警阈值 (百分比字符串)
 }
 
 
@@ -386,3 +515,271 @@ async def set_alert_settings(
         "cleared": cleared,
         "note": "立即生效, 不需要重启 uvicorn",
     }
+
+
+# ============================================================
+# Phase 4 E1: Dashboard 待确认队列 (model_capabilities_log.approved=0)
+# ============================================================
+
+@router.get("/api/pending-review")
+async def get_pending_review(
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+):
+    """Phase 4 E1: 列出 AI 推断但尚未人工确认的能力变更。
+
+    数据源: model_capabilities_log WHERE approved=0 AND source='ai_infer'
+    按创建时间倒序。
+
+    返回每条记录包含:
+    - id, model_id, field_changed, old_value, new_value
+    - confidence, created_at
+    - 待确认原因 (按 confidence 分级)
+    """
+    rows = await crud.list_pending_review(session, limit=limit)
+    return {
+        "count": len(rows),
+        "items": [
+            {
+                "id": r.id,
+                "model_id": r.model_id,
+                "field_changed": r.field_changed,
+                "old_value": r.old_value,
+                "new_value": r.new_value,
+                "confidence": r.confidence,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "confidence_level": (
+                    "high" if (r.confidence or 0) >= 0.8
+                    else "medium" if (r.confidence or 0) >= 0.6
+                    else "low"
+                ),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/api/pending-review/{log_id}/approve")
+async def approve_pending_review(
+    log_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """人工批准一条能力变更 (Phase 4 E1)。
+
+    行为:
+    - log.approved 置 1
+    - 若 field_changed == "tier": 同步更新 model_registry.tier + 从旧 tier 组踢出 + 加入新 tier 组
+    - 其它字段 (capabilities / context_length / modality / metadata / create) 仅作记录
+    - P1-1 fix: commit 后调 route_engine.refresh_cache() 让路由立即拿到新 tier/成员
+
+    返回:
+    - 200: { status: "approved", log_id, field_changed, applied, model_id, new_group }
+    - 404: log 不存在
+    """
+    log = await crud.approve_capability_change(session, log_id)
+    if not log:
+        raise HTTPException(status_code=404, detail=f"Pending review {log_id} not found")
+    await session.commit()
+
+    # P1-1 fix: 路由缓存即刻刷新. 失败只 logger 警告, 不让 dashboard 5xx.
+    try:
+        await route_engine.refresh_cache()
+    except Exception as e:
+        logger.warning("approve 后刷新路由缓存失败: log_id=%s err=%s", log_id, e)
+
+    applied = log.field_changed == "tier" and log.new_value is not None
+    # 若 tier 迁移, 报上新 group_id (供 dashboard UI 反馈)
+    new_group = None
+    if log.field_changed == "tier" and log.new_value:
+        new_group = await crud.find_target_group_for_tier(session, log.new_value)
+    return {
+        "status": "approved",
+        "log_id": log.id,
+        "field_changed": log.field_changed,
+        "applied": applied,
+        "model_id": log.model_id,
+        "new_group": new_group,
+    }
+
+
+@router.post("/api/pending-review/{log_id}/reject")
+async def reject_pending_review(
+    log_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """人工拒绝一条能力变更 (Phase 4 E1)。
+
+    行为:
+    - log.approved 置 1 (拒绝 = 不再待确认)
+    - 不动 model_registry (保留当前值)
+
+    返回:
+    - 200: { status: "rejected", log_id }
+    - 404: log 不存在
+    """
+    log = await crud.reject_capability_change(session, log_id)
+    if not log:
+        raise HTTPException(status_code=404, detail=f"Pending review {log_id} not found")
+    await session.commit()
+    return {
+        "status": "rejected",
+        "log_id": log.id,
+        "field_changed": log.field_changed,
+    }
+
+
+# ============================================================
+# Phase 4 E3: Dashboard 跨源分歧 (cross_source_discrepancies)
+# ============================================================
+
+@router.get("/api/cross-source/discrepancies")
+async def get_cross_source_discrepancies(
+    status: str = Query("pending", pattern="^(pending|resolved|ignored)$"),
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+):
+    """Phase 4 E3: 列出跨源分歧记录。
+
+    Returns 每条:
+    - id, model_id, field_changed, sources_json (parsed), discrepancy_score
+    - status, resolved_value, resolved_at
+    """
+    rows = await crud.list_cross_source_discrepancies(session, status=status, limit=limit)
+    return {
+        "count": len(rows),
+        "items": [
+            {
+                "id": r.id,
+                "model_id": r.model_id,
+                "field_changed": r.field_changed,
+                "sources": json.loads(r.sources_json) if r.sources_json else [],
+                "discrepancy_score": r.discrepancy_score,
+                "status": r.status,
+                "resolved_value": r.resolved_value,
+                "resolved_note": r.resolved_note,
+                "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/api/cross-source/discrepancies/{discrepancy_id}/resolve")
+async def resolve_cross_source_discrepancy(
+    discrepancy_id: int,
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """Phase 4 E3: 人工拍板跨源分歧。
+
+    body: {
+        "resolved_value": "<最终值>" 或 JSON 字符串 for capabilities,
+        "resolved_note": "可选备注",
+        "ignored": false  # true 时状态为 ignored
+    }
+
+    P1-10 fix: 拍板后调 route_engine.refresh_cache() 并回流 model_registry:
+    - tier / capabilities / context_length / modality 字段拍板后, 将结果写一条
+      model_capabilities_log (source="human_resolve", confidence=1.0, approved=1)
+      并同步更新 model_registry 对应字段. 下一个请求路由能拿到新值.
+    - ignored=true 时不写 registry (表示误报, 只改 discrepancy 状态).
+    - 其它字段 (e.g. benchmark_scores) 仅动 discrepancy, 不写 registry.
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be dict")
+    resolved_value = payload.get("resolved_value")
+    resolved_note = payload.get("resolved_note")
+    ignored = bool(payload.get("ignored", False))
+    # P1-12 fix: ignored=true 时允许 resolved_value 为空 (仅作误报标记, 不需拍板值).
+    # 非 ignored 才校验 resolved_value 必填, 避免上游调用方误传空值被 400 拒掉.
+    if not ignored and resolved_value is None:
+        raise HTTPException(status_code=400, detail="resolved_value required")
+
+    row = await crud.resolve_cross_source_discrepancy(
+        session,
+        discrepancy_id=discrepancy_id,
+        resolved_value=resolved_value,
+        resolved_note=resolved_note,
+        ignored=ignored,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Discrepancy {discrepancy_id} not found")
+
+    # P1-10 fix: 人工拍板后, 同步更新 model_registry 字段 (tier/capabilities/context_length/modality)
+    applied = False
+    if not ignored and row.field_changed in ("tier", "capabilities", "context_length", "modality"):
+        from db.models import ModelRegistry
+
+        registry = await session.get(ModelRegistry, row.model_id)
+        if registry:
+            old_value = getattr(registry, row.field_changed, None)
+            # P1-7 fix: 先捕获旧值, 再 mutate, 最后 logger
+            registry_updates = {
+                "tier": resolved_value,
+                "capabilities": resolved_value,
+                "context_length": int(resolved_value) if row.field_changed == "context_length" else None,
+                "modality": resolved_value,
+            }
+            new_field_value = registry_updates[row.field_changed]
+            if row.field_changed == "context_length" and new_field_value is None:
+                logger.warning(
+                    "resolve context_length 解析失败: model=%s_value=%s",
+                    row.model_id, resolved_value,
+                )
+            else:
+                setattr(registry, row.field_changed, new_field_value)
+                # 同步写一条 audit log (source="human_resolve", approved=1, 永久生效)
+                await crud.log_capability_change(
+                    session,
+                    model_id=row.model_id,
+                    field_changed=row.field_changed,
+                    old_value=str(old_value) if old_value is not None else None,
+                    new_value=str(new_field_value),
+                    source="human_resolve",
+                    confidence=1.0,
+                    approved=1,
+                )
+                logger.info(
+                    "resolve 同源: model=%s %s %s -> %s (discrepancy_id=%d)",
+                    row.model_id, row.field_changed, old_value, new_field_value, discrepancy_id,
+                )
+                applied = True
+        else:
+            logger.warning(
+                "resolve 时 registry 缺失: model=%s (discrepancy_id=%d)",
+                row.model_id, discrepancy_id,
+            )
+
+    await session.commit()
+
+    # P1-10 fix: 路由缓存即刻刷新. 失败只 logger 警告, 不让 dashboard 5xx.
+    try:
+        await route_engine.refresh_cache()
+    except Exception as e:
+        logger.warning("resolve 后刷新路由缓存失败: discrepancy_id=%s err=%s", discrepancy_id, e)
+
+    return {
+        "status": "ignored" if ignored else "resolved",
+        "discrepancy_id": row.id,
+        "model_id": row.model_id,
+        "field_changed": row.field_changed,
+        "resolved_value": row.resolved_value,
+        "applied": applied,
+    }
+
+
+@router.post("/api/cross-source/run-detection")
+async def run_cross_source_detection():
+    """手动触发跨源分歧检测 (Phase 4 E3)。
+
+    Returns: { total_models, with_discrepancy, recorded }
+    """
+    from intelligence.cross_source_validator import detect_and_record
+    try:
+        summary = await detect_and_record()
+    except Exception as e:
+        logger.error(f"跨源检测失败: {e}")
+        raise HTTPException(status_code=500, detail=f"Detection failed: {e}")
+    return summary

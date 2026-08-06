@@ -75,7 +75,7 @@
 - **同档多替代**：DeepSeek-V4-Flash、Qwen-Plus、GLM-4-Air 能力相近但价格不同
 - **第三方聚合**：硅基流动提供市面大部分开源模型；火山引擎/腾讯云/阿里云也代理第三方模型
 
-如果 Agent 只能写死 `model="deepseek-chat"`，则永远用不到更便宜的同级替代品。
+如果 hermes-agent-cn 只能写死 `model="deepseek-chat"`，则永远用不到更便宜的同级替代品。
 
 ### 4.2 三维模型组织
 
@@ -167,7 +167,7 @@ tier:flagship → tier:strong → tier:balanced → tier:light → tier:free
         6. 全部不可用 → fallback 到 priority 最低 channel（Phase 2E, 聚合平台兜底）
 ```
 
-### 4.5 Agent 侧接入协议
+### 4.5 hermes-agent-cn 侧接入协议
 
 ```python
 # 方式1: 精确模型名（向后兼容，行为不变）
@@ -520,6 +520,24 @@ ALTER TABLE channels ADD COLUMN billing_mode TEXT DEFAULT 'pay_per_token';
 - 递归 fallback：组内无可用 → 查 fallback_group → 递归
 - 精确模型路由 fallback 到底层：channel 全不匹配 → 透传到 priority 最低 channel（Phase 2E, 聚合平台兜底）
 
+**渠道冷却机制**（借鉴 LiteLLM cooldown）：
+```
+渠道连续失败计数: fail_count[channel_id]
+    │
+    ├─ 失败次数 < allowed_fails (3) → 正常参与路由
+    │
+    └─ 失败次数 >= allowed_fails → 进入冷却
+        cooldown_until[channel_id] = now + cooldown_time (60s)
+        冷却期内: 该渠道从候选列表中移除
+        冷却结束: 重置 fail_count，恢复正常参与
+```
+实现方式：纯内存 dict，与频限器同生命周期（重启后自然重置）。
+
+**weighted 加权路由**（借鉴 LiteLLM weight）：
+- 当组策略为 `weighted` 时，按 `model_group_members.weight` 做加权随机选择
+- 权重越高被选中概率越大，适用于分散用量避免单渠道频限
+- 示例：主力渠道 weight=10，备胎 weight=2 → 主力被选中概率 ≈ 83%
+
 ### 7.2 频限器 (`gateway/limiter.py`)
 
 纯内存实现（不变）：
@@ -540,7 +558,13 @@ ALTER TABLE channels ADD COLUMN billing_mode TEXT DEFAULT 'pay_per_token';
 - 异步记录用量（`usage_logs`）
 
 新增（Phase 2）：
-- 响应头注入实际路由信息（X-AIMC-Actual-Model 等）
+- 响应头注入实际路由信息（X-AIMC-Actual-Model / X-AIMC-Actual-Channel / X-AIMC-Route-Reason）
+- **精确成本计算**（借鉴 LiteLLM Cost Tracking）：
+  - 非流式：从响应 body 的 `usage` 字段取 prompt_tokens + completion_tokens
+  - 流式：从最后一个 chunk 的 `usage` 字段取（或累加）
+  - 成本 = input_tokens × input_price + output_tokens × output_price
+  - 价格来源：选中渠道的 price_snapshots 当前时段价格
+  - 写入 usage_logs.cost_estimate（精确值，非估算）
 
 ### 7.4 情报采集层 (`intelligence/`)
 
@@ -714,15 +738,18 @@ groups:
 | tier 调整权限 | **仅人工确认** | 避免 AI 误判导致路由异常 |
 | 组内默认策略 | **cheapest** | 符合"省钱"核心定位 |
 | 订阅制渠道 | **价格视为 0** | 套餐内调用零边际成本 |
-| 本地模型 | **作为渠道（provider_type=local）** | 频限由 Agent 侧管理 |
+| 本地模型 | **作为渠道（provider_type=local）** | 频限由 hermes-agent-cn 侧管理 |
 | 模型组降级 | **组间 fallback chain** | 借鉴 9Router 三层 + LiteLLM fallback |
-| 精确模型无匹配时 | **fallback 到 priority 最低 channel** | 聚合平台 1 key 通吃兜底 (Phase 2E) |
+| 精确模型无匹配时 | **fallback 到 priority 最低 channel** | 聚合平台 1 key 通吃兖底 (Phase 2E) |
 | 告警 throttle | **锁内 check+mark 60s 窗口** | 防刷屏优先，宁可 60s 不重试 |
 | `.env` 保护 | **gitignore + pre-commit 双层** | 单层 gitignore 不够，commit -f 可绕过 |
 | Router cache 刷新 | **5min 自动 + endpoint 手动** | 平时够用，改完立即刷不用等 |
 | `accounts.api_key` 加密 | **XOR+Base64 轻量化 (零依赖)** | DB 文件泄露 ≠ channel key 泄露；不用 cryptography 库；不上 Infisical（破坏单进程原则） |
 | 加密 key 丢了 | **永久性数据丢失** | 每次部署重新生成 master key；丢了 = 重新部署（个人用工具可接受） |
-| 加密 vs .env 关系 | **不加密 .env 本身** | 避免"开机输入 master key 解密 .env 才能解 DB"的鸡生蛋问题 |
+| 加密 vs .env 关系 | **不加密 .env 本身** | 避免“开机输入 master key 解密 .env 才能解 DB”的鸡生蛋问题 |
+| 渠道故障处理 | **冷却机制** | 借鉴 LiteLLM cooldown，避免反复尝试故障渠道 |
+| 成本追踪 | **精确计算** | 借鉴 LiteLLM Cost Tracking，用实际价格×tokens |
+| 跨模型参数兼容 | **远期 drop_params** | 借鉴 LiteLLM，转发时丢弃不支持的参数 |
 
 ## 十一、部署方案
 

@@ -309,9 +309,9 @@ ALTER TABLE accounts ADD COLUMN expires_at       DATETIME;  -- 可选, 厂商给
 
 ## 六、跨项目参考
 
-- **hermes-tray**：它调 AIMC 的 api_key 是 Bearer token，**不存 channel key**，所以本文档不影响 hermes-tray
-- AIMC 自己改完加密后，hermes-tray 不需要任何改动
-- 如果未来想做"hermes-tray 调 AIMC 也走 OAuth/JWT 而不是 static api_key"，那是另一个独立设计
+- **hermes-tray**：它通过 hermes-agent-cn 间接调 AIMC，**不存 channel key**，所以本文档不影响 hermes-tray
+- AIMC 自己改完加密后，hermes-tray 不需要任何改动（hermes-agent-cn 也不需要）
+- 如果未来想做"hermes-agent-cn 调 AIMC 也走 OAuth/JWT 而不是 static api_key"，那是另一个独立设计
 
 ## 七、相关文档
 

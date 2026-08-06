@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AIMC - AI Model Compass</title>
     <link rel="stylesheet" href="/static/style.css">
-    <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZTOjDkG0eMq1vq9iF1K2g3H4j5L6m7N8o9P0q1R2s3T4u5V6w7X8y9Z0" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" integrity="sha384-k2G1V1M0mN4j5L6n7O8p9Q0r1S2t3U4v5W6x7Y8z9A0b1C2d3E4f5G6h7I8j9K0" crossorigin="anonymous"></script>
+    <!-- 第三方库本地化 (vendor/)：避免外网 CDN 不可达 + 移除不可信 SRI 哈希 -->
+    <script src="/static/vendor/htmx.min.js"></script>
+    <script src="/static/vendor/chart.umd.min.js"></script>
 </head>
 <body>
     <header>
@@ -45,6 +46,19 @@
             <canvas id="usage-chart" width="600" height="200"></canvas>
         </section>
 
+        <!-- Phase 3.A: Group 路由命中率聚合 -->
+        <section class="card" id="group-routing-section">
+            <h2>组路由命中率 <span class="subtitle">近 7 天 · Agent 视角</span></h2>
+            <div class="summary-row" id="group-routing-summary">
+                <span class="summary-item">总请求: <strong id="gr-total">--</strong></span>
+                <span class="summary-item">组路由占比: <strong id="gr-grouped-pct">--</strong>%</span>
+                <span class="summary-item">精确路由: <strong id="gr-exact">--</strong></span>
+            </div>
+            <div id="group-routing-list" hx-get="/dashboard/api/stats/group_routing" hx-trigger="load, every 60s" hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
+
         <!-- Phase 2.9: Model Registry (只读) -->
         <section class="card" id="registry-models-section">
             <h2>Model Registry <span class="subtitle">路由元信息 (tier / capabilities / ctx)</span></h2>
@@ -57,6 +71,26 @@
         <section class="card" id="registry-groups-section">
             <h2>Model Groups <span class="subtitle">能力档 / 场景 (tier:xxx / scene:xxx)</span></h2>
             <div id="registry-groups-list" hx-get="/dashboard/api/registry/groups" hx-trigger="load, every 60s" hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
+
+        <!-- Phase 4 E1: 待确认能力变更队列 -->
+        <section class="card" id="pending-review-section">
+            <h2>待确认能力变更 <span class="subtitle">AI 推断 · tier 永久人工确认</span></h2>
+            <div id="pending-review-list" hx-get="/dashboard/api/pending-review" hx-trigger="load, every 30s" hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
+
+        <!-- Phase 4 E3: 跨源分歧 -->
+        <section class="card" id="cross-source-section">
+            <h2>跨源分歧 <span class="subtitle">同一 model 多源 tier/capabilities 不一致</span></h2>
+            <div class="cross-source-toolbar">
+                <button id="run-detection-btn" onclick="runCrossSourceDetection(this)">立即检测</button>
+                <span id="detection-result" class="meta"></span>
+            </div>
+            <div id="cross-source-list" hx-get="/dashboard/api/cross-source/discrepancies" hx-trigger="load, every 60s" hx-swap="innerHTML">
                 <p class="loading">加载中...</p>
             </div>
         </section>

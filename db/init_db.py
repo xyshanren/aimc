@@ -41,6 +41,7 @@ async def ensure_migrations():
     - accounts.last_rotated_at / expires_at (API-Sec-3, 2026-07-29)
     - channels.provider_type / billing_mode (Phase 2.3, 2026-07-29)
     - settings_runtime 表 (API-Sec-2, 2026-07-29) — 新建表, create_all 自动
+    - usage_logs.group_id (Phase 3.A, 2026-07-29) — Dashboard 命中率聚合
     """
     async with engine.begin() as conn:
         # intel_sources.last_content
@@ -110,6 +111,18 @@ async def ensure_migrations():
             logger.info("迁移: channels 添加 billing_mode 列 (Phase 2.3)")
         else:
             logger.debug("迁移: channels.billing_mode 已存在，跳过")
+
+        # usage_logs.group_id (Phase 3.A, 2026-07-29)
+        # 用于 Dashboard 命中率聚合查询, 老数据全部 NULL (精确模型路由)
+        result = await conn.execute(text("PRAGMA table_info('usage_logs')"))
+        columns = {row[1] for row in result.fetchall()}
+        if "group_id" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE usage_logs ADD COLUMN group_id TEXT"
+            ))
+            logger.info("迁移: usage_logs 添加 group_id 列 (Phase 3.A)")
+        else:
+            logger.debug("迁移: usage_logs.group_id 已存在，跳过")
 
 
 async def drop_all():

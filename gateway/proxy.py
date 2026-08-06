@@ -20,21 +20,27 @@ logger = logging.getLogger(__name__)
 
 
 def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
-    """Phase 2.5: 构造 X-AIMC-* 响应头
+    """Phase 3.E: 构造 X-AIMC-* 响应头
 
-    三个 header:
+    五个 header (Phase 2.5 加 3 个, Phase 3.E 加 2 个):
     - X-AIMC-Actual-Model: 实际命中的 model (组路由时被替换, 精确路由时 = requested_model)
     - X-AIMC-Actual-Channel: 实际命中的 channel name (e.g. siliconflow_aggregator)
     - X-AIMC-Group-Id: 命中的 model group (仅组路由时有, e.g. tier:balanced)
+    - X-AIMC-Actual-Tier: 实际命中 model 的能力档 (e.g. T2, 仅当 model 在 registry 时有)
+    - X-AIMC-Actual-Capabilities: 实际命中 model 的 capabilities (JSON 字符串,
+      e.g. '["reasoning","code"]', 仅当 model 在 registry 时有)
 
-    用途: Agent 知道"我的 tier:balanced 实际打到哪个 model + channel",
-    方便 hermes-tray v0.3.0 footer pill + stats page 消费。
+    用途: hermes-agent-cn 知道"我的 tier:balanced 实际打到哪个 model + channel",
+    以及该 model 的能力档 / 能力标签, 方便 hermes-tray (通过 hermes-agent-cn)
+    在 footer pill + stats page 展示。
 
     注意 (2026-07-29 Phase 2.10 E2E 发现):
     - _select_by_group 注入的 _actual_model / _group_id 是写在共享 channel dict 里
       (select_best_channel 返回的是 _channels_cache 里的对象, 不是 copy)
     - 后续精确路由命中**同一个 channel dict** 时, 这些字段仍残留, 污染响应头
     - 修法: 只在请求带 "tier:" / "scene:" 前缀时才信任 _actual_model
+    - Phase 3.E 进一步: select_best_channel 返回前也写 _actual_model,
+      所以精确路由时 _actual_model = requested_model 也成立 (不污染)
     """
     headers = {}
     is_group_request = requested_model.startswith(("tier:", "scene:"))
@@ -51,6 +57,23 @@ def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
     # group_id: 只在组路由请求 + channel 有 _group_id 时发
     if is_group_request and channel.get("_group_id"):
         headers["X-AIMC-Group-Id"] = channel["_group_id"]
+    # Phase 3.E: tier / capabilities (从 channel._registry_* 读, 已在 router.py 注入)
+    # tier: 简单字符串, 直接发
+    if channel.get("_registry_tier"):
+        headers["X-AIMC-Actual-Tier"] = channel["_registry_tier"]
+    # capabilities: DB 存的是 JSON 字符串, 需要解析后重新序列化保证格式
+    # (避免 "[\"reasoning\"]" 这种双重转义问题, 直接给 hermes-agent-cn 一个干净 JSON)
+    caps_raw = channel.get("_registry_capabilities")
+    if caps_raw:
+        try:
+            caps_list = json.loads(caps_raw)
+            # 列表才有意义, 字典/字符串 fallback 成空
+            if isinstance(caps_list, list):
+                headers["X-AIMC-Actual-Capabilities"] = json.dumps(caps_list, ensure_ascii=False)
+            else:
+                headers["X-AIMC-Actual-Capabilities"] = "[]"
+        except (ValueError, TypeError):
+            headers["X-AIMC-Actual-Capabilities"] = "[]"
     return headers
 
 
@@ -71,6 +94,13 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
         "Content-Type": "application/json",
         "Authorization": f"Bearer {channel['api_key']}",
     }
+    # 本地模型 (Ollama / vllm / LM Studio / llama.cpp):
+    # - Ollama 完全忽略 Authorization, 多发一个 header 也不影响
+    # - vllm 严格: 多余的 "Bearer no-key-required" 可能被当作无效 token 拒绝
+    # - LM Studio: 同 Ollama, 容忍
+    # 稳妥做法: provider_type=local 时跳过 Authorization header
+    if channel.get("provider_type") == "local":
+        forward_headers.pop("Authorization", None)
 
     # 判断是否为流式请求
     try:
@@ -185,7 +215,7 @@ async def _forward_normal(
         _schedule_alert(channel, response)
 
     # 尝试记录用量（异步，不阻塞响应）
-    _schedule_usage_log(channel, response, latency_ms)
+    _schedule_usage_log(channel, response, latency_ms, requested_model)
 
     return JSONResponse(
         status_code=response.status_code,
@@ -194,11 +224,28 @@ async def _forward_normal(
     )
 
 
-def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int):
-    """异步记录用量日志（fire-and-forget）"""
+def _extract_group_id(requested_model: str) -> str | None:
+    """Phase 3.A: 从 requested_model 提取 group_id
+
+    - tier:xxx / scene:xxx 前缀 → 返回 group_id (e.g. "tier:balanced")
+    - 精确模型名 → 返回 None (不需要记录 group)
+    """
+    if requested_model and requested_model.startswith(("tier:", "scene:")):
+        return requested_model
+    return None
+
+
+def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int, requested_model: str = ""):
+    """异步记录用量日志（fire-and-forget）
+
+    Phase 3.A: 接收 requested_model, 提取 group_id 写入 usage_logs
+    - 精确模型路由: group_id = NULL
+    - 组路由: group_id = "tier:xxx" / "scene:xxx"
+    """
     try:
         data = response.json()
         usage = data.get("usage", {})
+        group_id = _extract_group_id(requested_model)
         # 创建异步任务写入数据库
         asyncio.get_event_loop().create_task(
             _write_usage_log(
@@ -209,6 +256,7 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
                 output_tokens=usage.get("completion_tokens", 0),
                 status_code=response.status_code,
                 latency_ms=latency_ms,
+                group_id=group_id,
             )
         )
     except Exception:
@@ -223,8 +271,15 @@ async def _write_usage_log(
     output_tokens: int,
     status_code: int,
     latency_ms: int,
+    group_id: str | None = None,
 ):
-    """写入用量日志到数据库"""
+    """写入用量日志到数据库
+
+    Phase 3.A: group_id 参数
+    - 精确模型路由时为 None
+    - 组路由时为 "tier:xxx" / "scene:xxx"
+    - 供 Dashboard 命中率聚合 GROUP BY group_id, model
+    """
     try:
         from db.engine import async_session_factory
         from db.models import UsageLog
@@ -234,6 +289,7 @@ async def _write_usage_log(
                 channel_id=channel_id,
                 account_id=account_id,
                 model=model,
+                group_id=group_id,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 status_code=status_code,

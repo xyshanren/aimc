@@ -18,6 +18,7 @@ Phase 2B-2 改造后的流程：
 import json
 import logging
 import re
+from typing import Optional
 
 from config import settings
 from schemas.intel import ParseResult
@@ -32,11 +33,26 @@ _SANITY_MAX_TITLE_LEN = 200        # 标题太长可能是 HTML 污染
 _SANITY_MIN_DISCOUNT = 1.0         # "X 折" < 1 折 = 超过 99% 折扣（异常）
 _SANITY_MAX_DISCOUNT = 9.5         # "X 折" > 9.5 折 = 折扣 < 5%（几乎没意义）
 
+# Phase 3.1 (2026-07-29): 按 source_type 调整 sanity check 阈值
+# model_list / benchmark / price_aggregator 不是促销信息
+# AI 解析置信度天然较低（榜单变频繁/列表变频繁）
+# 阈值放低到 0.4 避免大量误报标黄
+_SOURCE_TYPE_SANITY_OVERRIDES = {
+    "model_list": 0.4,
+    "price_aggregator": 0.4,
+    "benchmark": 0.4,
+}
 
-def _sanity_check(result: ParseResult) -> tuple[bool, str | None]:
+
+def _sanity_check(result: ParseResult, source_type: str = "web_page") -> tuple[bool, str | None]:
     """简单 sanity check 解析结果
 
     Phase 2D-1: 防止 LLM 编造看似合理的错误优惠入库
+    Phase 3.1: 按 source_type 调整阈值 (model_list / benchmark / price_aggregator 放低)
+
+    Args:
+        result: AI 解析结果
+        source_type: 采集源类型 (Phase 3.1 用于调阈值)
 
     Returns:
         (flagged, reason)
@@ -44,13 +60,15 @@ def _sanity_check(result: ParseResult) -> tuple[bool, str | None]:
         - (True, "low_confidence(0.45)") 异常（不阻止入库，标黄让人看）
 
     规则（按优先级）：
-    1. confidence < 0.6 → low_confidence
+    1. confidence < 阈值 → low_confidence (Phase 3.1: model_list/benchmark/price_aggregator 用 0.4)
     2. title 太短/太长 → title_length
     3. "X 折" < 1 或 > 9.5 → abnormal_discount
     4. "免费/白嫖" 但 confidence < 0.8 → free_but_uncertain
     """
-    if result.confidence < _SANITY_MIN_CONFIDENCE:
-        return True, f"low_confidence({result.confidence:.2f})"
+    # Phase 3.1: 按 source_type 选阈值
+    min_confidence = _SOURCE_TYPE_SANITY_OVERRIDES.get(source_type, _SANITY_MIN_CONFIDENCE)
+    if result.confidence < min_confidence:
+        return True, f"low_confidence({result.confidence:.2f}, type={source_type})"
 
     title = result.title or ""
     if len(title) < _SANITY_MIN_TITLE_LEN:
@@ -108,9 +126,11 @@ async def handle_parse_result(content: str, source):
     ai_result: ParseResult | None = None
     try:
         from intelligence.parser import parse_content
-        ai_result = await parse_content(content, source.provider, source.url)
+        ai_result = await parse_content(
+            content, source.provider, source.url, source.source_type
+        )
         logger.debug(
-            f"AI 解析完成: provider={source.provider}, "
+            f"AI 解析完成: provider={source.provider}, type={source.source_type}, "
             f"is_promotion={ai_result.is_promotion}, "
             f"confidence={ai_result.confidence:.2f}"
         )
@@ -118,13 +138,32 @@ async def handle_parse_result(content: str, source):
         logger.warning(f"AI 解析异常: {source.provider} - {e}")
         ai_result = None
 
+    # === 1.5 Phase 3.1: model_list / benchmark / price_aggregator 类型特殊处理 ===
+    # 这些类型不是促销信息, 不应入 promotions 表 (会污染 dashboard)
+    # 但当前是"半天最小可用版": 仍入 promotions, 加 source_type 标记让 3.3 消费者认出来
+    # 后续可以加 model_registry_candidates / benchmark_snapshots 表分流 (但需要 schema 改动)
+
+    # === 1.6 Phase 3.4: price_aggregator 类型同步价格到 price_snapshots + 刷路由缓存 ===
+    if ai_result and source.source_type == "price_aggregator":
+        await _handle_price_aggregator_result(ai_result, source)
+
     # === 2. AI 成功 + 置信度足够 → 入库 ===
-    if ai_result and ai_result.is_promotion and ai_result.confidence >= settings.parse_confidence_threshold:
+    if ai_result and (
+        (ai_result.is_promotion and ai_result.confidence >= settings.parse_confidence_threshold)
+        or ai_result.models
+    ):
         await _save_promotion(ai_result, source)
-        logger.info(
-            f"优惠入库(AI): [{ai_result.provider}] {ai_result.title} "
-            f"(置信度: {ai_result.confidence:.2f})"
-        )
+        if ai_result.models:
+            logger.info(
+                f"模型元信息候选(AI): [{ai_result.provider}] "
+                f"count={len(ai_result.models)}, "
+                f"confidence={ai_result.confidence:.2f}"
+            )
+        else:
+            logger.info(
+                f"优惠入库(AI): [{ai_result.provider}] {ai_result.title} "
+                f"(置信度: {ai_result.confidence:.2f})"
+            )
         return
 
     # === 3. 触发降级：AI 失败 OR AI 成功但低置信度 OR AI 判断非优惠 ===
@@ -148,6 +187,80 @@ async def handle_parse_result(content: str, source):
             f"非优惠或全部失败，跳过: {source.provider} "
             f"(ai={'failed' if ai_result is None else 'no_promotion'})"
         )
+
+
+async def _handle_price_aggregator_result(result: ParseResult, source):
+    """Phase 3.4: 把 price_aggregator 解析出的模型价格同步到 price_snapshots
+
+    期望 AI 在 content / summary / discount_desc 中给出 (model, input_price, output_price)
+    表。本实现采用保守的"key=value 行解析"，避免依赖结构化字段（Phase 3.2 未引入）。
+    未识别行被忽略，避免污染。
+    """
+    from intelligence.pricing_sync import apply_price_change_to_route_cache, sync_price_change
+
+    text = "\n".join(
+        part for part in (result.discount_desc, result.content, result.summary) if part
+    )
+    rows = _parse_price_lines(text)
+
+    synced = 0
+    refreshed = 0
+    for model, input_price, output_price in rows:
+        change = await sync_price_change(
+            source.provider,
+            model,
+            input_price,
+            output_price,
+            source="crawler",
+        )
+        if change is None:
+            continue
+        synced += 1
+        if change.changed and await apply_price_change_to_route_cache(change):
+            refreshed += 1
+
+    if synced:
+        logger.info(
+            "price_aggregator 同步: provider=%s synced=%s, refreshed=%s",
+            source.provider, synced, refreshed,
+        )
+
+
+_PRICE_LINE_RE = re.compile(
+    r"^(?P<model>[A-Za-z0-9_./\-:]{2,})\s*[=:]\s*"
+    r"(?:(?P<input>\d+(?:\.\d+)?)\s*/\s*)?"
+    r"(?P<output>\d+(?:\.\d+)?)\s*$"
+)
+
+
+def _parse_price_lines(text: Optional[str]) -> list[tuple[str, Optional[float], Optional[float]]]:
+    """Phase 3.4: 从纯文本中解析 (model, input, output) 价格行。
+
+    支持格式：
+    - `deepseek-v3: 2.0/3.0`        # input/output
+    - `qwen-plus = 0.8`             # 仅 output
+    - `Pro/deepseek-ai/DeepSeek-V3: 1.5/2.5`
+
+    未识别行被跳过，避免污染 price_snapshots。
+    """
+    if not text:
+        return []
+
+    rows: list[tuple[str, Optional[float], Optional[float]]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = _PRICE_LINE_RE.match(line)
+        if not match:
+            continue
+        input_price = float(match.group("input")) if match.group("input") else None
+        output_price = float(match.group("output"))
+        # input 缺失时沿用 output (保守处理, 1 元 1M tokens 是常见聚合定价)
+        if input_price is None:
+            input_price = output_price
+        rows.append((match.group("model"), input_price, output_price))
+    return rows
 
 
 async def _try_css_fallback(content: str, source) -> ParseResult | None:
@@ -190,16 +303,34 @@ async def _save_promotion(result: ParseResult, source):
     Phase 2D-1: 加 sanity_check 标黄
     - 标黄不阻止入库（你之前说倾向后者 — 不丢数据，只是醒目标记）
     - 标黄原因写到 flagged_reason
+
+    Phase 3.1: 接收 source_type
+    - sanity check 阈值按 type 调整 (model_list/benchmark/price_aggregator 放低)
+    - source_type 写进 raw_data JSON, 让 3.3 消费者认出来
+
+    Phase 3.3 接通 (P0-1 fix): 入库 commit 后, 若 intelligence_kind=model_metadata 且
+    models 非空, 调用 model_sync.process_promotion 立即消费.
+    - 用新 session (model_sync 内部自行 async_session_factory),
+      避免与本函数已 commit 的事务重叠
+    - 调用失败仅 logger.warning, 不影响优惠入库主流程
     """
+    promo_id: Optional[int] = None
+    raw_data_json: Optional[str] = None
     try:
         from db.engine import async_session_factory
         from db import crud
 
-        # sanity check（先于入库，但不影响入库）
-        flagged, flagged_reason = _sanity_check(result)
+        # sanity check（先于入库，但不影响入库）— Phase 3.1: 传 source_type
+        flagged, flagged_reason = _sanity_check(result, source.source_type)
+
+        # Phase 3.2: 把 models 序列化进 raw_data, 供 Phase 3.3 自动入组消费
+        raw_data_dict = result.model_dump()
+        raw_data_dict["_source_type"] = source.source_type
+        raw_data_dict["_intelligence_kind"] = result.intelligence_kind
+        raw_data_json = json.dumps(raw_data_dict, ensure_ascii=False)
 
         async with async_session_factory() as session:
-            await crud.create_promotion(
+            promo = await crud.create_promotion(
                 session,
                 provider=result.provider or source.provider,
                 title=result.title or "未知活动",
@@ -210,11 +341,12 @@ async def _save_promotion(result: ParseResult, source):
                 end_date=result.end_date,
                 status="active",
                 confidence=result.confidence,
-                raw_data=json.dumps(result.model_dump(), ensure_ascii=False),
+                raw_data=raw_data_json,
                 flagged=1 if flagged else 0,
                 flagged_reason=flagged_reason,
             )
             await session.commit()
+            promo_id = promo.id
 
         if flagged:
             logger.warning(
@@ -223,6 +355,30 @@ async def _save_promotion(result: ParseResult, source):
             )
     except Exception as e:
         logger.error(f"优惠入库失败: {e}")
+        return  # P0-1 fix: 优惠入库失败时不要跳下游 process_promotion
+
+    # P0-1 fix: model_metadata 入库后, 立即触发 Phase 3.3 自动入组消费
+    if (promo_id is not None
+            and result.intelligence_kind == "model_metadata"
+            and result.models):
+        try:
+            from intelligence.model_sync import process_promotion
+            sync_results = await process_promotion(promo_id, raw_data_json or "")
+            joined = sum(1 for r in sync_results if r.action == "auto_joined")
+            pending = sum(1 for r in sync_results if r.action == "pending_review")
+            rejected = sum(1 for r in sync_results if r.action == "rejected")
+            left = sum(1 for r in sync_results if r.action == "auto_left")
+            logger.info(
+                "Phase 3.3 自动消费: promo=%s models=%d (joined=%d pending=%d rejected=%d left=%d)",
+                promo_id, len(sync_results), joined, pending, rejected, left,
+            )
+        except Exception as e:
+            # 仅 logger.warning, 不影响 _save_promotion 主流程
+            # 下次 scheduler 重扫 / run-model-sync 重试会补救
+            logger.warning(
+                "Phase 3.3 自动消费失败: promo=%s err=%s (优惠已入库, 下次重试可补救)",
+                promo_id, e,
+            )
 
 
 async def _alert_low_confidence(result: ParseResult, source):

@@ -172,11 +172,11 @@ async def has_changed(source, new_content: str) -> bool:
 | 2B（按需）| 3 项 P1 强建议 | 2-3 天 | 跑通 2A 后 |
 | 2C（按需）| 8 项 P2 可选 | - | 业务增长后 |
 
-## 七、跟 hermes-tray 联调关系
+## 七、跟 hermes-agent-cn / hermes-tray 联调关系
 
-爬虫改进跟 SSE 元数据注入（hermes-tray v0.3.0 联调）**独立**，可以并行做：
+爬虫改进跟 SSE 元数据注入（hermes-agent-cn v0.3.0 联调）**独立**，可以并行做：
 - 这条线（crawl-improvements.md）：情报层内部质量
-- hermes-tray 联调线（architecture.md Phase 2）：网关层 SSE 注入
+- hermes-agent-cn 联调线（architecture.md Phase 2）：网关层 SSE 注入；hermes-tray 是客户端，通过 hermes-agent-cn 间接拿到数据
 
 两侧各自 commit 走各自仓库，**没有代码耦合**。
 

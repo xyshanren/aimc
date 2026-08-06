@@ -182,7 +182,7 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 ## Phase 2: 多维模型组（已完成，2026-07-29）
 
-> 目标：实现跨模型比价路由，Agent 请求"能力档"而非具体模型
+> 目标：实现跨模型比价路由，hermes-agent-cn 请求"能力档"而非具体模型
 
 ### 2.1 数据层
 
@@ -198,10 +198,12 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 - ⬜ 模型组解析器：识别 `tier:`/`scene:` 前缀
 - ⬜ 组内跨模型全局选优逻辑
-- ⬜ Agent 偏好约束处理（`extra_body.aimc_preferences`）
+- ⬜ hermes-agent-cn 偏好约束处理（`extra_body.aimc_preferences`）
 - ⬜ 组间 fallback chain 递归降级
 - ⬜ billing_mode 处理（free/subscription 价格视为 0）
 - ⬜ 响应头注入（X-AIMC-Actual-Model / X-AIMC-Actual-Channel）
+- ⬜ **渠道冷却机制**（借鉴 LiteLLM）：连续失败 N 次 → 进入冷却期 → 冷却期内跳过该渠道
+- ⬜ **weighted 加权路由**（借鉴 LiteLLM）：基于 model_group_members.weight 做加权随机分配
 
 ### 2.3 模型组管理器
 
@@ -209,13 +211,19 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 - ⬜ 组缓存定时刷新（与路由缓存同步）
 - ⬜ `/v1/models` 接口升级：返回模型 + 模型组
 
-### 2.4 Dashboard 扩展
+### 2.4 成本追踪增强（借鉴 LiteLLM Cost Tracking）
+
+- ⬜ 精确成本计算：响应返回后，用 price_snapshots 当前价格 × usage tokens 计算 cost_estimate
+- ⬜ usage_logs 写入时自动关联渠道价格（不再依赖外部估算）
+- ⬜ Dashboard 成本视图：按模型/按渠道/按日 聚合花费
+
+### 2.5 Dashboard 扩展
 
 - ⬜ 模型注册表管理页面（增删改查）
 - ⬜ 模型组配置页面（组成员管理、策略选择）
 - ⬜ 模型能力标签可视化（tier 分布图、能力雷达图）
 
-### 2.5 验证标准
+### 2.6 验证标准
 
 - [ ] `model="tier:balanced"` 请求能正确返回组内最便宜的模型响应
 - [ ] 组内全部渠道频限满时，自动降级到 `fallback_group`
@@ -223,12 +231,34 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 - [ ] 精确模型名请求行为不变（向后兼容）
 - [ ] Dashboard 可管理模型和组配置
 - [ ] `#5` cache refresh endpoint 也刷模型组缓存（避免改完 seed_models.py 要等 5 分钟）
+- [ ] 渠道连续失败 3 次后进入冷却，冷却期内不再被选中
+- [ ] usage_logs.cost_estimate 与 price_snapshots 价格一致
 
 ---
 
 ## Phase 3: 情报联动模型组
 
 > 目标：情报层自动维护模型注册表和组成员关系
+> 关联文档：[agent-integration.md](agent-integration.md) — hermes-agent-cn × AIMC 协同方案
+
+### 3.0 hermes-agent-cn 协同层（Phase 3 启动前先落地）— ✅
+
+> 状态：全部完成 (commit `c4b6f1e` 之后)
+
+- ✅ docs/agent-integration.md：3 方案对比 + 推荐 A+C 组合
+- ✅ /v1/models 元信息增强（返回 `aimc_metadata` 字段含 family/tier/capabilities/modality/context_length/providers）— commit `d72f65b`
+- ✅ **Dashboard 模型组路由分布（命中率聚合）**— commit `929e5fb`
+  - `usage_logs` 加 `group_id` 列 + proxy.py 同步记录
+  - Dashboard 新增 `GET /api/stats/group_routing` + Chart.js 饼图
+  - **半天工作量，hermes-agent-cn 零代码改动**
+- ✅ hermes-agent-cn 集成 PR（CCR profile 风格配置：background/think/longContext/default → group 名, 集成 PR 草案见 [hermes-agent-cn-integration-pr.md](hermes-agent-cn-integration-pr.md)）— commit `9b965ed`，PR 已提给 hermes-agent-cn 仓库
+- ✅ **响应头增强** — commit `c4b6f1e` (Phase 3.E)
+  - `X-AIMC-Actual-Tier`: 实际命中 model 的能力档
+  - `X-AIMC-Actual-Capabilities`: 实际命中 model 的 capabilities (JSON)
+  - 让 hermes-agent-cn 一次请求拿到 tier/capabilities, 不必二次查 /v1/models
+- ✅ **PR 联调 E2E** — commit `c4b6f1e` (Phase 3.E)
+  - `tests/test_hermes_agent_cn_e2e.py` 4 个场景全过: 启动拉取 / 组路由头 / 精确路由头 / Profile 校验
+  - 验证 AIMC 侧准备就绪, hermes-agent-cn PR 可直接对接
 
 ### 3.1 采集源扩展
 
@@ -273,9 +303,11 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 - ⬜ 延迟追踪：记录各渠道历史延迟，支持 latency 策略
 - ⬜ 组内权重自动调整：基于成功率和延迟动态调权
 - ⬜ 价格趋势预测：基于历史快照预测峰谷，提前切换
-- ⬜ Agent 偏好学习：记录哪些路由决策效果好
+- ⬜ hermes-agent-cn 偏好学习：记录哪些路由决策效果好
 - ⬜ Dashboard 成本报表：月度/周度花费趋势、节省金额估算
 - ⬜ 多渠道分散策略：避免单渠道频限，自动分散用量
+- ⬜ **参数兼容处理**（借鉴 LiteLLM drop_params）：跨模型转发时自动丢弃目标模型不支持的参数
+- ⬜ **按 Key 成本隔离**（借鉴 LiteLLM Virtual Key）：为不同 hermes-agent-cn 分配独立 Key，分别追踪花费和预算
 
 ---
 
@@ -290,6 +322,8 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 | `model_cards` vs `model_registry` | 9 张表 (`model_cards` 已实现) + 4 张表待加 | Phase 2 处理双轨关系（合并 or 保留） |
 | 并发安全 | 单进程无锁 | 足够（个人使用场景） |
 | Playwright 浏览器二进制 | 未装（采集功能不可用） | 个人用可接受，未来按需装 |
+| 渠道故障记忆 | 无（每次重新尝试） | Phase 2 增加冷却机制 |
+| 成本计算 | 简单估算 | Phase 2 用 price_snapshots 精确计算 |
 
 ---
 
@@ -312,6 +346,6 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 ## 跨项目参考
 
-- **hermes-tray**（`D:\work\workspace\Qoder\hermes-tray`）的 v0.3.0 计划在 Phase 1 消费 aimc 注入的 SSE `routing_decision` 事件（footer pill + stats page）。
-- Phase 2 完成后，hermes-tray 可切换到 `model="tier:balanced"` 调用方式，跟"能力档"对齐。
+- **hermes-tray**（`D:\work\workspace\Qoder\hermes-tray`）的 v0.3.0 计划在 Phase 1 消费 aimc 注入的 SSE `routing_decision` 事件（footer pill + stats page）。注意：hermes-tray 是客户端，不直接调 AIMC, 应通过 hermes-agent-cn 中转。
+- Phase 2 完成后，**hermes-agent-cn** 可切换到 `model="tier:balanced"` 调用方式，跟"能力档"对齐；hermes-tray 通过 hermes-agent-cn 间接受益。
 - 两侧 commit 走各自仓库，联调在各自 phase 完成后做。

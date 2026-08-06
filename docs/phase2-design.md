@@ -334,6 +334,6 @@ response.headers["X-AIMC-Group-Id"] = channel.get("_group_id", "")  # tier:balan
 
 1. **B 双轨保留**：model_cards 永久存 benchmark，model_registry 存路由元信息，soft join ✓ (已拍)
 2. **种子规模**：Phase 2.2 seed 8-10 个 model 是否够？建议先 `deepseek-chat` / `qwen-plus` / `qwen-max` / `glm-4-plus` / `glm-4-air` / `kimi-k2` / `MiniMax-Text-01` / `doubao-pro-32k` 8 个（覆盖已配 channel 的实际支持 model）
-3. **响应头命名**：`X-AIMC-Actual-Model` / `X-AIMC-Actual-Channel` / `X-AIMC-Group-Id` —— 跟 hermes-tray v0.3.0 计划消费的字段对齐（[competitive-research.md](competitive-research.md) 提到）
+3. **响应头命名**：`X-AIMC-Actual-Model` / `X-AIMC-Actual-Channel` / `X-AIMC-Group-Id` —— 跟 hermes-agent-cn v0.3.0 计划消费的字段对齐（hermes-tray 通过 hermes-agent-cn 间接受益）
 
 如果都没问题，回复"开干"，我从 Phase 2.1（4 张新表 ORM + 幂等迁移）开始。

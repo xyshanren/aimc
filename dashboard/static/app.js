@@ -25,6 +25,12 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
         renderRegistryModels(target);
     } else if (target.id === 'registry-groups-list') {
         renderRegistryGroups(target);
+    } else if (target.id === 'group-routing-list') {
+        renderGroupRouting(target);
+    } else if (target.id === 'pending-review-list') {
+        renderPendingReview(target);
+    } else if (target.id === 'cross-source-list') {
+        renderCrossSource(target);
     }
 });
 
@@ -167,7 +173,271 @@ function renderRegistryGroups(container) {
     }
 }
 
+// Phase 3.A: Group 路由命中率渲染 (Dashboard 唯一路径)
+function renderGroupRouting(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+
+        // 1) 顶部 summary 填充
+        const summary = data.summary || {};
+        const grTotal = document.getElementById('gr-total');
+        const grPct = document.getElementById('gr-grouped-pct');
+        const grExact = document.getElementById('gr-exact');
+        if (grTotal) grTotal.textContent = summary.total_requests ?? 0;
+        if (grPct) grPct.textContent = summary.group_routed_pct ?? 0;
+        if (grExact) grExact.textContent = summary.exact_model_requests ?? 0;
+
+        const groups = data.groups || [];
+        const unmatched = data.unmatched || {};
+
+        if (groups.length === 0 && unmatched.request_count === 0) {
+            container.innerHTML = '<p class="loading">近 7 天无组路由请求 · 所有请求都是精确模型名</p>';
+            return;
+        }
+
+        let html = '';
+
+        // 2) 每个 group 一个卡片
+        for (const g of groups) {
+            const dist = g.model_distribution || [];
+            const channels = g.channels_used || [];
+            html += `<div class="gr-group-card">
+                <h4><code>${esc(g.group_id)}</code>
+                    <span class="meta">${esc(g.request_count)} 次 · 估 ${esc(g.total_cost ?? 0)} 元</span>
+                </h4>`;
+            if (dist.length === 0) {
+                html += '<p class="meta">无命中明细</p>';
+            } else {
+                html += '<table><thead><tr><th>实际 model</th><th>次数</th><th>占比</th><th>分布</th></tr></thead><tbody>';
+                for (const m of dist) {
+                    const pct = m.percentage || 0;
+                    html += `<tr>
+                        <td><code>${esc(m.model)}</code></td>
+                        <td>${esc(m.count)}</td>
+                        <td>${esc(pct.toFixed(1))}%</td>
+                        <td><div class="bar-track"><div class="bar-fill" style="width:${esc(pct)}%"></div></div></td>
+                    </tr>`;
+                }
+                html += '</tbody></table>';
+            }
+            if (channels.length > 0) {
+                html += `<p class="meta">渠道: ${channels.map(c => `<span class="chip">${esc(c)}</span>`).join(' ')}</p>`;
+            }
+            html += '</div>';
+        }
+
+        // 3) unmatched (精确路由)
+        if (unmatched.request_count > 0) {
+            const top = unmatched.top_models || [];
+            html += `<div class="gr-group-card unmatched">
+                <h4>精确模型路由 <span class="meta">${esc(unmatched.request_count)} 次 (group_id 为 NULL)</span></h4>`;
+            if (top.length > 0) {
+                html += '<table><thead><tr><th>model</th><th>次数</th></tr></thead><tbody>';
+                for (const m of top) {
+                    html += `<tr><td><code>${esc(m.model)}</code></td><td>${esc(m.count)}</td></tr>`;
+                }
+                html += '</tbody></table>';
+            }
+            html += '</div>';
+        }
+
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderGroupRouting failed:', e);
+        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+// Phase 4 E1: 待确认能力变更队列
+async function approvePendingReview(logId, btn) {
+    if (!confirm(`确定批准 log #${logId} ? Tier 会自动写入 ModelRegistry`)) return;
+    try {
+        const resp = await fetch(`/dashboard/api/pending-review/${logId}/approve`, { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            const card = btn.closest('.pr-card');
+            if (card) card.remove();
+            const summary = document.getElementById('pr-summary');
+            if (summary) {
+                const n = Math.max(0, parseInt(summary.textContent.replace(/\D/g, '') || '0', 10) - 1);
+                summary.textContent = `${n} 条待确认`;
+            }
+        } else {
+            alert('批准失败: ' + (data.detail || resp.statusText));
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+    }
+}
+
+async function rejectPendingReview(logId, btn) {
+    if (!confirm(`确定拒绝 log #${logId} ? 不会修改 ModelRegistry`)) return;
+    try {
+        const resp = await fetch(`/dashboard/api/pending-review/${logId}/reject`, { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            const card = btn.closest('.pr-card');
+            if (card) card.remove();
+            const summary = document.getElementById('pr-summary');
+            if (summary) {
+                const n = Math.max(0, parseInt(summary.textContent.replace(/\D/g, '') || '0', 10) - 1);
+                summary.textContent = `${n} 条待确认`;
+            }
+        } else {
+            alert('拒绝失败: ' + (data.detail || resp.statusText));
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+    }
+}
+
+function renderPendingReview(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+        const items = data.items || [];
+        if (items.length === 0) {
+            container.innerHTML = '<p class="loading">✓ 当前无待确认能力变更</p>';
+            return;
+        }
+        let html = `<p class="meta">共 <strong id="pr-summary">${esc(data.count)} 条待确认</strong>，按时间倒序</p>`;
+        for (const item of items) {
+            const conf = item.confidence || 0;
+            const confLabel = item.confidence_level || 'low';
+            const confClass = `conf-${confLabel}`;
+            const created = item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '?';
+            html += `<div class="pr-card">
+                <div class="pr-row">
+                    <code class="pr-model">${esc(item.model_id)}</code>
+                    <span class="pr-field">${esc(item.field_changed)}</span>
+                    <span class="pr-old">${esc(item.old_value ?? '(空)')}</span>
+                    <span class="pr-arrow">→</span>
+                    <span class="pr-new">${esc(item.new_value ?? '(空)')}</span>
+                    <span class="pr-conf ${confClass}">${esc(conf.toFixed(2))} · ${esc(confLabel)}</span>
+                    <span class="pr-time">${esc(created)}</span>
+                </div>
+                <div class="pr-actions">
+                    <button class="btn-approve" onclick="approvePendingReview(${item.id}, this)">批准</button>
+                    <button class="btn-reject" onclick="rejectPendingReview(${item.id}, this)">拒绝</button>
+                </div>
+            </div>`;
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderPendingReview failed:', e);
+        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+// Phase 4 E3: 跨源分歧
+async function resolveCrossSource(discrepancyId, btn, ignored) {
+    const action = ignored ? '忽略' : '拍板';
+    if (!confirm(`确定${action} discrepancy #${discrepancyId} ?`)) return;
+    let resolvedValue = '';
+    if (!ignored) {
+        resolvedValue = prompt('请输入最终值 (capabilities 请用 JSON 数组)', 'T3');
+        if (resolvedValue === null) return;
+    } else {
+        resolvedValue = '(ignored)';
+    }
+    const note = prompt('备注 (可空)', '');
+    try {
+        const resp = await fetch(`/dashboard/api/cross-source/discrepancies/${discrepancyId}/resolve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                resolved_value: resolvedValue,
+                resolved_note: note || null,
+                ignored: ignored,
+            }),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            const card = btn.closest('.cs-card');
+            if (card) card.remove();
+            const summary = document.getElementById('cs-summary');
+            if (summary) {
+                const n = Math.max(0, parseInt(summary.textContent.replace(/\D/g, '') || '0', 10) - 1);
+                summary.textContent = `${n} 条待处理`;
+            }
+        } else {
+            alert('操作失败: ' + (data.detail || resp.statusText));
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+    }
+}
+
+async function runCrossSourceDetection(btn) {
+    btn.disabled = true;
+    const result = document.getElementById('detection-result');
+    result.textContent = '检测中...';
+    try {
+        const resp = await fetch('/dashboard/api/cross-source/run-detection', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            result.textContent = `本次: ${data.total_models} 个 model · ${data.with_discrepancy} 个分歧 · ${data.recorded} 条入库`;
+            // 触发刷新列表
+            htmx.trigger('#cross-source-list', 'load');
+        } else {
+            result.textContent = '失败: ' + (data.detail || resp.statusText);
+        }
+    } catch (e) {
+        result.textContent = '网络错误: ' + e.message;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function renderCrossSource(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+        const items = data.items || [];
+        if (items.length === 0) {
+            container.innerHTML = '<p class="loading">✓ 当前无跨源分歧</p>';
+            return;
+        }
+        let html = `<p class="meta">共 <strong id="cs-summary">${esc(data.count)} 条待处理</strong>，按分歧程度排序</p>`;
+        for (const item of items) {
+            const score = item.discrepancy_score || 0;
+            const scoreLabel = score >= 0.9 ? '高' : score >= 0.6 ? '中' : '低';
+            const scoreClass = score >= 0.9 ? 'conf-high' : score >= 0.6 ? 'conf-medium' : 'conf-low';
+            const sources = item.sources || [];
+            // 按 value 分组显示
+            const byValue = {};
+            for (const s of sources) {
+                const v = String(s.value ?? '(空)');
+                if (!byValue[v]) byValue[v] = [];
+                byValue[v].push(s);
+            }
+            let sourcesHtml = '';
+            for (const [v, entries] of Object.entries(byValue)) {
+                const chips = entries.map(e =>
+                    `<span class="chip">${esc(e.source)}<span class="conf-mini">${e.confidence != null ? '·' + esc(e.confidence.toFixed(2)) : ''}</span></span>`
+                ).join(' ');
+                sourcesHtml += `<div class="cs-value-row"><code>${esc(v)}</code>${chips}</div>`;
+            }
+            html += `<div class="cs-card">
+                <div class="cs-row">
+                    <code class="cs-model">${esc(item.model_id)}</code>
+                    <span class="cs-field">${esc(item.field_changed)}</span>
+                    <span class="pr-conf ${scoreClass}">分歧 ${esc(score.toFixed(2))} · ${esc(scoreLabel)}</span>
+                </div>
+                <div class="cs-sources">${sourcesHtml}</div>
+                <div class="pr-actions">
+                    <button class="btn-approve" onclick="resolveCrossSource(${item.id}, this, false)">拍板</button>
+                    <button class="btn-reject" onclick="resolveCrossSource(${item.id}, this, true)">忽略</button>
+                </div>
+            </div>`;
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderCrossSource failed:', e);
+        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+    }
+}
+
 // 用量统计图表
+async function loadUsageChart() {
     try {
         const resp = await fetch('/dashboard/api/usage/summary?days=7');
         const data = await resp.json();

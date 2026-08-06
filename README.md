@@ -94,6 +94,58 @@ response = client.chat.completions.create(
 )
 ```
 
+## 本地模型接入（Ollama / vllm / LM Studio / llama.cpp）
+
+AIMC 支持把本地跑的模型统一接入，享受跨云端/本地的智能路由。例如：
+- `tier:light` 组里有云端免费档 + 本地小模型，AIMC 自动选最便宜的（本地永远 0 元）
+- `scene:code` 组里同时有 DeepSeek-Coder 云端版 + 本地 Qwen2.5-Coder
+
+支持的本地服务（OpenAI 兼容协议）：
+
+| 服务        | 默认端口    | 默认 base_url                  |
+|-------------|------------|--------------------------------|
+| Ollama      | 11434      | `http://localhost:11434/v1`    |
+| vllm        | 8000       | `http://localhost:8000/v1`     |
+| LM Studio   | 1234       | `http://localhost:1234/v1`     |
+| llama.cpp   | 8080       | `http://localhost:8080/v1`     |
+
+**接入步骤（1 分钟）**：
+
+```bash
+# 1. 确认本地服务在跑（Ollama 示例）
+ollama serve   # 默认监听 :11434
+ollama pull qwen2:7b
+
+# 2. （可选）自定义 base_url — 编辑 .env
+# OLLAMA_BASE_URL=http://192.168.1.100:11434/v1
+
+# 3. 运行接入脚本（自动探测 4 个服务 + 列出可用 model + 让你选）
+python scripts/seed_local_channel.py
+
+# 4. 重启 uvicorn 或 POST /dashboard/api/cache/refresh 刷新路由缓存
+
+# 5. 验证
+curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("qwen2"))'
+```
+
+**特性**：
+- `provider_type='local'` 自动识别，proxy 跳过 Authorization header
+- `billing_mode='free'` 价格视为 0，路由时 `cheapest` 策略永远优先本地（节省云端费用 + 流量）
+- 频限给 `qpm=9999`（本地无上游限速），但仍记录 TPM 用于成本/用量观测
+- 模型名直接透传本地（如 `qwen2:7b`、`deepseek-r1:7b`），不需要改写
+
+**典型用法 — 任务分级走不同档位**：
+```python
+# 后台日志摘要 → 本地小模型（免费）
+response = client.chat.completions.create(model="tier:light", messages=...)
+
+# 复杂代码生成 → 云端旗舰
+response = client.chat.completions.create(model="tier:flagship", messages=...)
+
+# 长上下文 RAG → 长上下文档
+response = client.chat.completions.create(model="scene:longctx", messages=...)
+```
+
 ## 项目结构
 
 ```

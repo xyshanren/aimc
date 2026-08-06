@@ -8,6 +8,48 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+# Phase 3.1 (2026-07-29) — 采集源类型常量
+# 统一在一个地方, 避免硬编码字符串拼写错误
+class SourceType:
+    """采集源类型枚举 (字符串常量, 用于 DB IntelSource.source_type)
+
+    演进历史:
+    - Phase 2A: web_page / api_doc / announcement (价格/公告)
+    - Phase 3.1: + model_list / price_aggregator / benchmark (模型/榜单)
+
+    语义:
+    - web_page:        厂商官方文档站/定价页 (默认)
+    - api_doc:         API 文档页 (e.g. 某个 endpoint 描述)
+    - announcement:    公告页 (新模型/新功能发布)
+    - model_list:      模型列表页 (发现新 model_id, 用于 model_registry)
+    - price_aggregator: 第三方聚合平台价格页 (e.g. 硅基流动/火山方舟)
+    - benchmark:       Benchmark 榜单 (e.g. LMSYS Arena / SuperCLUE)
+    """
+    WEB_PAGE = "web_page"
+    API_DOC = "api_doc"
+    ANNOUNCEMENT = "announcement"
+    MODEL_LIST = "model_list"
+    PRICE_AGGREGATOR = "price_aggregator"
+    BENCHMARK = "benchmark"
+
+    @classmethod
+    def all(cls) -> list[str]:
+        return [cls.WEB_PAGE, cls.API_DOC, cls.ANNOUNCEMENT,
+                cls.MODEL_LIST, cls.PRICE_AGGREGATOR, cls.BENCHMARK]
+
+
+# Phase 3.1: 按 source_type 推荐轮询间隔 (秒)
+# 调度器会用这个表决定每个采集源的频率
+DEFAULT_POLL_INTERVALS = {
+    SourceType.WEB_PAGE: 900,            # 15 分钟 (价格页变动中等)
+    SourceType.API_DOC: 3600,            # 1 小时 (API 文档变动少)
+    SourceType.ANNOUNCEMENT: 1800,       # 30 分钟 (公告变动频繁)
+    SourceType.MODEL_LIST: 86400,        # 1 天 (新模型不频繁)
+    SourceType.PRICE_AGGREGATOR: 21600,  # 6 小时 (价格变动中等)
+    SourceType.BENCHMARK: 604800,        # 1 周 (榜单变动少)
+}
+
+
 @dataclass
 class IntelSourceBase:
     """采集源基类
