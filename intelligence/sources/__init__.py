@@ -29,6 +29,8 @@ from intelligence.sources.price_aggregator import (
     SiliconFlowPricingSource,
     OpenRouterPricingSource,
 )
+# Phase 4 v4.2 (2026-08-06): 阿里千问AI 观察性情报源
+from intelligence.sources.qianwenai import QianwenAISource
 from intelligence.sources.benchmark import (
     LMSYSArenaBenchmarkSource,
     SuperCLUEBenchmarkSource,
@@ -43,6 +45,9 @@ def get_all_sources() -> list[IntelSourceBase]:
     - 9 个 model_list (Phase 3.1 + 3.6: siliconflow/volcengine + deepseek/qwen/glm + 4 新厂商)
     - 2 个 price_aggregator
     - 1 个 benchmark (实际 2 个 LMSYS + SuperCLUE)
+
+    Phase 4 v4.2 (2026-08-06): +1 个观察性聚合源 QianwenAISource → 共 19 个
+    - 3 个 price_aggregator (siliconflow / openrouter / qianwenai)
     """
     return [
         # Phase 2A 原有 (价格页/公告页)
@@ -66,6 +71,8 @@ def get_all_sources() -> list[IntelSourceBase]:
         # Phase 3.1 price_aggregator
         SiliconFlowPricingSource(),
         OpenRouterPricingSource(),
+        # Phase 4 v4.2 price_aggregator (观察)
+        QianwenAISource(),
         # Phase 3.1 benchmark
         LMSYSArenaBenchmarkSource(),
         SuperCLUEBenchmarkSource(),
