@@ -84,6 +84,10 @@ async def process_model_item(
     model_id = item.model_id
 
     # 1) 出组判定 (Phase 3.3 关键安全阀: 极高置信度)
+    # P0-4 fix: must_auto_leave 一旦成立 (item.status=deprecated 且 conf>=0.9),
+    # 无条件 return SyncResult, 不准 fallthrough 到下面的入组逻辑.
+    # 之前只在 inner-if 里 return, 如果 existing 已是 deprecated (重复扫) 或
+    # registry 没有该 model, 都会 fallthrough 跳到入组判定 → deprecated model 被重新入组.
     if should_auto_leave(item):
         existing = await crud.get_model_registry(session, model_id)
         if existing and existing.status != "deprecated":
@@ -103,10 +107,17 @@ async def process_model_item(
                 "自动出组: model=%s status %s -> deprecated (conf=%.2f)",
                 model_id, old_status, item.confidence,
             )
-            return SyncResult(
-                model_id=model_id, action="auto_left",
-                confidence=item.confidence, reason="deprecated + conf>=0.9",
+        else:
+            # 已 deprecated (重复扫) 或 registry 不存在 (从来没入过组)
+            logger.debug(
+                "出组无变化: model=%s conf=%.2f (existing=%s)",
+                model_id, item.confidence,
+                "deprecated" if existing else "absent",
             )
+        return SyncResult(
+            model_id=model_id, action="auto_left",
+            confidence=item.confidence, reason="deprecated + conf>=0.9",
+        )
 
     # 2) 入组判定 (高置信度)
     if not should_auto_join(item):
@@ -160,7 +171,9 @@ async def process_model_item(
             approved=0,
         )
     else:
-        # 更新非 tier 字段
+        # P0-5 fix: 字段变更全部走 model_capabilities_log (approved=0 等待人工),
+        # 不直接 mutate existing.* (之前 context_length / modality 绕过审批,
+        # 与 docstring 中 "capabilities / context_length / modality 变更也走 log" 矛盾).
         if item.display_name and existing.display_name != item.display_name:
             await crud.log_capability_change(
                 session,
@@ -173,21 +186,40 @@ async def process_model_item(
                 approved=0,
             )
         if item.context_length and existing.context_length != item.context_length:
-            existing.context_length = item.context_length
+            await crud.log_capability_change(
+                session,
+                model_id=model_id,
+                field_changed="context_length",
+                old_value=existing.context_length,
+                new_value=item.context_length,
+                source="ai_infer",
+                confidence=item.confidence,
+                approved=0,
+            )
         if item.modality and existing.modality != item.modality:
-            existing.modality = item.modality
+            await crud.log_capability_change(
+                session,
+                model_id=model_id,
+                field_changed="modality",
+                old_value=existing.modality,
+                new_value=item.modality,
+                source="ai_infer",
+                confidence=item.confidence,
+                approved=0,
+            )
 
-    # tier 写 log (无论新建还是已有, tier 永远不直接落库)
-    await crud.log_capability_change(
-        session,
-        model_id=model_id,
-        field_changed="tier",
-        old_value=existing.tier if existing else None,
-        new_value=item.inferred_tier,
-        source="ai_infer",
-        confidence=item.confidence,
-        approved=0,  # 永远人工确认
-    )
+    # tier 写 log (P1-4 fix: 仅当新建 或 tier 变动时才写, 避免重复入组刷 tier log 噪声)
+    if not existing or existing.tier != item.inferred_tier:
+        await crud.log_capability_change(
+            session,
+            model_id=model_id,
+            field_changed="tier",
+            old_value=existing.tier if existing else None,
+            new_value=item.inferred_tier,
+            source="ai_infer",
+            confidence=item.confidence,
+            approved=0,  # 永远人工确认
+        )
 
     # 自动入组 (仅当找到对应 tier: 组)
     if target_group:

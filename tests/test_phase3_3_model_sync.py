@@ -454,6 +454,146 @@ def test_process_promotion_end_to_end():
 
 
 # ============================================================
+# Test 11 (P0-4 fix): 出组分支无条件 return, 已 deprecated 不准 fallthrough 重新入组
+# ============================================================
+def test_process_auto_leave_already_deprecated_no_fallthrough():
+    print("\n=== Test 11: P0-4 出组分支已 deprecated 无 fallthrough ===")
+    state = _install_mock_db()
+    from intelligence.model_sync import process_model_item
+    from schemas.intel import ModelIntelItem
+
+    # 预存一个已 deprecated 的 model
+    state["registry"]["old-deprecated"] = {
+        "model_id": "old-deprecated", "family": "qwen",
+        "tier": "T1", "status": "deprecated", "context_length": 32000,
+        "modality": "text",
+    }
+
+    item = ModelIntelItem(
+        model_id="old-deprecated", family="qwen", inferred_tier="T1",
+        confidence=0.95, status="deprecated", confidence_level="high",
+    )
+    result = asyncio.run(process_model_item(_MockSessionShim(), item))
+    # 应返回 auto_left (不会走到入组逻辑)
+    assert result.action == "auto_left", f"应 auto_left, 实际 {result.action}"
+    # 不能因为 “重复扫” 而被重新加入 tier:strong (那是入组逻辑的产物)
+    members_for_model = [
+        k for k in state["members"].keys() if k[1] == "old-deprecated"
+    ]
+    assert members_for_model == [], (
+        f"已 deprecated 的 model 不应被入组, 实际 members={members_for_model}"
+    )
+    # status log 不应重复 (因为没状态变化)
+    status_logs = [l for l in state["logs"] if l["field_changed"] == "status"]
+    assert len(status_logs) == 0, (
+        f"已 deprecated 重复扫不应再写 status log, 实际 {len(status_logs)} 条"
+    )
+    print("  [OK] 已 deprecated 重复扫不 fallthrough, 不入组, 不重写 status log")
+
+
+# ============================================================
+# Test 12 (P0-4 fix): 出组但 registry 里不存在 → 也不能 fallthrough
+# ============================================================
+def test_process_auto_leave_registry_absent():
+    print("\n=== Test 12: P0-4 出组但 registry 不存在 ===")
+    state = _install_mock_db()
+    from intelligence.model_sync import process_model_item
+    from schemas.intel import ModelIntelItem
+
+    item = ModelIntelItem(
+        model_id="never-existed", family="qwen", inferred_tier="T1",
+        confidence=0.95, status="deprecated", confidence_level="high",
+    )
+    result = asyncio.run(process_model_item(_MockSessionShim(), item))
+    assert result.action == "auto_left", f"应 auto_left, 实际 {result.action}"
+    # 不能走入组逻辑 → members 为空
+    assert state["members"] == {}, (
+        f"registry 不存在的 deprecated model 不应入组, 实际 members={state['members']}"
+    )
+    print("  [OK] registry 缺行的 deprecated model 不被意外入组")
+
+
+# ============================================================
+# Test 13 (P0-5 fix): context_length / modality 变更走 log, 不 mutate
+# ============================================================
+def test_process_context_length_modality_audit_log():
+    print("\n=== Test 13: P0-5 context_length / modality 走 log ===")
+    state = _install_mock_db()
+    from intelligence.model_sync import process_model_item
+    from schemas.intel import ModelIntelItem
+
+    # 预存一个 model
+    state["registry"]["ctx-test"] = {
+        "model_id": "ctx-test", "family": "qwen",
+        "tier": "T1", "status": "active",
+        "context_length": 8192, "modality": "text",
+    }
+
+    item = ModelIntelItem(
+        model_id="ctx-test", family="qwen", inferred_tier="T1",
+        context_length=32768, modality="multimodal",
+        confidence=0.9, confidence_level="high",
+    )
+    asyncio.run(process_model_item(_MockSessionShim(), item))
+
+    # registry 中 context_length / modality 不应被直接改写
+    reg = state["registry"]["ctx-test"]
+    assert reg["context_length"] == 8192, (
+        f"context_length 不应被 mutate, 实际 {reg['context_length']}"
+    )
+    assert reg["modality"] == "text", (
+        f"modality 不应被 mutate, 实际 {reg['modality']}"
+    )
+    # 应该有 context_length + modality 两条变更 log (approved=0)
+    ctx_logs = [l for l in state["logs"] if l["field_changed"] == "context_length"]
+    mod_logs = [l for l in state["logs"] if l["field_changed"] == "modality"]
+    assert len(ctx_logs) == 1 and ctx_logs[0]["approved"] == 0
+    assert ctx_logs[0]["old_value"] == 8192 and ctx_logs[0]["new_value"] == 32768
+    assert len(mod_logs) == 1 and mod_logs[0]["approved"] == 0
+    assert mod_logs[0]["old_value"] == "text" and mod_logs[0]["new_value"] == "multimodal"
+    print("  [OK] context_length/modality 走 log, 未直接 mutate registry")
+
+
+# ============================================================
+# Test 14 (P1-4 fix): 重复入组 tier 未变 → 不重写 tier log
+# ============================================================
+def test_process_repeat_join_no_tier_log_dedup():
+    print("\n=== Test 14: P1-4 重复入组 tier 不变不写 tier log ===")
+    state = _install_mock_db()
+    from intelligence.model_sync import process_model_item
+    from schemas.intel import ModelIntelItem
+
+    # 第一次入组: tier=T2, 新建 registry
+    item = ModelIntelItem(
+        model_id="dup-tier", family="qwen", inferred_tier="T2",
+        confidence=0.9, confidence_level="high",
+    )
+    asyncio.run(process_model_item(_MockSessionShim(), item))
+    tier_logs_1 = [l for l in state["logs"] if l["field_changed"] == "tier"]
+    assert len(tier_logs_1) == 1, f"首次应 1 条 tier log, 实际 {len(tier_logs_1)}"
+
+    # 第二次入组: 同一 model_id, tier=T2 (未变), 应不重复写 tier log
+    asyncio.run(process_model_item(_MockSessionShim(), item))
+    tier_logs_2 = [l for l in state["logs"] if l["field_changed"] == "tier"]
+    assert len(tier_logs_2) == 1, (
+        f"tier 未变不应重写 log, 实际 {len(tier_logs_2)} 条"
+    )
+    print("  [OK] 重复入组 tier 不变只写 1 条 tier log")
+
+    # 第三次: tier 变化 T2 → T3 → 应再写一条
+    item2 = ModelIntelItem(
+        model_id="dup-tier", family="qwen", inferred_tier="T3",
+        confidence=0.9, confidence_level="high",
+    )
+    asyncio.run(process_model_item(_MockSessionShim(), item2))
+    tier_logs_3 = [l for l in state["logs"] if l["field_changed"] == "tier"]
+    assert len(tier_logs_3) == 2, (
+        f"tier 变化应再写 1 条, 累计应 2 条, 实际 {len(tier_logs_3)}"
+    )
+    print(f"  [OK] tier 变化时再多写 1 条 log, 累计 {len(tier_logs_3)} 条")
+
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -471,9 +611,14 @@ def main():
     test_process_promotion_wrong_kind()
     test_process_promotion_bad_json()
     test_process_promotion_end_to_end()
+    # P0-4 / P0-5 / P1-4 新增用例
+    test_process_auto_leave_already_deprecated_no_fallthrough()
+    test_process_auto_leave_registry_absent()
+    test_process_context_length_modality_audit_log()
+    test_process_repeat_join_no_tier_log_dedup()
 
     print("\n" + "=" * 60)
-    print("ALL 10 TESTS PASSED")
+    print("ALL 14 TESTS PASSED")
     print("=" * 60)
 
 

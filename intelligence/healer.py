@@ -307,7 +307,15 @@ async def _save_promotion(result: ParseResult, source):
     Phase 3.1: 接收 source_type
     - sanity check 阈值按 type 调整 (model_list/benchmark/price_aggregator 放低)
     - source_type 写进 raw_data JSON, 让 3.3 消费者认出来
+
+    Phase 3.3 接通 (P0-1 fix): 入库 commit 后, 若 intelligence_kind=model_metadata 且
+    models 非空, 调用 model_sync.process_promotion 立即消费.
+    - 用新 session (model_sync 内部自行 async_session_factory),
+      避免与本函数已 commit 的事务重叠
+    - 调用失败仅 logger.warning, 不影响优惠入库主流程
     """
+    promo_id: Optional[int] = None
+    raw_data_json: Optional[str] = None
     try:
         from db.engine import async_session_factory
         from db import crud
@@ -319,9 +327,10 @@ async def _save_promotion(result: ParseResult, source):
         raw_data_dict = result.model_dump()
         raw_data_dict["_source_type"] = source.source_type
         raw_data_dict["_intelligence_kind"] = result.intelligence_kind
+        raw_data_json = json.dumps(raw_data_dict, ensure_ascii=False)
 
         async with async_session_factory() as session:
-            await crud.create_promotion(
+            promo = await crud.create_promotion(
                 session,
                 provider=result.provider or source.provider,
                 title=result.title or "未知活动",
@@ -332,11 +341,12 @@ async def _save_promotion(result: ParseResult, source):
                 end_date=result.end_date,
                 status="active",
                 confidence=result.confidence,
-                raw_data=json.dumps(raw_data_dict, ensure_ascii=False),
+                raw_data=raw_data_json,
                 flagged=1 if flagged else 0,
                 flagged_reason=flagged_reason,
             )
             await session.commit()
+            promo_id = promo.id
 
         if flagged:
             logger.warning(
@@ -345,6 +355,30 @@ async def _save_promotion(result: ParseResult, source):
             )
     except Exception as e:
         logger.error(f"优惠入库失败: {e}")
+        return  # P0-1 fix: 优惠入库失败时不要跳下游 process_promotion
+
+    # P0-1 fix: model_metadata 入库后, 立即触发 Phase 3.3 自动入组消费
+    if (promo_id is not None
+            and result.intelligence_kind == "model_metadata"
+            and result.models):
+        try:
+            from intelligence.model_sync import process_promotion
+            sync_results = await process_promotion(promo_id, raw_data_json or "")
+            joined = sum(1 for r in sync_results if r.action == "auto_joined")
+            pending = sum(1 for r in sync_results if r.action == "pending_review")
+            rejected = sum(1 for r in sync_results if r.action == "rejected")
+            left = sum(1 for r in sync_results if r.action == "auto_left")
+            logger.info(
+                "Phase 3.3 自动消费: promo=%s models=%d (joined=%d pending=%d rejected=%d left=%d)",
+                promo_id, len(sync_results), joined, pending, rejected, left,
+            )
+        except Exception as e:
+            # 仅 logger.warning, 不影响 _save_promotion 主流程
+            # 下次 scheduler 重扫 / run-model-sync 重试会补救
+            logger.warning(
+                "Phase 3.3 自动消费失败: promo=%s err=%s (优惠已入库, 下次重试可补救)",
+                promo_id, e,
+            )
 
 
 async def _alert_low_confidence(result: ParseResult, source):
