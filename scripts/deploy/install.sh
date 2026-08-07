@@ -25,10 +25,11 @@ err() { echo -e "${RED}[FAIL]${NC} $*"; exit 1; }
 info "=== Phase 4 v4.3 AIMC 安装 ==="
 
 # 1. OS 检查
-if [[ ! -f /etc/os_release ]] || ! grep -q "Ubuntu" /etc/os_release; then
+# 注意: Ubuntu 文件路径是 /etc/os-release (短横线), 不是 /etc/os_release (下划线)
+if [[ ! -f /etc/os-release ]] || ! grep -q "Ubuntu" /etc/os-release; then
     err "仅支持 Ubuntu. 检测到: $(cat /etc/os-release 2>/dev/null | head -3 || echo unknown)"
 fi
-. /etc/os_release
+. /etc/os-release
 info "OS: $PRETTY_NAME"
 
 # 2. Python 版本
