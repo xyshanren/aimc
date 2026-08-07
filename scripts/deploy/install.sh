@@ -56,10 +56,13 @@ fi
 info "基础命令: git / curl OK"
 
 # 4. systemd user 实例检查
+# v4.3.5: LXC 容器 / 极简镜像常无 dbus, 设置 SYSTEMD_USER_OK 标志让后续步骤优雅降级
+SYSTEMD_USER_OK=true
 if ! systemctl --user status >/dev/null 2>&1; then
-    warn "systemd --user 不可用 — 检查是否需要 loginctl enable-linger"
-    warn "  尝试: sudo loginctl enable-linger $USER"
-    warn "  或重新登录 (确保 XDG_RUNTIME_DIR 设置)"
+    warn "systemctl --user 不可用 — LXC 容器 / 极简镜像常见 (无 dbus socket)"
+    warn "  LXC 开发模式: cd $AIMC_HOME && .venv/bin/python main.py"
+    warn "  真机部署后: 重跑 install.sh 启用 systemd"
+    SYSTEMD_USER_OK=false
 fi
 
 # === 部署路径 ===
@@ -118,11 +121,20 @@ mkdir -p "$SYSTEMD_USER_DIR"
 cp "$AIMC_HOME/scripts/deploy/aimc.service" "$SYSTEMD_USER_DIR/aimc.service"
 
 # 重新加载 + 启用 (不立即 start, 因为 .env 还没填)
-systemctl --user daemon-reload
-info "systemd unit 已安装: ~/.config/systemd/user/aimc.service"
+# v4.3.5: LXC 容器 systemctl --user 不可用, daemon-reload 会报 "Failed to connect to bus"
+if [[ "$SYSTEMD_USER_OK" == "true" ]]; then
+    systemctl --user daemon-reload
+    info "systemd unit 已安装: ~/.config/systemd/user/aimc.service"
+else
+    warn "unit 文件已复制到 ~/.config/systemd/user/aimc.service 但未 daemon-reload"
+    warn "  (LXC 无 dbus, 真机部署后重跑 install.sh 启用)"
+fi
 
 # === 7. enable-linger (服务在登出后仍跑) ===
-if command -v loginctl >/dev/null 2>&1; then
+# v4.3.5: 同上, LXC 容器下 loginctl 也常常不可用, graceful skip
+if [[ "$SYSTEMD_USER_OK" != "true" ]]; then
+    warn "loginctl 不可用 (LXC 容器) — 真机部署后手动: sudo loginctl enable-linger $USER"
+elif command -v loginctl >/dev/null 2>&1; then
     if ! loginctl show-user "$USER" 2>/dev/null | grep -q "Linger=yes"; then
         info "启用 linger (用户登出后服务继续跑) — 需要 sudo"
         sudo loginctl enable-linger "$USER" \
@@ -131,18 +143,31 @@ if command -v loginctl >/dev/null 2>&1; then
     else
         info "linger 已启用 OK"
     fi
+else
+    warn "loginctl 命令不存在 — 跳过 linger 检查"
 fi
 
 # === 8. 启动 (可选 — 默认不启, 让用户填完 .env 后再启) ===
+# v4.3.5: LXC 容器下 systemctl --user 不可用, 改提示手动跑 python
 if [[ "${AIMC_AUTOSTART:-0}" == "1" ]]; then
-    info "启动服务 (AIMC_AUTOSTART=1)"
-    systemctl --user enable --now aimc.service
-    sleep 2
-    systemctl --user status aimc.service --no-pager || true
+    if [[ "$SYSTEMD_USER_OK" == "true" ]]; then
+        info "启动服务 (AIMC_AUTOSTART=1)"
+        systemctl --user enable --now aimc.service
+        sleep 2
+        systemctl --user status aimc.service --no-pager || true
+    else
+        warn "AIMC_AUTOSTART=1 但 systemd --user 不可用 — LXC 手动跑:"
+        warn "  cd $AIMC_HOME && .venv/bin/python main.py"
+    fi
 else
     info "未自动启动 (AIMC_AUTOSTART=0, 默认)"
-    info "  启动: systemctl --user enable --now aimc.service"
-    info "  查日志: journalctl --user -u aimc -f"
+    if [[ "$SYSTEMD_USER_OK" == "true" ]]; then
+        info "  启动: systemctl --user enable --now aimc.service"
+        info "  查日志: journalctl --user -u aimc -f"
+    else
+        info "  LXC 开发模式: cd $AIMC_HOME && .venv/bin/python main.py"
+        info "  真机部署后: systemctl --user enable --now aimc.service"
+    fi
 fi
 
 # === 9. 健康检查 ===
