@@ -84,9 +84,14 @@ if [[ ! -d "$AIMC_HOME/.venv" ]]; then
 fi
 
 # === 3. 装依赖 ===
-info "装 Python 依赖 (可能 1-3 min)..."
-"$AIMC_HOME/.venv/bin/pip" install --upgrade pip -q
-"$AIMC_HOME/.venv/bin/pip" install -r "$AIMC_HOME/requirements.txt" -q \
+# v4.3.4: 去掉 -q, 让用户看到实时进度条
+# (v4.3.3 用 -q 抑制, 但 LXC minimal image 装依赖慢, 用户看不出在动)
+info "装 Python 依赖 (可能 1-10 min, 看终端进度条)..."
+echo "[INFO] 先升 pip (这一步快, 5-10s)..."
+"$AIMC_HOME/.venv/bin/pip" install --upgrade pip -q 2>&1 | tail -3
+echo "[INFO] 装 requirements.txt (进度条实时显示)..."
+# 不加 -q, pip 默认 progress bar on; 如果太卡可以手 ctrl-c 后用 -v 重跑看详情
+"$AIMC_HOME/.venv/bin/pip" install -r "$AIMC_HOME/requirements.txt" \
     || err "pip install 失败"
 
 # === 4. 复制 .env 模板 ===
