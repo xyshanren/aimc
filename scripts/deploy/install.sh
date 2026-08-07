@@ -96,9 +96,23 @@ fi
 info "AIMC_HOME=$AIMC_HOME"
 
 # === 2. venv 创建 ===
-if [[ ! -d "$AIMC_HOME/.venv" ]]; then
+# v4.3.7: 检测 .venv 存在但不可写的情况 (常见于之前用 root 跑过 install.sh 遗留)
+if [[ -d "$AIMC_HOME/.venv" ]]; then
+    if [[ -w "$AIMC_HOME/.venv" ]]; then
+        info "venv 已存在且可写: $AIMC_HOME/.venv (跳过创建)"
+    else
+        err "venv 目录存在但当前用户 ($(whoami)) 无写权限"
+        echo "  可能是之前用 root/sudo 跑 install.sh 遗留的 venv"
+        echo "  修法二选一 (不要 sudo 创建新 venv, 会造成所有权混乱):"
+        echo "  1. 删除旧 venv (安全, 重跑会重建):"
+        echo "     sudo rm -rf $AIMC_HOME/.venv"
+        echo "  2. 改主 (保留依赖缓存):"
+        echo "     sudo chown -R $(whoami):$(id -gn) $AIMC_HOME/.venv"
+        echo "  然后重跑 install.sh"
+    fi
+else
     info "创建 venv: $AIMC_HOME/.venv"
-    python3 -m venv "$AIMC_HOME/.venv" || err "venv 创建失败"
+    python3 -m venv "$AIMC_HOME/.venv" || err "venv 创建失败 (检查 python3-venv 是否安装)"
 fi
 
 # === 3. 装依赖 ===
