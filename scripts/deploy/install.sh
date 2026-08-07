@@ -42,12 +42,18 @@ fi
 info "Python: $PYTHON_VERSION OK"
 
 # 3. 依赖检查
-for cmd in git curl sqlite3; do
+# 区分: hard-fail (安装必需) vs soft-warn (可选, 备份脚本等场景才用)
+for cmd in git curl; do
     if ! command -v $cmd >/dev/null 2>&1; then
         err "缺失命令: $cmd (运行: sudo apt install -y $cmd)"
     fi
 done
-info "基础命令: git / curl / sqlite3 OK"
+# sqlite3 CLI 仅 backup.sh 旧版用; v4.3.3+ backup.sh 改用 Python sqlite3 模块
+# 保留 soft-warn, 给极简镜像部署提供提示
+if ! command -v sqlite3 >/dev/null 2>&1; then
+    warn "sqlite3 CLI 未装 — v4.3.3+ backup.sh 已切到 Python, 可忽略"
+fi
+info "基础命令: git / curl OK"
 
 # 4. systemd user 实例检查
 if ! systemctl --user status >/dev/null 2>&1; then

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================
-# AIMC 数据库备份脚本 (Phase 4 v4.3)
+# AIMC 数据库备份脚本 (Phase 4 v4.3.3)
 # ============================================================
-# 用 SQLite .backup 命令做热备份 (WAL 模式安全)
-# 不依赖 sqlite3 二进制 (用 sqlite3 模块, 跟 Python 同步)
+# 用 Python sqlite3 模块做热备份 (WAL 安全 + atomic page-by-page copy)
+# 不依赖 sqlite3 CLI 二进制 (v4.3.3 改, install 零额外系统包)
 # 用法:
 #   bash backup.sh                        # 默认 ~/aimc/data/aimc.db → ~/aimc/backups/
 #   bash backup.sh /path/to/aimc.db       # 指定源 db
@@ -26,10 +26,33 @@ fi
 
 mkdir -p "$BACKUP_DIR"
 
-# === 热备份 (SQLite 推荐方式) ===
-# 用 sqlite3 .backup 命令安全备份 (WAL 检查点 + atomic rename)
-echo "[INFO] 备份 $DB_PATH → $BACKUP_FILE"
-sqlite3 "$DB_PATH" ".backup '$BACKUP_FILE'"
+# === 热备份 (v4.3.3 改: 用 Python sqlite3 模块, 不依赖 sqlite3 CLI) ===
+# Python sqlite3 自带 Connection.backup() API, 等价于 CLI .backup 命令
+# (WAL 检查点 + atomic page-by-page copy), 而且不需要 apt 装额外包
+echo "[INFO] 备份 $DB_PATH → $BACKUP_FILE (Python sqlite3)"
+# 优先用 venv 内的 python (跟 systemd unit 一致), fallback 到系统 python3
+AIMC_VENV_PY="${AIMC_HOME:-$HOME/aimc}/.venv/bin/python"
+if [[ ! -x "$AIMC_VENV_PY" ]]; then
+    AIMC_VENV_PY="python3"
+fi
+"$AIMC_VENV_PY" - "$DB_PATH" "$BACKUP_FILE" <<'PYEOF'
+import sqlite3, sys
+src_path, dst_path = sys.argv[1], sys.argv[2]
+src = sqlite3.connect(src_path)
+dst = sqlite3.connect(dst_path)
+try:
+    with dst:
+        src.backup(dst)  # WAL checkpoint + atomic page copy
+finally:
+    dst.close()
+    src.close()
+print(f"[OK] hot backup 完成: {src_path} -> {dst_path}")
+PYEOF
+BACKUP_RC=$?
+if [[ $BACKUP_RC -ne 0 ]]; then
+    echo "[FAIL] Python backup 退出码 $BACKUP_RC" >&2
+    exit $BACKUP_RC
+fi
 
 # 验证
 BACKUP_SIZE=$(stat -c %s "$BACKUP_FILE" 2>/dev/null || stat -f %z "$BACKUP_FILE")
