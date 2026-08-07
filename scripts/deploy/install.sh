@@ -65,20 +65,35 @@ if ! systemctl --user status >/dev/null 2>&1; then
     SYSTEMD_USER_OK=false
 fi
 
-# === 部署路径 ===
-AIMC_HOME="$HOME/aimc"
-AIMC_REPO="${AIMC_REPO_URL:-https://github.com/<your-repo>/aimc.git}"
+# === 部署路径检测 (v4.3.6) ===
+# 优先级: 当前目录 (有 .git) > AIMC_HOME env > $HOME/aimc (有 .git) > clone
+AIMC_REPO="${AIMC_REPO_URL:-}"
 
-# === 1. Clone / 更新仓库 ===
-if [[ -d "$AIMC_HOME/.git" ]]; then
-    info "仓库已存在: $AIMC_HOME — 拉取最新"
-    cd "$AIMC_HOME"
-    git pull --rebase --autostash || warn "git pull 失败, 继续 (可能是未提交本地修改)"
+if [[ -d ".git" ]]; then
+    # 在仓库目录内跑 install.sh, 就地安装 (推荐)
+    AIMC_HOME="$(pwd)"
+    info "检测到仓库目录: $AIMC_HOME (就地安装)"
+elif [[ -n "${AIMC_HOME:-}" ]] && [[ -d "$AIMC_HOME/.git" ]]; then
+    info "使用 AIMC_HOME=$AIMC_HOME"
+elif [[ -d "$HOME/aimc/.git" ]]; then
+    AIMC_HOME="$HOME/aimc"
+    info "使用默认路径: $AIMC_HOME"
 else
+    # 没找到仓库, 走 clone 路径
+    AIMC_HOME="${AIMC_HOME:-$HOME/aimc}"
+    if [[ -z "$AIMC_REPO" ]]; then
+        err "没检测到仓库目录, 也没设 AIMC_REPO_URL"
+        echo "  提示:"
+        echo "  1. 在仓库目录跑: cd /path/to/aimc && bash scripts/deploy/install.sh"
+        echo "  2. 或设置仓库: export AIMC_REPO_URL=git@github.com:you/aimc.git"
+        echo "  3. 或手动 clone: git clone <repo> $AIMC_HOME"
+    fi
     info "Clone 仓库 -> $AIMC_HOME"
     git clone "$AIMC_REPO" "$AIMC_HOME" || err "git clone 失败: $AIMC_REPO"
     cd "$AIMC_HOME"
+    AIMC_HOME="$(pwd)"
 fi
+info "AIMC_HOME=$AIMC_HOME"
 
 # === 2. venv 创建 ===
 if [[ ! -d "$AIMC_HOME/.venv" ]]; then
@@ -118,7 +133,9 @@ info "数据目录: $AIMC_HOME/data"
 # === 6. 安装 systemd unit (user 级) ===
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
-cp "$AIMC_HOME/scripts/deploy/aimc.service" "$SYSTEMD_USER_DIR/aimc.service"
+# v4.3.6: sed 替换 %h/aimc 为实际 $AIMC_HOME (不用 %h, 避免 path 假设)
+sed "s|%h/aimc|$AIMC_HOME|g" "$AIMC_HOME/scripts/deploy/aimc.service" > "$SYSTEMD_USER_DIR/aimc.service"
+info "systemd unit 已生成: $SYSTEMD_USER_DIR/aimc.service (WorkingDirectory=$AIMC_HOME)"
 
 # 重新加载 + 启用 (不立即 start, 因为 .env 还没填)
 # v4.3.5: LXC 容器 systemctl --user 不可用, daemon-reload 会报 "Failed to connect to bus"
