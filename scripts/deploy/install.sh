@@ -95,6 +95,21 @@ else
 fi
 info "AIMC_HOME=$AIMC_HOME"
 
+# v4.3.8: 检测整个仓库目录可写性
+# (覆盖整个目录是 root-owned 的情况, 比如之前 root clone 后 lxc 用户跑 install.sh)
+# 这种场景下 .venv 还不存在, v4.3.7 检测不到, 但建 venv 会 Permission denied
+if [[ ! -w "$AIMC_HOME" ]]; then
+    OWNER_INFO=$(stat -c '%U:%G' "$AIMC_HOME" 2>/dev/null || stat -f '%Su:%Sg' "$AIMC_HOME")
+    err "AIMC_HOME 目录 ($AIMC_HOME) 当前用户 ($(whoami)) 无写权限"
+    echo "  目录所有权: $OWNER_INFO"
+    echo "  修法 (不要 sudo 创建 venv, 会造成所有权混乱):"
+    echo "    sudo chown -R $(whoami):$(id -gn) $AIMC_HOME"
+    echo "  或重新 clone 到当前用户拥有的目录:"
+    echo "    sudo rm -rf $AIMC_HOME"
+    echo "    git clone <repo> $AIMC_HOME"
+    echo "  然后重跑 install.sh"
+fi
+
 # === 2. venv 创建 ===
 # v4.3.7: 检测 .venv 存在但不可写的情况 (常见于之前用 root 跑过 install.sh 遗留)
 if [[ -d "$AIMC_HOME/.venv" ]]; then
