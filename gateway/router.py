@@ -42,6 +42,8 @@ class RouteEngine:
         self._registry_cache: dict = {}        # model_id -> ModelRegistry ORM
         self._groups_cache: dict = {}          # group_id -> ModelGroup ORM
         self._group_members_cache: dict = {}   # group_id -> [model_id]
+        # V4.5.1: 能力评分 (model_cards) — sort_key tie-break
+        self._cards_cache: dict = {}           # model_id -> [ModelCard ORM]
 
     async def refresh_cache(self):
         """从数据库刷新渠道缓存到内存 (全量)
@@ -58,6 +60,7 @@ class RouteEngine:
         async with async_session_factory() as session:
             await self._load_channels_cache(session)
             await self._load_groups_cache(session)
+            await self._load_cards_cache(session)
 
         self._last_refresh = datetime.now()
         logger.info(
@@ -326,6 +329,55 @@ class RouteEngine:
             f"个 group members 跨 {len(self._group_members_cache)} 个组"
         )
 
+    # ===========================================================
+    # V4.5.1: 能力评分路由 (model_cards 缓存 + score_bonus + sort_key 接入)
+    # ===========================================================
+
+    async def _load_cards_cache(self, session) -> None:
+        """V4.5.1: 加载 model_cards 评分 (model_id → [ModelCard]).
+
+        反向索引: 一个 model 可对应多个 benchmark source (OpenCompass + LMSYS + ...).
+        score_bonus() 取 max(score × recency) — 历史最强分 (考虑时效).
+        """
+        from db.models import ModelCard
+        result = await session.execute(select(ModelCard))
+        cards = result.scalars().all()
+        self._cards_cache = {}
+        for card in cards:
+            self._cards_cache.setdefault(card.model, []).append(card)
+        logger.info(
+            f"路由缓存: {sum(len(v) for v in self._cards_cache.values())} 个 model_card "
+            f"跨 {len(self._cards_cache)} 个 model"
+        )
+
+    def score_bonus(self, model: str) -> float:
+        """V4.5.1: model 的能力评分加成 [0.0, 1.0].
+
+        计算: max(card.score × recency_weight(card.updated_at)) over cards.
+        - 无 card / 无 updated_at → 0.0
+        - score 100% + recency 1.0 → 1.0 (满分)
+        - 半年内的 OpenCompass 引用 → ~1.0
+        - 一年前的 → ~0.5
+        - 二年前 / 无时间戳 → 0.0
+
+        用法: sort_key 加 -score_bonus 项, 价格平手时高分排前. 权重 ≤ 0.2 (Phase 2 design).
+        """
+        from intelligence.recency import recency_weight
+
+        cards = self._cards_cache.get(model, [])
+        if not cards:
+            return 0.0
+        best = 0.0
+        for card in cards:
+            if card.score is None:
+                continue
+            recency = recency_weight(card.updated_at)
+            # score 是 0~100, 归一化到 0~1
+            weighted = (card.score / 100.0) * recency
+            if weighted > best:
+                best = weighted
+        return best
+
     def _resolve_account_key(self, account) -> Optional[str]:
         """API-Sec-1: 透明获取 account 的明文 api_key
 
@@ -420,13 +472,16 @@ class RouteEngine:
             logger.warning(f"所有渠道配额耗尽: {model}")
             return None
 
-        # 4. 多维排序：价格 ASC > 剩余配额 DESC > 优先级 DESC
+        # 4. 多维排序: 价格 ASC > 剩余配额 DESC > 优先级 DESC > score_bonus DESC
+        # V4.5.1: 加 score_bonus tie-break — 价格平手时高分 model 优先
+        # 但分数高不会完全压制便宜 model (排序后位), 仅起 tie-break 作用
         def sort_key(item):
             ch, price = item
             input_price = price.get("input_price") or 0
             quota_remaining = ch["quota_remaining"] if ch["quota_remaining"] is not None else 999999999
             priority = ch["priority"]
-            return (input_price, -quota_remaining, -priority)
+            bonus = self.score_bonus(model)  # V4.5.1: [0, 1]
+            return (input_price, -quota_remaining, -priority, -bonus)
 
         candidates.sort(key=sort_key)
 
