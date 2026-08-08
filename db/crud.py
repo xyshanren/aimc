@@ -3,7 +3,7 @@
 提供各表的增删改查操作。
 """
 
-from datetime import date
+from datetime import date, datetime
 import logging
 from typing import Optional
 
@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import (
     Channel, Account, PriceSnapshot, Promotion,
     ChannelQuota, UsageLog, ParseRule, IntelSource,
-    ModelCard, SettingsRuntime,
+    ModelCard, SettingsRuntime, ModelFeedbackSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,6 +113,47 @@ async def update_account_quota(session: AsyncSession, account_id: int, used_delt
         if account.quota_total and account.quota_used >= account.quota_total:
             account.status = "exhausted"
             logger.info(f"账号 {account.account_name} 配额已耗尽")
+
+
+async def list_accounts(
+    session: AsyncSession,
+    provider: Optional[str] = None,
+    status: Optional[str] = None,
+) -> list[tuple[Account, Channel]]:
+    """列出账号及其渠道信息，供 CLI 和 Dashboard 复用。"""
+    stmt = select(Account, Channel).join(Channel, Account.channel_id == Channel.id)
+    if provider:
+        stmt = stmt.where(Channel.provider == provider)
+    if status:
+        stmt = stmt.where(Account.status == status)
+    stmt = stmt.order_by(Account.id)
+    return list((await session.execute(stmt)).all())
+
+
+async def update_account_status(
+    session: AsyncSession,
+    account_id: int,
+    status: str,
+) -> Optional[Account]:
+    account = await session.get(Account, account_id)
+    if account:
+        account.status = status
+        await session.flush()
+    return account
+
+
+async def rotate_account_key(
+    session: AsyncSession,
+    account_id: int,
+    ciphertext: bytes,
+) -> Optional[Account]:
+    account = await session.get(Account, account_id)
+    if account:
+        account.api_key_ciphertext = ciphertext
+        account.api_key = ""
+        account.last_rotated_at = datetime.now()
+        await session.flush()
+    return account
 
 
 # === 价格快照操作 ===
@@ -259,6 +300,38 @@ async def create_usage_log(session: AsyncSession, **kwargs) -> UsageLog:
     session.add(log)
     await session.flush()
     return log
+
+
+async def upsert_feedback_summary(session: AsyncSession, **kwargs) -> ModelFeedbackSummary:
+    """按 (model_id, period_start) 幂等写入周反馈汇总。"""
+    stmt = select(ModelFeedbackSummary).where(
+        ModelFeedbackSummary.model_id == kwargs["model_id"],
+        ModelFeedbackSummary.period_start == kwargs["period_start"],
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row:
+        for key, value in kwargs.items():
+            setattr(row, key, value)
+    else:
+        row = ModelFeedbackSummary(**kwargs)
+        session.add(row)
+    await session.flush()
+    return row
+
+
+async def list_feedback_summary(
+    session: AsyncSession,
+    period_start=None,
+    model_id: Optional[str] = None,
+    limit: int = 100,
+) -> list[ModelFeedbackSummary]:
+    stmt = select(ModelFeedbackSummary)
+    if period_start is not None:
+        stmt = stmt.where(ModelFeedbackSummary.period_start == period_start)
+    if model_id:
+        stmt = stmt.where(ModelFeedbackSummary.model_id == model_id)
+    stmt = stmt.order_by(ModelFeedbackSummary.feedback_score.desc()).limit(limit)
+    return list((await session.execute(stmt)).scalars().all())
 
 
 # === 解析规则操作 ===

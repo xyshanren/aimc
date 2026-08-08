@@ -116,9 +116,18 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # V4.4: 每天检查账号配额、active 账号和月成本告警
+    scheduler.add_job(
+        _v44_alert_task,
+        trigger=IntervalTrigger(hours=24),
+        id="v44_alert_checks",
+        name="V4.4 账号与成本告警",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
-        f"调度器已启动 (持久化模式), 共 {len(sources) + 3} 个定时任务, "
+        f"调度器已启动 (持久化模式), 共 {len(sources) + 4} 个定时任务, "
         f"jobstore={settings.db_path}"
     )
 
@@ -328,6 +337,16 @@ async def _check_key_rotation_task():
         logger.info(f"key 轮换检查完成: {count} 个告警")
     except Exception as e:
         logger.error(f"key 轮换检查失败: {e}", exc_info=True)
+
+
+async def _v44_alert_task():
+    """V4.4: 每天执行四类告警检查。"""
+    try:
+        from intelligence.v44_alerts import check_all_alerts
+        count = await check_all_alerts()
+        logger.info("V4.4 告警检查完成: %d 条", count)
+    except Exception as e:
+        logger.error("V4.4 告警检查失败: %s", e, exc_info=True)
 
 
 async def _cross_source_detection_task():

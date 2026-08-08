@@ -43,6 +43,7 @@ async def ensure_migrations():
     - settings_runtime 表 (API-Sec-2, 2026-07-29) — 新建表, create_all 自动
     - usage_logs.group_id (Phase 3.A, 2026-07-29) — Dashboard 命中率聚合
     - model_group_members.is_active / removed_at / removed_reason / removed_by (P1-2, 2026-08-06) — 软删除
+    - model_feedback_summary (V4.4.A) — 模型周反馈汇总表
     """
     async with engine.begin() as conn:
         # intel_sources.last_content
@@ -157,6 +158,10 @@ async def ensure_migrations():
             logger.info("迁移: model_group_members 添加 removed_by 列 (P1-2)")
         else:
             logger.debug("迁移: model_group_members.removed_by 已存在，跳过")
+
+        # model_feedback_summary (V4.4.A): Base.metadata.create_all 已负责建表和索引
+        # 老库也无需 ALTER；表不存在时会在上面的 create_all 创建。
+        logger.debug("迁移: model_feedback_summary 由 metadata 幂等创建")
 
 
 async def drop_all():

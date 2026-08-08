@@ -164,6 +164,37 @@ class UsageLog(Base):
     created_at = Column(DateTime, default=func.now())
 
 
+class ModelFeedbackSummary(Base):
+    """按周聚合的模型隐式反馈（V4.4.A）"""
+    __tablename__ = "model_feedback_summary"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_id = Column(Text, nullable=False, comment="usage_logs.model")
+    family = Column(Text, nullable=False, comment="模型族")
+    period_start = Column(DateTime, nullable=False, comment="统计周期起点（周一）")
+    period_end = Column(DateTime, nullable=False, comment="统计周期终点（下周一，开区间）")
+    request_count = Column(Integer, nullable=False)
+    success_count = Column(Integer, nullable=False)
+    retry_count = Column(Integer, nullable=False)
+    input_tokens = Column(Integer, nullable=True)
+    output_tokens = Column(Integer, nullable=True)
+    cost_total = Column(Float, nullable=True)
+    fail_rate = Column(Float, nullable=True)
+    retry_rate = Column(Float, nullable=True)
+    p50_latency_ms = Column(Integer, nullable=True)
+    p95_latency_ms = Column(Integer, nullable=True)
+    avg_output_tokens = Column(Integer, nullable=True)
+    feedback_score = Column(Float, nullable=True)
+    client_breakdown = Column(Text, nullable=True, comment="JSON: 按 account_id 统计请求数")
+    created_at = Column(DateTime, default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("model_id", "period_start", name="uq_feedback_model_period"),
+        Index("idx_feedback_period", "period_start"),
+        Index("idx_feedback_score", "feedback_score"),
+    )
+
+
 class ParseRule(Base):
     """解析规则表（自愈循环支撑）"""
     __tablename__ = "parse_rules"
