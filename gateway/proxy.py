@@ -148,11 +148,13 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
     try:
         if is_stream:
             return await _forward_stream(
-                target_url, forward_headers, body, channel, start_time, aimc_headers
+                target_url, forward_headers, body, channel, start_time,
+                aimc_headers, requested_model=requested_model,
             )
         else:
             return await _forward_normal(
-                target_url, forward_headers, body, channel, start_time, aimc_headers
+                target_url, forward_headers, body, channel, start_time,
+                aimc_headers, requested_model=requested_model,
             )
     except httpx.TimeoutException:
         logger.error(f"上游超时: {channel['name']} ({target_url})")
@@ -180,6 +182,7 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
 async def _forward_stream(
     url: str, headers: dict, body: bytes, channel: dict, start_time: float,
     aimc_headers: dict | None = None,
+    requested_model: str = "",
 ) -> StreamingResponse:
     """流式透传：原样传递字节，不解析 SSE"""
 
@@ -233,8 +236,12 @@ async def _forward_stream(
 async def _forward_normal(
     url: str, headers: dict, body: bytes, channel: dict, start_time: float,
     aimc_headers: dict | None = None,
+    requested_model: str = "",
 ) -> JSONResponse:
-    """非流式转发：等待完整响应后返回"""
+    """非流式转发：等待完整响应后返回
+
+    V4.6.1: 接收 requested_model 透传给 _schedule_usage_log (Phase 3.A group_id 提取)
+    """
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(settings.request_timeout, connect=10.0)) as client:
         response = await client.post(url, headers=headers, content=body)

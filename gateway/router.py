@@ -457,12 +457,16 @@ class RouteEngine:
 
         # 2. 频限过滤
         from gateway.limiter import rate_limiter
+        from gateway.cooldown import cooldown_manager
+        # V4.6.1: 同时过滤 cooldown (单次失败就冷却, 避免反复撞死 key)
         candidates = [
             (ch, price) for ch, price in candidates
-            if not rate_limiter.is_limited(ch["account_id"], ch["quotas"])
+            if not cooldown_manager.is_in_cooldown(ch["account_id"])
+            and not rate_limiter.is_limited(ch["account_id"], ch["quotas"])
         ]
 
         if not candidates:
+            # 无候选时回 fallback; 再用 _is_channel_usable 检查一次 (含 cooldown)
             logger.warning(f"所有渠道频限已满: {model}")
             return None
 
