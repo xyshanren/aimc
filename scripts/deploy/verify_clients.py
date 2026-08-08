@@ -19,9 +19,27 @@
 """
 import argparse
 import json
+import socket
 import sys
 import urllib.request
 import urllib.error
+
+
+def get_local_lan_ip() -> str:
+    """自动探测本机非 127.0.0.1 的 LAN IP (零依赖, UDP socket 绕路拿地址)
+
+    Returns:
+        str 第一个非 127.0.0.1 的网卡 IP, 探测失败返回空串
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # 不真发包, 只是让 OS 选路由接口
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except Exception:
+        return ""
+    finally:
+        s.close()
 
 
 def check_endpoint(name: str, base_url: str, api_key: str = "") -> dict:
@@ -102,10 +120,17 @@ def main() -> int:
         ("0.0.0.0 绑定", f"http://{args.host}:{args.port}/v1", args.api_key),
     ]
 
-    # LAN 测试 (尝试常见客户端 IP 模式)
+    # LAN 测试 (v4.3.9: 自动探测本机真实 LAN IP, 不再写死 192.168.1.x)
     if not args.skip_lan:
-        # 提示用户填真实客户端 IP, 但默认试 192.168 / 10.0 / 172
-        endpoints.append((f"LAN (192.168.1.x 模拟)", f"http://192.168.1.100:{args.port}/v1", args.api_key))
+        lan_ip = get_local_lan_ip()
+        if lan_ip and lan_ip != "127.0.0.1":
+            endpoints.append((f"LAN (autodetect: {lan_ip})", f"http://{lan_ip}:{args.port}/v1", args.api_key))
+        elif args.host not in ("127.0.0.1", "localhost"):
+            # 探测失败但 --host 提供了 IP, 退回用 --host
+            endpoints.append((f"LAN (--host 兜底)", f"http://{args.host}:{args.port}/v1", args.api_key))
+        else:
+            # 都拿不到, 提示用户手动跳过或 --lan-host 覆盖
+            print(f"  [.] LAN 跳过 (探测不到本机 IP, 用 --lan-host <ip> 手动指定)")
 
     results = []
     for name, url, key in endpoints:
