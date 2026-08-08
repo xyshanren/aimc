@@ -537,3 +537,212 @@ function loadWeeklyReport(value) {
 }
 
 document.addEventListener('DOMContentLoaded', loadReportsList);
+
+// ============================================================
+// V4.6: Dashboard 账号管理 (列表 / 加 / 启停 / 轮换 / 过期扫描)
+// 与 dashboard/routes.py /api/accounts/* 配套
+// ============================================================
+
+async function loadActiveChannels() {
+    // 填充加账号表单的 provider select
+    const sel = document.getElementById('acct-provider');
+    if (!sel) return;
+    try {
+        const resp = await fetch('/dashboard/api/channels/active');
+        const data = await resp.json();
+        sel.innerHTML = '<option value="">-- 选择 provider --</option>';
+        (data.channels || []).forEach(ch => {
+            const opt = document.createElement('option');
+            opt.value = ch.provider;
+            opt.textContent = `${ch.provider} (${ch.name})`;
+            sel.appendChild(opt);
+        });
+    } catch (e) {
+        sel.innerHTML = `<option value="">加载失败: ${esc(e.message)}</option>`;
+    }
+}
+
+async function loadAccounts() {
+    // 重新拉列表 — 同 hx-get 同样的 URL, 但用 fetch 强制刷新
+    const container = document.getElementById('accounts-list');
+    const meta = document.getElementById('accounts-meta');
+    if (meta) meta.textContent = '加载中...';
+    try {
+        const resp = await fetch('/dashboard/api/accounts');
+        const data = await resp.json();
+        renderAccounts(data);
+        if (meta) {
+            const active = (data.accounts || []).filter(a => a.status === 'active').length;
+            meta.textContent = `共 ${data.count} 个账号 · ${active} 个 active`;
+        }
+    } catch (e) {
+        if (meta) meta.textContent = `加载失败: ${esc(e.message)}`;
+        if (container) container.innerHTML = `<p class="error">加载失败: ${esc(e.message)}</p>`;
+    }
+}
+
+function renderAccounts(data) {
+    const container = document.getElementById('accounts-list');
+    if (!container) return;
+    const items = data.accounts || [];
+    if (items.length === 0) {
+        container.innerHTML = '<p class="loading">✓ 当前无账号 — 点上方 "+ 加新账号" 添加</p>';
+        return;
+    }
+
+    let html = '<table><thead><tr><th>ID</th><th>Provider</th><th>账号名</th><th>状态</th><th>已用/总额</th><th>过期</th><th>Key</th><th>备注</th><th>操作</th></tr></thead><tbody>';
+    for (const a of items) {
+        const quota = a.quota_total
+            ? `${a.quota_used.toLocaleString()} / ${a.quota_total.toLocaleString()} (${a.quota_pct ?? 0}%)`
+            : '∅';
+        const expires = a.expires_at ? a.expires_at.slice(0, 10) : '∅';
+        const notes = a.notes || '';
+        const status = a.status;
+        const actions = [];
+        if (status !== 'active') {
+            actions.push(`<button class="btn-sm btn-enable" onclick="toggleAccount(${a.id}, 'active', this)">启用</button>`);
+        } else {
+            actions.push(`<button class="btn-sm btn-disable" onclick="toggleAccount(${a.id}, 'disabled', this)">禁用</button>`);
+        }
+        actions.push(`<button class="btn-sm btn-rotate" onclick="rotateAccountKey(${a.id}, this)">轮换</button>`);
+        html += `<tr>
+            <td>${a.id}</td>
+            <td>${esc(a.provider)}</td>
+            <td><code>${esc(a.account_name)}</code></td>
+            <td class="status-${esc(status)}">${esc(status)}</td>
+            <td>${quota}</td>
+            <td>${esc(expires)}</td>
+            <td><code class="key-display">${esc(a.key_display)}</code></td>
+            <td class="notes">${esc(notes)}</td>
+            <td class="row-actions">${actions.join(' ')}</td>
+        </tr>`;
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+async function toggleAccount(accountId, newStatus, btn) {
+    if (!confirm(`确定将账号 #${accountId} 切换为 ${newStatus}?`)) return;
+    btn.disabled = true;
+    try {
+        const resp = await fetch(`/dashboard/api/accounts/${accountId}/${newStatus === 'active' ? 'enable' : 'disable'}`, {
+            method: 'POST',
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            await loadAccounts();
+        } else {
+            alert('操作失败: ' + (data.detail || resp.statusText));
+            btn.disabled = false;
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+        btn.disabled = false;
+    }
+}
+
+async function rotateAccountKey(accountId, btn) {
+    const newKey = prompt(`为账号 #${accountId} 输入新 API Key\n(明文仅本次提交到后端, 加密入库)`);
+    if (!newKey) return;
+    btn.disabled = true;
+    try {
+        const resp = await fetch(`/dashboard/api/accounts/${accountId}/rotate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_key: newKey }),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            await loadAccounts();
+        } else {
+            alert('轮换失败: ' + (data.detail || resp.statusText));
+            btn.disabled = false;
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+        btn.disabled = false;
+    }
+}
+
+async function submitNewAccount() {
+    const provider = document.getElementById('acct-provider').value;
+    const name = document.getElementById('acct-name').value.trim();
+    const apiKey = document.getElementById('acct-api-key').value;
+    const quotaTotalRaw = document.getElementById('acct-quota-total').value;
+    const expiresAt = document.getElementById('acct-expires-at').value;
+    const notes = document.getElementById('acct-notes').value.trim();
+    const feedback = document.getElementById('acct-add-feedback');
+
+    if (!provider) { feedback.textContent = '❌ 请选择 provider'; feedback.className = 'feedback error'; return; }
+    if (!name) { feedback.textContent = '❌ 请输入账号名'; feedback.className = 'feedback error'; return; }
+    if (!apiKey) { feedback.textContent = '❌ 请输入 API Key'; feedback.className = 'feedback error'; return; }
+
+    const payload = { provider, name, api_key: apiKey };
+    if (quotaTotalRaw) payload.quota_total = parseInt(quotaTotalRaw, 10);
+    if (expiresAt) payload.expires_at = expiresAt;
+    if (notes) payload.notes = notes;
+
+    feedback.textContent = '提交中...';
+    feedback.className = 'feedback';
+    try {
+        const resp = await fetch('/dashboard/api/accounts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            feedback.textContent = `✅ 账号 #${data.account.id} 创建成功 (${data.account.account_name})`;
+            feedback.className = 'feedback success';
+            // 清空表单
+            document.getElementById('acct-name').value = '';
+            document.getElementById('acct-api-key').value = '';
+            document.getElementById('acct-quota-total').value = '';
+            document.getElementById('acct-expires-at').value = '';
+            document.getElementById('acct-notes').value = '';
+            await loadAccounts();
+        } else {
+            feedback.textContent = '❌ ' + (data.detail || resp.statusText);
+            feedback.className = 'feedback error';
+        }
+    } catch (e) {
+        feedback.textContent = '❌ 网络错误: ' + e.message;
+        feedback.className = 'feedback error';
+    }
+}
+
+async function triggerExpireCheck() {
+    if (!confirm('扫描并标记所有 expires_at < now 的账号为 expired?')) return;
+    try {
+        const resp = await fetch('/dashboard/api/accounts/expire-check', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            alert(`扫描完成 — ${data.expired_count} 个账号标记为 expired`);
+            await loadAccounts();
+        } else {
+            alert('扫描失败: ' + (data.detail || resp.statusText));
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+    }
+}
+
+// htmx 渲染: accounts-list
+document.body.addEventListener('htmx:afterSwap', function(event) {
+    if (event.detail.target.id === 'accounts-list') {
+        try {
+            const data = JSON.parse(event.detail.target.textContent);
+            renderAccounts(data);
+            const meta = document.getElementById('accounts-meta');
+            if (meta) {
+                const active = (data.accounts || []).filter(a => a.status === 'active').length;
+                meta.textContent = `共 ${data.count} 个账号 · ${active} 个 active`;
+            }
+        } catch (e) {
+            // 非 JSON — 忽略
+        }
+    }
+});
+
+// 页面加载时拉 active channels 填表单
+document.addEventListener('DOMContentLoaded', loadActiveChannels);

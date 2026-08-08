@@ -100,6 +100,60 @@
             </div>
         </section>
 
+        <!-- V4.6: Dashboard 账号管理 (替代 SSH + 编辑 .env) -->
+        <section class="card" id="accounts-section">
+            <h2>账号管理 <span class="subtitle">加账号无需重启 · 等价 add_account.py / rotate_account.py</span></h2>
+            <div class="accounts-toolbar">
+                <button class="btn-secondary" onclick="loadAccounts()">刷新列表</button>
+                <button class="btn-secondary" onclick="triggerExpireCheck()">扫描过期</button>
+                <span id="accounts-meta" class="meta">加载中...</span>
+            </div>
+
+            <!-- 加账号表单 (折叠) -->
+            <details class="accounts-form-details">
+                <summary>+ 加新账号</summary>
+                <div class="accounts-form">
+                    <div class="form-row">
+                        <label>Provider
+                            <select id="acct-provider"><option value="">加载中...</option></select>
+                        </label>
+                        <label>账号名
+                            <input type="text" id="acct-name" placeholder="e.g. deepseek_02">
+                        </label>
+                    </div>
+                    <div class="form-row">
+                        <label>API Key
+                            <input type="password" id="acct-api-key" placeholder="sk-xxx — 仅本次会话使用, 加密入库">
+                        </label>
+                    </div>
+                    <div class="form-row">
+                        <label>总配额 (tokens, 可选)
+                            <input type="number" id="acct-quota-total" placeholder="e.g. 100000">
+                        </label>
+                        <label>过期时间 (可选)
+                            <input type="date" id="acct-expires-at">
+                        </label>
+                    </div>
+                    <div class="form-row">
+                        <label>备注 (可选)
+                            <input type="text" id="acct-notes" placeholder="e.g. 新用户优惠 7000 万 tokens">
+                        </label>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn-primary" onclick="submitNewAccount()">提交</button>
+                        <span id="acct-add-feedback" class="feedback"></span>
+                    </div>
+                </div>
+            </details>
+
+            <div id="accounts-list"
+                 hx-get="/dashboard/api/accounts"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
+
         <!-- Phase 4 E3: 跨源分歧 -->
         <section class="card" id="cross-source-section">
             <h2>跨源分歧 <span class="subtitle">同一 model 多源 tier/capabilities 不一致</span></h2>

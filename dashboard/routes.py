@@ -4,11 +4,14 @@
 - /dashboard -> 单页面 HTML
 - /api/dashboard/* -> Dashboard 数据 API
 - /api/dashboard/sources/run-now -> 手动触发情报采集 (Phase 2A-4)
+- /api/dashboard/accounts/* -> V4.6 账号管理 (列表/加/启停/轮换/过期扫描)
 """
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
@@ -18,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.engine import get_session
 from db import crud
 from db.models import (
-    Channel, Promotion, UsageLog, PriceSnapshot,
+    Channel, Account, Promotion, UsageLog, PriceSnapshot,
     ModelRegistry, ModelGroup, ModelGroupMember,
     ModelCapabilitiesLog,
     CrossSourceDiscrepancy,
@@ -888,3 +891,289 @@ async def get_report_by_date(date: str):
         content=f"<pre class='report-md'>{text}</pre>",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+# ============================================================
+# V4.6: Dashboard 账号管理 (替代 SSH + 编辑 .env)
+# 业务逻辑与 scripts/add_account.py / rotate_account.py / expire_accounts.py
+# 对齐, 但走 HTTP, dashboard 一条命令加账号无需重启.
+# ============================================================
+
+
+def _mask_key_display(ciphertext: Optional[bytes]) -> str:
+    """账号列表里显示的 key 状态: encrypted(hex 末尾4字节) / missing.
+
+    为什么不解密: dashboard handler 不依赖 AIMC_MASTER_KEY, 避免路由层错误传递.
+    实际明文只有加密入库路径 (scripts/add_account.py) 会写入, 无 dashboard 反向解密需求.
+    """
+    if not ciphertext:
+        return "(未加密)"
+    # 取末尾 4 字节 hex 作为弱校验标识 (同账号轮换时变化, 但不可逆推明文)
+    return f"encrypted:{ciphertext[-4:].hex()}"
+
+
+def _account_to_dict(account: Account, channel: Channel) -> dict:
+    """账号 + channel 转 dict 给前端. key 脱敏, status 颜色由前端 style.css 控制."""
+    return {
+        "id": account.id,
+        "channel_id": account.channel_id,
+        "provider": channel.provider,
+        "channel_name": channel.name,
+        "account_name": account.account_name,
+        "status": account.status,
+        "quota_total": account.quota_total,
+        "quota_used": account.quota_used or 0,
+        "quota_remaining": account.quota_remaining,
+        "quota_pct": (
+            round(account.quota_used / account.quota_total * 100, 1)
+            if account.quota_total else None
+        ),
+        "last_rotated_at": account.last_rotated_at.isoformat() if account.last_rotated_at else None,
+        "expires_at": account.expires_at.isoformat() if account.expires_at else None,
+        "notes": account.notes,
+        "key_display": _mask_key_display(account.api_key_ciphertext),
+        "created_at": account.created_at.isoformat() if account.created_at else None,
+    }
+
+
+@router.get("/api/accounts")
+async def list_accounts(
+    provider: Optional[str] = Query(None, description="过滤 provider, e.g. deepseek"),
+    status: Optional[str] = Query(None, description="过滤 status, e.g. active"),
+    session: AsyncSession = Depends(get_session),
+):
+    """V4.6: 列出账号 (脱敏), 供 Dashboard 账号管理页.
+
+    与 scripts/list_accounts.py 一致: 走 crud.list_accounts, 默认按 id 排序.
+    """
+    rows = await crud.list_accounts(session, provider=provider, status=status)
+    return {
+        "count": len(rows),
+        "accounts": [_account_to_dict(acc, ch) for acc, ch in rows],
+    }
+
+
+@router.get("/api/channels/active")
+async def list_active_channels(session: AsyncSession = Depends(get_session)):
+    """V4.6: 列出 active channels, 供 Dashboard 加账号表单的 provider 下拉选项."""
+    rows = list((await session.execute(
+        select(Channel).where(Channel.status == "active").order_by(Channel.provider)
+    )).scalars().all())
+    return {
+        "count": len(rows),
+        "channels": [
+            {
+                "id": ch.id,
+                "provider": ch.provider,
+                "name": ch.name,
+            }
+            for ch in rows
+        ],
+    }
+
+
+def _parse_iso_datetime(value) -> Optional[datetime]:
+    """解析 ISO 8601 datetime/date 字符串; 容错: 'YYYY-MM-DD' 也接受."""
+    if not value:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"expires_at must be string, got {type(value).__name__}")
+    # datetime.fromisoformat 支持 'YYYY-MM-DD' (Python 3.11+) / 'YYYY-MM-DDTHH:MM:SS'
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        # 试一下仅日期格式
+        try:
+            return datetime.fromisoformat(value + "T00:00:00")
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"expires_at format invalid: {value} (use YYYY-MM-DD or ISO)")
+
+
+@router.post("/api/accounts")
+async def create_account_dashboard(
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """V4.6: Dashboard 加账号 (等价 scripts/add_account.py).
+
+    body:
+    {
+        "provider": "deepseek",       # 必填, active channel
+        "name": "deepseek_02",        # 必填, 同 channel 下唯一
+        "api_key": "sk-xxx",          # 必填, 不写明文字段, 直接 encrypt 入 ciphertext
+        "quota_total": 100000,        # 可选
+        "expires_at": "2026-11-08",   # 可选, ISO date 或 datetime
+        "notes": "新用户优惠"          # 可选 (V4.5 fix: accounts.notes 列)
+    }
+
+    返回:
+    - 201: { status: created, account: {...} }
+    - 400: 字段缺失 / 类型错
+    - 404: provider 无 active channel
+    - 409: 同 channel 下 name 重复
+    """
+    from config import settings
+    from security.crypto import encrypt
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be dict")
+
+    provider = payload.get("provider")
+    name = payload.get("name")
+    api_key = payload.get("api_key")
+    quota_total = payload.get("quota_total")
+    expires_at_raw = payload.get("expires_at")
+    notes = payload.get("notes")
+
+    if not provider or not isinstance(provider, str):
+        raise HTTPException(status_code=400, detail="provider required (string)")
+    if not name or not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="name required (string)")
+    if not api_key or not isinstance(api_key, str):
+        raise HTTPException(status_code=400, detail="api_key required (string)")
+    if not settings.aimc_master_key:
+        raise HTTPException(status_code=500, detail="AIMC_MASTER_KEY 未配置, 无法加密 API key")
+    if quota_total is not None and not isinstance(quota_total, int):
+        raise HTTPException(status_code=400, detail="quota_total must be int or null")
+
+    expires_at = _parse_iso_datetime(expires_at_raw)
+
+    # 1) 找 active channel
+    channel = (await session.execute(
+        select(Channel).where(Channel.provider == provider, Channel.status == "active").order_by(Channel.id)
+    )).scalars().first()
+    if not channel:
+        raise HTTPException(
+            status_code=404,
+            detail=f"未找到 active channel: {provider} — 请先在渠道状态页添加或激活",
+        )
+
+    # 2) 重名检查
+    existing = await crud.list_accounts(session, provider=provider)
+    if any(acc.account_name == name for acc, _ in existing):
+        raise HTTPException(status_code=409, detail=f"账号已存在: {name} (provider={provider})")
+
+    # 3) 加密入库
+    account = await crud.create_account(
+        session,
+        channel_id=channel.id,
+        account_name=name,
+        api_key="",
+        api_key_ciphertext=encrypt(api_key, settings.aimc_master_key),
+        status="active",
+        quota_total=quota_total,
+        quota_used=0,
+        last_rotated_at=datetime.now(),
+        expires_at=expires_at,
+        notes=notes,
+    )
+    await session.commit()
+
+    # 4) 路由缓存即刻刷新, 新账号下一请求可命中
+    try:
+        from gateway.router import route_engine
+        await route_engine.refresh_cache()
+    except Exception as e:
+        logger.warning("账号新增后刷新路由缓存失败: id=%s err=%s", account.id, e)
+
+    logger.info("V4.6 dashboard add: id=%s provider=%s name=%s", account.id, provider, name)
+    return {
+        "status": "created",
+        "account": _account_to_dict(account, channel),
+        "note": "下次路由生效已触发 refresh_cache",
+    }
+
+
+async def _set_account_status(session: AsyncSession, account_id: int, new_status: str) -> dict:
+    """V4.6: 切换 active/disabled, 返回 dict 或抛 404."""
+    account = await crud.update_account_status(session, account_id, new_status)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"账号不存在: {account_id}")
+    await session.commit()
+    # refresh 路由缓存
+    try:
+        from gateway.router import route_engine
+        await route_engine.refresh_cache()
+    except Exception as e:
+        logger.warning("账号 %s 状态变更后刷新路由缓存失败: %s", account_id, e)
+    channel = await session.get(Channel, account.channel_id)
+    return _account_to_dict(account, channel) if channel else _account_to_dict(account, Channel())
+
+
+@router.post("/api/accounts/{account_id}/enable")
+async def enable_account(account_id: int, session: AsyncSession = Depends(get_session)):
+    """V4.6: 启用账号 (等价 rotate_account.py enable --id)."""
+    return await _set_account_status(session, account_id, "active")
+
+
+@router.post("/api/accounts/{account_id}/disable")
+async def disable_account(account_id: int, session: AsyncSession = Depends(get_session)):
+    """V4.6: 禁用账号 (等价 rotate_account.py disable --id). 软删, 不物理删除."""
+    return await _set_account_status(session, account_id, "disabled")
+
+
+@router.post("/api/accounts/{account_id}/rotate")
+async def rotate_account_dashboard(
+    account_id: int,
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """V4.6: 轮换 key (等价 rotate_account.py rotate --id --new-key).
+
+    body: { "api_key": "sk-new-key-xxx" }
+
+    返回 200/400/404, 同 create.
+    """
+    from config import settings
+    from security.crypto import encrypt
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be dict")
+    api_key = payload.get("api_key")
+    if not api_key or not isinstance(api_key, str):
+        raise HTTPException(status_code=400, detail="api_key required (string)")
+    if not settings.aimc_master_key:
+        raise HTTPException(status_code=500, detail="AIMC_MASTER_KEY 未配置, 无法加密 API key")
+
+    account = await crud.rotate_account_key(
+        session, account_id, encrypt(api_key, settings.aimc_master_key)
+    )
+    if not account:
+        raise HTTPException(status_code=404, detail=f"账号不存在: {account_id}")
+    await session.commit()
+
+    try:
+        from gateway.router import route_engine
+        await route_engine.refresh_cache()
+    except Exception as e:
+        logger.warning("账号 %s 轮换后刷新路由缓存失败: %s", account_id, e)
+
+    channel = await session.get(Channel, account.channel_id)
+    logger.info("V4.6 dashboard rotate: id=%s provider=%s", account_id, channel.provider if channel else "?")
+    return {
+        "status": "rotated",
+        "account": _account_to_dict(account, channel) if channel else _account_to_dict(account, Channel()),
+        "note": "下次路由生效已触发 refresh_cache",
+    }
+
+
+@router.post("/api/accounts/expire-check")
+async def expire_check_dashboard():
+    """V4.6: 扫过期 (等价 rotate_account.py expire-check / scripts/expire_accounts.py).
+
+    返回: { status: ok, expired_count: N }
+    """
+    from scripts.expire_accounts import expire_accounts
+    try:
+        count = await expire_accounts()
+    except Exception as e:
+        logger.error("V4.6 expire-check 失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"expire-check failed: {e}")
+    if count > 0:
+        try:
+            from gateway.router import route_engine
+            await route_engine.refresh_cache()
+        except Exception as e:
+            logger.warning("expire-check 后刷新路由缓存失败: %s", e)
+    logger.info("V4.6 dashboard expire-check: %d 个账号标记 expired", count)
+    return {"status": "ok", "expired_count": count}
