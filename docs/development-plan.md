@@ -1,6 +1,6 @@
 # AIMC 开发计划
 
-> 更新时间：2026-08-08（V4.6 全章完成, §6.2 显式打星主动放弃）
+> 更新时间：2026-08-08（V4.6 全章完成, §6.2 显式打星主动放弃, 进入稳定期）
 > 状态标记：✅ 已完成 | 🔨 进行中 | ⬜ 待开发 | ⏸ 主动延后
 > 配套文档：[架构设计](architecture.md) / [竞品调研](competitive-research.md) / [V4.4 专项设计](v44-feedback-and-alert-design.md)
 
@@ -461,13 +461,125 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 ## V4.7+ 远期展望（参考）
 
-| 阶段 | 主题 | 价值 |
-|------|------|------|
-| **参数兼容处理** | 借鉴 LiteLLM `drop_params`：跨模型转发时自动丢弃目标模型不支持的参数 | 避免 400 错误 |
-| **Virtual Key 成本隔离** | 借鉴 LiteLLM Virtual Key：不同客户端分配独立 Key，分别追踪预算 | 4 客户端分别计费 |
-| **价格趋势预测** | 基于历史快照预测峰谷时段，提前切换 | 节省成本 |
-| **Playwright 浏览器采集** | 装 chromium，启用 `playwright` 抓 HTML 源（qianwenai 等） | 补全情报覆盖 |
-| **跨项目联动** | hermes-tray AIMC SSE `routing_decision` 事件消费 | 客户端可视化路由 |
+### 选取原则：**数据驱动 + 告警驱动**
+
+V4.7+ 优先做哪个不预设，**由 `analyze_usage.py` 输出的产品决策建议驱动**。
+稳定期累积 usage_logs，1~2 个月后根据 V4.7+ 推荐项的触发情况决定优先级。
+
+### V4.7+ 候选项
+
+| 阶段 | 主题 | 价值 | `analyze_usage` 触发信号 |
+|------|------|------|------------------------|
+| **drop_params** | 借鉴 LiteLLM：跨模型转发自动丢弃目标不支持的参数 | 避免 400 错误 | 4xx 占比 ≥ 2% |
+| **Virtual Key 成本隔离** | 借鉴 LiteLLM：不同客户端独立 Key + 独立预算 | 多客户端分别计费 | 至少 2 个客户端账号 |
+| **价格趋势预测** | 基于历史快照预测峰谷时段，提前切换 | 节省成本 | CostRising 告警 ≥ 3 次/月 |
+| **Playwright 浏览器采集** | 装 chromium，启用 playwright 抓 HTML 源 | 补全情报覆盖 | 手动决定 |
+| **语义缓存** | 相似 prompt 复用响应 | 降低成本 + 提速 | Top 5 model 占流量 ≥ 90% |
+| **智能调度** | 时段差异大时优先便宜 channel | 节省成本 | 时段 peak/avg ≥ 3.0 |
+
+### 稳定期跟踪工具：`scripts/analyze_usage.py`
+
+```bash
+# 默认：30 天使用分析 + Markdown 报告
+python scripts/analyze_usage.py
+
+# 指定窗口
+python scripts/analyze_usage.py --days 7
+python scripts/analyze_usage.py --period-start 2026-07-01
+
+# JSON 输出（给 Dashboard / 其他脚本消费）
+python scripts/analyze_usage.py --json-only
+```
+
+**输出维度**：
+1. **status 分布**（V4.6.1 Cooldown 验证）：2xx / 4xx / 5xx 占比，整体错误率
+2. **多账号分散度**：Shannon entropy + 最大账号占比（V4.6.1 least-used 验证）
+3. **channel 错误率 Top 5**：找出反复挂的上游
+4. **model 集中度**：Top 5 model 占总流量比例（V4.7+ 缓存价值判断）
+5. **model 4xx Top 5**：跨模型转发失败的 model（V4.7+ drop_params 信号）
+6. **token / latency / cost 画像**：median / p95 / p99 / max
+7. **时段分布**：24 小时 heatmap（V4.7+ 调度价值判断）
+8. **自动 failover 命中率**：失败 cluster 后是否切了账号（V4.6.1 验证）
+9. **决策建议**：根据上述信号自动列出 V4.7+ 优先级
+
+输出报告：
+- `reports/usage_analysis_YYYY-MM-DD.md`（人读）
+- `reports/usage_analysis_latest.md`（symlink）
+- `--json-only` 模式只输出 JSON
+
+### 调度建议
+
+- **每周**：跑一次 `--days 7` 看近况，扫描决策建议是否变化
+- **每月**：跑一次 `--days 30` 看趋势，验证 V4.7+ 候选是否该启动了
+- **首次跑**：样本 < 100 请求时报告说"样本不足"，无需判断
+
+---
+
+## §7 稳定期跟踪 (2026-08-08 ~)
+
+### 当前状态
+
+- ✅ V4.4 反馈 + 告警 + CLI 完成（隐式反馈采集 + 周报 + 告警）
+- ✅ V4.5 能力评分路由 + Dashboard 账号 UI 完成
+- ✅ V4.6 多账号 + Cooldown + 5 源 benchmark 完成（§6.2 显式打星主动放弃）
+- ✅ 95 个单元测试 + 多账号 e2e 测试 + V4.6.1 e2e 全过
+- ✅ 稳定期跟踪工具 `scripts/analyze_usage.py` 完成（产品决策依据）
+- ✅ 文档体系同步刷新（README + development-plan）
+
+**判定**：**已可稳定使用**（告警驱动 + 自动 failover + 周报 + Dashboard + 使用分析）
+
+### 使用期间需要验证的项目
+
+这些项目在开发期都有单测 / e2e 覆盖，但**真实力证需要真实流量**：
+
+#### V4.4 / V4.5 需验证项
+
+- [ ] **周报质量**：连续 4 周人工阅读周报，判断推荐行动是否准
+- [ ] **告警质量**：连续 4 周扫 v44_alerts 告警，判断是否漏报 / 误报
+- [ ] **隐式反馈分准确性**：连续 4 周对比 feedback_score 与真实使用体验
+- [ ] **能力评分路由权重**：连续 4 周看路由是否真的分流到分数高的 model
+
+#### V4.6 需验证项
+
+- [ ] **多账号真实分散度**：连续 4 周看 `analyze_usage` 的 Shannon entropy 是否 ≥ 0.5
+- [ ] **Cooldown 触发频率**：连续 4 周看是否有误伤（4xx 被误判 5xx 的场景）
+- [ ] **多源 benchmark 加权**：连续 4 周看 `benchmark_score` 与实际反馈分的吻合度
+- [ ] **least-used 均衡效果**：连续 4 周看最高账号占比是否 < 70%
+
+#### 基础设施需验证项
+
+- [ ] **WAL + 加密 DB 性能**：连续 4 周看 p95 latency 是否稳定
+- [ ] **告警 Webhook 到达率**：连续 4 周看 webhook 是否有丢包
+- [ ] **API Key 轮换提醒准确性**：连续 4 周看 30 天阈值是否合理
+
+### V4.7+ 决策准则（**非预定顺序**）
+
+| 信号（analyze_usage 输出） | 优先级提开的候选项 |
+|--------------------------|-------------------|
+| 4xx 占比 ≥ 2% | drop_params |
+| Top 5 model 占流量 ≥ 90% | 语义缓存 |
+| 时段 peak/avg ≥ 3.0 | 智能调度 / 价格趋势预测 |
+| 多账号 Shannon entropy < 0.5 | least-used 策略调整 |
+| 自动 failover 命中率 < 80% | Cooldown 阈值调整 |
+| CostRising 告警 ≥ 3 次/月 | 价格趋势预测 |
+| 长上下文请求（> 32k）≥ 5% | 长上下文优化 |
+
+**说明**：任何候选项的启动 = 该信号连续 4 周出现 + 当前任务列表清空 + 时间充裕。
+
+### 稳定期不动的项目（**主动锁入**）
+
+- **多账户架构**：V4.6.1 已稳，不重构
+- **Dashboard 架构**：V4.5 已稳，不扩新功能
+- **告警架构**：V4.4 已稳，仅加新告警类，不改原有
+- **路由算法**：V4.5.1 已稳，仅改 weighting
+
+### 反馈收集机制
+
+稳定期期间收集两类反馈：
+1. **周报**：周一自动生成，人工扫一眼
+2. **analyze_usage 决策建议**：每周跑一次，人工扫一眼
+
+不设专项反馈渠道（如表单），避免增加开发成本。
 
 ---
 

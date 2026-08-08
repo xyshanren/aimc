@@ -23,8 +23,11 @@ AIMC（AI Model Compass）是一款专为个人开发者设计的**轻量级 LLM
 - **告警驱动多账号 (V4.4)** — 80%/100% 配额 + NoActiveAccount + CostRising 4 类告警
 - **Dashboard 账号管理 UI (V4.6)** — 无需 SSH, Web 加/轮换/启用/禁用账号
 - **Dashboard 周报查看页 (V4.5)** — Web 渲染历史 Markdown 周报
+- **稳定期使用分析 (V4.6.4+)** — `scripts/analyze_usage.py` 从 usage_logs 自动提取 V4.7+ 优先级信号 (Shannon entropy / 4xx 占比 / 时段差异 / 自动 failover 命中率)
 - **自愈循环** — AI 解析置信度评估，高置信自动入库，低置信告警人工
 - **极简部署** — 单进程、单文件数据库、零外部依赖
+
+**当前状态**：V4.6 全章完成，进入稳定期（详见 `docs/development-plan.md` §7）。
 
 ## 系统架构
 
@@ -152,6 +155,33 @@ response = client.chat.completions.create(model="tier:flagship", messages=...)
 response = client.chat.completions.create(model="scene:longctx", messages=...)
 ```
 
+## 稳定期跟踪（V4.7+ 决策依据）
+
+V4.6 全章完成后进入稳定期。为驱动后续迭代选择，需累积使用反馈：
+
+```bash
+# 每周跑一次: 使用分析 + Markdown 报告 (含 V4.7+ 优先级建议)
+python scripts/analyze_usage.py --days 7
+
+# 每月跑一次: 月度趋势
+python scripts/analyze_usage.py --days 30
+
+# JSON 输出（给 Dashboard / 其他脚本消费）
+python scripts/analyze_usage.py --json-only
+```
+
+**报告维度**：
+- **status 分布**：V4.6.1 Cooldown 是否生效
+- **多账号分散度**：Shannon entropy + 最大账号占比
+- **model 集中度 / 4xx Top 5**：V4.7+ 缓存 / drop_params 信号
+- **时段分布**：V4.7+ 智能调度价值
+- **自动 failover 命中率**：V4.6.1 验证
+- **V4.7+ 决策建议**：根据上述信号自动列出
+
+报告输出：`reports/usage_analysis_latest.md`（人读）/ `--json-only` 模式只输出 JSON。
+
+**判定准则**：任何 V4.7+ 候选项的启动 = 该信号连续 4 周出现 + 决策建议触发 + 时间充裕。
+
 ## 项目结构
 
 ```
@@ -180,7 +210,11 @@ aimc/
 ├── db/                     # 数据库层
 ├── schemas/                # Pydantic 模型
 ├── dashboard/              # 极简 Dashboard
-├── scripts/                # 运维脚本 (含 V4.6.1 multi_account_import.py)
+├── scripts/                # 运维脚本
+│   ├── multi_account_import.py  # V4.6.1 多账号批量导入
+│   ├── generate_weekly_report.py # V4.4.B 周报生成
+│   ├── aggregate_weekly_feedback.py # V4.4.B 周报反债聚合
+│   └── analyze_usage.py   # 稳定期使用分析 (V4.7+ 决策依据)
 ├── security/               # API-Sec-1 XOR+Base64 加密 (V4.5)
 └── docs/                   # 项目文档
 ```
