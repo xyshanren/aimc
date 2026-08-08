@@ -30,6 +30,28 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 STATIC_DIR = Path(__file__).parent / "static"
+# V4.5: 周报目录, 与 scripts/generate_weekly_report.py 同步
+REPORTS_DIR = Path(__file__).parent.parent / "reports"
+
+
+def _list_weekly_reports() -> list[dict]:
+    """列出 reports/ 下所有 weekly_YYYY-MM-DD.md, 按日期倒序。"""
+    if not REPORTS_DIR.exists():
+        return []
+    out: list[dict] = []
+    for path in REPORTS_DIR.glob("weekly_*.md"):
+        try:
+            stat = path.stat()
+            out.append({
+                "filename": path.name,
+                "date": path.stem.replace("weekly_", ""),
+                "size_bytes": stat.st_size,
+                "modified_at": stat.st_mtime,
+            })
+        except OSError:
+            continue
+    out.sort(key=lambda r: r["date"], reverse=True)
+    return out
 
 
 @router.get("", response_class=HTMLResponse)
@@ -786,3 +808,83 @@ async def run_cross_source_detection():
         logger.error(f"跨源检测失败: {e}")
         raise HTTPException(status_code=500, detail=f"Detection failed: {e}")
     return summary
+
+
+# ============================================================
+# V4.5: Dashboard 周报查看页 (V4.4.B 生成, V4.5 提供 UI)
+# ============================================================
+
+@router.get("/api/reports")
+async def list_reports():
+    """列出 reports/ 下所有周报 + 指向 latest 的元信息。
+
+    Returns:
+        {
+            "count": int,
+            "latest": {date, filename, mtime, size_bytes} | None,
+            "reports": [{date, filename, size_bytes, modified_at}, ...]
+        }
+
+    Note: 目录不存在 (未跑过 generate_weekly_report) 时返 count=0, latest=null。
+    """
+    reports = _list_weekly_reports()
+    latest_path = REPORTS_DIR / "weekly-latest.md"
+    latest: dict | None = None
+    if latest_path.exists():
+        stat = latest_path.stat()
+        latest = {
+            "filename": "weekly-latest.md",
+            "size_bytes": stat.st_size,
+            "modified_at": stat.st_mtime,
+            # latest 的 period_start 从第一个 weekly_*.md 推断
+            "date": reports[0]["date"] if reports else None,
+        }
+    return {
+        "count": len(reports),
+        "latest": latest,
+        "reports": reports,
+    }
+
+
+@router.get("/api/reports/latest")
+async def get_latest_report():
+    """返回 weekly-latest.md 原文 (Markdown)。)
+
+    用于 Dashboard 渲染。报头 X-AIMC-Meta 携带元数据 (date / size / modified_at)。
+    """
+    latest_path = REPORTS_DIR / "weekly-latest.md"
+    if not latest_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="weekly-latest.md 不存在 — 请先跑 python scripts/generate_weekly_report.py",
+        )
+    text = latest_path.read_text(encoding="utf-8")
+    stat = latest_path.stat()
+    return HTMLResponse(
+        content=f"<pre class='report-md'>{text}</pre>",
+        headers={
+            "X-AIMC-Size": str(stat.st_size),
+            "X-AIMC-Modified": str(int(stat.st_mtime)),
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
+@router.get("/api/reports/{date}")
+async def get_report_by_date(date: str):
+    """返回指定日期的周报 Markdown。date 格式 YYYY-MM-DD。"""
+    # 防路径穿越 — 只允许 YYYY-MM-DD 格式
+    import re as _re
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {date}")
+    report_path = REPORTS_DIR / f"weekly_{date}.md"
+    if not report_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"周报 weekly_{date}.md 不存在",
+        )
+    text = report_path.read_text(encoding="utf-8")
+    return HTMLResponse(
+        content=f"<pre class='report-md'>{text}</pre>",
+        headers={"Cache-Control": "no-cache"},
+    )

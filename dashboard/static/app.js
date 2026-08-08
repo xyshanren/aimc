@@ -481,3 +481,59 @@ async function loadUsageChart() {
 
 // 页面加载完成后初始化图表
 document.addEventListener('DOMContentLoaded', loadUsageChart);
+
+// ============================================================
+// V4.5: 周报查看页 (与 dashboard/static/index.html #weekly-report-section 配套)
+// ============================================================
+
+async function loadReportsList() {
+    // 加载 reports/ 下所有周报元信息, 填充 select options + meta
+    const sel = document.getElementById('report-select');
+    const meta = document.getElementById('report-meta');
+    if (!sel || !meta) return;
+    try {
+        const resp = await fetch('/dashboard/api/reports');
+        const data = await resp.json();
+
+        // 清空, 重建 options (保留 "最新" 默认项)
+        sel.innerHTML = '<option value="latest">最新</option>';
+        (data.reports || []).forEach(r => {
+            const opt = document.createElement('option');
+            opt.value = r.date;
+            opt.textContent = r.date;
+            sel.appendChild(opt);
+        });
+
+        if (data.latest && data.latest.modified_at) {
+            const m = new Date(data.latest.modified_at * 1000);
+            meta.textContent = `最新报告生成于 ${m.toLocaleString('zh-CN')} · 共 ${data.count} 期`;
+        } else {
+            meta.textContent = `未生成过周报 — 请先跑 python scripts/generate_weekly_report.py`;
+        }
+    } catch (e) {
+        meta.textContent = `加载周报列表失败: ${e.message}`;
+    }
+}
+
+function loadWeeklyReport(value) {
+    // select 切换时调 — value="latest" 拿 latest, 否则拿指定日期
+    const url = value === 'latest' || !value
+        ? '/dashboard/api/reports/latest'
+        : '/dashboard/api/reports/' + value;
+    const content = document.getElementById('weekly-report-content');
+    if (!content) return;
+    content.innerHTML = '<p class="loading">加载中...</p>';
+    fetch(url)
+        .then(r => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r.text();
+        })
+        .then(html => {
+            content.innerHTML = html;
+        })
+        .catch(e => {
+            content.innerHTML = `<p class="error">加载周报失败: ${esc(e.message)}</p>`;
+        });
+}
+
+document.addEventListener('DOMContentLoaded', loadReportsList);

@@ -44,6 +44,7 @@ async def ensure_migrations():
     - usage_logs.group_id (Phase 3.A, 2026-07-29) — Dashboard 命中率聚合
     - model_group_members.is_active / removed_at / removed_reason / removed_by (P1-2, 2026-08-06) — 软删除
     - model_feedback_summary (V4.4.A) — 模型周反馈汇总表
+        - accounts.notes (V4.5 fix, 2026-08-08) — add_account.py --notes 缺列补 migration
     """
     async with engine.begin() as conn:
         # intel_sources.last_content
@@ -162,6 +163,17 @@ async def ensure_migrations():
         # model_feedback_summary (V4.4.A): Base.metadata.create_all 已负责建表和索引
         # 老库也无需 ALTER；表不存在时会在上面的 create_all 创建。
         logger.debug("迁移: model_feedback_summary 由 metadata 幂等创建")
+
+        # accounts.notes (V4.5 fix, 2026-08-08): V4.4 add_account.py CLI 传 notes=args.notes
+        # 但 Account ORM 缺列, 导致 create_account 抛 TypeError.
+        # 修复: 加列并补 migration.
+        result = await conn.execute(text("PRAGMA table_info('accounts')"))
+        columns = {row[1] for row in result.fetchall()}
+        if "notes" not in columns:
+            await conn.execute(text("ALTER TABLE accounts ADD COLUMN notes TEXT"))
+            logger.info("迁移: accounts 添加 notes 列 (V4.5 fix)")
+        else:
+            logger.debug("迁移: accounts.notes 已存在，跳过")
 
 
 async def drop_all():

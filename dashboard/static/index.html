@@ -83,6 +83,23 @@
             </div>
         </section>
 
+        <!-- V4.5: 周报查看页 -->
+        <section class="card" id="weekly-report-section">
+            <h2>周报 <span class="subtitle">V4.4.B 自动生成 · 每周一 09:00 推送</span></h2>
+            <div class="report-toolbar">
+                <select id="report-select" onchange="loadWeeklyReport(this.value)">
+                    <option value="latest">最新</option>
+                </select>
+                <span id="report-meta" class="meta"></span>
+            </div>
+            <div id="weekly-report-content"
+                 hx-get="/dashboard/api/reports/latest"
+                 hx-trigger="load, every 5m"
+                 hx-swap="innerHTML">
+                <p class="loading">加载中...</p>
+            </div>
+        </section>
+
         <!-- Phase 4 E3: 跨源分歧 -->
         <section class="card" id="cross-source-section">
             <h2>跨源分歧 <span class="subtitle">同一 model 多源 tier/capabilities 不一致</span></h2>

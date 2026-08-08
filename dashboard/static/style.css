@@ -133,6 +133,57 @@ th {
     color: #ffad1f;
 }
 
+/* V4.5: 周报查看页 */
+.report-toolbar {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+
+.report-toolbar select {
+    background: #0f1419;
+    color: #e7e9ea;
+    border: 1px solid #2f3336;
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 0.9em;
+    cursor: pointer;
+    min-width: 160px;
+}
+
+.report-toolbar select:focus {
+    outline: none;
+    border-color: #1d9bf0;
+}
+
+.report-toolbar .meta {
+    color: #71767b;
+    font-size: 0.85em;
+}
+
+pre.report-md {
+    background: #0a0e13;
+    color: #c9d1d9;
+    border: 1px solid #2f3336;
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.85em;
+    line-height: 1.55;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.error {
+    color: #f4212e;
+    padding: 12px;
+}
+
 footer {
     text-align: center;
     padding: 20px;

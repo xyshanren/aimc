@@ -67,6 +67,7 @@ class Account(Base):
     # API-Sec-3 (2026-07-29): key 轮换审计
     last_rotated_at = Column(DateTime, nullable=True, comment="最后轮换时间 (manual_import.py 写入)")
     expires_at = Column(DateTime, nullable=True, comment="用户自定过期时间 (NULL=无)")
+    notes = Column(Text, nullable=True, comment="用户备注 (V4.5 fix: add_account.py --notes)")
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
