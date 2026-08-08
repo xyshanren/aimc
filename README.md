@@ -13,10 +13,16 @@ AIMC（AI Model Compass）是一款专为个人开发者设计的**轻量级 LLM
 - **零侵入透传** — 兼容 OpenAI SDK，流式/非流式原样透传，不解析 SSE
 - **情报聚合** — 定时爬取厂商定价页+活动页，AI 结构化提取优惠信息
 - **频限管理** — 内存滑动窗口追踪 QPM/TPM/并发/日限额，自动切换
-- **多账号兜底** — 同厂商多账号轮询，配额耗尽自动切换
-- **响应头可观测 (Phase 2.5)** — `X-AIMC-Actual-Model/Channel/Group-Id` 头告诉 Agent 实际命中
+- **多账号 least-used + Cooldown (V4.6.1)** — 同厂商多账号轮询分散流量；失败账号自动冷却跳过，冷却期后自动恢复
+- **能力评分路由 (V4.5)** — whichllm 启发，model_cards 加权 tie-break，价格平手时高分 model 优先
+- **多源 benchmark 加权 (V4.6.3)** — LMSYS / OpenCompass / LiveBench / SuperCLUE / Artificial Analysis 融合，reliability × recency 加权
+- **响应头可观测 (Phase 2.5 + Phase 3.E)** — `X-AIMC-Actual-Model/Channel/Group-Id/Tier/Capabilities` 告诉 Agent 实际命中
 - **API Key 加密 (API-Sec-1)** — DB 文件泄露 ≠ channel key 泄露（XOR+Base64 轻量化，零外部依赖）
 - **告警 throttle (Phase 2.5)** — 同 key 60s 内只发 1 次，防止飞书刷屏
+- **周报自动生成 (V4.4.B)** — 周一 9:00 自动 Markdown 周报 + Bark 推送关键结论
+- **告警驱动多账号 (V4.4)** — 80%/100% 配额 + NoActiveAccount + CostRising 4 类告警
+- **Dashboard 账号管理 UI (V4.6)** — 无需 SSH, Web 加/轮换/启用/禁用账号
+- **Dashboard 周报查看页 (V4.5)** — Web 渲染历史 Markdown 周报
 - **自愈循环** — AI 解析置信度评估，高置信自动入库，低置信告警人工
 - **极简部署** — 单进程、单文件数据库、零外部依赖
 
@@ -155,8 +161,9 @@ aimc/
 ├── gateway/                # 网关核心
 │   ├── app.py              # FastAPI 工厂
 │   ├── routes.py           # API 端点
-│   ├── proxy.py            # 流式透传
-│   ├── router.py           # 路由决策引擎
+│   ├── proxy.py            # 流式透传 + cooldown hook (V4.6.1)
+│   ├── router.py           # 路由决策引擎 + least-used (V4.6.1)
+│   ├── cooldown.py         # CooldownManager (V4.6.1)
 │   ├── limiter.py          # 频限器
 │   ├── fallback.py         # 故障转移
 │   └── middleware.py       # 日志/鉴权
@@ -167,23 +174,28 @@ aimc/
 │   ├── parser.py           # AI 解析
 │   ├── healer.py           # 自愈循环
 │   ├── alerter.py          # 告警推送
+│   ├── price_alert.py      # 价格波动告警 (V4.4)
+│   ├── benchmark_aggregator.py # 多源 benchmark 加权 (V4.6.3)
 │   └── sources/            # 采集源插件
 ├── db/                     # 数据库层
 ├── schemas/                # Pydantic 模型
 ├── dashboard/              # 极简 Dashboard
-├── scripts/                # 运维脚本
+├── scripts/                # 运维脚本 (含 V4.6.1 multi_account_import.py)
+├── security/               # API-Sec-1 XOR+Base64 加密 (V4.5)
 └── docs/                   # 项目文档
 ```
 
 ## 文档
 
-- [架构设计文档](docs/architecture.md) — 系统设计与数据模型（含 Phase 2 多维模型组）
-- [开发计划](docs/development-plan.md) — 路线总览 (Phase 1/2.5/2/3/4 + API-Sec-1/2/3)
+- [架构设计文档](docs/architecture.md) — 系统设计与数据模型（含 Phase 2 多维模型组 + V4.6.1 CooldownManager）
+- [开发计划](docs/development-plan.md) — 路线总览 (Phase 1/2.5/2/3/4 + API-Sec-1/2/3 + V4.4-V4.6)
+- [V4.4 设计文档](docs/v44-feedback-and-alert-design.md) — 隐式反馈 + 告警驱动多账号
 - [Phase 2 设计文档](docs/phase2-design.md) — 模型组设计 + 实施步骤
 - [API Key 安全设计](docs/api-key-security.md) — 加密方案 + 现状盘点
 - [快速开始指南](docs/quickstart.md) — 安装、配置、部署
 - [API 接口文档](docs/api.md) — 网关接口说明
 - [竞品调研](docs/competitive-research.md) — OpenRouter/9Router/LiteLLM/RouteLLM 对比
+- [E2E 测试报告](docs/e2e-results.md) — hermes-agent-cn 集成联调结果
 
 ## 设计原则
 

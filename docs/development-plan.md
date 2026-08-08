@@ -1,7 +1,7 @@
 # AIMC 开发计划
 
-> 更新时间：2026-08-08
-> 状态标记：✅ 已完成 | 🔨 进行中 | ⬜ 待开发
+> 更新时间：2026-08-08（V4.6 全章完成, §6.2 显式打星主动放弃）
+> 状态标记：✅ 已完成 | 🔨 进行中 | ⬜ 待开发 | ⏸ 主动延后
 > 配套文档：[架构设计](architecture.md) / [竞品调研](competitive-research.md) / [V4.4 专项设计](v44-feedback-and-alert-design.md)
 
 ---
@@ -18,9 +18,9 @@
 | **API-Sec-2** | **ALERT_CHANNEL runtime override** | **✅** | **改告警 channel / webhook 不重启** |
 | **API-Sec-3** | **key 轮换提醒** | **✅** | **30 天未轮换飞书告警** |
 | **V4.3 部署 hotfix** | **8 次部署修复** | **✅** | **install.sh V4.3.8 + smoke V4.3.11 + verify_clients V4.3.11** |
-| **V4.4** | **反馈+告警+CLI 账号管理** | **⬜** | **隐式反馈 + 周报 + 告警驱动 + 账号 CLI (9.5h)** |
-| **V4.5** | **能力评分路由 + Dashboard 账号 UI** | **⬜** | **whichllm 启发 + score 入路由 + Web UI (12h)** |
-| **V4.6** | **告警驱动多账号 + 显式反馈** | **⬜** | **待 V4.4 告警频繁触发后实施 (8h)** |
+| **V4.4** | **反馈+告警+CLI 账号管理** | **✅** | **隐式反馈 + 周报 + 告警驱动 + 账号 CLI (9.5h)** |
+| **V4.5** | **能力评分路由 + Dashboard 账号 UI** | **✅** | **whichllm 启发 + score 入路由 + Web UI (12h)** |
+| **V4.6** | **告警驱动多账号 + whichllm 多源 benchmark** | **✅** | **多账号+Cooldown + 5源 benchmark 加权融合 (10h, §6.2 显式打星主动放弃)** |
 
 设计原则：**运维先于新功能**（新增"二、设计原则"）。Phase 2.5 在 Phase 2 实施前补的，让"日常运维不痛"先于"模型组新能力"。
 
@@ -321,113 +321,141 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 ---
 
-## V4.4: 反馈 + 告警 + CLI 账号管理（本周, ~9.5h）
+## V4.4: 反馈 + 告警 + CLI 账号管理（✅, 2026-07-29）
 
 > 目标：**从"被动响应"升级到"主动洞察"** — 加个账号从 30 秒变为 10 秒；每周自动告诉你哪个模型最划算
 > 详细设计：[v44-feedback-and-alert-design.md](v44-feedback-and-alert-design.md)
+> 提交拆分: `edfad38` (V4.4 隐式反馈+告警+CLI) / `ad2bb8c` (V4.4.B 周报+Bark+timer) / `e426a3c` (V4.4.D 多账号引导)
 
 ### 4.1 隐式反馈系统（`model_feedback_summary`）
 
-- ⬜ 新增 `model_feedback_summary` 表 + 索引（init_db.py 幂等迁移）
-- ⬜ `scripts/aggregate_weekly_feedback.py` (1h): 从 usage_logs 周聚合，反馈分公式 `100 - 30*retry - 50*fail - 0.01*p95`
-- ⬜ `db/crud.py` 加 `upsert_feedback_summary` / `list_feedback_summary`
+- ✅ 新增 `model_feedback_summary` 表 + 索引（init_db.py 幂等迁移）
+- ✅ `scripts/aggregate_weekly_feedback.py` (1h): 从 usage_logs 周聚合，反馈分公式 `100 - 30*retry - 50*fail - 0.01*p95`
+- ✅ `db/crud.py` 加 `upsert_feedback_summary` / `list_feedback_summary`
 
 ### 4.2 周报自动生成
 
-- ⬜ `scripts/generate_weekly_report.py` (1h): Markdown 模板（总览/排行 Top5/趋势/告警/推荐行动）
-- ⬜ `scripts/publish_report.py` (30min): Bark / 飞书推送关键结论
-- ⬜ systemd timer: 每周一 9:00 触发
+- ✅ `scripts/generate_weekly_report.py` (1h): Markdown 模板（总览/排行 Top5/趋势/告警/推荐行动）
+- ✅ `scripts/publish_report.py` (30min): Bark / 飞书推送关键结论
+- ✅ systemd timer: 每周一 9:00 触发
 
-### 4.3 告警驱动场景（4 个新增）
+### 4.3 告警驱动场景（4 个新增, `intelligence/v44_alerts.py`）
 
-- ⬜ `QuotaNearLimitAlert` (80%) 
-- ⬜ `AccountExhaustedAlert` (100%)
-- ⬜ `NoActiveAccountAlert` (provider 全耗尽)
-- ⬜ `CostRisingAlert` (月环比 +30%)
-- ⬜ `scripts/expire_accounts.py` (30min): 过期扫描
+- ✅ `QuotaNearLimitAlert` (80%)
+- ✅ `AccountExhaustedAlert` (100%)
+- ✅ `NoActiveAccountAlert` (provider 全耗尽)
+- ✅ `CostRisingAlert` (月环比 +30%)
+- ✅ `scripts/expire_accounts.py` (30min): 过期扫描
 
 ### 4.4 账号管理 CLI
 
-- ⬜ `scripts/add_account.py` (1h): 加密入库，无需重启
-- ⬜ `scripts/list_accounts.py` (30min): 脱敏显示 sk-***-last4
-- ⬜ `scripts/rotate_account.py` (30min): disable / enable / rotate / expire-check
-- ⬜ `.env.example` 加 `_KEYS` 多 key 引导说明
-- ⬜ `install.sh` / `manual_import.py` 引导文案改用 CLI
+- ✅ `scripts/add_account.py` (1h): 加密入库，无需重启
+- ✅ `scripts/list_accounts.py` (30min): 脱敏显示 sk-***-last4
+- ✅ `scripts/rotate_account.py` (30min): disable / enable / rotate / expire-check
+- ✅ `.env.example` 加 `_KEYS` 多 key 引导说明
+- ✅ `install.sh` / `manual_import.py` 引导文案改用 CLI
 
 ### 4.5 验证标准
 
-- [ ] 跑 `aggregate_weekly_feedback.py` 过去 7 天数据不报错
-- [ ] 周一 9:00 自动生成 `reports/weekly_*.md`
-- [ ] Bark 收到推送（≤ 200 字关键结论）
-- [ ] `add_account.py` 加账号 → 加密入库 → 立即可路由
-- [ ] 80% / 100% 配额 → 收到对应告警
-- [ ] 故意耗尽某 provider → NoActiveAccount 告警 + 路由自动降级
+- [x] 跑 `aggregate_weekly_feedback.py` 过去 7 天数据不报错
+- [x] 周一 9:00 自动生成 `reports/weekly_*.md`
+- [x] Bark 收到推送（≤ 200 字关键结论）
+- [x] `add_account.py` 加账号 → 加密入库 → 立即可路由
+- [x] 80% / 100% 配额 → 收到对应告警
+- [x] 故意耗尽某 provider → NoActiveAccount 告警 + 路由自动降级
 
 ---
 
-## V4.5: 能力评分路由 + Dashboard 账号 UI（2 周内, ~12h）
+## V4.5: 能力评分路由 + Dashboard 账号 UI（✅, 2026-07-29）
 
 > 目标：把 V4.4 收集的反馈**反向驱动路由** + 提供 Web UI 管理账号
+> 提交拆分: `359a4dd` (V4.5 Dashboard 周报 + V4.4 测试补齐) / `4959dcb` (V4.6 Dashboard 账号 UI) / `72d12bd` (V4.5.1 能力评分路由)
 
 ### 5.1 能力评分路由（whichllm 启发）
 
-- ⬜ `model_cards` 表增强 5 字段: `confidence_level` / `source_type` / `score_components` / `last_active_at` / `source_reliability`
-- ⬜ `BenchmarkSource` 抽象基类 (类似 intelligence/sources/ 模式)
-- ⬜ LMSYSArena + OpenCompass 2 个 source 适配器
-- ⬜ `gateway/router.py` sort_key 加 `score_bonus` (权重 ≤ 0.2)
-- ⬜ `recency-aware` 时间衰减工具函数（半年线性衰减）
+- ✅ `model_cards` 表增强 5 字段: `confidence_level` / `source_type` / `score_components` / `last_active_at` / `source_reliability`
+- ✅ `BenchmarkSource` 抽象基类 (类似 intelligence/sources/ 模式)
+- ✅ LMSYSArena + OpenCompass 2 个 source 适配器 (后续 V4.6.3 扩展到 5 sources)
+- ✅ `gateway/router.py` sort_key 加 `score_bonus` (权重 ≤ 0.2)
+- ✅ `intelligence/recency.py`: recency-aware 时间衰减工具函数（半年线性衰减）
 
 ### 5.2 Dashboard 账号管理 UI
 
-- ⬜ `/dashboard/accounts` 页面：列表 / 加 / 轮换 / 启用 / 禁用
-- ⬜ Web 表单调用 CLI 等价 API
-- ⬜ 报告查看页面：`/dashboard/reports/weekly_*`
-- ⬜ API key 脱敏显示 + 复制按钮
+- ✅ `/dashboard/accounts` 页面：列表 / 加 / 轮换 / 启用 / 禁用
+- ✅ Web 表单调用 CLI 等价 API
+- ✅ 报告查看页面：`/dashboard/reports/weekly_*`
+- ✅ API key 脱敏显示 + 复制按钮
 
 ### 5.3 告警闭环
 
-- ⬜ `ScoreRegressionAlert` (2 周反馈分持续下滑)
-- ⬜ `CostAnomalyAlert` 集成报告链接
-- ⬜ alerter 与周报双向引用
+- ✅ `ScoreRegressionAlert` (2 周反馈分持续下滑)
+- ✅ `CostAnomalyAlert` 集成报告链接
+- ✅ alerter 与周报双向引用
 
 ### 5.4 验证标准
 
-- [ ] score_bonus 加权后，能力强的模型（T0）排序优先，但不会完全压制便宜模型（T2/T3）
-- [ ] Dashboard 能加账号（无需 SSH）
-- [ ] Dashboard 能看历史报告（Markdown 渲染）
-- [ ] 反馈分下滑模型自动告警
+- [x] score_bonus 加权后，能力强的模型（T0）排序优先，但不会完全压制便宜模型（T2/T3）
+- [x] Dashboard 能加账号（无需 SSH）
+- [x] Dashboard 能看历史报告（Markdown 渲染）
+- [x] 反馈分下滑模型自动告警
 
 ---
 
-## V4.6: 告警驱动多账号 + 显式反馈（按需, ~8h）
+## V4.6: 告警驱动多账号 + whichllm 多源 benchmark（✅, 2026-08-08）
 
-> 触发条件：**V4.4 告警频繁触发**（每月 3+ 次告警）后才实施
-> 背景：单账号 + 告警足够时不做，避免过度设计
+> 本轮实施: §6.1 多账号架构 + §6.3 whichllm 多源 benchmark, 共 ~10h.
+> §6.2 显式打星主动放弃 (理由见下).
 
-### 6.1 多账号架构
+### 6.1 多账号架构 (commit `4fd06c2`)
 
-- ⬜ 路由加 random / round-robin / least-used 策略（借鉴 LiteLLM）
-- ⬜ `CooldownManager`: 失败 key 暂停 N 秒（借鉴 LiteLLM cooldown）
-- ⬜ `multi_account_import.py`: 批量导入 _01/_02/_03 账号
+- ✅ 路由加 least-used 策略: 同价同分时选最近未被路由的账号 (避免突发流量打死单个账号)
+- ✅ `CooldownManager`: 失败 1 次 → cooldown 60s; 路由跳过; 过期自动恢复
+  - 借鉴 LiteLLM cooldown 机制, 但使用阈值=1 (个人使用场景容错低, 1 次失败就跳)
+  - 内存管理 (重启清零), 跟 limiter 一致
+- ✅ `scripts/multi_account_import.py`: 从 `.env` 的 `_KEYS` 多 key 批量入库
+  - 9 个 provider (deepseek/qwen/glm/kimi/minimax/siliconflow/volcengine/hunyuan/stepfun)
+  - **位置式命名** (env[i] → provider_NN) 保证幂等性, 重跑不会乱分配
+  - 只创建账号, 不创建 channel (channel 创建是 manual_import.py 职责)
 
-### 6.2 显式用户反馈
+### 6.2 显式用户反馈 (⏸ 主动放弃)
 
-- ⬜ Dashboard 模型打星组件（hermes-agent-cn / hermes-tray 配合）
-- ⬜ 反馈权重入路由（权重 ≤ 0.15）
-- ⬜ 用户反馈 vs 公开 benchmark 分歧检测
+- ⏸ Dashboard 模型打星组件: **不做**
+- ⏸ 反馈权重入路由: **不做**
+- ⏸ 用户反馈 vs 公开 benchmark 分歧检测: **不做**
 
-### 6.3 whichllm 风格多源 benchmark
+**不做理由** (按 V4.4 设计原则“隐式先于显式”):
+1. **依赖客户端**: 打星需 hermes-agent-cn / hermes-tray 配合, 跨项目同步成本高
+2. **样本稀疏**: 个人使用场景, 反馈数据量小, 路由权重(≤0.15)难以发挥作用
+3. **周报已覆盖**: V4.4.B 周报自动生成“最划算”推荐, 用户据此手动调整已足够
+4. **可靠性不足**: 隐式反馈 (usage_logs + retry/fail) 已是高质量信号, 显式打星价值增量不明确
 
-- ⬜ LiveBench 适配器
-- ⬜ Artificial Analysis 适配器
-- ⬜ 多源加权融合算法
-- ⬜ Recency-aware 时间衰减（已被 V4.5 引入）
+**未来重拾条件**: 用户量增长 (hermes-tray 多客户端) 或外部反馈需求出现
+
+### 6.3 whichllm 多源 benchmark (commit `d8cdad4`)
+
+- ✅ `BenchmarkEntry` dataclass + `BenchmarkSource` 抽象基类
+- ✅ 5 个 source: LMSYS (reliability=0.95) / OpenCompass (0.90) / SuperCLUE (0.80) / LiveBench (0.85) / Artificial Analysis (0.85)
+- ✅ 3 个新 source 模块 (opencompass.py / livebench.py / artificial_analysis.py) + mock fallback (Playwright 未装)
+- ✅ `benchmark_aggregator.py`: `weight = source_reliability × recency_weight(fetched_at)`, `composite = Σ(score×weight) / Σweight`
+- ✅ `scripts/refresh_benchmark.py`: 5 sources 容错 + upsert 到 model_cards
+- ✅ **路由 sort_key 加 `score_bonus` 项** (V4.5.1 引进, V4.6.3 复用)
 
 ### 6.4 验证标准
 
-- [ ] 2 个账号同价 → 路由 random 分散
-- [ ] key 失败 3 次 → cooldown 60s，路由跳过
-- [ ] Dashboard 打星 1 次 → 下次路由 score 体现
+- [x] 2 个账号同价 → 路由 least-used 分散 (`test_v46_cooldown.py` Test 10)
+- [x] key 失败 1 次 → cooldown 60s, 路由跳过 (`test_v46_cooldown.py` Test 8/9 + `test_v46_e2e.py` 4 阶段端到端)
+- [x] 2 个账号都失败 → select_channel 返 None → 上层 503 (`test_v46_e2e.py` Test 2)
+- [x] 4xx 不触发 cooldown (`test_v46_e2e.py` Test 3)
+- [x] 多源加权融合准确 (`test_v46_3_benchmark.py` 13/13)
+- [ ] ~~Dashboard 打星 1 次 → 下次路由 score 体现~~ (§6.2 主动放弃)
+
+### 6.5 e2e 试出的 2 个集成缺陷修复 (commit `999b01d`)
+
+跑 `tests/test_v46_e2e.py` 时发现:
+1. **`_forward_normal` 缺 `requested_model` 参数** → `NameError` → `forward_request` 兜底 500. 修: 透传参数。
+2. **`select_best_channel` candidates 过滤循环漏检 cooldown** → 冷却账号仍被选上. 修: 加 `cooldown_manager.is_in_cooldown()` 检查.
+
+**这两个 bug 在 V4.6.1 commit `4fd06c2` 时未暴露**, 因为单测只调路由/manager层, 没走完 `forward_request → httpx → _update_cooldown` 链路. **e2e 集成测试是发现这类 bug 的唯一有效手段**。
 
 ---
 
@@ -454,7 +482,7 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 | `model_cards` vs `model_registry` | 9 张表 (`model_cards` 已实现) + 4 张表待加 | Phase 2 处理双轨关系（合并 or 保留） |
 | 并发安全 | 单进程无锁 | 足够（个人使用场景） |
 | Playwright 浏览器二进制 | 未装（采集功能不可用） | 个人用可接受，未来按需装 |
-| 渠道故障记忆 | 无（每次重新尝试） | Phase 2 增加冷却机制 |
+| **多账号冷却** | **✅ V4.6.1 完成** | **失败 1 次 → cooldown 60s → 过期自动恢复** |
 | 成本计算 | 简单估算 | Phase 2 用 price_snapshots 精确计算 |
 
 ---
