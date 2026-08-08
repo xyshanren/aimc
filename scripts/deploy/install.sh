@@ -166,14 +166,23 @@ mkdir -p "$SYSTEMD_USER_DIR"
 sed "s|%h/aimc|$AIMC_HOME|g" "$AIMC_HOME/scripts/deploy/aimc.service" > "$SYSTEMD_USER_DIR/aimc.service"
 info "systemd unit 已生成: $SYSTEMD_USER_DIR/aimc.service (WorkingDirectory=$AIMC_HOME)"
 
+# V4.4.B: 周报 timer + service (每周一 09:00)
+sed "s|%h/aimc|$AIMC_HOME|g" "$AIMC_HOME/scripts/deploy/aimc-weekly-report.service" > "$SYSTEMD_USER_DIR/aimc-weekly-report.service"
+sed "s|%h/aimc|$AIMC_HOME|g" "$AIMC_HOME/scripts/deploy/aimc-weekly-report.timer" > "$SYSTEMD_USER_DIR/aimc-weekly-report.timer"
+info "周报 timer 已生成: $SYSTEMD_USER_DIR/aimc-weekly-report.timer (每周一 09:00)"
+
 # 重新加载 + 启用 (不立即 start, 因为 .env 还没填)
 # v4.3.5: LXC 容器 systemctl --user 不可用, daemon-reload 会报 "Failed to connect to bus"
 if [[ "$SYSTEMD_USER_OK" == "true" ]]; then
     systemctl --user daemon-reload
     info "systemd unit 已安装: ~/.config/systemd/user/aimc.service"
+    # V4.4.B: 启用周报 timer (不 enable service, timer 自动触发)
+    systemctl --user enable --now aimc-weekly-report.timer
+    info "周报 timer 已启用 (systemctl --user list-timers 验证)"
 else
-    warn "unit 文件已复制到 ~/.config/systemd/user/aimc.service 但未 daemon-reload"
+    warn "unit 文件已复制到 ~/.config/systemd/user/ 但未 daemon-reload"
     warn "  (LXC 无 dbus, 真机部署后重跑 install.sh 启用)"
+    warn "  周报 timer 同时未启用 — 真机部署后手动: systemctl --user enable --now aimc-weekly-report.timer"
 fi
 
 # === 7. enable-linger (服务在登出后仍跑) ===
@@ -229,7 +238,10 @@ echo "  代码:   $AIMC_HOME"
 echo "  venv:   $AIMC_HOME/.venv"
 echo "  配置:   $AIMC_HOME/.env (请现在编辑!)"
 echo "  数据:   $AIMC_HOME/data"
+echo "  报告:   $AIMC_HOME/reports (V4.4.B 周报输出)"
 echo "  启动:   systemctl --user enable --now aimc.service"
 echo "  状态:   systemctl --user status aimc"
 echo "  日志:   journalctl --user -u aimc -f"
+echo "  周报:   systemctl --user list-timers | grep aimc-weekly-report"
+echo "           手动跑: $AIMC_HOME/.venv/bin/python $AIMC_HOME/scripts/generate_weekly_report.py"
 echo

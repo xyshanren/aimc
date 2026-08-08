@@ -46,6 +46,11 @@ logs/
 .debug_*.py
 .check_*.py
 
+# AIMC 周报（V4.4.B 生成，本地不入仓；reports/.gitkeep 保留让目录入仓）
+reports/*.md
+reports/*.json
+!reports/.gitkeep
+
 # 系统文件
 .DS_Store
 Thumbs.db

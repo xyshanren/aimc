@@ -1,0 +1,3 @@
+# AIMC 周报输出目录
+# 由 scripts/generate_weekly_report.py 写入，由 .gitignore 排除实际报告
+# 本文件保留以让目录入仓

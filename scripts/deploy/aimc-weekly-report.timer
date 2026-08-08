@@ -1,0 +1,17 @@
+[Unit]
+Description=AIMC 周报定时器（V4.4.B — 每周一 09:00）
+Documentation=https://github.com/<your-repo>
+Requires=aimc-weekly-report.service
+
+[Timer]
+# 每周一 09:00 本地时间触发
+OnCalendar=Mon *-*-* 09:00:00
+# 开机错过补跑 (机器周一前宕机，周二恢复时跑一次)
+Persistent=true
+# 防止抖动（机器时钟不准时延迟一点）
+AccuracySec=1min
+# 用本地时区 (Asia/Shanghai) — OnCalendar 默认本地
+Unit=aimc-weekly-report.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,32 @@
+[Unit]
+Description=AIMC 周报生成 + Bark 推送（V4.4.B）
+Documentation=https://github.com/<your-repo>
+# 不依赖 aimc.service — 周报只读 DB, 不需要主进程在跑
+# 但若 DB 文件被 aimc.service 持有写锁时不影响 (SQLite WAL)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/aimc
+Environment="PATH=%h/aimc/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile=%h/aimc/.env
+
+# 先生成 Markdown 报告
+ExecStart=%h/aimc/.venv/bin/python %h/aimc/scripts/generate_weekly_report.py
+# 生成成功后推送关键结论 (Bark / Feishu / Server 酱)
+ExecStartPost=%h/aimc/.venv/bin/python %h/aimc/scripts/publish_report.py
+
+# 资源限制 — 周报是 IO+少量 DB read, 给 2G 余量
+MemoryMax=2G
+LimitNOFILE=65536
+
+# 安全 (Phase 4 v4.3 加)
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=%h/aimc/data %h/aimc/.venv %h/aimc/reports
+
+# oneshot 不需要 Restart
+
+[Install]
+WantedBy=default.target
