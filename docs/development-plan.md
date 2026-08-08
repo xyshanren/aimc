@@ -1,8 +1,8 @@
 # AIMC 开发计划
 
-> 更新时间：2026-07-29
+> 更新时间：2026-08-08
 > 状态标记：✅ 已完成 | 🔨 进行中 | ⬜ 待开发
-> 配套文档：[架构设计](architecture.md) / [竞品调研](competitive-research.md)
+> 配套文档：[架构设计](architecture.md) / [竞品调研](competitive-research.md) / [V4.4 专项设计](v44-feedback-and-alert-design.md)
 
 ---
 
@@ -14,12 +14,20 @@
 | **Phase 2.5** | **运维加固** | **✅** | **4 个日常痛点改进（详见下文）** |
 | **Phase 2** | **多维模型组** | **✅** | **4 张新表 + 25 model + 6 group + 35 member + tier/scene 路由 + Agent 偏好 + 响应头** |
 | Phase 3 | 情报联动模型组 | ✅ | 3.0/3.1/3.2/3.3/3.4 已完成，3.5 验证 4/4 PASS, 3.6 国内服务商补齐中 |
-| Phase 4 | 智能优化 | ⬜ 远期 | 用量分析 / 延迟追踪 / 自动权重 |
 | **API-Sec-1** | **DB api_key 加密 (XOR+Base64 轻量化)** | **✅** | **DB 文件泄露 ≠ channel key 泄露；零外部依赖** |
 | **API-Sec-2** | **ALERT_CHANNEL runtime override** | **✅** | **改告警 channel / webhook 不重启** |
 | **API-Sec-3** | **key 轮换提醒** | **✅** | **30 天未轮换飞书告警** |
+| **V4.3 部署 hotfix** | **8 次部署修复** | **✅** | **install.sh V4.3.8 + smoke V4.3.11 + verify_clients V4.3.11** |
+| **V4.4** | **反馈+告警+CLI 账号管理** | **⬜** | **隐式反馈 + 周报 + 告警驱动 + 账号 CLI (9.5h)** |
+| **V4.5** | **能力评分路由 + Dashboard 账号 UI** | **⬜** | **whichllm 启发 + score 入路由 + Web UI (12h)** |
+| **V4.6** | **告警驱动多账号 + 显式反馈** | **⬜** | **待 V4.4 告警频繁触发后实施 (8h)** |
 
 设计原则：**运维先于新功能**（新增"二、设计原则"）。Phase 2.5 在 Phase 2 实施前补的，让"日常运维不痛"先于"模型组新能力"。
+
+**V4.4-V4.6 新增原则**：
+- **隐式先于显式**：从 usage_logs 推断的反馈先做（0 成本），Dashboard 打星后做
+- **DB 先于 .env**：账号配置走 DB（密文 + 即时生效），.env 退化为启动引导
+- **告警驱动而非基建驱动**：先用单账号 + 告警提醒注册新账号，而非提前建多账号基础设施
 
 ---
 
@@ -313,19 +321,125 @@ ALTER TABLE accounts ADD COLUMN expires_at DATETIME;  -- 可选, user 自己定�
 
 ---
 
-## Phase 4: 智能优化（远期）
+## V4.4: 反馈 + 告警 + CLI 账号管理（本周, ~9.5h）
 
-> 目标：基于历史数据持续优化路由决策
+> 目标：**从"被动响应"升级到"主动洞察"** — 加个账号从 30 秒变为 10 秒；每周自动告诉你哪个模型最划算
+> 详细设计：[v44-feedback-and-alert-design.md](v44-feedback-and-alert-design.md)
 
-- ⬜ 用量分析：统计各模型/渠道的实际使用频率和成本
-- ⬜ 延迟追踪：记录各渠道历史延迟，支持 latency 策略
-- ⬜ 组内权重自动调整：基于成功率和延迟动态调权
-- ⬜ 价格趋势预测：基于历史快照预测峰谷，提前切换
-- ⬜ hermes-agent-cn 偏好学习：记录哪些路由决策效果好
-- ⬜ Dashboard 成本报表：月度/周度花费趋势、节省金额估算
-- ⬜ 多渠道分散策略：避免单渠道频限，自动分散用量
-- ⬜ **参数兼容处理**（借鉴 LiteLLM drop_params）：跨模型转发时自动丢弃目标模型不支持的参数
-- ⬜ **按 Key 成本隔离**（借鉴 LiteLLM Virtual Key）：为不同 hermes-agent-cn 分配独立 Key，分别追踪花费和预算
+### 4.1 隐式反馈系统（`model_feedback_summary`）
+
+- ⬜ 新增 `model_feedback_summary` 表 + 索引（init_db.py 幂等迁移）
+- ⬜ `scripts/aggregate_weekly_feedback.py` (1h): 从 usage_logs 周聚合，反馈分公式 `100 - 30*retry - 50*fail - 0.01*p95`
+- ⬜ `db/crud.py` 加 `upsert_feedback_summary` / `list_feedback_summary`
+
+### 4.2 周报自动生成
+
+- ⬜ `scripts/generate_weekly_report.py` (1h): Markdown 模板（总览/排行 Top5/趋势/告警/推荐行动）
+- ⬜ `scripts/publish_report.py` (30min): Bark / 飞书推送关键结论
+- ⬜ systemd timer: 每周一 9:00 触发
+
+### 4.3 告警驱动场景（4 个新增）
+
+- ⬜ `QuotaNearLimitAlert` (80%) 
+- ⬜ `AccountExhaustedAlert` (100%)
+- ⬜ `NoActiveAccountAlert` (provider 全耗尽)
+- ⬜ `CostRisingAlert` (月环比 +30%)
+- ⬜ `scripts/expire_accounts.py` (30min): 过期扫描
+
+### 4.4 账号管理 CLI
+
+- ⬜ `scripts/add_account.py` (1h): 加密入库，无需重启
+- ⬜ `scripts/list_accounts.py` (30min): 脱敏显示 sk-***-last4
+- ⬜ `scripts/rotate_account.py` (30min): disable / enable / rotate / expire-check
+- ⬜ `.env.example` 加 `_KEYS` 多 key 引导说明
+- ⬜ `install.sh` / `manual_import.py` 引导文案改用 CLI
+
+### 4.5 验证标准
+
+- [ ] 跑 `aggregate_weekly_feedback.py` 过去 7 天数据不报错
+- [ ] 周一 9:00 自动生成 `reports/weekly_*.md`
+- [ ] Bark 收到推送（≤ 200 字关键结论）
+- [ ] `add_account.py` 加账号 → 加密入库 → 立即可路由
+- [ ] 80% / 100% 配额 → 收到对应告警
+- [ ] 故意耗尽某 provider → NoActiveAccount 告警 + 路由自动降级
+
+---
+
+## V4.5: 能力评分路由 + Dashboard 账号 UI（2 周内, ~12h）
+
+> 目标：把 V4.4 收集的反馈**反向驱动路由** + 提供 Web UI 管理账号
+
+### 5.1 能力评分路由（whichllm 启发）
+
+- ⬜ `model_cards` 表增强 5 字段: `confidence_level` / `source_type` / `score_components` / `last_active_at` / `source_reliability`
+- ⬜ `BenchmarkSource` 抽象基类 (类似 intelligence/sources/ 模式)
+- ⬜ LMSYSArena + OpenCompass 2 个 source 适配器
+- ⬜ `gateway/router.py` sort_key 加 `score_bonus` (权重 ≤ 0.2)
+- ⬜ `recency-aware` 时间衰减工具函数（半年线性衰减）
+
+### 5.2 Dashboard 账号管理 UI
+
+- ⬜ `/dashboard/accounts` 页面：列表 / 加 / 轮换 / 启用 / 禁用
+- ⬜ Web 表单调用 CLI 等价 API
+- ⬜ 报告查看页面：`/dashboard/reports/weekly_*`
+- ⬜ API key 脱敏显示 + 复制按钮
+
+### 5.3 告警闭环
+
+- ⬜ `ScoreRegressionAlert` (2 周反馈分持续下滑)
+- ⬜ `CostAnomalyAlert` 集成报告链接
+- ⬜ alerter 与周报双向引用
+
+### 5.4 验证标准
+
+- [ ] score_bonus 加权后，能力强的模型（T0）排序优先，但不会完全压制便宜模型（T2/T3）
+- [ ] Dashboard 能加账号（无需 SSH）
+- [ ] Dashboard 能看历史报告（Markdown 渲染）
+- [ ] 反馈分下滑模型自动告警
+
+---
+
+## V4.6: 告警驱动多账号 + 显式反馈（按需, ~8h）
+
+> 触发条件：**V4.4 告警频繁触发**（每月 3+ 次告警）后才实施
+> 背景：单账号 + 告警足够时不做，避免过度设计
+
+### 6.1 多账号架构
+
+- ⬜ 路由加 random / round-robin / least-used 策略（借鉴 LiteLLM）
+- ⬜ `CooldownManager`: 失败 key 暂停 N 秒（借鉴 LiteLLM cooldown）
+- ⬜ `multi_account_import.py`: 批量导入 _01/_02/_03 账号
+
+### 6.2 显式用户反馈
+
+- ⬜ Dashboard 模型打星组件（hermes-agent-cn / hermes-tray 配合）
+- ⬜ 反馈权重入路由（权重 ≤ 0.15）
+- ⬜ 用户反馈 vs 公开 benchmark 分歧检测
+
+### 6.3 whichllm 风格多源 benchmark
+
+- ⬜ LiveBench 适配器
+- ⬜ Artificial Analysis 适配器
+- ⬜ 多源加权融合算法
+- ⬜ Recency-aware 时间衰减（已被 V4.5 引入）
+
+### 6.4 验证标准
+
+- [ ] 2 个账号同价 → 路由 random 分散
+- [ ] key 失败 3 次 → cooldown 60s，路由跳过
+- [ ] Dashboard 打星 1 次 → 下次路由 score 体现
+
+---
+
+## V4.7+ 远期展望（参考）
+
+| 阶段 | 主题 | 价值 |
+|------|------|------|
+| **参数兼容处理** | 借鉴 LiteLLM `drop_params`：跨模型转发时自动丢弃目标模型不支持的参数 | 避免 400 错误 |
+| **Virtual Key 成本隔离** | 借鉴 LiteLLM Virtual Key：不同客户端分配独立 Key，分别追踪预算 | 4 客户端分别计费 |
+| **价格趋势预测** | 基于历史快照预测峰谷时段，提前切换 | 节省成本 |
+| **Playwright 浏览器采集** | 装 chromium，启用 `playwright` 抓 HTML 源（qianwenai 等） | 补全情报覆盖 |
+| **跨项目联动** | hermes-tray AIMC SSE `routing_decision` 事件消费 | 客户端可视化路由 |
 
 ---
 
