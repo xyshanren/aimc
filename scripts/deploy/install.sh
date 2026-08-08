@@ -159,6 +159,40 @@ fi
 mkdir -p "$AIMC_HOME/data"
 info "数据目录: $AIMC_HOME/data"
 
+# === 5b. V4.4.D 账号状态检查 ===
+# 在 .env 已就绪后跳: 需要 AIMC_MASTER_KEY 才能解账号表 (Fernet 加密)
+# LXC 首次 init 跳过 (.env 为空), 手动跑 scripts/check_accounts_status.py 也可
+if [[ -n "${AIMC_SKIP_ACCOUNT_CHECK:-}" ]]; then
+    info "跳过账号检查 (AIMC_SKIP_ACCOUNT_CHECK 已设)"
+elif grep -qE '^AIMC_MASTER_KEY=[^[:space:]]+' "$AIMC_HOME/.env" 2>/dev/null; then
+    info "V4.4: 检查 active 账号数..."
+    # 走 venv 避免污染系统 Python; cd AIMC_HOME 让 db path 相对路径生效
+    ACCT_OUT=$(cd "$AIMC_HOME" && "$AIMC_HOME/.venv/bin/python" "$AIMC_HOME/scripts/check_accounts_status.py" 2>&1) || ACCT_OUT="err:非零退出码"
+    case "$ACCT_OUT" in
+        err:*)
+            warn "账号检查失败 (跳过): ${ACCT_OUT#err:}"
+            ;;
+        0)
+            warn "DB 中无 active 账号 — 服务启动后将无法路由任何请求"
+            warn "  V4.4 推荐 (二选一):"
+            warn "    1) 首次 init (从 .env 引导): $AIMC_HOME/.venv/bin/python $AIMC_HOME/scripts/manual_import.py"
+            warn "    2) 加额外账号 (V4.4 CLI):"
+            warn "       $AIMC_HOME/.venv/bin/python $AIMC_HOME/scripts/add_account.py --help"
+            warn "       列表/轮换: list_accounts.py / rotate_account.py"
+            ;;
+        *)
+            info "active 账号数: $ACCT_OUT"
+            # 详细分布
+            ACCT_JSON=$(cd "$AIMC_HOME" && "$AIMC_HOME/.venv/bin/python" "$AIMC_HOME/scripts/check_accounts_status.py" --json 2>/dev/null) || ACCT_JSON=""
+            if [[ -n "$ACCT_JSON" && "$ACCT_JSON" != *"err:"* ]]; then
+                info "账号分布: $ACCT_JSON"
+            fi
+            ;;
+    esac
+else
+    info "AIMC_MASTER_KEY 未配置, 跳过账号检查 (请编辑 $AIMC_HOME/.env 后重跑 install.sh 或手动跑 manual_import.py)"
+fi
+
 # === 6. 安装 systemd unit (user 级) ===
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"

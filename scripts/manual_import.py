@@ -17,6 +17,16 @@ Phase 1 使用：在爬虫未就绪前，手动录入渠道信息。
     2. python scripts/manual_import.py
 
 借鉴 hermes-tray：env-first，避免在 .py 里出现任何 key 字面量。
+
+V4.4 引导：多账号场景下，推荐使用 scripts/add_account.py CLI：
+    python scripts/add_account.py \\
+        --channel deepseek \\
+        --name deepseek_02 \\
+        --api-key sk-new-key-xxx \\
+        --quota-total 100000 \\
+        --expires-at 2026-11-08 \\
+        --notes '新账号'
+本脚本仅供首次 init（备份兼容路径）；运行时增量账号统一走 CLI。
 """
 
 import asyncio
@@ -310,7 +320,20 @@ async def import_demo_data():
         print("  3. 同名 channel 已存在, 如需迁移老明文数据跑 scripts/migrate_encrypt_keys.py")
         for cfg in CHANNELS:
             print(f"   {cfg['env_var']}=  ({cfg['name']})")
+    else:
+        # V4.4: 引导多账号场景用 CLI 加额外账号
+        print()
+        print("[V4.4 提示] 已完成首次 init。后续增量账号请用 CLI：")
+        print("  python scripts/add_account.py --channel <provider> --name <name> --api-key <key>")
+        print("  python scripts/list_accounts.py        # 查看所有账号（脱敏）")
+        print("  python scripts/rotate_account.py rotate --id <id> --new-key <key>  # 轮换 key")
+        print("  本脚本仅供 V4.3 兼容使用，V4.4 起推荐 CLI。")
 
 
 if __name__ == "__main__":
+    # V4.4 启动横幅
+    print("=" * 60)
+    print("AIMC manual_import.py — V4.3 兼容路径")
+    print("V4.4 起多账号推荐: python scripts/add_account.py --help")
+    print("=" * 60)
     asyncio.run(import_demo_data())
