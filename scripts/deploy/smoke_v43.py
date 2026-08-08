@@ -42,7 +42,7 @@ V43_SOURCES = [
     ("sensenova", "model_list", True, "主力"),       # 商汤日日新主力 (自家 + deepseek v4 flash 免费, 但 endpoint 待配置)
     ("hunyuan", "model_list", True, "mock"),         # 腾讯混元, 无 key, mock
     ("moonshot", "model_list", True, "观察"),        # kimi, 降级观察 (无优惠, key 待申请)
-    ("qianwenai", "pricing", False, "观察"),         # 千问AI 聚合观察, 仅 HTML (source 未注册, smoke 跳过)
+    # qianwenai 跳过 (用户 2026-08-08: 不注册, 临时观察源, 后续需要时再加 source plugin)
 ]
 
 

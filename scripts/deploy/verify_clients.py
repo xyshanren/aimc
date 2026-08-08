@@ -108,6 +108,12 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8080, help="AIMC 服务 port (默认 8080)")
     parser.add_argument("--api-key", default="", help="AIMC_API_KEY (如配置)")
     parser.add_argument("--skip-lan", action="store_true", help="跳过 LAN 客户端测试")
+    # v4.3.11: --lan-host 强制指定 LAN IP (覆盖 socket 自动探测)
+    # 场景: VirtualBox 有多网卡 (NAT 10.0.2.15 + Host-Only 192.168.56.12),
+    #       8.8.8.8 路由走 NAT, 自动探测拿不到 Host-Only IP
+    #       4 客户端连要用 Host-Only IP, --host 192.168.56.12 走 0.0.0.0 绑定测试
+    #       但 LAN 模拟需要 192.168.56.12 本身
+    parser.add_argument("--lan-host", default="", help="LAN 客户端 IP (强制覆盖, 留空走 socket 自动探测)")
     args = parser.parse_args()
 
     print("=== Phase 4 v4.3 — 多客户端连通性验证 ===\n")
@@ -120,17 +126,21 @@ def main() -> int:
         ("0.0.0.0 绑定", f"http://{args.host}:{args.port}/v1", args.api_key),
     ]
 
-    # LAN 测试 (v4.3.9: 自动探测本机真实 LAN IP, 不再写死 192.168.1.x)
+    # LAN 测试 (v4.3.11: --lan-host 强制 > socket 自动探测 > --host 兜底)
     if not args.skip_lan:
-        lan_ip = get_local_lan_ip()
-        if lan_ip and lan_ip != "127.0.0.1":
-            endpoints.append((f"LAN (autodetect: {lan_ip})", f"http://{lan_ip}:{args.port}/v1", args.api_key))
-        elif args.host not in ("127.0.0.1", "localhost"):
-            # 探测失败但 --host 提供了 IP, 退回用 --host
-            endpoints.append((f"LAN (--host 兜底)", f"http://{args.host}:{args.port}/v1", args.api_key))
+        if args.lan_host:
+            # 强制指定 LAN IP (4 客户端实际用的)
+            endpoints.append((f"LAN (--lan-host: {args.lan_host})", f"http://{args.lan_host}:{args.port}/v1", args.api_key))
         else:
-            # 都拿不到, 提示用户手动跳过或 --lan-host 覆盖
-            print(f"  [.] LAN 跳过 (探测不到本机 IP, 用 --lan-host <ip> 手动指定)")
+            lan_ip = get_local_lan_ip()
+            if lan_ip and lan_ip != "127.0.0.1":
+                endpoints.append((f"LAN (autodetect: {lan_ip})", f"http://{lan_ip}:{args.port}/v1", args.api_key))
+            elif args.host not in ("127.0.0.1", "localhost"):
+                # 探测失败但 --host 提供了 IP, 退回用 --host
+                endpoints.append((f"LAN (--host 兜底)", f"http://{args.host}:{args.port}/v1", args.api_key))
+            else:
+                # 都拿不到, 提示用户手动指定 --lan-host
+                print(f"  [.] LAN 跳过 (探测不到本机 IP, 用 --lan-host <ip> 手动指定)")
 
     results = []
     for name, url, key in endpoints:
