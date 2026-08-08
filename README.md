@@ -221,12 +221,13 @@ aimc/
 
 ## 文档
 
+- [用户使用指引（完整版）](docs/user_guide.md) — **推荐首次使用阅读** (安装/接入账号/Dashboard/运维/FAQ)
 - [架构设计文档](docs/architecture.md) — 系统设计与数据模型（含 Phase 2 多维模型组 + V4.6.1 CooldownManager）
-- [开发计划](docs/development-plan.md) — 路线总览 (Phase 1/2.5/2/3/4 + API-Sec-1/2/3 + V4.4-V4.6)
+- [开发计划](docs/development-plan.md) — 路线总览 (Phase 1/2.5/2/3/4 + API-Sec-1/2/3 + V4.4-V4.6 + §7 稳定期跟踪)
 - [V4.4 设计文档](docs/v44-feedback-and-alert-design.md) — 隐式反馈 + 告警驱动多账号
 - [Phase 2 设计文档](docs/phase2-design.md) — 模型组设计 + 实施步骤
 - [API Key 安全设计](docs/api-key-security.md) — 加密方案 + 现状盘点
-- [快速开始指南](docs/quickstart.md) — 安装、配置、部署
+- [快速开始指南](docs/quickstart.md) — 极简版安装配置（user_guide.md 的精简子集）
 - [API 接口文档](docs/api.md) — 网关接口说明
 - [竞品调研](docs/competitive-research.md) — OpenRouter/9Router/LiteLLM/RouteLLM 对比
 - [E2E 测试报告](docs/e2e-results.md) — hermes-agent-cn 集成联调结果
