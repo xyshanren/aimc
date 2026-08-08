@@ -11,6 +11,7 @@
 
 import json
 import logging
+import time
 from datetime import datetime, date
 from typing import Optional
 
@@ -44,6 +45,9 @@ class RouteEngine:
         self._group_members_cache: dict = {}   # group_id -> [model_id]
         # V4.5.1: 能力评分 (model_cards) — sort_key tie-break
         self._cards_cache: dict = {}           # model_id -> [ModelCard ORM]
+        # V4.6.1: least-used tie-break (同 channel 多账号轮询)
+        # account_id → 最近路由选中的时间戳 (time.time())
+        self._account_last_used: dict[int, float] = {}
 
     async def refresh_cache(self):
         """从数据库刷新渠道缓存到内存 (全量)
@@ -472,20 +476,24 @@ class RouteEngine:
             logger.warning(f"所有渠道配额耗尽: {model}")
             return None
 
-        # 4. 多维排序: 价格 ASC > 剩余配额 DESC > 优先级 DESC > score_bonus DESC
+        # 4. 多维排序: 价格 ASC > 剩余配额 DESC > 优先级 DESC > score_bonus DESC > least-used
         # V4.5.1: 加 score_bonus tie-break — 价格平手时高分 model 优先
-        # 但分数高不会完全压制便宜 model (排序后位), 仅起 tie-break 作用
+        # V4.6.1: 加 least-used tie-break — 同价同分时, 最近未被路由的账号优先 (多账号轮询)
         def sort_key(item):
             ch, price = item
             input_price = price.get("input_price") or 0
             quota_remaining = ch["quota_remaining"] if ch["quota_remaining"] is not None else 999999999
             priority = ch["priority"]
             bonus = self.score_bonus(model)  # V4.5.1: [0, 1]
-            return (input_price, -quota_remaining, -priority, -bonus)
+            # V4.6.1: 老的优先 (0 = 未用过) > 新的 (1.0 = 刚用过)
+            last_used = self._account_last_used.get(ch["account_id"], 0.0)
+            return (input_price, -quota_remaining, -priority, -bonus, last_used)
 
         candidates.sort(key=sort_key)
 
         best_channel, best_price = candidates[0]
+        # V4.6.1: 记录 last_used (路由层只 record, 不 mark_success — 成功标记由 proxy 层处理)
+        self._account_last_used[best_channel["account_id"]] = time.time()
         logger.debug(
             f"路由决策: model={model} -> {best_channel['name']} "
             f"(price={best_price.get('input_price')}, priority={best_channel['priority']})"
@@ -537,8 +545,15 @@ class RouteEngine:
         return min(self._channels_cache, key=lambda ch: ch.get("priority", 999))
 
     def _is_channel_usable(self, ch: dict) -> bool:
-        """Phase 2E: 检查 channel 是否可用 (限频 + 配额), 不检查 model 支持"""
+        """Phase 2E: 检查 channel 是否可用 (限频 + 配额), 不检查 model 支持
+
+        V4.6.1 加 cooldown 检查 — 失败的账号 (mark_failure 触发) 进入冷却期,
+        路由应跳过, 等冷却过期再恢复. 跟 limiter 一致: 内存管理, 不持久化.
+        """
+        from gateway.cooldown import cooldown_manager
         from gateway.limiter import rate_limiter
+        if cooldown_manager.is_in_cooldown(ch["account_id"]):
+            return False
         if rate_limiter.is_limited(ch["account_id"], ch["quotas"]):
             return False
         if ch.get("quota_remaining") is not None and ch["quota_remaining"] <= 0:
