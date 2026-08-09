@@ -190,6 +190,24 @@ CHANNELS = [
             ("step-1o", "normal", "全天", 0.0, 0.0),  # placeholder
         ],
     },
+    {
+        # V4.6.4: 商汤日日新 SenseNova (2026-08-09)
+        # 官方 base_url: https://api.sensenova.cn/v1
+        # token plan 备用 endpoint: https://token.sensenova.cn/v1
+        # 鉴权: 标准 Bearer token (sk- 开头), 跟其他渠道一样
+        # 模型 placeholder: SenseChat / sensenova-6.7-flash-lite / DeepSeek-V4-Flash (公测免费)
+        "key": "sensenova",
+        "name": "sensenova_official",
+        "provider": "sensenova",
+        "base_url": os.getenv("SENSENOVA_BASE_URL", "https://api.sensenova.cn/v1"),
+        "priority": 5,
+        "env_var": "SENSENOVA_API_KEY",
+        "qpm": 30,
+        "prices": [
+            ("SenseChat", "normal", "全天", 0.0, 0.0),  # placeholder
+            ("sensenova-6.7-flash-lite", "normal", "全天", 0.0, 0.0),  # placeholder
+        ],
+    },
 ]
 
 
