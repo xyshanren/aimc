@@ -32,7 +32,7 @@ async def main():
     print("API-Sec-1: 老明文 api_key 迁移到 ciphertext")
     print("=" * 60)
 
-    # 校验 master key
+    # 校验 master key (跟 security/crypto.py:64 字符 hex 保持一致)
     if not settings.aimc_master_key:
         print("ERROR: AIMC_MASTER_KEY 未设置")
         print("  1. python scripts/gen_master_key.py")
@@ -40,8 +40,16 @@ async def main():
         print("  3. 重跑这个脚本")
         sys.exit(1)
 
-    if len(settings.aimc_master_key) != 44:
-        print(f"ERROR: AIMC_MASTER_KEY 长度异常: {len(settings.aimc_master_key)} (期望 44)")
+    if len(settings.aimc_master_key) != 64:
+        print(f"ERROR: AIMC_MASTER_KEY 长度异常: {len(settings.aimc_master_key)} (期望 64 字符 hex)")
+        print("  生成新 key: python scripts/gen_master_key.py")
+        print("  注意: 改了 master key = 已有 ciphertext 不可解 = 需重新加密")
+        sys.exit(1)
+    # 顺便校验格式
+    try:
+        bytes.fromhex(settings.aimc_master_key)
+    except ValueError as e:
+        print(f"ERROR: AIMC_MASTER_KEY 格式异常 (期望 64 字符 hex): {e}")
         sys.exit(1)
 
     # 初始化 DB (确保新列已加)
