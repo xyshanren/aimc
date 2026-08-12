@@ -239,8 +239,14 @@ class RouteEngine:
 
         复用逻辑从原 refresh_cache() 抽出, 给 refresh_cache() 和
         invalidate_channel() 共享.
+
+        V4.6.4 增强: 收集 ciphertext 解密失败的 account, 一次性报 critical
+        (避免 5+ 个 WARNING 混在 INFO 中间被运维忽略)
         """
         from db.models import Channel
+
+        # V4.6.4: 清空失败列表 (用于本次 cache 加载期间的汇总告警)
+        self._last_load_decrypt_failures: list[tuple[str, str]] = []
 
         # 查询所有活跃渠道及其关联数据
         stmt = select(Channel).where(Channel.status == "active")
@@ -252,6 +258,40 @@ class RouteEngine:
             cache.extend(await self._build_channel_entries(session, ch))
 
         self._channels_cache = cache
+
+        # V4.6.4: 汇总告警 - 多账号解密失败时, critical + 显眼标题
+        failures = getattr(self, "_last_load_decrypt_failures", [])
+        if failures:
+            n = len(failures)
+            if n >= 3:
+                # 3+ 失败 = critical (router 路由命中率暴跌, 必须修复)
+                logger.critical("=" * 70)
+                logger.critical(
+                    f"!! {n} 个账号 ciphertext 解密失败 - 路由命中率会暴跌 !!"
+                )
+                logger.critical(
+                    "   原因: 大概率是 AIMC_MASTER_KEY 跟 db 加密时用的不一致"
+                )
+                logger.critical("   修复:")
+                logger.critical(
+                    "     1. python scripts/check_ciphertext_health.py  (诊断)"
+                )
+                logger.critical(
+                    "     2. 如果老 key 还在, 跑 scripts/reencrypt_accounts.py 批量重加密"
+                )
+                logger.critical(
+                    "     3. 如果老 key 没了, 跑 scripts/add_account.py 重建 account"
+                )
+                logger.critical("   失败的 accounts:")
+                for name, reason in failures:
+                    logger.critical(f"     - {name}  ({reason})")
+                logger.critical("=" * 70)
+            else:
+                # 1-2 个失败 = warning 级别
+                logger.warning(
+                    f"{n} 个账号 ciphertext 解密失败: "
+                    + ", ".join(name for name, _ in failures)
+                )
 
     async def _build_channel_entries(self, session, ch) -> list[dict]:
         """Phase 4 v2 (I6): 构造单个 channel 的 cache 条目列表
@@ -441,6 +481,11 @@ class RouteEngine:
                     f"ciphertext 存在但解密失败, 请检查 AIMC_MASTER_KEY 是否与加密时一致 "
                     f"(诊断: python scripts/check_ciphertext_health.py)"
                 )
+                # V4.6.4: 记录到失败列表, 供 _load_channels_cache 完成后汇总告警
+                if hasattr(self, "_last_load_decrypt_failures"):
+                    self._last_load_decrypt_failures.append(
+                        (account.account_name, "decrypt 失败")
+                    )
             except Exception as e:
                 logger.error(
                     f"账号 {account.account_name} ciphertext 解密异常: {e}"
