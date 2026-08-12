@@ -11,6 +11,7 @@
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, date
 from typing import Optional
@@ -21,6 +22,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_effective_base_url(ch) -> str:
+    """V4.6.4 fix: 返回渠道最终使用的 base_url。
+
+    规则:
+    - SENSENOVA_BASE_URL env 有设 -> 优先使用 (覆盖 db 值)
+    - 其他渠道 -> 仍以 db 为准 (env 不干扰)
+
+    设计原因:
+    - manual_import.py 写死的 api.sensenova.cn 是错误默认 (官方推荐 token.sensenova.cn)
+    - db 修改需要备份 + 重启服务; env 调整只需改 .env + 等缓存刷新 (默认 5 分钟)
+    - 旧 users 已在 db 里建过 sensenova_official 渠道, 改 env 立刻生效无需手动改 db
+
+    Returns:
+        实际使用的 base_url (去除尾斜杠)
+    """
+    db_base_url = (ch.base_url or "").rstrip("/")
+    if ch.provider == "sensenova":
+        env_override = os.getenv("SENSENOVA_BASE_URL", "").strip().rstrip("/")
+        if env_override and env_override != db_base_url:
+            logger.debug(
+                f"[sensenova] base_url env 覆盖 db: "
+                f"env={env_override} db={db_base_url} channel_id={ch.id}"
+            )
+            return env_override
+    return db_base_url
 
 
 class RouteEngine:
@@ -272,7 +300,10 @@ class RouteEngine:
                 "id": ch.id,
                 "name": ch.name,
                 "provider": ch.provider,
-                "base_url": ch.base_url,
+                # V4.6.4 fix: SENSENOVA_BASE_URL env 优先 db
+                # (manual_import.py 默认 api.sensenova.cn 错误, 官方推荐 token.sensenova.cn)
+                # 其他渠道暂不污染这个机制, sensenova endpoint 切换是唯一明确场景
+                "base_url": _resolve_effective_base_url(ch),
                 "priority": ch.priority,
                 "provider_type": ch.provider_type,
                 "billing_mode": ch.billing_mode,

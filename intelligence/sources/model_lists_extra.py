@@ -20,6 +20,8 @@ API 鉴权情况 (来自厂商官方文档):
 如未配 channel, 鉴权失败 → handle_fetch_error → 3 次连续失败后自动 disable
 """
 
+import os
+
 from intelligence.sources.base import IntelSourceBase, SourceType
 
 
@@ -49,8 +51,8 @@ class SenseNovaModelListSource(IntelSourceBase):
     """商汤日日新 SenseNova model 列表
 
     商汤科技 (SenseTime) 的日日新大模型 (SenseNova), 多模态 / 视觉见长
-    API: https://api.sensenova.cn/v1/models (OpenAI 兼容)
-    备用 endpoint: https://token.sensenova.cn/v1/models
+    API: https://token.sensenova.cn/v1/models (OpenAI 兼容, 公测 token plan 入口)
+    历史 endpoint: https://api.sensenova.cn/v1/models (部分 model 不识别, 1214 modelCode不存在)
     频率: 1 天
     """
 
@@ -63,7 +65,7 @@ class SenseNovaModelListSource(IntelSourceBase):
             css_selector=None,
             wait_until="domcontentloaded",
             wait_for=None,
-            api_endpoint="https://api.sensenova.cn/v1",
+            api_endpoint=os.getenv("SENSENOVA_BASE_URL", "https://token.sensenova.cn/v1"),
             api_key_from="sensenova",
         )
 
