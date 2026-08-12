@@ -541,15 +541,32 @@ class RouteEngine:
                     candidates.append((ch, price_info))
 
         if not candidates:
-            # Phase 2E: 无渠道明确支持该 model — 尝试 fallback 到 priority 最低的 channel
+            # Phase 2E: 无渠道明确支持该 model — fallback 到 priority 最低的 channel
             # (默认是聚合平台, 例如硅基流动: 1 个 key 通吃 100+ model)
-            fallback = self._get_fallback_channel()
-            if fallback and self._is_channel_usable(fallback):
-                logger.info(
-                    f"无可用渠道支持模型: {model}, fallback 到 {fallback['name']} "
-                    f"(priority={fallback['priority']})"
-                )
-                return fallback
+            #
+            # V4.6.4 fix: 返回 (channel, best_price), 用 channel 自己的 model 名发请求
+            # 避免上游不认用户请求的 model -> 404
+            # 例: 用户请求 deepseek-v2.5, siliconflow 只有 deepseek-ai/DeepSeek-V3
+            #     -> body.model = "deepseek-ai/DeepSeek-V3" (上游认), 上游返回 200
+            fallback_result = self._get_fallback_channel()
+            if fallback_result:
+                fallback_ch, fallback_price = fallback_result
+                if self._is_channel_usable(fallback_ch):
+                    if fallback_price:
+                        # V4.6.4: 注入 _actual_model = channel 支持的 model
+                        # (proxy 层会把这个替换到 body.model)
+                        fallback_ch["_actual_model"] = fallback_price["model"]
+                        logger.info(
+                            f"无可用渠道支持模型: {model}, fallback 到 {fallback_ch['name']} "
+                            f"via {fallback_price['model']} (priority={fallback_ch['priority']})"
+                        )
+                    else:
+                        # channel 没有任何 price_snapshot (边缘情况, 兼容)
+                        logger.warning(
+                            f"无可用渠道支持模型: {model}, fallback 到 {fallback_ch['name']} "
+                            f"但该 channel 无有效 price_snapshot"
+                        )
+                    return fallback_ch
             logger.warning(f"无可用渠道支持模型: {model}")
             return None
 
@@ -632,19 +649,40 @@ class RouteEngine:
                     return p
         return None
 
-    def _get_fallback_channel(self) -> Optional[dict]:
-        """Phase 2E: 获取 priority 最低的 channel 作为 fallback (默认 = 聚合平台)
+    def _get_fallback_channel(self) -> Optional[tuple]:
+        """Phase 2E: 获取 priority 最低的 channel + 它最便宜的 model 作为 fallback
+
+        V4.6.4 增强: 同时返回 channel 里最便宜的有效 price_snapshot,
+        让 fallback 路径用 channel 自己的 model 名发请求
+        (避免上游不认用户请求的 model 名 -> 404)
 
         设计: 硅基流动这种第三方聚合 (priority=1) 1 个 key 通吃 100+ model,
-        当 prices 表里没列某个 model 时, 走 fallback 把 model 名透传给硅基流动,
-        硅基流动再根据 model 名路由到对应厂商.
+        当 prices 表里没列某个 model 时, 走 fallback 把 model 名替换成 channel 支持的
+        (上游认的) model, 上游能识别返回 200.
 
         Returns:
-            priority 最小的 channel, 或 None (没有可用 channel)
+            (channel_dict, fallback_price_dict) 或 None
         """
         if not self._channels_cache:
             return None
-        return min(self._channels_cache, key=lambda ch: ch.get("priority", 999))
+        # priority 最小的 channel
+        ch = min(self._channels_cache, key=lambda c: c.get("priority", 999))
+        # 找该 channel 里最便宜的 price_snapshot (作为 fallback 发请求用的 model 名)
+        # 注意: ch["prices"] 是 dict 形式 (ORM 对象已 flatten), 用 dict 访问字段
+        best_price = None
+        today = date.today().isoformat()
+        for p in ch.get("prices", []):
+            # 跟 _is_price_effective 一致, 但用 dict 访问
+            eff_from = p.get("effective_from")
+            eff_to = p.get("effective_to")
+            if eff_from and eff_from > today:
+                continue
+            if eff_to and eff_to < today:
+                continue
+            in_p = p.get("input_price") or 999.0
+            if best_price is None or in_p < (best_price.get("input_price") or 999.0):
+                best_price = p
+        return ch, best_price
 
     def _is_channel_usable(self, ch: dict) -> bool:
         """Phase 2E: 检查 channel 是否可用 (限频 + 配额), 不检查 model 支持

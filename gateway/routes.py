@@ -105,4 +105,12 @@ async def chat_completions(request: Request):
         )
 
     # 透传请求到上游 (Phase 2.5: 传 requested_model 用于响应头 X-AIMC-Actual-Model)
-    return await forward_request(channel, body, request.headers, requested_model=model)
+    # V4.6.4: 传 channel._actual_model 作为 actual_model
+    #   - 精确路由时 = requested_model (无替换)
+    #   - fallback 路由时 = channel 支持的 model (proxy 层会替换 body.model)
+    actual_model = channel.get("_actual_model") or model
+    return await forward_request(
+        channel, body, request.headers,
+        requested_model=model,
+        actual_model=actual_model,
+    )

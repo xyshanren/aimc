@@ -243,6 +243,21 @@ async def import_one_channel(session, cfg: dict) -> bool:
         print(f"[skip] {cfg['name']}: {cfg['env_var']} 未配置")
         return False
 
+    # V4.6.4: minimax_compat 是 OpenAI 代理, endpoint 必须显式配
+    # 如果 .env 没 MINIMAX_BASE_URL, base_url 落到 PLACEHOLDER 默认值
+    # -> 创建出来的 channel 请求会发到 PLACEHOLDER.minimax (404)
+    # 修复: 强制要求 MINIMAX_BASE_URL 配好 (避免静默错误)
+    if cfg["provider"] == "minimax":
+        base_url = _clean_env_value(os.getenv("MINIMAX_BASE_URL", ""))
+        if not base_url or "PLACEHOLDER" in base_url:
+            print(
+                f"[skip] {cfg['name']}: MINIMAX_BASE_URL 未配置或为 PLACEHOLDER"
+            )
+            print(
+                f"       修复: nano ~/.env, 加 MINIMAX_BASE_URL=https://你的代理endpoint/v1"
+            )
+            return False
+
     # API-Sec-1: master key 校验
     if not settings.aimc_master_key:
         print(f"[skip] {cfg['name']}: AIMC_MASTER_KEY 未配置, 无法加密")
