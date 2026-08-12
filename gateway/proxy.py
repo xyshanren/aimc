@@ -9,6 +9,7 @@ import json
 import time
 import logging
 import asyncio
+from typing import Optional
 
 import httpx
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -106,18 +107,39 @@ def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
     return headers
 
 
-async def forward_request(channel: dict, body: bytes, headers: Headers, requested_model: str = ""):
+async def forward_request(channel: dict, body: bytes, headers: Headers, requested_model: str = "", actual_model: Optional[str] = None):
     """将请求透传到上游渠道
 
     Args:
         channel: 渠道信息字典，包含 base_url, api_key 等
         body: 原始请求体字节
         headers: 原始请求头
-        requested_model: 请求的 model 字符串 (Phase 2.5 用于响应头 X-AIMC-Actual-Model)
+        requested_model: 请求的 model 字符串 (用户原始请求, 用于响应头 X-AIMC-Actual-Model)
+        actual_model: V4.6.4+ — router fallback 路径选择的 channel 模型名
+                      (可能跟 requested_model 不同, 此时会替换 body.model)
 
     Returns:
         StreamingResponse 或 JSONResponse
     """
+    # V4.6.4: fallback 路径 router 选了 channel 但 model 名跟用户请求的不同
+    # 例: 用户请求 deepseek-v2.5, channel 只有 deepseek-ai/DeepSeek-V3
+    # 替换 body.model = channel 支持的 model, 上游能识别
+    actual_model = actual_model or requested_model
+    if actual_model != requested_model:
+        try:
+            import json as _json_mod
+            body_json = _json_mod.loads(body)
+            if body_json.get("model") != actual_model:
+                old_model = body_json.get("model")
+                body_json["model"] = actual_model
+                body = _json_mod.dumps(body_json, ensure_ascii=False).encode("utf-8")
+                logger.info(
+                    f"[V4.6.4 fallback model 替换] {old_model} -> {actual_model} "
+                    f"(channel={channel.get('name')})"
+                )
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.warning(f"body 解析失败, 跳过 model 替换: {e}")
+
     # 构建上游请求头
     forward_headers = {
         "Content-Type": "application/json",
@@ -139,7 +161,8 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
         is_stream = False
 
     # Phase 2.5: 构造 X-AIMC-* 响应头 (在 group 路由时注入 _actual_model 等)
-    aimc_headers = _build_aimc_headers(channel, requested_model)
+    # V4.6.4: 传 actual_model 让 _build_aimc_headers 用 fallback 后的真实 model 名
+    aimc_headers = _build_aimc_headers(channel, actual_model)
 
     target_url = f"{channel['base_url'].rstrip('/')}/chat/completions"
 
