@@ -1139,9 +1139,19 @@ class RouteEngine:
             best_ch, best_model, _, _ = candidates[0]
 
             # 4) 注入调试字段 (Phase 2.5 响应头用)
-            best_ch["_actual_model"] = best_model
+            # V4.6.4 fix: 保留 select_best_channel 已经注入的 _actual_model
+            #   - 精确路由: select_best_channel 内部已设 _actual_model = model (== best_model)
+            #   - fallback 路由: select_best_channel 已设 _actual_model = channel 支持的 model
+            #     (例如 best_model = "deepseek-v2.5", 但 _actual_model = "deepseek-ai/DeepSeek-V3")
+            #   - 不要用 best_model (组 member 名) 覆盖, 否则 fallback 路径的 model 替换会失效
+            if not best_ch.get("_actual_model"):
+                # 兜底: select_best_channel 没设 (理论不应该, 但安全起见)
+                best_ch["_actual_model"] = best_model
             best_ch["_group_id"] = current
-            registry = self._registry_cache.get(best_model)
+            # 用 _actual_model 查 registry (不是 best_model)
+            # 如果是 fallback, _actual_model 可能是 channel 支持的 model (不在 registry)
+            actual_model_for_lookup = best_ch["_actual_model"]
+            registry = self._registry_cache.get(actual_model_for_lookup) or self._registry_cache.get(best_model)
             if registry:
                 best_ch["_registry_tier"] = registry.tier
                 best_ch["_registry_family"] = registry.family
@@ -1149,11 +1159,12 @@ class RouteEngine:
                 best_ch["_registry_capabilities"] = registry.capabilities
 
             logger.info(
-                f"组路由: {group_id} -> {best_model} via {best_ch['name']} "
+                f"组路由: {group_id} -> {best_ch['_actual_model']} via {best_ch['name']} "
                 f"(strategy={strategy}, "
                 f"members={len(members)}, candidates={len(candidates)}, "
                 f"skipped={skipped}, "
-                f"prefs={prefs if prefs else '{}'})"
+                f"prefs={prefs if prefs else '{}'}, "
+                f"requested_model={best_model})"
             )
             return best_ch
 

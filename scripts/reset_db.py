@@ -86,22 +86,22 @@ def _backup_db(db_path: Path, backups_dir: Path) -> Path:
     return backup_path
 
 
-def _table_counts(session) -> dict:
+async def _table_counts(session) -> dict:
     """查询每个表的行数
 
-    V4.6.4: 抑制 SQLAlchemy 在表不存在时发出的 RuntimeWarning
-    (Python warnings 系统会被 SQLAlchemy 的 dialect 警告触发, 输出到 stderr)
+    V4.6.4: 改成 async + await session.execute, 避免 coroutine never awaited RuntimeWarning
+    (之前 sync def + AsyncSession.execute 没 await, GC 触发 warning)
+
+    之前 dcda904 commit 在函数内加 warnings.catch_warnings 但 catch 不到
+    (coroutine 在函数 return 后才被 GC, catch 上下文已退出)
     """
     counts = {}
-    with warnings.catch_warnings():
-        # 抑制 "Table ... does not exist" 类型的 RuntimeWarning
-        warnings.simplefilter("ignore", RuntimeWarning)
-        for table in TABLES_TO_CLEAR + TABLES_TO_KEEP:
-            try:
-                result = session.execute(text(f"SELECT COUNT(*) FROM {table}"))
-                counts[table] = result.scalar() or 0
-            except Exception:
-                counts[table] = "N/A (表不存在)"
+    for table in TABLES_TO_CLEAR + TABLES_TO_KEEP:
+        try:
+            result = await session.execute(text(f"SELECT COUNT(*) FROM {table}"))
+            counts[table] = result.scalar() or 0
+        except Exception:
+            counts[table] = "N/A (表不存在)"
     return counts
 
 
@@ -144,7 +144,7 @@ async def show_state(apply: bool, rollback_path: str = None) -> int:
     await init_db()
 
     async with async_session_factory() as session:
-        counts = _table_counts(session)
+        counts = await _table_counts(session)
         print(f"\n=== 当前 db 行数 ({db_path}) ===")
         for table in TABLES_TO_CLEAR:
             n = counts.get(table, "N/A")
