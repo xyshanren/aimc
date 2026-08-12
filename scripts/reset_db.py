@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import shutil
 import sys
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -86,14 +87,21 @@ def _backup_db(db_path: Path, backups_dir: Path) -> Path:
 
 
 def _table_counts(session) -> dict:
-    """查询每个表的行数"""
+    """查询每个表的行数
+
+    V4.6.4: 抑制 SQLAlchemy 在表不存在时发出的 RuntimeWarning
+    (Python warnings 系统会被 SQLAlchemy 的 dialect 警告触发, 输出到 stderr)
+    """
     counts = {}
-    for table in TABLES_TO_CLEAR + TABLES_TO_KEEP:
-        try:
-            result = session.execute(text(f"SELECT COUNT(*) FROM {table}"))
-            counts[table] = result.scalar() or 0
-        except Exception:
-            counts[table] = "N/A (表不存在)"
+    with warnings.catch_warnings():
+        # 抑制 "Table ... does not exist" 类型的 RuntimeWarning
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for table in TABLES_TO_CLEAR + TABLES_TO_KEEP:
+            try:
+                result = session.execute(text(f"SELECT COUNT(*) FROM {table}"))
+                counts[table] = result.scalar() or 0
+            except Exception:
+                counts[table] = "N/A (表不存在)"
     return counts
 
 
