@@ -135,13 +135,13 @@ systemctl --user restart aimc
 
 ```bash
 # 基础
-curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/health
 
 # 模型清单
 curl http://127.0.0.1:8080/v1/models | python -m json.tool | head -20
 
 # 跨网 (从 windows / wsl / 其他机器)
-curl http://<vm-ip>:8080/healthz
+curl http://<vm-ip>:8080/health
 ```
 
 ---
@@ -278,7 +278,7 @@ sudo netstat -tlnp | grep :8080
 journalctl --user -u aimc | grep -i scheduler
 
 # 看是否启了
-curl http://127.0.0.1:8080/healthz | python -m json.tool
+curl http://127.0.0.1:8080/health | python -m json.tool
 ```
 
 ---
