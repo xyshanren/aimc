@@ -18,10 +18,10 @@
     python scripts/seed_model_registry.py
     重复运行会先清后插 (idempotent, 跟 seed_model_cards.py 风格一致)
 
-规模：25 个 model
-覆盖厂商：deepseek / qwen / glm / kimi / doubao / hunyuan / stepfun / MiniMax / llama
+规模：25+ 个 model (V4.6.4 +6 个 SenseNova 相关)
+覆盖厂商：deepseek / qwen / glm / kimi / doubao / hunyuan / stepfun / sensenova / MiniMax / llama
 覆盖 tier：T0 / T1 / T2 / T3
-覆盖 capabilities：reasoning / code / math / general / long_context / agent
+覆盖 capabilities：reasoning / code / math / general / long_context / agent / multimodal
 """
 
 import asyncio
@@ -165,6 +165,32 @@ MODEL_REGISTRY = [
         "阶跃星辰基础"
     ),
 
+    # ========== SenseNova (4 个, V4.6.4) ==========
+    # sensenova-6.7-flash-lite: 8/31 后官方重定向失效, 标记 deprecated
+    (
+        "sensenova-6.7-flash-lite", "sensenova", "SenseNova 6.7 Flash Lite", "T2",
+        ["general", "multimodal"], 128000, "multimodal", 0, "2026-05",
+        "商汤日日新 6.7 flash-lite, 8/31 后官方重定向失效 (deprecated)"
+    ),
+    # sensenova-6.8-flash-lite: 当前公测 token plan 主力 (替代 6.7)
+    (
+        "sensenova-6.8-flash-lite", "sensenova", "SenseNova 6.8 Flash Lite", "T1",
+        ["general", "multimodal"], 128000, "multimodal", 0, "2026-08",
+        "商汤日日新 6.8 flash-lite, 公测 token plan 主力 (8/8 后取代 6.7)"
+    ),
+    # sensenova-u1-fast: U1 加速版, Neo-unify 架构
+    (
+        "sensenova-u1-fast", "sensenova", "SenseNova U1 Fast", "T1",
+        ["general", "multimodal"], 128000, "multimodal", 0, "2026-08",
+        "商汤日日新 U1 加速版, Neo-unify 架构, 公测 token plan"
+    ),
+    # deepseek-v4-flash: 商汤渠道公测免费提供 (deepseek family, sensenova channel)
+    (
+        "deepseek-v4-flash", "deepseek", "DeepSeek V4 Flash", "T1",
+        ["reasoning", "code", "general"], 1000000, "text", 0, "2026-07",
+        "DeepSeek V4 Flash, 1M ctx, 思考模式+工具调用, 商汤公测 token plan 免费"
+    ),
+
     # ========== MiniMax (1 个) ==========
     (
         "MiniMax-Text-01", "MiniMax", "MiniMax Text-01", "T1",
@@ -200,6 +226,9 @@ async def seed():
             capabilities, context_length, modality,
             is_open_source, release_date, notes,
         ) in MODEL_REGISTRY:
+            # V4.6.4: notes 里含 "(deprecated)" 关键字 -> status="deprecated"
+            # 避免变更 MODEL_REGISTRY tuple 结构 (向后兼容)
+            status = "deprecated" if "(deprecated)" in (notes or "") else "active"
             entry = ModelRegistry(
                 model_id=model_id,
                 family=family,
@@ -210,7 +239,7 @@ async def seed():
                 modality=modality,
                 is_open_source=is_open_source,
                 release_date=release_date,
-                status="active",
+                status=status,
                 notes=notes,
             )
             session.add(entry)

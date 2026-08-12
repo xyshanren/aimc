@@ -196,7 +196,12 @@ CHANNELS = [
         # 历史默认 api.sensenova.cn 错误 (少数 model 在该域名 1214 modelCode不存在)
         # env SENSENOVA_BASE_URL 可运行时覆盖 db (gateway/router.py _resolve_effective_base_url)
         # 鉴权: 标准 Bearer token (sk- 开头), 跟其他渠道一样
-        # model placeholder: SenseChat / sensenova-6.8-flash-lite / sensenova-u1-fast / deepseek-v4-flash (公测免费)
+        # model (V4.6.4 update):
+        #   - SenseChat: 移除 (上游已失效, code 5 model not found)
+        #   - sensenova-6.8-flash-lite: 公测 token plan 主力 (8/8 取代 6.7)
+        #   - sensenova-u1-fast: U1 加速版
+        #   - deepseek-v4-flash: 公测免费 (跨渠道 model_id)
+        #   - sensenova-6.7-flash-lite: 保留到 8/31, deprecated (官方重定向将失效)
         "key": "sensenova",
         "name": "sensenova_official",
         "provider": "sensenova",
@@ -205,10 +210,10 @@ CHANNELS = [
         "env_var": "SENSENOVA_API_KEY",
         "qpm": 30,
         "prices": [
-            ("SenseChat", "normal", "全天", 0.0, 0.0),  # placeholder
-            ("sensenova-6.8-flash-lite", "normal", "全天", 0.0, 0.0),  # 6.7 -> 6.8 (8/31 后重定向失效)
-            ("sensenova-u1-fast", "normal", "全天", 0.0, 0.0),  # 新 model (token plan)
-            ("deepseek-v4-flash", "normal", "全天", 0.0, 0.0),  # 公测免费 (token plan)
+            ("sensenova-6.8-flash-lite", "normal", "全天", 0.0, 0.0),  # 主力
+            ("sensenova-u1-fast", "normal", "全天", 0.0, 0.0),  # 加速版
+            ("deepseek-v4-flash", "normal", "全天", 0.0, 0.0),  # 公测免费 (跨渠道)
+            ("sensenova-6.7-flash-lite", "normal", "全天", 0.0, 0.0),  # 8/31 后失效, 保留兼容
         ],
     },
 ]
