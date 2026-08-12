@@ -291,8 +291,11 @@ class RouteEngine:
         for acc in active_accounts:
             plaintext_key = self._resolve_account_key(acc)
             if plaintext_key is None:
-                logger.warning(
-                    f"账号 {ch.name}/{acc.account_name} 既无 ciphertext 也无明文 key, 跳过"
+                # V4.6.4: _resolve_account_key 内部已经报了具体原因
+                # (ciphertext 解密失败 / 都为空 等), 不再重复警告
+                # 只在 DEBUG 级别记录 (供排查)
+                logger.debug(
+                    f"账号 {ch.name}/{acc.account_name} 无法解析 key, 跳过路由"
                 )
                 continue
 
@@ -416,8 +419,13 @@ class RouteEngine:
     def _resolve_account_key(self, account) -> Optional[str]:
         """API-Sec-1: 透明获取 account 的明文 api_key
 
-        优先用 ciphertext 解密 (Fernet), fallback 到明文 (仅迁移期)
-        都拿不到返回 None (调用方 skip 这个 account)
+        优先用 ciphertext 解密 (XOR+Base64), fallback 到明文 (仅迁移期)
+
+        V4.6.4 增强: ciphertext 解密失败时, logger.warning 明确报告失败原因
+        (避免 "既无 ciphertext 也无明文 key" 误导排查)
+
+        Returns:
+            明文, 或 None (拿不到任何 key)
         """
         # 优先 ciphertext
         if account.api_key_ciphertext is not None:
@@ -427,13 +435,27 @@ class RouteEngine:
                 plaintext = try_decrypt(account.api_key_ciphertext, settings.aimc_master_key)
                 if plaintext is not None:
                     return plaintext
+                # V4.6.4: 明确报告 ciphertext 存在但解密失败 (八成是 master key 不匹配)
+                logger.warning(
+                    f"账号 {account.account_name} (channel_id={account.channel_id}) "
+                    f"ciphertext 存在但解密失败, 请检查 AIMC_MASTER_KEY 是否与加密时一致 "
+                    f"(诊断: python scripts/check_ciphertext_health.py)"
+                )
             except Exception as e:
-                logger.error(f"账号 {account.account_name} ciphertext 解密失败: {e}")
+                logger.error(
+                    f"账号 {account.account_name} ciphertext 解密异常: {e}"
+                )
 
         # Fallback: 明文 (deprecated, 仅迁移期)
         if account.api_key:
             return account.api_key
 
+        # 最后才报 "都拿不到" (避免误导)
+        if account.api_key_ciphertext is None and not account.api_key:
+            logger.warning(
+                f"账号 {account.account_name} (channel_id={account.channel_id}) "
+                f"既无 ciphertext 也无明文 key, 跳过"
+            )
         return None
 
     def _is_price_effective(self, price) -> bool:
