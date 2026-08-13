@@ -83,7 +83,7 @@ curl http://localhost:8080/v1/models
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-aimc-key" \
-  -d '{"model": "deepseek-chat", "messages": [{"role": "user", "content": "Hello"}]}'
+  -d '{"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 ## 客户端接入
@@ -100,7 +100,7 @@ client = OpenAI(
 
 # 非流式
 response = client.chat.completions.create(
-    model="deepseek-chat",
+    model="deepseek-v4-flash",
     messages=[{"role": "user", "content": "你好"}],
 )
 print(response.choices[0].message.content)
@@ -127,7 +127,7 @@ const client = new OpenAI({
 });
 
 const response = await client.chat.completions.create({
-  model: 'deepseek-chat',
+  model: 'deepseek-v4-flash',
   messages: [{ role: 'user', content: 'Hello' }],
 });
 ```

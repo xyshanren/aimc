@@ -18,10 +18,10 @@
     python scripts/seed_model_registry.py
     重复运行会先清后插 (idempotent, 跟 seed_model_cards.py 风格一致)
 
-规模：25+ 个 model (V4.6.4 +6 个 SenseNova 相关)
-覆盖厂商：deepseek / qwen / glm / kimi / doubao / hunyuan / stepfun / sensenova / MiniMax / llama
+规模：25 个 model
+覆盖厂商：deepseek / qwen / glm / kimi / doubao / hunyuan / stepfun / MiniMax / llama
 覆盖 tier：T0 / T1 / T2 / T3
-覆盖 capabilities：reasoning / code / math / general / long_context / agent / multimodal
+覆盖 capabilities：reasoning / code / math / general / long_context / agent
 """
 
 import asyncio
@@ -41,26 +41,20 @@ from db.models import ModelRegistry
 # 字段：model_id, family, display_name, tier, capabilities (list), context_length,
 #       modality, is_open_source, release_date, notes
 MODEL_REGISTRY = [
-    # ========== DeepSeek (4 个) ==========
+    # ========== DeepSeek (2 个, V4 系列) ==========
+    # Phase 2a+ fix (2026-08-13): 官方 API 当前只支持 V4 系列
+    # (deepseek-v4-flash 升级到 V4-Flash-0731, deepseek-v4-pro 升级到 V4-Pro-0813)
+    # 历史 model 名 (deepseek-chat / deepseek-reasoner / deepseek-coder / deepseek-v2.5)
+    # 已不在官方 API 中, 调用会 404
     (
-        "deepseek-reasoner", "deepseek", "DeepSeek Reasoner", "T0",
-        ["reasoning", "math", "code"], 64000, "text", 0, "2025-01",
-        "R1 推理模型, 强推理/数学/代码"
+        "deepseek-v4-pro", "deepseek", "DeepSeek V4 Pro", "T0",
+        ["reasoning", "math", "code", "long_context"], 128000, "text", 0, "2026-08",
+        "V4 旗舰, 升级到 V4-Pro-0813, 支持 thinking",
     ),
     (
-        "deepseek-chat", "deepseek", "DeepSeek V3 Chat", "T1",
-        ["reasoning", "code", "general"], 128000, "text", 0, "2025-12",
-        "V3 主力, 128k ctx, 综合能力强"
-    ),
-    (
-        "deepseek-coder", "deepseek", "DeepSeek Coder", "T1",
-        ["code"], 64000, "text", 1, "2024-06",
-        "代码专用, 老牌但仍强"
-    ),
-    (
-        "deepseek-v2.5", "deepseek", "DeepSeek V2.5", "T2",
-        ["general"], 128000, "text", 0, "2024-09",
-        "V2.5 上一代, 仍在服务"
+        "deepseek-v4-flash", "deepseek", "DeepSeek V4 Flash", "T1",
+        ["reasoning", "code", "general"], 128000, "text", 0, "2026-07",
+        "V4 Flash 升级到 V4-Flash-0731, 性价比",
     ),
 
     # ========== Qwen (6 个) ==========
@@ -165,82 +159,52 @@ MODEL_REGISTRY = [
         "阶跃星辰基础"
     ),
 
-    # ========== SenseNova (4 个, V4.6.4) ==========
-    # sensenova-6.7-flash-lite: 8/31 后官方重定向失效, 标记 deprecated
-    (
-        "sensenova-6.7-flash-lite", "sensenova", "SenseNova 6.7 Flash Lite", "T2",
-        ["general", "multimodal"], 128000, "multimodal", 0, "2026-05",
-        "商汤日日新 6.7 flash-lite, 8/31 后官方重定向失效 (deprecated)"
-    ),
-    # sensenova-6.8-flash-lite: 当前公测 token plan 主力 (替代 6.7)
-    (
-        "sensenova-6.8-flash-lite", "sensenova", "SenseNova 6.8 Flash Lite", "T1",
-        ["general", "multimodal"], 128000, "multimodal", 0, "2026-08",
-        "商汤日日新 6.8 flash-lite, 公测 token plan 主力 (8/8 后取代 6.7)"
-    ),
-    # sensenova-u1-fast: U1 加速版, Neo-unify 架构
-    (
-        "sensenova-u1-fast", "sensenova", "SenseNova U1 Fast", "T1",
-        ["general", "multimodal"], 128000, "multimodal", 0, "2026-08",
-        "商汤日日新 U1 加速版, Neo-unify 架构, 公测 token plan"
-    ),
-    # deepseek-v4-flash: 商汤渠道公测免费提供 (deepseek family, sensenova channel)
-    (
-        "deepseek-v4-flash", "deepseek", "DeepSeek V4 Flash", "T1",
-        ["reasoning", "code", "general"], 1000000, "text", 0, "2026-07",
-        "DeepSeek V4 Flash, 1M ctx, 思考模式+工具调用, 商汤公测 token plan 免费"
-    ),
-
-    # ========== MiniMax (8 个, V4.6.4 补齐官方当前 8 个) ==========
-    # 老 MiniMax-Text-01 (2025-04, 1M ctx, deprecated) – 已不在官方列表
-    # V4.6.4 fix: 用 MiniMax 官方当前 8 个 model (platform.minimaxi.com/docs 查, 2026-08-08)
-    # M3: 最新 M 系列, 1M ctx, Agent/工具调用/长上下文
+    # ========== MiniMax (8 个, 对齐 MiniMax 官方 API + minimax_compat 渠道 price_snapshots) ==========
+    # Phase 4 fix (2026-08-13): 修复 1005111 commit 的家族错乱
+    # - 修复前错误状态: 5 个 model + family="MiniMax" 大写 + 注释指向 sensenova_official (错误)
+    # - sensenova_official 渠道实际一个 MiniMax model 都没有, 跟 family 字段无关
+    # - 对齐来源 (1): MiniMax 官方 API 文档 https://platform.minimaxi.com/docs/api-reference/api-overview (2026-08 现行)
+    # - 对齐来源 (2): db 中 minimax_compat 渠道 price_snapshots 实际 8 个 model
+    # - 字段约定: family 统一小写 "minimax" (跟 provider / channel.name 对齐, 与其他 family 一致)
     (
         "MiniMax-M3", "minimax", "MiniMax M3", "T1",
-        ["reasoning", "code", "general", "long_context"], 1000000, "multimodal", 1, "2026-06",
-        "MiniMax 最新 M 系列, 1M ctx, Agent 推理+工具调用+长上下文"
+        ["reasoning", "code", "long_context", "general"], 1000000, "multimodal", 0, "2026-08",
+        "M3 旗舰, 1M ctx, 适用于 Agent 推理/工具调用/代码",
     ),
-    # M2.7: 204.8k ctx, 输出 60tps
     (
         "MiniMax-M2.7", "minimax", "MiniMax M2.7", "T1",
-        ["reasoning", "code", "general"], 204800, "text", 1, "2026-03",
-        "MiniMax M2.7, 204.8k ctx, 开启自我迭代, 输出 60tps"
+        ["reasoning", "code", "general"], 204800, "text", 0, "2026-08",
+        "M2.7 自我迭代, 60tps",
     ),
-    # M2.7-highspeed: 极速版
     (
         "MiniMax-M2.7-highspeed", "minimax", "MiniMax M2.7 Highspeed", "T2",
-        ["general"], 204800, "text", 1, "2026-03",
-        "MiniMax M2.7 极速版, 效果不变更快, 100tps"
+        ["reasoning", "general"], 204800, "text", 0, "2026-08",
+        "M2.7 极速版, 100tps",
     ),
-    # M2.5: 性能与性价比平衡
     (
         "MiniMax-M2.5", "minimax", "MiniMax M2.5", "T2",
-        ["general"], 204800, "text", 1, "2026-02",
-        "MiniMax M2.5, 顶尖性能与极致性价比, 60tps"
+        ["general"], 204800, "text", 0, "2026-08",
+        "M2.5 极致性价比, 60tps",
     ),
-    # M2.5-highspeed
     (
         "MiniMax-M2.5-highspeed", "minimax", "MiniMax M2.5 Highspeed", "T3",
-        ["general"], 204800, "text", 1, "2026-02",
-        "MiniMax M2.5 极速版, 60tps"
+        ["general"], 204800, "text", 0, "2026-08",
+        "M2.5 极速版, 100tps",
     ),
-    # M2.1: 多语言编程能力升级
     (
         "MiniMax-M2.1", "minimax", "MiniMax M2.1", "T2",
-        ["code", "general"], 204800, "text", 1, "2025-12",
-        "MiniMax M2.1, 强大多语言编程能力, 60tps"
+        ["code", "general"], 204800, "text", 0, "2026-08",
+        "M2.1 多语言编程, 60tps",
     ),
-    # M2.1-highspeed
     (
         "MiniMax-M2.1-highspeed", "minimax", "MiniMax M2.1 Highspeed", "T3",
-        ["general"], 204800, "text", 1, "2025-12",
-        "MiniMax M2.1 极速版"
+        ["general"], 204800, "text", 0, "2026-08",
+        "M2.1 极速版, 100tps",
     ),
-    # M2: 专为高效编码与 Agent 工作流
     (
         "MiniMax-M2", "minimax", "MiniMax M2", "T2",
-        ["code", "general"], 204800, "text", 1, "2025-10",
-        "MiniMax M2, 专为高效编码与 Agent 工作流而生"
+        ["code", "general"], 204800, "text", 0, "2026-08",
+        "M2 高效编码/Agent 工作流",
     ),
 
     # ========== Llama (2 个) ==========
@@ -271,9 +235,6 @@ async def seed():
             capabilities, context_length, modality,
             is_open_source, release_date, notes,
         ) in MODEL_REGISTRY:
-            # V4.6.4: notes 里含 "(deprecated)" 关键字 -> status="deprecated"
-            # 避免变更 MODEL_REGISTRY tuple 结构 (向后兼容)
-            status = "deprecated" if "(deprecated)" in (notes or "") else "active"
             entry = ModelRegistry(
                 model_id=model_id,
                 family=family,
@@ -284,7 +245,7 @@ async def seed():
                 modality=modality,
                 is_open_source=is_open_source,
                 release_date=release_date,
-                status=status,
+                status="active",
                 notes=notes,
             )
             session.add(entry)

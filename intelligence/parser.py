@@ -18,7 +18,7 @@ from openai import AsyncOpenAI
 
 from config import settings
 from intelligence.cleaner import clean_html
-from schemas.intel import ModelIntelItem, ParseResult
+from schemas.intel import ModelIntelItem, ModelPricingItem, ParseResult
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +63,29 @@ SYSTEM_PROMPT = """你是一个 AI 大模型情报分析助手。
       "is_open_source": true,
       "status": "active|preview|deprecated",
       "confidence": 0.0,
-      "tier_reason": "推断依据"
+      "tier_reason": "推断依据",
+      "pricing": [
+        {
+          "type": "normal|cache_hit|free",
+          "input_price": 6.0,
+          "output_price": 12.0,
+          "time_range": "全天"
+        }
+      ]
     }
   ]
 }
 
 规则：
 - source_type=model_list 时重点提取 models，即使没有优惠也必须返回模型列表。
-- tier 表示综合能力（参考 architecture.md §4.2）：T0 旗舰前沿（如 DeepSeek-V4-Pro、Qwen3-235B），T1 强力（如 DeepSeek-V3），T2 均衡（如 Qwen-Plus），T3 轻量（如 Qwen2.5-7B），T4 微型/嵌入（如 Qwen2.5-1.5B）。
+- source_type=price_aggregator 时重点提取 pricing + promotions:
+  1. 含 model × 价格表 → intelligence_kind="pricing", 每个 model 必须返回 pricing 列表
+  2. 仅含订阅优惠/新品发布 → intelligence_kind="promotion"
+  3. 同时含两者 → 优先 pricing (价格确定性更高)
+- 价格类型识别:
+  - 表格列 "缓存命中" 或 "cache hit" → type="cache_hit", input_price/output_price 通常为 0
+  - "免费" / "限时免费" / "Free" → type="free", input_price=0, output_price=0
+  - 常规按时段计费 → type="normal", time_range="全天" 或具体时段如 "00:00-08:00"
 - 不确定的 tier 设 null，禁止无依据猜测；每个模型 confidence 独立评分。
 - capabilities 只能使用给定标签；无法确定的字段设为 null 或空数组。
 - confidence 必须在 0.0-1.0；日期统一 YYYY-MM-DD。
@@ -80,6 +95,8 @@ _ALLOWED_TIERS = {"T0", "T1", "T2", "T3", "T4"}
 _ALLOWED_CAPABILITIES = {
     "general", "reasoning", "code", "math", "vision", "tool_use", "long_context",
 }
+# Phase 4 v4.3 (2026-08-13): 价格类型白名单
+_ALLOWED_PRICE_TYPES = {"normal", "cache_hit", "free", "peak", "offpeak"}
 
 
 # === Thinking model 响应预处理 (V4.6.4, 2026-08-13) ===
@@ -273,6 +290,30 @@ def normalize_model_item(data: dict) -> ModelIntelItem:
     if status not in {"active", "preview", "deprecated"}:
         status = "active"
 
+    # Phase 4 v4.3 (2026-08-13): 清洗 pricing 字段
+    raw_pricing = data.get("pricing") or []
+    pricing_list: list[ModelPricingItem] = []
+    for item in raw_pricing:
+        if not isinstance(item, dict):
+            continue
+        price_type = str(item.get("type") or "normal").strip().lower()
+        if price_type not in _ALLOWED_PRICE_TYPES:
+            price_type = "normal"
+        # 价格转 float, 失败 None
+        def _to_float(v):
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+        pricing_list.append(ModelPricingItem(
+            type=price_type,
+            input_price=_to_float(item.get("input_price")),
+            output_price=_to_float(item.get("output_price")),
+            time_range=str(item.get("time_range") or "全天").strip() or "全天",
+        ))
+
     return ModelIntelItem(
         model_id=model_id,
         family=data.get("family"),
@@ -286,6 +327,7 @@ def normalize_model_item(data: dict) -> ModelIntelItem:
         confidence=confidence,
         confidence_level=confidence_level(confidence),
         tier_reason=data.get("tier_reason") or fallback_reason,
+        pricing=pricing_list,
     )
 
 

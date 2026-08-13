@@ -116,18 +116,9 @@ async def start_scheduler():
         replace_existing=True,
     )
 
-    # V4.4: 每天检查账号配额、active 账号和月成本告警
-    scheduler.add_job(
-        _v44_alert_task,
-        trigger=IntervalTrigger(hours=24),
-        id="v44_alert_checks",
-        name="V4.4 账号与成本告警",
-        replace_existing=True,
-    )
-
     scheduler.start()
     logger.info(
-        f"调度器已启动 (持久化模式), 共 {len(sources) + 4} 个定时任务, "
+        f"调度器已启动 (持久化模式), 共 {len(sources) + 3} 个定时任务, "
         f"jobstore={settings.db_path}"
     )
 
@@ -233,6 +224,21 @@ async def _run_source_task(source):
                 logger.info(
                     f"API 抽取成功: {source.provider} → {len(model_ids)} 个 model"
                 )
+                # Phase 2a+ fix (2026-08-13): 同时把 model_ids 同步到硅基流动 channel
+                # price_snapshots. 让 /v1/models 在重启后立刻可见, 不需要等 router cache
+                # 仅硅基流动启用, 其他厂商暂不动 (避免污染)
+                if source.provider == "siliconflow":
+                    try:
+                        from db.engine import async_session_factory
+                        from scripts._siliconflow_sync import sync_siliconflow_models_to_price_snapshots
+                        async with async_session_factory() as session:
+                            added = await sync_siliconflow_models_to_price_snapshots(session, model_ids)
+                        if added:
+                            logger.info(
+                                f"硅基流动 model 列表同步: 新增 {added} 条 price_snapshots"
+                            )
+                    except Exception as e:
+                        logger.warning(f"硅基流动 price_snapshots 同步失败 (非阻断): {e}")
             except FetchApiError as e:
                 # 401/403/404 → 不可重试, 降级 HTML
                 # 5xx/timeout → 已重试完仍失败, 降级 HTML
@@ -337,16 +343,6 @@ async def _check_key_rotation_task():
         logger.info(f"key 轮换检查完成: {count} 个告警")
     except Exception as e:
         logger.error(f"key 轮换检查失败: {e}", exc_info=True)
-
-
-async def _v44_alert_task():
-    """V4.4: 每天执行四类告警检查。"""
-    try:
-        from intelligence.v44_alerts import check_all_alerts
-        count = await check_all_alerts()
-        logger.info("V4.4 告警检查完成: %d 条", count)
-    except Exception as e:
-        logger.error("V4.4 告警检查失败: %s", e, exc_info=True)
 
 
 async def _cross_source_detection_task():

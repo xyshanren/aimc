@@ -77,14 +77,15 @@ GROUPS = [
 # 字段: (group_id, model_id, priority, weight, max_cost_ratio, added_by)
 GROUP_MEMBERS = [
     # ========== tier:flagship (T0) ==========
-    ("tier:flagship", "deepseek-reasoner", 100, 1.0, None, "manual"),
+    # Phase 2a+ fix (2026-08-13): deepseek-reasoner → deepseek-v4-pro, 新增 MiniMax-M2.7
+    ("tier:flagship", "deepseek-v4-pro", 100, 1.0, None, "manual"),
     ("tier:flagship", "kimi-k3", 100, 1.0, None, "manual"),
     ("tier:flagship", "qwen-max", 110, 1.0, None, "manual"),
-    ("tier:flagship", "MiniMax-Text-01", 120, 1.0, None, "manual"),
+    ("tier:flagship", "MiniMax-M2.7", 120, 1.0, None, "manual"),
 
     # ========== tier:strong (T1) ==========
-    ("tier:strong", "deepseek-chat", 100, 1.0, None, "manual"),
-    ("tier:strong", "deepseek-coder", 100, 1.0, None, "manual"),
+    # Phase 2a+ fix (2026-08-13): deepseek-chat / deepseek-coder → deepseek-v4-flash
+    ("tier:strong", "deepseek-v4-flash", 100, 1.0, None, "manual"),
     ("tier:strong", "glm-4-plus", 100, 1.0, None, "manual"),
     ("tier:strong", "kimi-k2", 100, 1.0, None, "manual"),
     ("tier:strong", "qwen2.5-72b", 110, 1.0, None, "manual"),
@@ -92,7 +93,7 @@ GROUP_MEMBERS = [
     ("tier:strong", "hunyuan-pro", 130, 1.0, None, "manual"),
 
     # ========== tier:balanced (T2) ==========
-    ("tier:balanced", "deepseek-v2.5", 100, 1.0, None, "manual"),
+    # Phase 2a+ fix (2026-08-13): 移除 deepseek-v2.5 (registry 已删)
     ("tier:balanced", "qwen-plus", 100, 1.0, None, "manual"),
     ("tier:balanced", "qwen2.5-32b", 110, 1.0, None, "manual"),
     ("tier:balanced", "glm-4-air", 100, 1.0, None, "manual"),
@@ -110,7 +111,8 @@ GROUP_MEMBERS = [
     ("tier:light", "doubao-lite-32k", 140, 1.0, None, "manual"),
 
     # ========== scene:code (T1+ 含 code cap) ==========
-    ("scene:code", "deepseek-coder", 100, 1.0, None, "manual"),
+    # Phase 2a+ fix (2026-08-13): deepseek-coder → deepseek-v4-flash (含 code cap)
+    ("scene:code", "deepseek-v4-flash", 100, 1.0, None, "manual"),
     ("scene:code", "qwen-max", 100, 1.0, None, "manual"),
     ("scene:code", "glm-4-plus", 100, 1.0, None, "manual"),
     ("scene:code", "hunyuan-pro", 100, 1.0, None, "manual"),

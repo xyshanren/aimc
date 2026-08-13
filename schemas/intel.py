@@ -4,6 +4,20 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 
+class ModelPricingItem(BaseModel):
+    """Phase 4 v4.3 (2026-08-13): AI 从采集内容中提取的单个价格快照.
+
+    价格类型:
+    - normal: 常规按量计费
+    - cache_hit: 上下文缓存命中 (input_price/output_price 可为 0)
+    - free: 完全免费 (input_price=0, output_price=0)
+    """
+    type: str = "normal"  # normal / cache_hit / free
+    input_price: Optional[float] = None
+    output_price: Optional[float] = None
+    time_range: Optional[str] = "全天"
+
+
 class ModelIntelItem(BaseModel):
     """Phase 3.2: AI 从采集内容中提取的单个模型元信息。"""
 
@@ -19,6 +33,8 @@ class ModelIntelItem(BaseModel):
     confidence: float = 0.0
     confidence_level: str = "low"
     tier_reason: Optional[str] = None
+    # Phase 4 v4.3: 价格快照列表 (一条 model 可对应多个 price_type)
+    pricing: list[ModelPricingItem] = Field(default_factory=list)
 
 
 class IntelSourceCreate(BaseModel):
