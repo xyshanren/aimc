@@ -95,9 +95,9 @@ def test_2_group_route():
 
     # 验证: 组路由即便 upstream 400, AIMC 头应已注入
     # Phase 2a+ fix (2026-08-13): tier:balanced 现成员 (脚本 seed_model_groups.py):
-    # qwen-plus / qwen2.5-32b / glm-4-air / hunyuan-standard / llama-3.1-70b / step-1-8k
+    # qwen-plus / qwen-2.5-32b / glm-4-air / hunyuan-standard / llama-3.1-70b / step-1-8k
     expected_models = (
-        "qwen-plus", "qwen2.5-32b", "glm-4-air",
+        "qwen-plus", "qwen-2.5-32b", "glm-4-air",
         "hunyuan-standard", "llama-3.1-70b", "step-1-8k",
     )
     assert resp.headers.get("X-AIMC-Actual-Model") in expected_models, \
@@ -147,11 +147,11 @@ async def test_4_preferences():
 
     # 4a) 无 prefs
     # Phase 2a+ fix (2026-08-13): tier:balanced 现成员 (脚本 seed_model_groups.py):
-    # qwen-plus / qwen2.5-32b / glm-4-air / hunyuan-standard / llama-3.1-70b / step-1-8k
+    # qwen-plus / qwen-2.5-32b / glm-4-air / hunyuan-standard / llama-3.1-70b / step-1-8k
     ch = route_engine.select_channel("tier:balanced")
     assert ch is not None, "无 prefs 应返 channel, 实际 None (cache 可能没刷新)"
     expected_models = (
-        "qwen-plus", "qwen2.5-32b", "glm-4-air",
+        "qwen-plus", "qwen-2.5-32b", "glm-4-air",
         "hunyuan-standard", "llama-3.1-70b", "step-1-8k",
     )
     assert ch["_actual_model"] in expected_models, \
@@ -161,7 +161,7 @@ async def test_4_preferences():
     # 4b) prefer_family='qwen'
     ch = route_engine.select_channel("tier:balanced", prefs={"prefer_family": "qwen"})
     assert ch is not None
-    assert ch["_actual_model"] in ("qwen-plus", "qwen2.5-32b"), \
+    assert ch["_actual_model"] in ("qwen-plus", "qwen-2.5-32b"), \
         f"prefer_family=qwen 应选 qwen 系列, 实际 {ch['_actual_model']!r}"
     print(f"  4b) prefer_family=qwen -> {ch['_actual_model']!r} (family 优先生效) [OK]")
 

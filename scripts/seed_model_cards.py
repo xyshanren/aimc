@@ -101,23 +101,23 @@ MODEL_CARDS = [
 
     # ========== MiniMax (8 张, V4.6.4 补齐官方当前 8 个) ==========
     # M2.7: 2026-03-18, 230B, LLM 官方榜
-    ("MiniMax-M2.7", "minimax", "OpenCompass LLM 官方 2026-05-13", 53.7, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=official", "230B, 2026-03-18, 自我进化 Agent 强"),
+    ("minimax-m2.7", "minimax", "OpenCompass LLM 官方 2026-05-13", 53.7, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=official", "230B, 2026-03-18, 自我进化 Agent 强"),
     # M2.7-Highspeed: 极速版, 榜单未收录
-    ("MiniMax-M2.7-highspeed", "minimax", "OpenCompass LLM 官方 2026-05-13", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=official", "未收录, TPS 100 极速版"),
+    ("minimax-m2.7-highspeed", "minimax", "OpenCompass LLM 官方 2026-05-13", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=official", "未收录, TPS 100 极速版"),
     # M3: 2026-06-01, 196B, 1M ctx 多模态, VLM 官方榜
-    ("MiniMax-M3", "minimax", "OpenCompass VLM 官方 2026-06-01", 51.6, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=official", "196B, 2026-06-01, 1M ctx, 原生多模态"),
+    ("minimax-m3", "minimax", "OpenCompass VLM 官方 2026-06-01", 51.6, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=official", "196B, 2026-06-01, 1M ctx, 原生多模态"),
     # V4.6.4 补 M2.5 / M2.5-highspeed / M2.1 / M2.1-highspeed / M2
     # M2.5: 2026-02, 230B, LLM 开源榜
-    ("MiniMax-M2.5", "minimax", "OpenCompass LLM 开源 2026-03-09", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "230B, 2026-02 发布, 未收录进 5-13 官方榜"),
-    ("MiniMax-M2.5", "minimax", "OpenCompass VLM 开源 2026-05-26", 0.0, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "VLM 榜单未收录"),
+    ("minimax-m2.5", "minimax", "OpenCompass LLM 开源 2026-03-09", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "230B, 2026-02 发布, 未收录进 5-13 官方榜"),
+    ("minimax-m2.5", "minimax", "OpenCompass VLM 开源 2026-05-26", 0.0, "multimodal", "https://rank.opencompass.org.cn/leaderboard/image-vlm?class=open_source", "VLM 榜单未收录"),
     # M2.5-Highspeed: 极速版
-    ("MiniMax-M2.5-highspeed", "minimax", "OpenCompass LLM 开源 2026-03-09", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "未收录, 极速版"),
+    ("minimax-m2.5-highspeed", "minimax", "OpenCompass LLM 开源 2026-03-09", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "未收录, 极速版"),
     # M2.1: 2025-12, 230B
-    ("MiniMax-M2.1", "minimax", "OpenCompass LLM 开源 2026-03-09", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "230B, 2025-12 发布, 未收录"),
+    ("minimax-m2.1", "minimax", "OpenCompass LLM 开源 2026-03-09", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "230B, 2025-12 发布, 未收录"),
     # M2.1-Highspeed: 极速版
-    ("MiniMax-M2.1-highspeed", "minimax", "OpenCompass LLM 开源 2026-03-09", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "未收录, 极速版"),
+    ("minimax-m2.1-highspeed", "minimax", "OpenCompass LLM 开源 2026-03-09", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "未收录, 极速版"),
     # M2: 2025-10, 专为高效编码与 Agent
-    ("MiniMax-M2", "minimax", "OpenCompass LLM 开源 2026-03-09", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "230B, 2025-10 发布, 专为 Agent 编码, 未收录"),
+    ("minimax-m2", "minimax", "OpenCompass LLM 开源 2026-03-09", 0.0, "general", "https://rank.opencompass.org.cn/leaderboard/llm?class=open_source", "230B, 2025-10 发布, 专为 Agent 编码, 未收录"),
 
     # ========== 字节 Doubao (4 张) ==========
     # Doubao-Seed-2-0-Pro (High): LLM 官方 #3, 火山方舟头部

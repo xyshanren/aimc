@@ -1,7 +1,10 @@
 #!/usr/bin/env python
-"""Pre-commit hook: 阻止 .env 任何变体被 commit (Phase 2E, 2026-07-25)
+"""Pre-commit hook (Phase 2E, 2026-07-25 + Phase 4 v4.3, 2026-08-13)
 
-检查 git staged files, 如果有 .env / .env.* / .env.local / etc. → 拒绝 commit.
+检查 2 项:
+1. 阻止 .env 任何变体被 commit (防泄露 API Key)
+2. model_registry / model_groups 修改时, 触发 db 一致性检测
+   (防 family 大写 / model_id namespace 错误 / model 漂移)
 
 安装方法 (只需 1 次, 之后 git hook 自动生效):
     git config core.hooksPath .githooks
@@ -60,6 +63,51 @@ def main() -> int:
         print(f"  2. 用 git commit --no-verify 跳过 hook (不推荐)")
         print(f"  3. 或者从 .gitignore 移除对应 pattern")
         return 1
+
+    # === Phase 4 v4.3 (2026-08-13): model registry 一致性检测 ===
+    # 仅在 seed_* / db/crud.py / model 字段相关文件修改时触发
+    MODEL_TRIGGER_FILES = (
+        "scripts/seed_model_registry.py",
+        "scripts/seed_model_groups.py",
+        "scripts/seed_model_cards.py",
+        "db/normalizers.py",
+        "db/crud.py",
+        "db/models.py",
+    )
+    model_triggered = any(
+        any(f.endswith(trigger) for trigger in MODEL_TRIGGER_FILES)
+        for f in staged_files
+    )
+    if model_triggered:
+        print("[pre-commit] 检测到 model_registry 相关文件修改, 跑 db 一致性检查...")
+        try:
+            result = subprocess.run(
+                ["python", "scripts/check_model_consistency.py", "--check", "db"],
+                capture_output=True, text=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            print("[pre-commit] FAIL: model_registry 检查超时 (> 60s)")
+            return 1
+        except Exception as e:
+            print(f"[pre-commit] FAIL: model_registry 检查异常: {e}")
+            return 1
+
+        if result.returncode == 2:
+            # db 不一致 → ERROR, 阻断 commit
+            print("[pre-commit] FAIL: model_registry db 一致性检查发现 ERROR:")
+            print(result.stdout)
+            print(result.stderr)
+            print(f"\n如确认变更正确, 请:")
+            print(f"  1. 跑 python scripts/check_model_consistency.py --check db 看具体 issue")
+            print(f"  2. 修代码或用 --skip-model-check 跳过 (不推荐)")
+            print(f"  3. 或 git commit --no-verify 跳过 hook")
+            return 1
+        elif result.returncode == 1:
+            # WARN (db 一致但有官方源漂移) → 不阻断, 仅提示
+            print("[pre-commit] WARN: model_registry 有 WARN (db 一致但官方源漂移):")
+            print(result.stdout)
+        else:
+            print(f"[pre-commit] OK: model_registry db 一致性通过")
 
     return 0
 

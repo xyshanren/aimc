@@ -44,6 +44,7 @@ from sqlalchemy import delete, select
 from db.engine import async_session_factory
 from db.init_db import init_db
 from db.models import ModelGroup, ModelGroupMember, ModelRegistry
+from db.normalizers import normalize_model_id, validate_model_id
 
 
 # 字段: (group_id, display_name, tier (限定), capabilities (JSON), min_context,
@@ -81,21 +82,21 @@ GROUP_MEMBERS = [
     ("tier:flagship", "deepseek-v4-pro", 100, 1.0, None, "manual"),
     ("tier:flagship", "kimi-k3", 100, 1.0, None, "manual"),
     ("tier:flagship", "qwen-max", 110, 1.0, None, "manual"),
-    ("tier:flagship", "MiniMax-M2.7", 120, 1.0, None, "manual"),
+    ("tier:flagship", "minimax-m2.7", 120, 1.0, None, "manual"),
 
     # ========== tier:strong (T1) ==========
     # Phase 2a+ fix (2026-08-13): deepseek-chat / deepseek-coder → deepseek-v4-flash
     ("tier:strong", "deepseek-v4-flash", 100, 1.0, None, "manual"),
     ("tier:strong", "glm-4-plus", 100, 1.0, None, "manual"),
     ("tier:strong", "kimi-k2", 100, 1.0, None, "manual"),
-    ("tier:strong", "qwen2.5-72b", 110, 1.0, None, "manual"),
+    ("tier:strong", "qwen-2.5-72b", 110, 1.0, None, "manual"),
     ("tier:strong", "doubao-pro-32k", 120, 1.0, None, "manual"),
     ("tier:strong", "hunyuan-pro", 130, 1.0, None, "manual"),
 
     # ========== tier:balanced (T2) ==========
     # Phase 2a+ fix (2026-08-13): 移除 deepseek-v2.5 (registry 已删)
     ("tier:balanced", "qwen-plus", 100, 1.0, None, "manual"),
-    ("tier:balanced", "qwen2.5-32b", 110, 1.0, None, "manual"),
+    ("tier:balanced", "qwen-2.5-32b", 110, 1.0, None, "manual"),
     ("tier:balanced", "glm-4-air", 100, 1.0, None, "manual"),
     ("tier:balanced", "hunyuan-standard", 120, 1.0, None, "manual"),
     ("tier:balanced", "llama-3.1-70b", 130, 1.0, None, "manual"),
@@ -103,7 +104,7 @@ GROUP_MEMBERS = [
 
     # ========== tier:light (T3) ==========
     ("tier:light", "qwen-turbo", 100, 1.0, None, "manual"),
-    ("tier:light", "qwen2.5-7b", 110, 1.0, None, "manual"),
+    ("tier:light", "qwen-2.5-7b", 110, 1.0, None, "manual"),
     ("tier:light", "glm-4-flash", 100, 1.0, None, "manual"),
     ("tier:light", "glm-4-9b", 110, 1.0, None, "manual"),
     ("tier:light", "llama-3.1-8b", 120, 1.0, None, "manual"),
@@ -119,7 +120,7 @@ GROUP_MEMBERS = [
 
     # ========== scene:free (T3, priority 策略) ==========
     ("scene:free", "qwen-turbo", 100, 1.0, None, "manual"),
-    ("scene:free", "qwen2.5-7b", 110, 1.0, None, "manual"),
+    ("scene:free", "qwen-2.5-7b", 110, 1.0, None, "manual"),
     ("scene:free", "glm-4-flash", 100, 1.0, None, "manual"),
     ("scene:free", "glm-4-9b", 110, 1.0, None, "manual"),
     ("scene:free", "llama-3.1-8b", 120, 1.0, None, "manual"),
@@ -160,12 +161,32 @@ async def seed():
 
         # 2) seed members
         member_count = 0
+        # Phase 4 v4.3 (2026-08-13): 校验 member model_id 已在 model_registry 里 (防漂移)
+        reg_models = {
+            r.model_id: r.family
+            for r in (await session.execute(select(ModelRegistry.model_id, ModelRegistry.family))).all()
+        }
         for (
             group_id, model_id, priority, weight, max_cost_ratio, added_by,
         ) in GROUP_MEMBERS:
+            # 归一化 + 校验 namespace
+            model_id_norm = normalize_model_id(model_id)
+            assert model_id_norm == model_id, (
+                f"GROUP_MEMBERS 元组里 model_id='{model_id}' 应已归一化为 '{model_id_norm}'"
+            )
+            # 必须在 registry 里有同名 model_id
+            assert model_id_norm in reg_models, (
+                f"GROUP_MEMBERS [{group_id}] model_id='{model_id_norm}' 不在 model_registry 中, "
+                f"应先在 seed_model_registry.py 加这个 model"
+            )
+            # namespace 检查 (按 registry 的 family)
+            family = reg_models[model_id_norm]
+            assert validate_model_id(model_id_norm, family), (
+                f"GROUP_MEMBERS [{group_id}] model_id='{model_id_norm}' namespace 与 family='{family}' 不匹配"
+            )
             mem = ModelGroupMember(
                 group_id=group_id,
-                model_id=model_id,
+                model_id=model_id_norm,
                 priority=priority,
                 weight=weight,
                 max_cost_ratio=max_cost_ratio,

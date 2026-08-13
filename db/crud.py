@@ -460,13 +460,19 @@ async def upsert_model_registry(
     AI 推断的 tier 只能写 capabilities_log，待 dashboard 确认后才生效。
     """
     from db.models import ModelRegistry
+    from db.normalizers import normalize_family, normalize_model_id
 
-    existing = await session.get(ModelRegistry, model_id)
+    # Phase 4 v4.3 (2026-08-13): 防御性归一化
+    # 防 model_sync.py / AI 推断自动入组时用大写 family (历史问题)
+    model_id_norm = normalize_model_id(model_id)
+    family_norm = normalize_family(family)
+
+    existing = await session.get(ModelRegistry, model_id_norm)
     if existing:
         for key, value in kwargs.items():
             setattr(existing, key, value)
         return existing
-    row = ModelRegistry(model_id=model_id, family=family, tier=tier, **kwargs)
+    row = ModelRegistry(model_id=model_id_norm, family=family_norm, tier=tier, **kwargs)
     session.add(row)
     await session.flush()
     return row
