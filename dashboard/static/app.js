@@ -63,10 +63,15 @@ function renderPromotions(container) {
     try {
         const data = JSON.parse(container.textContent);
         if (!Array.isArray(data) || data.length === 0) {
+            // Phase 4 v4.3.1 (2026-08-13): 9 家厂商 announcement source 已补齐
+            // (deepseek/glm/原有 + kimi/minimax/qwen/hunyuan/sensenova/stepfun/moonshot 7 家新增)
+            // 数据为空说明 scheduler 尚未完成首次采集, 或该厂商无新优惠, 不是 "source 未接"
             container.innerHTML = `
                 <p class="loading">暂无优惠情报</p>
-                <p class="meta">优惠采集需要在 intelligence/sources/ 接 news/announcement source;
-                    当前 9 家厂商仅配置了 model_list 源, Phase 2A 单独规划时补齐.</p>
+                <p class="meta">9 家厂商 announcement source 已配置 (intelligence/sources/*AnnouncementSource);
+                    数据为空说明 scheduler 尚未完成首次采集 (默认 30 分钟一次),
+                    或该厂商当前无新优惠发布.
+                    <br>手动触发: <code>POST /dashboard/api/sources/run-now?provider=&lt;name&gt;</code></p>
             `;
             return;
         }

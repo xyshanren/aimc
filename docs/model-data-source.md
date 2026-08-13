@@ -111,10 +111,14 @@ python scripts/check_model_consistency.py --check official --provider minimax
 - commit `1005111` (2026-08-13): MiniMax family 缩到 5 个 + 用大写 "MiniMax", 引入漂移
 - commit `4a2cfc5` (2026-08-13): 修了 MiniMax family 数量, 但没修大小写, 没修 namespace (qwen2.5-* / step-1-8k / moonshot-v1-8k)
 - commit `ae4badf` (2026-08-13): 5 厂商价格采集 source, 但没交叉验证 model 集合
-- 本次 (Phase 4 v4.3): 引入 normalizers + 检测脚本 + pre-commit hook, 系统性解决
+- commit `450499c` (2026-08-13, Phase 4 v4.3): 引入 normalizers + 检测脚本 + pre-commit hook, 系统性解决 (seed_model_registry/groups/cards + db/crud 全部归一化)
+- commit `6251e6e` (2026-08-13, feat/intel-announcements-2026-08-13): 补齐 7 家 announcement source (优惠情报) + 4 项后续 plan (group check + monthly audit + price_type UI + auto-group)
+- commit `1d011e2` (2026-08-13, feat/intel-announcements-2026-08-13): manual_import.py 补归一化防御层 + 迁移脚本清理 db 漂移 (10 ERROR -> 0)。原因: 450499c commit 漏改了 manual_import.py cfg 字符串, 跑过老 cfg 的部署会在 price_snapshots 里留 8 个大写行 + 2 个老 model 行。
 
 后续 plan 候选:
 - family 字段加 DB CHECK 约束 (更严格)
 - 自动修复模式 (`--fix` 自动同步, 但风险大)
-- model_group_members 一致性检查
-- 月度第三方源审查任务 (scheduler 周期跑 + Bark 告警)
+- ~~model_group_members 一致性检查~~ ✅ (scripts/check_group_members_consistency.py, 6251e6e)
+- ~~月度第三方源审查任务~~ ✅ (scheduler.py CronTrigger '0 6 1 * *', 6251e6e)
+- ~~dashboard 按 price_type 渲染~~ ✅ (dashboard/static/app.js, 6251e6e)
+- ~~model_group_members AI 自动入组~~ ✅ (intelligence/model_sync.py AUTO_JOIN_NON_T0, 6251e6e)
