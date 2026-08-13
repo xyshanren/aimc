@@ -82,6 +82,133 @@ _ALLOWED_CAPABILITIES = {
 }
 
 
+# === Thinking model 响应预处理 (V4.6.4, 2026-08-13) ===
+# 背景: thinking model (MiniMax M2.7 / M2.7-highspeed / M3 / DeepSeek-R1 /
+#       Qwen3-Thinking 等) 默认开启 reasoning, response.choices[0].message.content
+#       会输出<think>块 + markdown fence 包裹的 JSON.
+# 老代码 json.loads(result_text) 报 JSONDecodeError, 导致整条采集降级到 CSS 抽取.
+# 修复: 剥掉 thinking 块 + 剥掉 markdown fence, 只留纯 JSON.
+
+import re as _re_parser_helper
+_THINK_BLOCK_RE = _re_parser_helper.compile(
+    r"<think>.*?</think>",
+    _re_parser_helper.DOTALL,
+)
+# fence: ```json { ... } ```  或  ``` { ... } ```  (语言名可选)
+# 重要: 用 lazy match 先抓到 fence, 然后用 _balanced_braces 函数抓实际的 JSON
+# (上面的 brace_pair 正则只支持 1 层嵌套, 真实 AIMC models 数组是 2 层嵌套)
+_FENCE_RE = _re_parser_helper.compile(
+    r"```(?:json)?\s*(\{)",
+    _re_parser_helper.DOTALL,
+)
+
+
+def _balanced_braces(text: str, start: int = 0) -> tuple[int, int] | None:
+    """从 start 开始找下一个 balanced { ... } 范围
+
+    Args:
+        text: 输入字符串
+        start: 从该索引开始扫描
+
+    Returns:
+        (start_idx, end_idx_exclusive) 或 None (没找到)
+
+    支持任意深度嵌套 (手写 stack, 避免 regex recursion 的 re 库依赖)
+    """
+    n = len(text)
+    i = start
+    while i < n:
+        if text[i] == "{":
+            depth = 1
+            j = i + 1
+            in_str = False
+            escape_next = False
+            while j < n and depth > 0:
+                ch = text[j]
+                if escape_next:
+                    escape_next = False
+                    j += 1
+                    continue
+                if in_str:
+                    if ch == "\\":
+                        escape_next = True
+                    elif ch == '"':
+                        in_str = False
+                else:
+                    if ch == '"':
+                        in_str = True
+                    elif ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                j += 1
+            if depth == 0:
+                return (i, j)
+            return None
+        i += 1
+    return None
+
+
+def _extract_json_from_response(text):
+    """从 LLM response.content 抽出纯 JSON 字符串 (V4.6.4+)
+
+    背景: thinking model 默认在 content 里输出<think>块 + markdown fence,
+    老代码 json.loads(result_text) 会报 JSONDecodeError.
+
+    设计: 按优先级试多种方式剥出 JSON, 都失败则原样返回(由调用者处理).
+    1. thinking 块全剥掉 (re.sub)
+    2. markdown fence ```...``` 包裹 (用 _balanced_braces 抓任意深度嵌套)
+    3. 字符串中查找 balanced { ... } (任意深度, 用 stack-based parser)
+    4. 前三步都不行: 原样返回 (老代码逻辑, 让 json.loads 自然抛错)
+
+    Args:
+        text: LLM 返回的 content
+
+    Returns:
+        剥出后的 JSON 字符串 (不保证一定合法, 由调用者 json.loads 验证)
+
+    Raises:
+        TypeError: text is None
+    """
+    if text is None:
+        raise TypeError("response content is None")
+
+    raw = text.strip()
+
+    # Step 1: 剥掉 thinking 块
+    cleaned = _THINK_BLOCK_RE.sub("", raw).strip()
+
+    # Step 2: 剥掉 markdown fence 包裹 — fence 内的 { ... } 用 balanced_braces 提取
+    fence_match = _FENCE_RE.search(cleaned)
+    if fence_match:
+        start = fence_match.start(1)
+        brace_range = _balanced_braces(cleaned, start)
+        if brace_range:
+            candidate = cleaned[brace_range[0]:brace_range[1]]
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                pass  # 不是合法 JSON, 试下一步
+
+    # Step 3: 任意深度 balanced { ... } 扫描
+    pos = 0
+    while True:
+        brace_range = _balanced_braces(cleaned, pos)
+        if not brace_range:
+            break
+        candidate = cleaned[brace_range[0]:brace_range[1]]
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            pass  # 试下一个 brace match
+        pos = brace_range[1]
+
+    # Step 4: 起始未能剥出: 原样返回 (老代码逻辑)
+    return cleaned
+
+
 def confidence_level(confidence: float) -> str:
     """将置信度分为 low/medium/high，供 Phase 3.3 安全阀消费。"""
     if confidence >= 0.8:
@@ -214,7 +341,20 @@ async def parse_content(
     )
 
     result_text = response.choices[0].message.content
-    data = json.loads(result_text)  # JSONDecodeError 向上抛
+    # V4.6.4: thinking model 预处理 (MiniMax / DeepSeek-R1 / Qwen3-Thinking 等)
+    # 兼容<think>块 + markdown fence 的输出格式
+    try:
+        json_text = _extract_json_from_response(result_text)
+        data = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        # 输出脱敏的 response_text 前 200 字符 + provider/model 用于排查
+        # V4.6.4: 之前抛 Exception 让 healer 收到, 看不到 response content
+        sanitized = (result_text or "")[:200].replace("\n", "\\n")
+        logger.warning(
+            f"[parser] JSON 解析失败: provider={provider} model={settings.parse_model} "
+            f"err={exc.msg[:50]} response[:200]={sanitized!r}"
+        )
+        raise
 
     models = []
     for item in data.get("models") or []:

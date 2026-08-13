@@ -18,6 +18,15 @@ Phase 1 使用：在爬虫未就绪前，手动录入渠道信息。
 
 借鉴 hermes-tray：env-first，避免在 .py 里出现任何 key 字面量。
 
+V4.6.4 重要区别（2026-08-13）：
+- 本脚本的 *_API_KEY 环境变量跟 .env 里 OPENAI_API_KEY / OPENAI_BASE_URL /
+  PARSE_MODEL 是两套独立配置，互不重叠：
+  - 本脚本：创建 mini渠道 + 写入 db.accounts.ciphertext（面向业务网关）
+  - 上面 OPENAI_*：intelligence/parser.py 爬取页面后的 AI 结构化提取使用
+- 例如：.env 里可以同时配 MINIMAX_API_KEY（供本脚本创建 minimax_compat 渠道）
+  和 OPENAI_API_KEY=<同一个 MiniMax token> + OPENAI_BASE_URL=https://api.minimaxi.com/v1
+  （供 parser.py 用 MiniMax-M2.7 提取页面内容）。同一个 key 可能要配两份。
+
 V4.4 引导：多账号场景下，推荐使用 scripts/add_account.py CLI：
     python scripts/add_account.py \\
         --channel deepseek \\
