@@ -36,6 +36,12 @@ from sqlalchemy import delete, select
 from db.engine import async_session_factory
 from db.init_db import init_db
 from db.models import ModelRegistry
+from db.normalizers import (
+    normalize_capabilities,
+    normalize_family,
+    normalize_model_id,
+    validate_model_id,
+)
 
 
 # 字段：model_id, family, display_name, tier, capabilities (list), context_length,
@@ -74,17 +80,17 @@ MODEL_REGISTRY = [
         "通义极速版, 便宜"
     ),
     (
-        "qwen2.5-72b", "qwen", "Qwen 2.5 72B", "T1",
+        "qwen-2.5-72b", "qwen", "Qwen 2.5 72B", "T1",
         ["reasoning", "code", "general"], 128000, "text", 1, "2024-09",
         "Qwen 2.5 72B 开源旗舰, 硅基流动常驻"
     ),
     (
-        "qwen2.5-32b", "qwen", "Qwen 2.5 32B", "T2",
+        "qwen-2.5-32b", "qwen", "Qwen 2.5 32B", "T2",
         ["general"], 128000, "text", 1, "2024-09",
         "Qwen 2.5 32B 开源, 性价比"
     ),
     (
-        "qwen2.5-7b", "qwen", "Qwen 2.5 7B", "T3",
+        "qwen-2.5-7b", "qwen", "Qwen 2.5 7B", "T3",
         ["general"], 32000, "text", 1, "2024-09",
         "Qwen 2.5 7B 轻量"
     ),
@@ -122,10 +128,14 @@ MODEL_REGISTRY = [
         ["reasoning", "long_context", "code"], 1000000, "text", 0, "2026-07",
         "K3 最新旗舰, 1M ctx, 2026-07-27 开源权重"
     ),
+
+    # ========== Moonshot (1 个) ==========
+    # Phase 4 v4.3 fix (2026-08-13): family 从 kimi 改为 moonshot
+    # 让 model_id namespace 与 family 一致 (validate_model_id 规则)
     (
-        "moonshot-v1-8k", "kimi", "Moonshot V1 8K", "T3",
+        "moonshot-v1-8k", "moonshot", "Moonshot V1 8K", "T3",
         ["general"], 8000, "text", 0, "2024-08",
-        "Moonshot 短上下文"
+        "Moonshot 短上下文, 跟 Kimi K2/K3 同公司但 API 系列不同"
     ),
 
     # ========== Doubao (2 个) ==========
@@ -152,9 +162,12 @@ MODEL_REGISTRY = [
         "腾讯混元标准"
     ),
 
-    # ========== StepFun (1 个) ==========
+    # ========== Step (1 个, 阶跃星辰 step-* 系列) ==========
+    # Phase 4 v4.3 fix (2026-08-13): family 从 stepfun 改为 step
+    # 让 model_id namespace 与 family 一致 (validate_model_id 规则)
+    # channel.name 仍叫 stepfun_official (跟 family 解耦)
     (
-        "step-1-8k", "stepfun", "Step-1 8K", "T2",
+        "step-1-8k", "step", "Step-1 8K", "T2",
         ["general"], 8000, "text", 0, "2024-10",
         "阶跃星辰基础"
     ),
@@ -167,42 +180,42 @@ MODEL_REGISTRY = [
     # - 对齐来源 (2): db 中 minimax_compat 渠道 price_snapshots 实际 8 个 model
     # - 字段约定: family 统一小写 "minimax" (跟 provider / channel.name 对齐, 与其他 family 一致)
     (
-        "MiniMax-M3", "minimax", "MiniMax M3", "T1",
+        "minimax-m3", "minimax", "MiniMax M3", "T1",
         ["reasoning", "code", "long_context", "general"], 1000000, "multimodal", 0, "2026-08",
         "M3 旗舰, 1M ctx, 适用于 Agent 推理/工具调用/代码",
     ),
     (
-        "MiniMax-M2.7", "minimax", "MiniMax M2.7", "T1",
+        "minimax-m2.7", "minimax", "MiniMax M2.7", "T1",
         ["reasoning", "code", "general"], 204800, "text", 0, "2026-08",
         "M2.7 自我迭代, 60tps",
     ),
     (
-        "MiniMax-M2.7-highspeed", "minimax", "MiniMax M2.7 Highspeed", "T2",
+        "minimax-m2.7-highspeed", "minimax", "MiniMax M2.7 Highspeed", "T2",
         ["reasoning", "general"], 204800, "text", 0, "2026-08",
         "M2.7 极速版, 100tps",
     ),
     (
-        "MiniMax-M2.5", "minimax", "MiniMax M2.5", "T2",
+        "minimax-m2.5", "minimax", "MiniMax M2.5", "T2",
         ["general"], 204800, "text", 0, "2026-08",
         "M2.5 极致性价比, 60tps",
     ),
     (
-        "MiniMax-M2.5-highspeed", "minimax", "MiniMax M2.5 Highspeed", "T3",
+        "minimax-m2.5-highspeed", "minimax", "MiniMax M2.5 Highspeed", "T3",
         ["general"], 204800, "text", 0, "2026-08",
         "M2.5 极速版, 100tps",
     ),
     (
-        "MiniMax-M2.1", "minimax", "MiniMax M2.1", "T2",
+        "minimax-m2.1", "minimax", "MiniMax M2.1", "T2",
         ["code", "general"], 204800, "text", 0, "2026-08",
         "M2.1 多语言编程, 60tps",
     ),
     (
-        "MiniMax-M2.1-highspeed", "minimax", "MiniMax M2.1 Highspeed", "T3",
+        "minimax-m2.1-highspeed", "minimax", "MiniMax M2.1 Highspeed", "T3",
         ["general"], 204800, "text", 0, "2026-08",
         "M2.1 极速版, 100tps",
     ),
     (
-        "MiniMax-M2", "minimax", "MiniMax M2", "T2",
+        "minimax-m2", "minimax", "MiniMax M2", "T2",
         ["code", "general"], 204800, "text", 0, "2026-08",
         "M2 高效编码/Agent 工作流",
     ),
@@ -235,12 +248,27 @@ async def seed():
             capabilities, context_length, modality,
             is_open_source, release_date, notes,
         ) in MODEL_REGISTRY:
+            # Phase 4 v4.3 (2026-08-13): 应用层归一化 + assert
+            # 防止 commit 1005111 历史问题: family 大写 / model_id 不规范
+            family_norm = normalize_family(family)
+            model_id_norm = normalize_model_id(model_id)
+            assert family_norm == family, (
+                f"MODEL_REGISTRY 元组里 family='{family}' 应已归一化为 '{family_norm}'"
+            )
+            assert model_id_norm == model_id, (
+                f"MODEL_REGISTRY 元组里 model_id='{model_id}' 应已归一化为 '{model_id_norm}'"
+            )
+            assert validate_model_id(model_id_norm, family_norm), (
+                f"model_id='{model_id}' 不符合 '{family_norm}-' namespace 规范"
+            )
+            capabilities_norm = normalize_capabilities(capabilities)
+
             entry = ModelRegistry(
-                model_id=model_id,
-                family=family,
+                model_id=model_id_norm,
+                family=family_norm,
                 display_name=display_name,
                 tier=tier,
-                capabilities=json.dumps(capabilities, ensure_ascii=False),
+                capabilities=json.dumps(capabilities_norm, ensure_ascii=False),
                 context_length=context_length,
                 modality=modality,
                 is_open_source=is_open_source,

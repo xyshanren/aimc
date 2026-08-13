@@ -449,7 +449,7 @@ groups:
     display_name: "轻量免费组"
     tier: T3
     strategy: cheapest
-    members: [qwen2.5-7b, glm-4-9b, deepseek-r1-distill-7b]
+    members: [qwen-2.5-7b, glm-4-9b, deepseek-r1-distill-7b]
 
   # 按场景分组（可选）
   - group_id: "scene:code"
@@ -462,7 +462,7 @@ groups:
   - group_id: "scene:free"
     display_name: "零成本组"
     strategy: priority
-    members: [qwen2.5-7b-sf-free, glm-4-9b-sf-free, deepseek-r1-7b-sf-free]
+    members: [qwen-2.5-7b-sf-free, glm-4-9b-sf-free, deepseek-r1-7b-sf-free]
 ```
 
 ### 3.5 路由决策流程（升级版）

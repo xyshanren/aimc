@@ -705,7 +705,7 @@ groups:
     tier: T3
     strategy: cheapest
     fallback_group: null
-    members: [qwen2.5-7b, glm-4-9b, deepseek-r1-distill-7b]
+    members: [qwen-2.5-7b, glm-4-9b, deepseek-r1-distill-7b]
 
   # 按场景（可选）
   - group_id: "scene:code"
@@ -720,7 +720,7 @@ groups:
     display_name: "零成本组"
     strategy: priority
     fallback_group: null
-    members: [qwen2.5-7b-sf, glm-4-9b-sf, deepseek-r1-7b-sf]
+    members: [qwen-2.5-7b-sf, glm-4-9b-sf, deepseek-r1-7b-sf]
 ```
 
 ## 十、关键设计决策
