@@ -159,32 +159,52 @@ MODEL_REGISTRY = [
         "阶跃星辰基础"
     ),
 
-    # ========== MiniMax (按 sensenova_official 已收录的 M 系列) ==========
-    # Phase 2a+ fix (2026-08-13): 替换原 MiniMax-Text-01 (deprecated), 改用 M 系列
+    # ========== MiniMax (8 个, 对齐 MiniMax 官方 API + minimax_compat 渠道 price_snapshots) ==========
+    # Phase 4 fix (2026-08-13): 修复 1005111 commit 的家族错乱
+    # - 修复前错误状态: 5 个 model + family="MiniMax" 大写 + 注释指向 sensenova_official (错误)
+    # - sensenova_official 渠道实际一个 MiniMax model 都没有, 跟 family 字段无关
+    # - 对齐来源 (1): MiniMax 官方 API 文档 https://platform.minimaxi.com/docs/api-reference/api-overview (2026-08 现行)
+    # - 对齐来源 (2): db 中 minimax_compat 渠道 price_snapshots 实际 8 个 model
+    # - 字段约定: family 统一小写 "minimax" (跟 provider / channel.name 对齐, 与其他 family 一致)
     (
-        "MiniMax-M2.7", "MiniMax", "MiniMax M2.7", "T0",
-        ["reasoning", "code", "long_context", "general"], 200000, "text", 0, "2026-08",
-        "MiniMax M2.7 旗舰, 长上下文",
+        "MiniMax-M3", "minimax", "MiniMax M3", "T1",
+        ["reasoning", "code", "long_context", "general"], 1000000, "multimodal", 0, "2026-08",
+        "M3 旗舰, 1M ctx, 适用于 Agent 推理/工具调用/代码",
     ),
     (
-        "MiniMax-M2", "MiniMax", "MiniMax M2", "T1",
-        ["reasoning", "code", "general"], 128000, "text", 0, "2026-08",
-        "MiniMax M2 主力",
+        "MiniMax-M2.7", "minimax", "MiniMax M2.7", "T1",
+        ["reasoning", "code", "general"], 204800, "text", 0, "2026-08",
+        "M2.7 自我迭代, 60tps",
     ),
     (
-        "MiniMax-M2.7-flash", "MiniMax", "MiniMax M2.7 Flash", "T1",
-        ["reasoning", "general"], 128000, "text", 0, "2026-08",
-        "MiniMax M2.7 Flash 闪速版",
+        "MiniMax-M2.7-highspeed", "minimax", "MiniMax M2.7 Highspeed", "T2",
+        ["reasoning", "general"], 204800, "text", 0, "2026-08",
+        "M2.7 极速版, 100tps",
     ),
     (
-        "MiniMax-M2.1", "MiniMax", "MiniMax M2.1", "T1",
-        ["general"], 128000, "text", 0, "2026-08",
-        "MiniMax M2.1",
+        "MiniMax-M2.5", "minimax", "MiniMax M2.5", "T2",
+        ["general"], 204800, "text", 0, "2026-08",
+        "M2.5 极致性价比, 60tps",
     ),
     (
-        "MiniMax-M2.7-highspeed", "MiniMax", "MiniMax M2.7 Highspeed", "T2",
-        ["general"], 128000, "text", 0, "2026-08",
-        "MiniMax M2.7 高速推理版",
+        "MiniMax-M2.5-highspeed", "minimax", "MiniMax M2.5 Highspeed", "T3",
+        ["general"], 204800, "text", 0, "2026-08",
+        "M2.5 极速版, 100tps",
+    ),
+    (
+        "MiniMax-M2.1", "minimax", "MiniMax M2.1", "T2",
+        ["code", "general"], 204800, "text", 0, "2026-08",
+        "M2.1 多语言编程, 60tps",
+    ),
+    (
+        "MiniMax-M2.1-highspeed", "minimax", "MiniMax M2.1 Highspeed", "T3",
+        ["general"], 204800, "text", 0, "2026-08",
+        "M2.1 极速版, 100tps",
+    ),
+    (
+        "MiniMax-M2", "minimax", "MiniMax M2", "T2",
+        ["code", "general"], 204800, "text", 0, "2026-08",
+        "M2 高效编码/Agent 工作流",
     ),
 
     # ========== Llama (2 个) ==========
