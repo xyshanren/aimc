@@ -11,7 +11,6 @@
 
 import json
 import logging
-import time
 from datetime import datetime, date
 from typing import Optional
 
@@ -43,11 +42,6 @@ class RouteEngine:
         self._registry_cache: dict = {}        # model_id -> ModelRegistry ORM
         self._groups_cache: dict = {}          # group_id -> ModelGroup ORM
         self._group_members_cache: dict = {}   # group_id -> [model_id]
-        # V4.5.1: 能力评分 (model_cards) — sort_key tie-break
-        self._cards_cache: dict = {}           # model_id -> [ModelCard ORM]
-        # V4.6.1: least-used tie-break (同 channel 多账号轮询)
-        # account_id → 最近路由选中的时间戳 (time.time())
-        self._account_last_used: dict[int, float] = {}
 
     async def refresh_cache(self):
         """从数据库刷新渠道缓存到内存 (全量)
@@ -64,7 +58,6 @@ class RouteEngine:
         async with async_session_factory() as session:
             await self._load_channels_cache(session)
             await self._load_groups_cache(session)
-            await self._load_cards_cache(session)
 
         self._last_refresh = datetime.now()
         logger.info(
@@ -333,55 +326,6 @@ class RouteEngine:
             f"个 group members 跨 {len(self._group_members_cache)} 个组"
         )
 
-    # ===========================================================
-    # V4.5.1: 能力评分路由 (model_cards 缓存 + score_bonus + sort_key 接入)
-    # ===========================================================
-
-    async def _load_cards_cache(self, session) -> None:
-        """V4.5.1: 加载 model_cards 评分 (model_id → [ModelCard]).
-
-        反向索引: 一个 model 可对应多个 benchmark source (OpenCompass + LMSYS + ...).
-        score_bonus() 取 max(score × recency) — 历史最强分 (考虑时效).
-        """
-        from db.models import ModelCard
-        result = await session.execute(select(ModelCard))
-        cards = result.scalars().all()
-        self._cards_cache = {}
-        for card in cards:
-            self._cards_cache.setdefault(card.model, []).append(card)
-        logger.info(
-            f"路由缓存: {sum(len(v) for v in self._cards_cache.values())} 个 model_card "
-            f"跨 {len(self._cards_cache)} 个 model"
-        )
-
-    def score_bonus(self, model: str) -> float:
-        """V4.5.1: model 的能力评分加成 [0.0, 1.0].
-
-        计算: max(card.score × recency_weight(card.updated_at)) over cards.
-        - 无 card / 无 updated_at → 0.0
-        - score 100% + recency 1.0 → 1.0 (满分)
-        - 半年内的 OpenCompass 引用 → ~1.0
-        - 一年前的 → ~0.5
-        - 二年前 / 无时间戳 → 0.0
-
-        用法: sort_key 加 -score_bonus 项, 价格平手时高分排前. 权重 ≤ 0.2 (Phase 2 design).
-        """
-        from intelligence.recency import recency_weight
-
-        cards = self._cards_cache.get(model, [])
-        if not cards:
-            return 0.0
-        best = 0.0
-        for card in cards:
-            if card.score is None:
-                continue
-            recency = recency_weight(card.updated_at)
-            # score 是 0~100, 归一化到 0~1
-            weighted = (card.score / 100.0) * recency
-            if weighted > best:
-                best = weighted
-        return best
-
     def _resolve_account_key(self, account) -> Optional[str]:
         """API-Sec-1: 透明获取 account 的明文 api_key
 
@@ -457,16 +401,12 @@ class RouteEngine:
 
         # 2. 频限过滤
         from gateway.limiter import rate_limiter
-        from gateway.cooldown import cooldown_manager
-        # V4.6.1: 同时过滤 cooldown (单次失败就冷却, 避免反复撞死 key)
         candidates = [
             (ch, price) for ch, price in candidates
-            if not cooldown_manager.is_in_cooldown(ch["account_id"])
-            and not rate_limiter.is_limited(ch["account_id"], ch["quotas"])
+            if not rate_limiter.is_limited(ch["account_id"], ch["quotas"])
         ]
 
         if not candidates:
-            # 无候选时回 fallback; 再用 _is_channel_usable 检查一次 (含 cooldown)
             logger.warning(f"所有渠道频限已满: {model}")
             return None
 
@@ -480,24 +420,22 @@ class RouteEngine:
             logger.warning(f"所有渠道配额耗尽: {model}")
             return None
 
-        # 4. 多维排序: 价格 ASC > 剩余配额 DESC > 优先级 DESC > score_bonus DESC > least-used
-        # V4.5.1: 加 score_bonus tie-break — 价格平手时高分 model 优先
-        # V4.6.1: 加 least-used tie-break — 同价同分时, 最近未被路由的账号优先 (多账号轮询)
+        # 4. 多维排序：价格 ASC > 剩余配额 DESC > 优先级 DESC
         def sort_key(item):
             ch, price = item
-            input_price = price.get("input_price") or 0
+            # Phase 2a+ fix (2026-08-13): NULL 价格 → 999 兜底, 跟组路由 _get_input_price 对齐.
+            # 修复前 `price.get("input_price") or 0` 把 NULL 当 0 元, 导致硅基流动 NULL 价格
+            # model 在精确路由里永远排第一 (refresh_siliconflow_models.py 入库的 90+ model 名
+            # 全部 NULL 价格). 修复后排最后, 跟组路由行为一致.
+            raw_input_price = price.get("input_price")
+            input_price = float(raw_input_price) if raw_input_price is not None else 999.0
             quota_remaining = ch["quota_remaining"] if ch["quota_remaining"] is not None else 999999999
             priority = ch["priority"]
-            bonus = self.score_bonus(model)  # V4.5.1: [0, 1]
-            # V4.6.1: 老的优先 (0 = 未用过) > 新的 (1.0 = 刚用过)
-            last_used = self._account_last_used.get(ch["account_id"], 0.0)
-            return (input_price, -quota_remaining, -priority, -bonus, last_used)
+            return (input_price, -quota_remaining, -priority)
 
         candidates.sort(key=sort_key)
 
         best_channel, best_price = candidates[0]
-        # V4.6.1: 记录 last_used (路由层只 record, 不 mark_success — 成功标记由 proxy 层处理)
-        self._account_last_used[best_channel["account_id"]] = time.time()
         logger.debug(
             f"路由决策: model={model} -> {best_channel['name']} "
             f"(price={best_price.get('input_price')}, priority={best_channel['priority']})"
@@ -549,15 +487,8 @@ class RouteEngine:
         return min(self._channels_cache, key=lambda ch: ch.get("priority", 999))
 
     def _is_channel_usable(self, ch: dict) -> bool:
-        """Phase 2E: 检查 channel 是否可用 (限频 + 配额), 不检查 model 支持
-
-        V4.6.1 加 cooldown 检查 — 失败的账号 (mark_failure 触发) 进入冷却期,
-        路由应跳过, 等冷却过期再恢复. 跟 limiter 一致: 内存管理, 不持久化.
-        """
-        from gateway.cooldown import cooldown_manager
+        """Phase 2E: 检查 channel 是否可用 (限频 + 配额), 不检查 model 支持"""
         from gateway.limiter import rate_limiter
-        if cooldown_manager.is_in_cooldown(ch["account_id"]):
-            return False
         if rate_limiter.is_limited(ch["account_id"], ch["quotas"]):
             return False
         if ch.get("quota_remaining") is not None and ch["quota_remaining"] <= 0:
