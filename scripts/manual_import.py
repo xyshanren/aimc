@@ -54,6 +54,7 @@ load_dotenv()
 from db.engine import async_session_factory
 from db.init_db import init_db
 from db import crud
+from db.normalizers import normalize_model_id, normalize_family  # Phase 4 v4.3.1 (2026-08-13): 防御性归一化
 from config import settings  # API-Sec-1: 读 AIMC_MASTER_KEY
 
 
@@ -70,10 +71,13 @@ CHANNELS = [
         "priority": 10,
         "env_var": "DEEPSEEK_API_KEY",
         "qpm": 60,
+        # Phase 4 v4.3.1 (2026-08-13): 改用 V4 系列 model (跟 1005111 commit 对齐)
+        # 历史 deepseek-chat / deepseek-reasoner 是 V4.4 时代老 model,
+        # 官方 API 当前 (2026-08) 只支持 V4 系列.
         "prices": [
-            ("deepseek-chat", "normal", "全天", 1.0, 2.0),
-            ("deepseek-chat", "offpeak", "00:00-08:00", 0.5, 1.0),
-            ("deepseek-reasoner", "normal", "全天", 4.0, 16.0),
+            ("deepseek-v4-pro", "normal", "全天", 4.0, 16.0),
+            ("deepseek-v4-flash", "normal", "全天", 1.0, 2.0),
+            ("deepseek-v4-flash", "offpeak", "00:00-08:00", 0.5, 1.0),
         ],
     },
     {
@@ -111,6 +115,11 @@ CHANNELS = [
         "priority": 5,
         "env_var": "KIMI_API_KEY",
         "qpm": 30,
+        # Phase 4 v4.3.1 (2026-08-13): 保持 cfg model 跟实际 Moonshot API 一致.
+        # model_id 命名以 "moonshot-" 开头 (family=moonshot, 跟 registry 对齐).
+        # 注意: 这俩 model 不在 model_registry (registry 只 seed 了 moonshot-v1-8k),
+        # 跑 check_group_members_consistency 时会报 "model 不在 registry",
+        # 如需加可手动 seed 进去.
         "prices": [
             ("moonshot-v1-128k", "normal", "全天", 6.0, 6.0),
             ("moonshot-v1-32k", "normal", "全天", 3.0, 3.0),
@@ -133,14 +142,16 @@ CHANNELS = [
         "qpm": 60,
         "prices": [
             # V4.6.4: MiniMax 官方当前 8 个 model (从 platform.minimaxi.com/docs 查, 2026-08-08)
-            ("MiniMax-M3",              "normal", "全天", 0.0, 0.0),
-            ("MiniMax-M2.7",            "normal", "全天", 0.0, 0.0),
-            ("MiniMax-M2.7-highspeed",  "normal", "全天", 0.0, 0.0),
-            ("MiniMax-M2.5",            "normal", "全天", 0.0, 0.0),
-            ("MiniMax-M2.5-highspeed",  "normal", "全天", 0.0, 0.0),
-            ("MiniMax-M2.1",            "normal", "全天", 0.0, 0.0),
-            ("MiniMax-M2.1-highspeed",  "normal", "全天", 0.0, 0.0),
-            ("MiniMax-M2",              "normal", "全天", 0.0, 0.0),
+            # Phase 4 v4.3.1 (2026-08-13): model_id 全小写 namespace (跟 450499c 对齐).
+            # 跟 model_registry / seed_model_groups / seed_model_cards 一致.
+            ("minimax-m3",              "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.7",            "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.7-highspeed",  "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.5",            "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.5-highspeed",  "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.1",            "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.1-highspeed",  "normal", "全天", 0.0, 0.0),
+            ("minimax-m2",              "normal", "全天", 0.0, 0.0),
         ],
     },
 
@@ -339,10 +350,17 @@ async def import_one_channel(session, cfg: dict) -> bool:
     print(f"[+] 创建账号: {account.account_name} (key 已加密)")
 
     for model, price_type, time_range, in_p, out_p in cfg["prices"]:
+        # Phase 4 v4.3.1 (2026-08-13): 防御性归一化
+        # 即使 cfg 写了 "MiniMax-M3" 之类的大写, 也能在写入 db 前归一化为 "minimax-m3".
+        # 跟 db/crud.py upsert_model_registry 一致.
+        model_norm = normalize_model_id(model)
+        assert model_norm == model, (
+            f"manual_import.py cfg 里 model='{model}' 应已归一化为 '{model_norm}'"
+        )
         await crud.create_price_snapshot(
             session,
             channel_id=channel.id,
-            model=model,
+            model=model_norm,
             price_type=price_type,
             time_range=time_range,
             input_price=in_p,
