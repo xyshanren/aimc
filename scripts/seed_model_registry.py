@@ -191,11 +191,56 @@ MODEL_REGISTRY = [
         "DeepSeek V4 Flash, 1M ctx, 思考模式+工具调用, 商汤公测 token plan 免费"
     ),
 
-    # ========== MiniMax (1 个) ==========
+    # ========== MiniMax (8 个, V4.6.4 补齐官方当前 8 个) ==========
+    # 老 MiniMax-Text-01 (2025-04, 1M ctx, deprecated) – 已不在官方列表
+    # V4.6.4 fix: 用 MiniMax 官方当前 8 个 model (platform.minimaxi.com/docs 查, 2026-08-08)
+    # M3: 最新 M 系列, 1M ctx, Agent/工具调用/长上下文
     (
-        "MiniMax-Text-01", "MiniMax", "MiniMax Text-01", "T1",
-        ["long_context", "general"], 1000000, "text", 0, "2025-04",
-        "MiniMax 长上下文, 1M ctx, 实际用 MiniMax-Text-01"
+        "MiniMax-M3", "minimax", "MiniMax M3", "T1",
+        ["reasoning", "code", "general", "long_context"], 1000000, "multimodal", 1, "2026-06",
+        "MiniMax 最新 M 系列, 1M ctx, Agent 推理+工具调用+长上下文"
+    ),
+    # M2.7: 204.8k ctx, 输出 60tps
+    (
+        "MiniMax-M2.7", "minimax", "MiniMax M2.7", "T1",
+        ["reasoning", "code", "general"], 204800, "text", 1, "2026-03",
+        "MiniMax M2.7, 204.8k ctx, 开启自我迭代, 输出 60tps"
+    ),
+    # M2.7-highspeed: 极速版
+    (
+        "MiniMax-M2.7-highspeed", "minimax", "MiniMax M2.7 Highspeed", "T2",
+        ["general"], 204800, "text", 1, "2026-03",
+        "MiniMax M2.7 极速版, 效果不变更快, 100tps"
+    ),
+    # M2.5: 性能与性价比平衡
+    (
+        "MiniMax-M2.5", "minimax", "MiniMax M2.5", "T2",
+        ["general"], 204800, "text", 1, "2026-02",
+        "MiniMax M2.5, 顶尖性能与极致性价比, 60tps"
+    ),
+    # M2.5-highspeed
+    (
+        "MiniMax-M2.5-highspeed", "minimax", "MiniMax M2.5 Highspeed", "T3",
+        ["general"], 204800, "text", 1, "2026-02",
+        "MiniMax M2.5 极速版, 60tps"
+    ),
+    # M2.1: 多语言编程能力升级
+    (
+        "MiniMax-M2.1", "minimax", "MiniMax M2.1", "T2",
+        ["code", "general"], 204800, "text", 1, "2025-12",
+        "MiniMax M2.1, 强大多语言编程能力, 60tps"
+    ),
+    # M2.1-highspeed
+    (
+        "MiniMax-M2.1-highspeed", "minimax", "MiniMax M2.1 Highspeed", "T3",
+        ["general"], 204800, "text", 1, "2025-12",
+        "MiniMax M2.1 极速版"
+    ),
+    # M2: 专为高效编码与 Agent 工作流
+    (
+        "MiniMax-M2", "minimax", "MiniMax M2", "T2",
+        ["code", "general"], 204800, "text", 1, "2025-10",
+        "MiniMax M2, 专为高效编码与 Agent 工作流而生"
     ),
 
     # ========== Llama (2 个) ==========
