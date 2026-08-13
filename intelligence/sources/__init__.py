@@ -9,6 +9,8 @@ from intelligence.sources.deepseek import (
 )
 from intelligence.sources.qwen import (
     QwenSource, QwenActivitySource, QwenModelListSource,
+    # Phase 4 v4.3.1 (2026-08-13): Qwen 公告页
+    QwenAnnouncementSource,
 )
 from intelligence.sources.glm import (
     GLMSource, GLMActivitySource, GLMModelListSource,
@@ -44,6 +46,13 @@ from intelligence.sources.benchmark import (
     LMSYSArenaBenchmarkSource,
     SuperCLUEBenchmarkSource,
 )
+# Phase 4 v4.3.1 (2026-08-13): 7 家 announcement source (优惠情报采集)
+from intelligence.sources.kimi import KimiAnnouncementSource
+from intelligence.sources.minimax import MiniMaxAnnouncementSource
+from intelligence.sources.hunyuan import HunyuanAnnouncementSource
+from intelligence.sources.moonshot import MoonshotAnnouncementSource
+from intelligence.sources.sensenova_announcement import SenseNovaAnnouncementSource
+from intelligence.sources.stepfun_announcement import StepFunAnnouncementSource
 
 
 def get_all_sources() -> list[IntelSourceBase]:
@@ -94,6 +103,14 @@ def get_all_sources() -> list[IntelSourceBase]:
         # Phase 3.1 benchmark
         LMSYSArenaBenchmarkSource(),
         SuperCLUEBenchmarkSource(),
+        # Phase 4 v4.3.1 announcement source (7 家,补齐 9 厂商优惠情报采集)
+        KimiAnnouncementSource(),
+        MiniMaxAnnouncementSource(),
+        QwenAnnouncementSource(),
+        HunyuanAnnouncementSource(),
+        MoonshotAnnouncementSource(),
+        SenseNovaAnnouncementSource(),
+        StepFunAnnouncementSource(),
     ]
 
 

@@ -79,35 +79,63 @@ def main() -> int:
         for f in staged_files
     )
     if model_triggered:
-        print("[pre-commit] 检测到 model_registry 相关文件修改, 跑 db 一致性检查...")
+        print("[pre-commit] 检测到 model 相关文件修改, 跑 db 一致性检查...")
         try:
             result = subprocess.run(
                 ["python", "scripts/check_model_consistency.py", "--check", "db"],
                 capture_output=True, text=True, timeout=60,
             )
         except subprocess.TimeoutExpired:
-            print("[pre-commit] FAIL: model_registry 检查超时 (> 60s)")
+            print("[pre-commit] FAIL: model 检查超时 (> 60s)")
             return 1
         except Exception as e:
-            print(f"[pre-commit] FAIL: model_registry 检查异常: {e}")
+            print(f"[pre-commit] FAIL: model 检查异常: {e}")
             return 1
 
         if result.returncode == 2:
-            # db 不一致 → ERROR, 阻断 commit
-            print("[pre-commit] FAIL: model_registry db 一致性检查发现 ERROR:")
+            print("[pre-commit] FAIL: model 检查发现 ERROR:")
             print(result.stdout)
             print(result.stderr)
-            print(f"\n如确认变更正确, 请:")
-            print(f"  1. 跑 python scripts/check_model_consistency.py --check db 看具体 issue")
-            print(f"  2. 修代码或用 --skip-model-check 跳过 (不推荐)")
-            print(f"  3. 或 git commit --no-verify 跳过 hook")
             return 1
         elif result.returncode == 1:
-            # WARN (db 一致但有官方源漂移) → 不阻断, 仅提示
-            print("[pre-commit] WARN: model_registry 有 WARN (db 一致但官方源漂移):")
+            print("[pre-commit] WARN: model 检查 WARN:")
             print(result.stdout)
         else:
-            print(f"[pre-commit] OK: model_registry db 一致性通过")
+            print(f"[pre-commit] OK: model 检查通过")
+
+    # === Phase 4 v4.3.1 (2026-08-13): group_members 一致性检测 ===
+    GROUP_TRIGGER_FILES = (
+        "scripts/seed_model_groups.py",
+        "scripts/check_group_members_consistency.py",
+    )
+    group_triggered = any(
+        any(f.endswith(trigger) for trigger in GROUP_TRIGGER_FILES)
+        for f in staged_files
+    )
+    if group_triggered:
+        print("[pre-commit] 检测到 group 相关文件修改, 跑 group_members 一致性检查...")
+        try:
+            result = subprocess.run(
+                ["python", "scripts/check_group_members_consistency.py"],
+                capture_output=True, text=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            print("[pre-commit] FAIL: group_members 检查超时 (> 60s)")
+            return 1
+        except Exception as e:
+            print(f"[pre-commit] FAIL: group_members 检查异常: {e}")
+            return 1
+
+        if result.returncode == 2:
+            print("[pre-commit] FAIL: group_members 检查发现 ERROR:")
+            print(result.stdout)
+            print(result.stderr)
+            return 1
+        elif result.returncode == 1:
+            print("[pre-commit] WARN: group_members 检查 WARN:")
+            print(result.stdout)
+        else:
+            print(f"[pre-commit] OK: group_members 检查通过")
 
     return 0
 
