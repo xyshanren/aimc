@@ -19,35 +19,6 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
-# V4.6.1: 视为上游失败的 status_code (跟现有 _schedule_alert 一致)
-_FAILURE_STATUS_CODES = frozenset((401, 403, 500, 502, 503, 504))
-
-
-def _update_cooldown(channel: dict, status_code: int) -> None:
-    """V4.6.1: 根据 status_code 更新账号 cooldown 状态.
-
-    - 2xx (成功) → mark_success: 清空失败计数 + 冷却
-    - 401/403/5xx (失败) → mark_failure: 累计失败, 达到阈值进入冷却
-    - 其他 (3xx/4xx 其他) → 不动 (e.g. 400 是请求方问题, 不应让账号冷却)
-
-    调用点是 _forward_stream / _forward_normal 拿到 status_code 后立刻调用,
-    不阻塞主响应, 不抛异常 (失败仅 log).
-    """
-    try:
-        account_id = channel.get("account_id")
-        if account_id is None:
-            return
-        from gateway.cooldown import cooldown_manager
-        if status_code in _FAILURE_STATUS_CODES:
-            cooldown_manager.mark_failure(
-                account_id, reason=f"HTTP {status_code}"
-            )
-        elif 200 <= status_code < 300:
-            cooldown_manager.mark_success(account_id)
-    except Exception as e:  # 永不阻断主流程
-        logger.warning(f"_update_cooldown 异常 (忽略): {e}")
-
-
 def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
     """Phase 3.E: 构造 X-AIMC-* 响应头
 
@@ -148,13 +119,11 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
     try:
         if is_stream:
             return await _forward_stream(
-                target_url, forward_headers, body, channel, start_time,
-                aimc_headers, requested_model=requested_model,
+                target_url, forward_headers, body, channel, start_time, aimc_headers
             )
         else:
             return await _forward_normal(
-                target_url, forward_headers, body, channel, start_time,
-                aimc_headers, requested_model=requested_model,
+                target_url, forward_headers, body, channel, start_time, aimc_headers
             )
     except httpx.TimeoutException:
         logger.error(f"上游超时: {channel['name']} ({target_url})")
@@ -182,7 +151,6 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
 async def _forward_stream(
     url: str, headers: dict, body: bytes, channel: dict, start_time: float,
     aimc_headers: dict | None = None,
-    requested_model: str = "",
 ) -> StreamingResponse:
     """流式透传：原样传递字节，不解析 SSE"""
 
@@ -200,9 +168,6 @@ async def _forward_stream(
     # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
     if response.status_code in (401, 403, 500, 502, 503, 504):
         _schedule_alert(channel, response)
-
-    # V4.6.1: 更新账号 cooldown (失败进入冷却, 成功清空)
-    _update_cooldown(channel, response.status_code)
 
     async def stream_generator():
         try:
@@ -236,12 +201,8 @@ async def _forward_stream(
 async def _forward_normal(
     url: str, headers: dict, body: bytes, channel: dict, start_time: float,
     aimc_headers: dict | None = None,
-    requested_model: str = "",
 ) -> JSONResponse:
-    """非流式转发：等待完整响应后返回
-
-    V4.6.1: 接收 requested_model 透传给 _schedule_usage_log (Phase 3.A group_id 提取)
-    """
+    """非流式转发：等待完整响应后返回"""
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(settings.request_timeout, connect=10.0)) as client:
         response = await client.post(url, headers=headers, content=body)
@@ -252,9 +213,6 @@ async def _forward_normal(
     # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
     if response.status_code in (401, 403, 500, 502, 503, 504):
         _schedule_alert(channel, response)
-
-    # V4.6.1: 更新账号 cooldown (失败进入冷却, 成功清空)
-    _update_cooldown(channel, response.status_code)
 
     # 尝试记录用量（异步，不阻塞响应）
     _schedule_usage_log(channel, response, latency_ms, requested_model)
@@ -283,17 +241,27 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
     Phase 3.A: 接收 requested_model, 提取 group_id 写入 usage_logs
     - 精确模型路由: group_id = NULL
     - 组路由: group_id = "tier:xxx" / "scene:xxx"
+
+    Phase 3.A+ fix (2026-08-13): model 字段兜底
+    - 优先用 router 注入的 _actual_model (精确路由 = requested_model, 组路由 = 实际命中)
+    - fallback 到 requested_model (请求体里的 model)
+    - 再次 fallback 到上游响应 data.model (避免空字符串导致 dashboard 命中率统计失真)
     """
     try:
         data = response.json()
         usage = data.get("usage", {})
         group_id = _extract_group_id(requested_model)
+        actual_model = (
+            channel.get("_actual_model")
+            or requested_model
+            or data.get("model", "")
+        )
         # 创建异步任务写入数据库
         asyncio.get_event_loop().create_task(
             _write_usage_log(
                 channel_id=channel.get("id"),
                 account_id=channel.get("account_id"),
-                model=data.get("model", ""),
+                model=actual_model,
                 input_tokens=usage.get("prompt_tokens", 0),
                 output_tokens=usage.get("completion_tokens", 0),
                 status_code=response.status_code,

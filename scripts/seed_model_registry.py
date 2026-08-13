@@ -41,26 +41,20 @@ from db.models import ModelRegistry
 # 字段：model_id, family, display_name, tier, capabilities (list), context_length,
 #       modality, is_open_source, release_date, notes
 MODEL_REGISTRY = [
-    # ========== DeepSeek (4 个) ==========
+    # ========== DeepSeek (2 个, V4 系列) ==========
+    # Phase 2a+ fix (2026-08-13): 官方 API 当前只支持 V4 系列
+    # (deepseek-v4-flash 升级到 V4-Flash-0731, deepseek-v4-pro 升级到 V4-Pro-0813)
+    # 历史 model 名 (deepseek-chat / deepseek-reasoner / deepseek-coder / deepseek-v2.5)
+    # 已不在官方 API 中, 调用会 404
     (
-        "deepseek-reasoner", "deepseek", "DeepSeek Reasoner", "T0",
-        ["reasoning", "math", "code"], 64000, "text", 0, "2025-01",
-        "R1 推理模型, 强推理/数学/代码"
+        "deepseek-v4-pro", "deepseek", "DeepSeek V4 Pro", "T0",
+        ["reasoning", "math", "code", "long_context"], 128000, "text", 0, "2026-08",
+        "V4 旗舰, 升级到 V4-Pro-0813, 支持 thinking",
     ),
     (
-        "deepseek-chat", "deepseek", "DeepSeek V3 Chat", "T1",
-        ["reasoning", "code", "general"], 128000, "text", 0, "2025-12",
-        "V3 主力, 128k ctx, 综合能力强"
-    ),
-    (
-        "deepseek-coder", "deepseek", "DeepSeek Coder", "T1",
-        ["code"], 64000, "text", 1, "2024-06",
-        "代码专用, 老牌但仍强"
-    ),
-    (
-        "deepseek-v2.5", "deepseek", "DeepSeek V2.5", "T2",
-        ["general"], 128000, "text", 0, "2024-09",
-        "V2.5 上一代, 仍在服务"
+        "deepseek-v4-flash", "deepseek", "DeepSeek V4 Flash", "T1",
+        ["reasoning", "code", "general"], 128000, "text", 0, "2026-07",
+        "V4 Flash 升级到 V4-Flash-0731, 性价比",
     ),
 
     # ========== Qwen (6 个) ==========
@@ -165,11 +159,32 @@ MODEL_REGISTRY = [
         "阶跃星辰基础"
     ),
 
-    # ========== MiniMax (1 个) ==========
+    # ========== MiniMax (按 sensenova_official 已收录的 M 系列) ==========
+    # Phase 2a+ fix (2026-08-13): 替换原 MiniMax-Text-01 (deprecated), 改用 M 系列
     (
-        "MiniMax-Text-01", "MiniMax", "MiniMax Text-01", "T1",
-        ["long_context", "general"], 1000000, "text", 0, "2025-04",
-        "MiniMax 长上下文, 1M ctx, 实际用 MiniMax-Text-01"
+        "MiniMax-M2.7", "MiniMax", "MiniMax M2.7", "T0",
+        ["reasoning", "code", "long_context", "general"], 200000, "text", 0, "2026-08",
+        "MiniMax M2.7 旗舰, 长上下文",
+    ),
+    (
+        "MiniMax-M2", "MiniMax", "MiniMax M2", "T1",
+        ["reasoning", "code", "general"], 128000, "text", 0, "2026-08",
+        "MiniMax M2 主力",
+    ),
+    (
+        "MiniMax-M2.7-flash", "MiniMax", "MiniMax M2.7 Flash", "T1",
+        ["reasoning", "general"], 128000, "text", 0, "2026-08",
+        "MiniMax M2.7 Flash 闪速版",
+    ),
+    (
+        "MiniMax-M2.1", "MiniMax", "MiniMax M2.1", "T1",
+        ["general"], 128000, "text", 0, "2026-08",
+        "MiniMax M2.1",
+    ),
+    (
+        "MiniMax-M2.7-highspeed", "MiniMax", "MiniMax M2.7 Highspeed", "T2",
+        ["general"], 128000, "text", 0, "2026-08",
+        "MiniMax M2.7 高速推理版",
     ),
 
     # ========== Llama (2 个) ==========

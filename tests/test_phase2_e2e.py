@@ -88,17 +88,23 @@ def test_2_group_route():
         }),
         timeout=15,
     )
-    print(f"  status: {resp.status_code} (上游 400 是预期的, 硅基流动不认 'deepseek-v2.5' model 名)")
+    print(f"  status: {resp.status_code} (上游 400 是预期的, 硅基流动不认 tier:balanced 成员 model 名)")
     print(f"  X-AIMC-Actual-Model: {resp.headers.get('X-AIMC-Actual-Model', '<missing>')}")
     print(f"  X-AIMC-Actual-Channel: {resp.headers.get('X-AIMC-Actual-Channel', '<missing>')}")
     print(f"  X-AIMC-Group-Id: {resp.headers.get('X-AIMC-Group-Id', '<missing>')}")
 
     # 验证: 组路由即便 upstream 400, AIMC 头应已注入
-    assert resp.headers.get("X-AIMC-Actual-Model") == "deepseek-v2.5", \
-        f"组路由应注入 _actual_model='deepseek-v2.5', 实际 {resp.headers.get('X-AIMC-Actual-Model')!r}"
+    # Phase 2a+ fix (2026-08-13): tier:balanced 现成员 (脚本 seed_model_groups.py):
+    # qwen-plus / qwen2.5-32b / glm-4-air / hunyuan-standard / llama-3.1-70b / step-1-8k
+    expected_models = (
+        "qwen-plus", "qwen2.5-32b", "glm-4-air",
+        "hunyuan-standard", "llama-3.1-70b", "step-1-8k",
+    )
+    assert resp.headers.get("X-AIMC-Actual-Model") in expected_models, \
+        f"组路由应注入 _actual_model ∈ {expected_models}, 实际 {resp.headers.get('X-AIMC-Actual-Model')!r}"
     assert resp.headers.get("X-AIMC-Group-Id") == "tier:balanced"
     assert resp.headers.get("X-AIMC-Actual-Channel") == "siliconflow_aggregator"
-    print("  [OK] 组路由机制工作, 3 个 header 全部正确注入")
+    print(f"  [OK] 组路由机制工作, _actual_model={resp.headers.get('X-AIMC-Actual-Model')!r}")
 
 
 # ============================================================
@@ -140,10 +146,16 @@ async def test_4_preferences():
     await route_engine.refresh_cache()
 
     # 4a) 无 prefs
+    # Phase 2a+ fix (2026-08-13): tier:balanced 现成员 (脚本 seed_model_groups.py):
+    # qwen-plus / qwen2.5-32b / glm-4-air / hunyuan-standard / llama-3.1-70b / step-1-8k
     ch = route_engine.select_channel("tier:balanced")
     assert ch is not None, "无 prefs 应返 channel, 实际 None (cache 可能没刷新)"
-    assert ch["_actual_model"] == "deepseek-v2.5", \
-        f"无 prefs 应选 deepseek-v2.5, 实际 {ch['_actual_model']}"
+    expected_models = (
+        "qwen-plus", "qwen2.5-32b", "glm-4-air",
+        "hunyuan-standard", "llama-3.1-70b", "step-1-8k",
+    )
+    assert ch["_actual_model"] in expected_models, \
+        f"无 prefs 应选 tier:balanced 现成员之一, 实际 {ch['_actual_model']!r}"
     print(f"  4a) 无 prefs -> {ch['_actual_model']!r} ({ch['name']}) [OK]")
 
     # 4b) prefer_family='qwen'
