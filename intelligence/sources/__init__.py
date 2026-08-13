@@ -28,6 +28,15 @@ from intelligence.sources.model_lists_extra import (
 from intelligence.sources.price_aggregator import (
     SiliconFlowPricingSource,
     OpenRouterPricingSource,
+    # Phase 4 v4.3 (2026-08-13): 5 家厂商定价页
+    DeepSeekPricingSource,
+    KimiPricingSource,
+    MiniMaxPricingSource,
+    GLMPricingSource,
+    SiliconFlowPricingCenterSource,
+    # Phase 4 v4.3 (2026-08-13) 后续补充: 2 个 token-plan / step-plan 源
+    SenseNovaPricingSource,
+    StepFunPricingSource,
 )
 # Phase 4 v4.2 (2026-08-06): 阿里千问AI 观察性情报源
 from intelligence.sources.qianwenai import QianwenAISource
@@ -71,6 +80,15 @@ def get_all_sources() -> list[IntelSourceBase]:
         # Phase 3.1 price_aggregator
         SiliconFlowPricingSource(),
         OpenRouterPricingSource(),
+        # Phase 4 v4.3 price_aggregator (5 家厂商官方定价页)
+        DeepSeekPricingSource(),
+        KimiPricingSource(),
+        MiniMaxPricingSource(),
+        GLMPricingSource(),
+        SiliconFlowPricingCenterSource(),
+        # Phase 4 v4.3 后续补充 (2 个 token-plan / step-plan 源)
+        SenseNovaPricingSource(),
+        StepFunPricingSource(),
         # Phase 4 v4.2 price_aggregator (观察)
         QianwenAISource(),
         # Phase 3.1 benchmark
