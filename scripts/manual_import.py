@@ -108,9 +108,13 @@ CHANNELS = [
         ],
     },
     {
-        # Phase 2D-3: MiniMax 渠道 (2026-07-24)
-        # OpenAI-compatible 代理 — base_url + model 名称需用户填 (留 placeholder)
-        # 用 MINIMAX_BASE_URL + MINIMAX_MODEL 单独配（其他渠道用硬编码 base_url）
+        # Phase 2D-3: MiniMax 渠道 (2026-07-24, V4.6.4 修正: 用 MiniMax 官方 model 名)
+        # MiniMax OpenAI-compatible 代理 — base_url 需用户填 (留 placeholder)
+        # 用 MINIMAX_BASE_URL 单独配 endpoint（其他渠道用硬编码 base_url）
+        # V4.6.4 fix: prices 用 MiniMax 官方当前 8 个 model (取代错误的 gpt-4o-mini placeholder)
+        #   - MiniMax-M3 / MiniMax-M2.7 / MiniMax-M2.7-highspeed / MiniMax-M2.5
+        #   - MiniMax-M2.5-highspeed / MiniMax-M2.1 / MiniMax-M2.1-highspeed / MiniMax-M2
+        # 价格默认 0.0 (placeholder) - 等真实计费后改
         "key": "minimax",
         "name": "minimax_compat",
         "provider": "minimax",
@@ -119,8 +123,15 @@ CHANNELS = [
         "env_var": "MINIMAX_API_KEY",
         "qpm": 60,
         "prices": [
-            # 价格 placeholder — 等用户填真实计费后改
-            ("gpt-4o-mini", "normal", "全天", 0.0, 0.0),
+            # V4.6.4: MiniMax 官方当前 8 个 model (从 platform.minimaxi.com/docs 查, 2026-08-08)
+            ("MiniMax-M3",              "normal", "全天", 0.0, 0.0),
+            ("MiniMax-M2.7",            "normal", "全天", 0.0, 0.0),
+            ("MiniMax-M2.7-highspeed",  "normal", "全天", 0.0, 0.0),
+            ("MiniMax-M2.5",            "normal", "全天", 0.0, 0.0),
+            ("MiniMax-M2.5-highspeed",  "normal", "全天", 0.0, 0.0),
+            ("MiniMax-M2.1",            "normal", "全天", 0.0, 0.0),
+            ("MiniMax-M2.1-highspeed",  "normal", "全天", 0.0, 0.0),
+            ("MiniMax-M2",              "normal", "全天", 0.0, 0.0),
         ],
     },
 
