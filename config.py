@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     api_key: str = ""  # 留空则不鉴权
 
     # === AI 解析引擎 ===
+    # env 映射 (pydantic-settings 自动从 env var 读):
+    #   - openai_api_key  <- OPENAI_API_KEY
+    #   - openai_base_url <- OPENAI_BASE_URL
+    #   - parse_model     <- PARSE_MODEL
+    # .env 没配时,使用以下默认值
+    # V4.6.4 (2026-08-13): parse_model 默认仍为 gpt-4o-mini (向后兼容),
+    #   .env 可改为任何 OpenAI-compatible model 名 (如 MiniMax-M2.7 / MiniMax-M3 /
+    #   deepseek-reasoner 等). thinking model 会自动被 parser.py 预处理脱去 <think> 块
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     parse_model: str = "gpt-4o-mini"
