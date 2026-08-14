@@ -503,6 +503,51 @@ function renderCrossSource(container) {
     }
 }
 
+// 阶段1 (2026-08-14): prompt cache 节省成本统计
+async function loadCacheStats() {
+    try {
+        const resp = await authFetch('/dashboard/api/cache/stats?days=7');
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        // 顶部 summary
+        const savedEl = document.getElementById('cache-saved');
+        const tokensEl = document.getElementById('cache-tokens');
+        const pctEl = document.getElementById('cache-hit-pct');
+        if (savedEl) savedEl.textContent = '¥' + (data.saved_cost_cny || 0).toFixed(4);
+        if (tokensEl) tokensEl.textContent = (data.total_cached_tokens || 0).toLocaleString();
+        if (pctEl) pctEl.textContent = (data.hit_rate_pct || 0).toFixed(1);
+
+        // 按渠道
+        const chList = document.getElementById('cache-channel-list');
+        if (chList && data.by_channel && data.by_channel.length > 0) {
+            let html = '<table class="cache-table"><thead><tr><th>渠道</th><th>Input</th><th>Cached</th><th>命中率</th><th>节省</th></tr></thead><tbody>';
+            for (const c of data.by_channel) {
+                html += `<tr><td>${esc(c.channel_name)}</td><td>${c.input_tokens.toLocaleString()}</td><td>${c.cached_tokens.toLocaleString()}</td><td>${c.hit_rate_pct.toFixed(1)}%</td><td>¥${c.saved_cost_cny.toFixed(4)}</td></tr>`;
+            }
+            html += '</tbody></table>';
+            chList.innerHTML = html;
+        } else if (chList) {
+            chList.innerHTML = '<div style="color:#6a737d;font-size:13px;">暂无 cache 数据</div>';
+        }
+
+        // 按 model (TOP 10)
+        const mList = document.getElementById('cache-model-list');
+        if (mList && data.by_model && data.by_model.length > 0) {
+            let html = '<table class="cache-table"><thead><tr><th>Model</th><th>Input</th><th>Cached</th><th>命中率</th><th>节省</th></tr></thead><tbody>';
+            for (const m of data.by_model) {
+                html += `<tr><td>${esc(m.model)}</td><td>${m.input_tokens.toLocaleString()}</td><td>${m.cached_tokens.toLocaleString()}</td><td>${m.hit_rate_pct.toFixed(1)}%</td><td>¥${m.saved_cost_cny.toFixed(4)}</td></tr>`;
+            }
+            html += '</tbody></table>';
+            mList.innerHTML = html;
+        } else if (mList) {
+            mList.innerHTML = '<div style="color:#6a737d;font-size:13px;">暂无 cache 数据</div>';
+        }
+    } catch (e) {
+        console.warn('Cache stats load failed:', e);
+    }
+}
+
 // 用量统计图表
 async function loadUsageChart() {
     try {
@@ -548,6 +593,7 @@ async function loadUsageChart() {
 
 // 页面加载完成后初始化图表
 document.addEventListener('DOMContentLoaded', loadUsageChart);
+document.addEventListener('DOMContentLoaded', loadCacheStats);  // 阶段1 (2026-08-14)
 
 // ============================================================
 // V4.5: 周报查看页 (与 dashboard/static/index.html #weekly-report-section 配套)

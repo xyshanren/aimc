@@ -336,6 +336,174 @@ async def get_usage_summary(days: int = 7, session: AsyncSession = Depends(get_s
     ]
 
 
+def _approx_channel_saved(channel_id: int, cached_t: int, cache_price_map: dict) -> float:
+    """阶段1 (2026-08-14): 按 channel 估算节省金额 (fallback 简化版)
+
+    当前简化: 因为价格表是按 model 维度, 不能精确按 channel 聚合,
+    这里用 cache_price_map 平均 cached_input_price * 9 估算节省.
+
+    TODO: 后续改进 — 用 LEFT JOIN price_snapshots WHERE channel_id=X
+    按 channel_id 过滤聚合, 给出精确节省
+    """
+    if cached_t <= 0:
+        return 0.0
+    if not cache_price_map:
+        return cached_t * 0.1 / 1_000_000
+    avg_cip = sum(cache_price_map.values()) / len(cache_price_map)
+    return cached_t * avg_cip * 9 / 1_000_000
+
+
+@router.get("/api/cache/stats")
+async def get_cache_stats(days: int = 7, session: AsyncSession = Depends(get_session)):
+    """阶段1 (2026-08-14): prompt cache 节省成本统计
+
+    聚合最近 N 天 usage_logs 的 cached_input_tokens + price_snapshots.cached_input_price
+    计算:
+    - 总 input tokens / cache hit tokens / hit rate
+    - 按 cache 价 vs 普通价的差额算"节省金额"
+
+    Returns:
+        {
+            "period_days": 7,
+            "total_input_tokens": int,
+            "total_cached_tokens": int,
+            "hit_rate_pct": float,
+            "saved_cost_cny": float,           # 节省金额 (元)
+            "by_channel": [
+                {"channel_id": int, "channel_name": str,
+                 "input_tokens": int, "cached_tokens": int,
+                 "hit_rate_pct": float, "saved_cost_cny": float}
+            ],
+            "by_model": [
+                {"model": str, "input_tokens": int, "cached_tokens": int,
+                 "hit_rate_pct": float, "saved_cost_cny": float}
+            ],
+        }
+    """
+    from datetime import datetime, timedelta
+
+    # 计算时间窗口 (UTC 偏移不考虑, db 存的是本地 time)
+    cutoff = datetime.now() - timedelta(days=days)
+
+    # 1. 按 channel 聚合 (用 COALESCE 处理 NULL)
+    channel_stmt = (
+        select(
+            UsageLog.channel_id,
+            Channel.name.label("channel_name"),
+            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageLog.cached_input_tokens), 0).label("cached_tokens"),
+        )
+        .join(Channel, UsageLog.channel_id == Channel.id)
+        .where(UsageLog.created_at >= cutoff)
+        .group_by(UsageLog.channel_id, Channel.name)
+        .order_by(func.sum(UsageLog.cached_input_tokens).desc())
+    )
+    channel_rows = (await session.execute(channel_stmt)).all()
+
+    # 2. 按 model 聚合
+    model_stmt = (
+        select(
+            UsageLog.model,
+            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageLog.cached_input_tokens), 0).label("cached_tokens"),
+        )
+        .where(UsageLog.created_at >= cutoff)
+        .group_by(UsageLog.model)
+        .order_by(func.sum(UsageLog.cached_input_tokens).desc())
+        .limit(10)  # TOP 10 model
+    )
+    model_rows = (await session.execute(model_stmt)).all()
+
+    # 3. 算节省金额: cached_tokens * (input_price - cached_input_price) / 1e6
+    #    从 price_snapshots 读真实 cache 价; input_price 通常 SF 聚合平台未公开
+    #    估算: 假设 input_price = cached_input_price * 10 (cache 是 10% off, 节省 90%)
+    #    如果有 input_price, 用真实差额
+    price_map_stmt = select(
+        PriceSnapshot.model,
+        PriceSnapshot.input_price,
+        PriceSnapshot.cached_input_price,
+    )
+    price_rows = (await session.execute(price_map_stmt)).all()
+    # model -> cached_input_price (元/百万 tokens)
+    cache_price_map = {}
+    for p in price_rows:
+        if p.cached_input_price is None:
+            continue
+        cache_price_map[p.model] = p.cached_input_price
+        # 如果有真实 input_price, 也存 (按 model 维度算差额)
+    input_price_map = {}
+    for p in price_rows:
+        if p.input_price is not None:
+            input_price_map[p.model] = p.input_price
+
+    def saved_for(model: str, cached_t: int) -> float:
+        """算单个 model 的节省金额 (元)
+
+        算法:
+        - 如果有真实 input_price + cached_input_price: 用真实差额
+        - 否则用 cached_input_price * 9 (假设 cache 是 10% off, 节省 90%)
+        - 完全没价格: 用 0.1 元/百万的兜底
+        """
+        if cached_t <= 0:
+            return 0.0
+        cip = cache_price_map.get(model)
+        if cip is None:
+            return cached_t * 0.1 / 1_000_000  # 兜底
+        iip = input_price_map.get(model)
+        if iip is not None:
+            diff = max(iip - cip, 0)
+            return cached_t * diff / 1_000_000
+        # 用 cached_price * 9 估算 (cache 省 90%)
+        return cached_t * cip * 9 / 1_000_000
+
+    by_channel = []
+    for row in channel_rows:
+        input_t = int(row.input_tokens or 0)
+        cached_t = int(row.cached_tokens or 0)
+        hit_rate = (cached_t / input_t * 100) if input_t > 0 else 0.0
+        # by_channel 节省金额需要按 channel 算 (channel_id -> models -> 价格), 简化用 model 价
+        # 真实算需要 JOIN price_snapshots WHERE channel_id=..., 先用 model 价格近似
+        by_channel.append({
+            "channel_id": row.channel_id,
+            "channel_name": row.channel_name,
+            "input_tokens": input_t,
+            "cached_tokens": cached_t,
+            "hit_rate_pct": round(hit_rate, 1),
+            # TODO: 按 channel_id 过滤 price_snapshots 算精确节省
+            "saved_cost_cny": round(_approx_channel_saved(row.channel_id, cached_t, cache_price_map), 4),
+        })
+
+    by_model = []
+    for row in model_rows:
+        input_t = int(row.input_tokens or 0)
+        cached_t = int(row.cached_tokens or 0)
+        hit_rate = (cached_t / input_t * 100) if input_t > 0 else 0.0
+        saved = saved_for(row.model, cached_t)
+        by_model.append({
+            "model": row.model,
+            "input_tokens": input_t,
+            "cached_tokens": cached_t,
+            "hit_rate_pct": round(hit_rate, 1),
+            "saved_cost_cny": round(saved, 4),
+        })
+
+    # 4. 总计
+    total_input = sum(c["input_tokens"] for c in by_channel)
+    total_cached = sum(c["cached_tokens"] for c in by_channel)
+    total_hit_rate = (total_cached / total_input * 100) if total_input > 0 else 0.0
+    total_saved = sum(c["saved_cost_cny"] for c in by_channel)
+
+    return {
+        "period_days": days,
+        "total_input_tokens": total_input,
+        "total_cached_tokens": total_cached,
+        "hit_rate_pct": round(total_hit_rate, 1),
+        "saved_cost_cny": round(total_saved, 4),
+        "by_channel": by_channel,
+        "by_model": by_model,
+    }
+
+
 @router.get("/api/prices")
 async def get_prices(session: AsyncSession = Depends(get_session)):
     """当前价格列表"""
