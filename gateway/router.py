@@ -11,7 +11,6 @@
 
 import json
 import logging
-import os
 import time
 from datetime import datetime, date
 from typing import Optional
@@ -22,33 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_effective_base_url(ch) -> str:
-    """V4.6.4 fix: 返回渠道最终使用的 base_url。
-
-    规则:
-    - SENSENOVA_BASE_URL env 有设 -> 优先使用 (覆盖 db 值)
-    - 其他渠道 -> 仍以 db 为准 (env 不干扰)
-
-    设计原因:
-    - manual_import.py 写死的 api.sensenova.cn 是错误默认 (官方推荐 token.sensenova.cn)
-    - db 修改需要备份 + 重启服务; env 调整只需改 .env + 等缓存刷新 (默认 5 分钟)
-    - 旧 users 已在 db 里建过 sensenova_official 渠道, 改 env 立刻生效无需手动改 db
-
-    Returns:
-        实际使用的 base_url (去除尾斜杠)
-    """
-    db_base_url = (ch.base_url or "").rstrip("/")
-    if ch.provider == "sensenova":
-        env_override = os.getenv("SENSENOVA_BASE_URL", "").strip().rstrip("/")
-        if env_override and env_override != db_base_url:
-            logger.debug(
-                f"[sensenova] base_url env 覆盖 db: "
-                f"env={env_override} db={db_base_url} channel_id={ch.id}"
-            )
-            return env_override
-    return db_base_url
 
 
 class RouteEngine:
@@ -71,6 +43,16 @@ class RouteEngine:
         self._registry_cache: dict = {}        # model_id -> ModelRegistry ORM
         self._groups_cache: dict = {}          # group_id -> ModelGroup ORM
         self._group_members_cache: dict = {}   # group_id -> [model_id]
+        # V4.6.4 (2026-08-14): member priority tie-break (Issue 3)
+        # 场景: 同 group 内多个 member 走同一个 channel (如 minimax_compat),
+        # 价格/配额/优先级都一致 → 需用 model_group_members.priority tie-break
+        # (数字越小越优先, e.g. deepseek-v4-pro priority=100 > minimax-m2.7 priority=120)
+        self._member_priority_cache: dict = {} # group_id -> {model_id: priority}
+        # V4.5.1: 能力评分 (model_cards) — sort_key tie-break
+        self._cards_cache: dict = {}           # model_id -> [ModelCard ORM]
+        # V4.6.1: least-used tie-break (同 channel 多账号轮询)
+        # account_id → 最近路由选中的时间戳 (time.time())
+        self._account_last_used: dict[int, float] = {}
 
     async def refresh_cache(self):
         """从数据库刷新渠道缓存到内存 (全量)
@@ -87,6 +69,7 @@ class RouteEngine:
         async with async_session_factory() as session:
             await self._load_channels_cache(session)
             await self._load_groups_cache(session)
+            await self._load_cards_cache(session)
 
         self._last_refresh = datetime.now()
         logger.info(
@@ -233,14 +216,8 @@ class RouteEngine:
 
         复用逻辑从原 refresh_cache() 抽出, 给 refresh_cache() 和
         invalidate_channel() 共享.
-
-        V4.6.4 增强: 收集 ciphertext 解密失败的 account, 一次性报 critical
-        (避免 5+ 个 WARNING 混在 INFO 中间被运维忽略)
         """
         from db.models import Channel
-
-        # V4.6.4: 清空失败列表 (用于本次 cache 加载期间的汇总告警)
-        self._last_load_decrypt_failures: list[tuple[str, str]] = []
 
         # 查询所有活跃渠道及其关联数据
         stmt = select(Channel).where(Channel.status == "active")
@@ -252,40 +229,6 @@ class RouteEngine:
             cache.extend(await self._build_channel_entries(session, ch))
 
         self._channels_cache = cache
-
-        # V4.6.4: 汇总告警 - 多账号解密失败时, critical + 显眼标题
-        failures = getattr(self, "_last_load_decrypt_failures", [])
-        if failures:
-            n = len(failures)
-            if n >= 3:
-                # 3+ 失败 = critical (router 路由命中率暴跌, 必须修复)
-                logger.critical("=" * 70)
-                logger.critical(
-                    f"!! {n} 个账号 ciphertext 解密失败 - 路由命中率会暴跌 !!"
-                )
-                logger.critical(
-                    "   原因: 大概率是 AIMC_MASTER_KEY 跟 db 加密时用的不一致"
-                )
-                logger.critical("   修复:")
-                logger.critical(
-                    "     1. python scripts/check_ciphertext_health.py  (诊断)"
-                )
-                logger.critical(
-                    "     2. 如果老 key 还在, 跑 scripts/reencrypt_accounts.py 批量重加密"
-                )
-                logger.critical(
-                    "     3. 如果老 key 没了, 跑 scripts/add_account.py 重建 account"
-                )
-                logger.critical("   失败的 accounts:")
-                for name, reason in failures:
-                    logger.critical(f"     - {name}  ({reason})")
-                logger.critical("=" * 70)
-            else:
-                # 1-2 个失败 = warning 级别
-                logger.warning(
-                    f"{n} 个账号 ciphertext 解密失败: "
-                    + ", ".join(name for name, _ in failures)
-                )
 
     async def _build_channel_entries(self, session, ch) -> list[dict]:
         """Phase 4 v2 (I6): 构造单个 channel 的 cache 条目列表
@@ -325,11 +268,8 @@ class RouteEngine:
         for acc in active_accounts:
             plaintext_key = self._resolve_account_key(acc)
             if plaintext_key is None:
-                # V4.6.4: _resolve_account_key 内部已经报了具体原因
-                # (ciphertext 解密失败 / 都为空 等), 不再重复警告
-                # 只在 DEBUG 级别记录 (供排查)
-                logger.debug(
-                    f"账号 {ch.name}/{acc.account_name} 无法解析 key, 跳过路由"
+                logger.warning(
+                    f"账号 {ch.name}/{acc.account_name} 既无 ciphertext 也无明文 key, 跳过"
                 )
                 continue
 
@@ -337,10 +277,7 @@ class RouteEngine:
                 "id": ch.id,
                 "name": ch.name,
                 "provider": ch.provider,
-                # V4.6.4 fix: SENSENOVA_BASE_URL env 优先 db
-                # (manual_import.py 默认 api.sensenova.cn 错误, 官方推荐 token.sensenova.cn)
-                # 其他渠道暂不污染这个机制, sensenova endpoint 切换是唯一明确场景
-                "base_url": _resolve_effective_base_url(ch),
+                "base_url": ch.base_url,
                 "priority": ch.priority,
                 "provider_type": ch.provider_type,
                 "billing_mode": ch.billing_mode,
@@ -359,10 +296,19 @@ class RouteEngine:
         return entries
 
     async def _load_groups_cache(self, session) -> None:
-        """Phase 4 v2 (I6): 从给定 session 加载 groups cache (内部辅助)"""
+        """Phase 4 v2 (I6): 从给定 session 加载 groups cache (内部辅助)
+
+        V4.6.4 fix (2026-08-14): 防御性 group_id 归一化
+        - 历史上 model_group_members.group_id 被污染过 int string (如 '1')
+          而 model_groups.group_id 是 string (如 'tier:flagship'), 导致
+          _group_members_cache key 跟 _groups_cache key 不一致, 永远查不到 -> 503.
+        - 修复: 加载时把 int string 通过 model_groups.id 反查转成对应 string.
+          不在 model_groups 里的 group_id 记录 warning + skip (避免再次污染).
+        """
         from db.models import (
             ModelRegistry, ModelGroup, ModelGroupMember,
         )
+        from db.normalizers import normalize_model_id  # 防 def use, 跟其他模块一致
 
         # 1) model_registry: model_id → ORM
         reg_result = await session.execute(
@@ -376,13 +322,14 @@ class RouteEngine:
             f"(family: {set(r.family for r in self._registry_cache.values())})"
         )
 
-        # 2) model_groups: group_id → ORM
+        # 2) model_groups: group_id → ORM (同时建 id -> group_id 反查表, 给 step 3 防御用)
         grp_result = await session.execute(
             select(ModelGroup).where(ModelGroup.enabled == 1)
         )
-        self._groups_cache = {
-            g.group_id: g for g in grp_result.scalars().all()
-        }
+        groups = grp_result.scalars().all()
+        self._groups_cache = {g.group_id: g for g in groups}
+        # V4.6.4: int id -> string group_id 反查 (member.group_id='1' 防御用)
+        id_to_gid: dict[int, str] = {g.id: g.group_id for g in groups if g.id is not None}
         logger.info(
             f"路由缓存: {len(self._groups_cache)} 个 model group "
             f"({list(self._groups_cache.keys())})"
@@ -394,23 +341,95 @@ class RouteEngine:
             select(ModelGroupMember).where(ModelGroupMember.is_active == 1)
         )
         self._group_members_cache = {}
+        # V4.6.4 (Issue 3): 同时 build member priority cache (组内 tie-break)
+        self._member_priority_cache = {}
+        skipped_invalid = 0
         for m in mem_result.scalars().all():
-            self._group_members_cache.setdefault(m.group_id, []).append(m.model_id)
+            gid = m.group_id
+            # V4.6.4 fix: 防御性 group_id 规范化
+            # - 如果是 int string ('1' '2' ...) -> 通过 id_to_gid 反查成 string
+            # - 如果不在 _groups_cache 里 -> warning + skip (污染数据, 不能进 cache)
+            if gid in self._groups_cache:
+                normalized_gid = gid
+            elif gid.isdigit() and int(gid) in id_to_gid:
+                normalized_gid = id_to_gid[int(gid)]
+                logger.warning(
+                    f"[V4.6.4] model_group_members.group_id={gid!r} (int string) "
+                    f"归一化到 {normalized_gid!r} (model_id={m.model_id})"
+                )
+            else:
+                logger.warning(
+                    f"[V4.6.4] model_group_members.group_id={gid!r} 不在 model_groups "
+                    f"({list(self._groups_cache.keys())}), skip (id={m.id})"
+                )
+                skipped_invalid += 1
+                continue
+            self._group_members_cache.setdefault(normalized_gid, []).append(m.model_id)
+            # V4.6.4: 存 member priority (group_id -> model_id -> priority)
+            # 没显式设 priority 时, 默认 100 (跟 ORM default 一致)
+            self._member_priority_cache.setdefault(normalized_gid, {})[m.model_id] = (
+                m.priority if m.priority is not None else 100
+            )
         logger.info(
             f"路由缓存: {sum(len(v) for v in self._group_members_cache.values())} "
             f"个 group members 跨 {len(self._group_members_cache)} 个组"
+            f"{f' (跳过 {skipped_invalid} 条 group_id 无效)' if skipped_invalid else ''}"
         )
+
+    # ===========================================================
+    # V4.5.1: 能力评分路由 (model_cards 缓存 + score_bonus + sort_key 接入)
+    # ===========================================================
+
+    async def _load_cards_cache(self, session) -> None:
+        """V4.5.1: 加载 model_cards 评分 (model_id → [ModelCard]).
+
+        反向索引: 一个 model 可对应多个 benchmark source (OpenCompass + LMSYS + ...).
+        score_bonus() 取 max(score × recency) — 历史最强分 (考虑时效).
+        """
+        from db.models import ModelCard
+        result = await session.execute(select(ModelCard))
+        cards = result.scalars().all()
+        self._cards_cache = {}
+        for card in cards:
+            self._cards_cache.setdefault(card.model, []).append(card)
+        logger.info(
+            f"路由缓存: {sum(len(v) for v in self._cards_cache.values())} 个 model_card "
+            f"跨 {len(self._cards_cache)} 个 model"
+        )
+
+    def score_bonus(self, model: str) -> float:
+        """V4.5.1: model 的能力评分加成 [0.0, 1.0].
+
+        计算: max(card.score × recency_weight(card.updated_at)) over cards.
+        - 无 card / 无 updated_at → 0.0
+        - score 100% + recency 1.0 → 1.0 (满分)
+        - 半年内的 OpenCompass 引用 → ~1.0
+        - 一年前的 → ~0.5
+        - 二年前 / 无时间戳 → 0.0
+
+        用法: sort_key 加 -score_bonus 项, 价格平手时高分排前. 权重 ≤ 0.2 (Phase 2 design).
+        """
+        from intelligence.recency import recency_weight
+
+        cards = self._cards_cache.get(model, [])
+        if not cards:
+            return 0.0
+        best = 0.0
+        for card in cards:
+            if card.score is None:
+                continue
+            recency = recency_weight(card.updated_at)
+            # score 是 0~100, 归一化到 0~1
+            weighted = (card.score / 100.0) * recency
+            if weighted > best:
+                best = weighted
+        return best
 
     def _resolve_account_key(self, account) -> Optional[str]:
         """API-Sec-1: 透明获取 account 的明文 api_key
 
-        优先用 ciphertext 解密 (XOR+Base64), fallback 到明文 (仅迁移期)
-
-        V4.6.4 增强: ciphertext 解密失败时, logger.warning 明确报告失败原因
-        (避免 "既无 ciphertext 也无明文 key" 误导排查)
-
-        Returns:
-            明文, 或 None (拿不到任何 key)
+        优先用 ciphertext 解密 (Fernet), fallback 到明文 (仅迁移期)
+        都拿不到返回 None (调用方 skip 这个 account)
         """
         # 优先 ciphertext
         if account.api_key_ciphertext is not None:
@@ -420,32 +439,13 @@ class RouteEngine:
                 plaintext = try_decrypt(account.api_key_ciphertext, settings.aimc_master_key)
                 if plaintext is not None:
                     return plaintext
-                # V4.6.4: 明确报告 ciphertext 存在但解密失败 (八成是 master key 不匹配)
-                logger.warning(
-                    f"账号 {account.account_name} (channel_id={account.channel_id}) "
-                    f"ciphertext 存在但解密失败, 请检查 AIMC_MASTER_KEY 是否与加密时一致 "
-                    f"(诊断: python scripts/check_ciphertext_health.py)"
-                )
-                # V4.6.4: 记录到失败列表, 供 _load_channels_cache 完成后汇总告警
-                if hasattr(self, "_last_load_decrypt_failures"):
-                    self._last_load_decrypt_failures.append(
-                        (account.account_name, "decrypt 失败")
-                    )
             except Exception as e:
-                logger.error(
-                    f"账号 {account.account_name} ciphertext 解密异常: {e}"
-                )
+                logger.error(f"账号 {account.account_name} ciphertext 解密失败: {e}")
 
         # Fallback: 明文 (deprecated, 仅迁移期)
         if account.api_key:
             return account.api_key
 
-        # 最后才报 "都拿不到" (避免误导)
-        if account.api_key_ciphertext is None and not account.api_key:
-            logger.warning(
-                f"账号 {account.account_name} (channel_id={account.channel_id}) "
-                f"既无 ciphertext 也无明文 key, 跳过"
-            )
         return None
 
     def _is_price_effective(self, price) -> bool:
@@ -486,43 +486,30 @@ class RouteEngine:
                     candidates.append((ch, price_info))
 
         if not candidates:
-            # Phase 2E: 无渠道明确支持该 model — fallback 到 priority 最低的 channel
+            # Phase 2E: 无渠道明确支持该 model — 尝试 fallback 到 priority 最低的 channel
             # (默认是聚合平台, 例如硅基流动: 1 个 key 通吃 100+ model)
-            #
-            # V4.6.4 fix: 返回 (channel, best_price), 用 channel 自己的 model 名发请求
-            # 避免上游不认用户请求的 model -> 404
-            # 例: 用户请求 deepseek-v2.5, siliconflow 只有 deepseek-ai/DeepSeek-V3
-            #     -> body.model = "deepseek-ai/DeepSeek-V3" (上游认), 上游返回 200
-            fallback_result = self._get_fallback_channel()
-            if fallback_result:
-                fallback_ch, fallback_price = fallback_result
-                if self._is_channel_usable(fallback_ch):
-                    if fallback_price:
-                        # V4.6.4: 注入 _actual_model = channel 支持的 model
-                        # (proxy 层会把这个替换到 body.model)
-                        fallback_ch["_actual_model"] = fallback_price["model"]
-                        logger.info(
-                            f"无可用渠道支持模型: {model}, fallback 到 {fallback_ch['name']} "
-                            f"via {fallback_price['model']} (priority={fallback_ch['priority']})"
-                        )
-                    else:
-                        # channel 没有任何 price_snapshot (边缘情况, 兼容)
-                        logger.warning(
-                            f"无可用渠道支持模型: {model}, fallback 到 {fallback_ch['name']} "
-                            f"但该 channel 无有效 price_snapshot"
-                        )
-                    return fallback_ch
+            fallback = self._get_fallback_channel()
+            if fallback and self._is_channel_usable(fallback):
+                logger.info(
+                    f"无可用渠道支持模型: {model}, fallback 到 {fallback['name']} "
+                    f"(priority={fallback['priority']})"
+                )
+                return fallback
             logger.warning(f"无可用渠道支持模型: {model}")
             return None
 
         # 2. 频限过滤
         from gateway.limiter import rate_limiter
+        from gateway.cooldown import cooldown_manager
+        # V4.6.1: 同时过滤 cooldown (单次失败就冷却, 避免反复撞死 key)
         candidates = [
             (ch, price) for ch, price in candidates
-            if not rate_limiter.is_limited(ch["account_id"], ch["quotas"])
+            if not cooldown_manager.is_in_cooldown(ch["account_id"])
+            and not rate_limiter.is_limited(ch["account_id"], ch["quotas"])
         ]
 
         if not candidates:
+            # 无候选时回 fallback; 再用 _is_channel_usable 检查一次 (含 cooldown)
             logger.warning(f"所有渠道频限已满: {model}")
             return None
 
@@ -536,22 +523,24 @@ class RouteEngine:
             logger.warning(f"所有渠道配额耗尽: {model}")
             return None
 
-        # 4. 多维排序：价格 ASC > 剩余配额 DESC > 优先级 DESC
+        # 4. 多维排序: 价格 ASC > 剩余配额 DESC > 优先级 DESC > score_bonus DESC > least-used
+        # V4.5.1: 加 score_bonus tie-break — 价格平手时高分 model 优先
+        # V4.6.1: 加 least-used tie-break — 同价同分时, 最近未被路由的账号优先 (多账号轮询)
         def sort_key(item):
             ch, price = item
-            # Phase 2a+ fix (2026-08-13): NULL 价格 → 999 兜底, 跟组路由 _get_input_price 对齐.
-            # 修复前 `price.get("input_price") or 0` 把 NULL 当 0 元, 导致硅基流动 NULL 价格
-            # model 在精确路由里永远排第一 (refresh_siliconflow_models.py 入库的 90+ model 名
-            # 全部 NULL 价格). 修复后排最后, 跟组路由行为一致.
-            raw_input_price = price.get("input_price")
-            input_price = float(raw_input_price) if raw_input_price is not None else 999.0
+            input_price = price.get("input_price") or 0
             quota_remaining = ch["quota_remaining"] if ch["quota_remaining"] is not None else 999999999
             priority = ch["priority"]
-            return (input_price, -quota_remaining, -priority)
+            bonus = self.score_bonus(model)  # V4.5.1: [0, 1]
+            # V4.6.1: 老的优先 (0 = 未用过) > 新的 (1.0 = 刚用过)
+            last_used = self._account_last_used.get(ch["account_id"], 0.0)
+            return (input_price, -quota_remaining, -priority, -bonus, last_used)
 
         candidates.sort(key=sort_key)
 
         best_channel, best_price = candidates[0]
+        # V4.6.1: 记录 last_used (路由层只 record, 不 mark_success — 成功标记由 proxy 层处理)
+        self._account_last_used[best_channel["account_id"]] = time.time()
         logger.debug(
             f"路由决策: model={model} -> {best_channel['name']} "
             f"(price={best_price.get('input_price')}, priority={best_channel['priority']})"
@@ -588,44 +577,30 @@ class RouteEngine:
                     return p
         return None
 
-    def _get_fallback_channel(self) -> Optional[tuple]:
-        """Phase 2E: 获取 priority 最低的 channel + 它最便宜的 model 作为 fallback
-
-        V4.6.4 增强: 同时返回 channel 里最便宜的有效 price_snapshot,
-        让 fallback 路径用 channel 自己的 model 名发请求
-        (避免上游不认用户请求的 model 名 -> 404)
+    def _get_fallback_channel(self) -> Optional[dict]:
+        """Phase 2E: 获取 priority 最低的 channel 作为 fallback (默认 = 聚合平台)
 
         设计: 硅基流动这种第三方聚合 (priority=1) 1 个 key 通吃 100+ model,
-        当 prices 表里没列某个 model 时, 走 fallback 把 model 名替换成 channel 支持的
-        (上游认的) model, 上游能识别返回 200.
+        当 prices 表里没列某个 model 时, 走 fallback 把 model 名透传给硅基流动,
+        硅基流动再根据 model 名路由到对应厂商.
 
         Returns:
-            (channel_dict, fallback_price_dict) 或 None
+            priority 最小的 channel, 或 None (没有可用 channel)
         """
         if not self._channels_cache:
             return None
-        # priority 最小的 channel
-        ch = min(self._channels_cache, key=lambda c: c.get("priority", 999))
-        # 找该 channel 里最便宜的 price_snapshot (作为 fallback 发请求用的 model 名)
-        # 注意: ch["prices"] 是 dict 形式 (ORM 对象已 flatten), 用 dict 访问字段
-        best_price = None
-        today = date.today().isoformat()
-        for p in ch.get("prices", []):
-            # 跟 _is_price_effective 一致, 但用 dict 访问
-            eff_from = p.get("effective_from")
-            eff_to = p.get("effective_to")
-            if eff_from and eff_from > today:
-                continue
-            if eff_to and eff_to < today:
-                continue
-            in_p = p.get("input_price") or 999.0
-            if best_price is None or in_p < (best_price.get("input_price") or 999.0):
-                best_price = p
-        return ch, best_price
+        return min(self._channels_cache, key=lambda ch: ch.get("priority", 999))
 
     def _is_channel_usable(self, ch: dict) -> bool:
-        """Phase 2E: 检查 channel 是否可用 (限频 + 配额), 不检查 model 支持"""
+        """Phase 2E: 检查 channel 是否可用 (限频 + 配额), 不检查 model 支持
+
+        V4.6.1 加 cooldown 检查 — 失败的账号 (mark_failure 触发) 进入冷却期,
+        路由应跳过, 等冷却过期再恢复. 跟 limiter 一致: 内存管理, 不持久化.
+        """
+        from gateway.cooldown import cooldown_manager
         from gateway.limiter import rate_limiter
+        if cooldown_manager.is_in_cooldown(ch["account_id"]):
+            return False
         if rate_limiter.is_limited(ch["account_id"], ch["quotas"]):
             return False
         if ch.get("quota_remaining") is not None and ch["quota_remaining"] <= 0:
@@ -1037,7 +1012,18 @@ class RouteEngine:
                     if registry.family == prefs["prefer_family"]:
                         family_bonus = 0
 
-                candidates.append((best, model_id, input_price, family_bonus))
+                # V4.6.4 (Issue 3): member_priority tie-break (组内排序)
+                # 场景: 同 group 内多个 member 走同一个 channel (如 minimax_compat),
+                # 价格 / family_bonus / channel_priority 都一致时 → 需用
+                # model_group_members.priority tie-break (越小越优先, e.g.
+                # deepseek-v4-pro priority=100 > minimax-m2.7 priority=120)
+                member_priority = (
+                    self._member_priority_cache.get(current, {}).get(model_id, 100)
+                )
+
+                candidates.append(
+                    (best, model_id, input_price, family_bonus, member_priority)
+                )
 
             if not candidates:
                 logger.warning(
@@ -1051,39 +1037,31 @@ class RouteEngine:
             # 3) 跨 member 排序 (按组策略)
             strategy = group.strategy or "cheapest"
             if strategy == "priority":
-                # priority 策略: channel.priority DESC (family_bonus 忽略)
+                # priority 策略: channel.priority DESC (family_bonus + member_priority 忽略)
                 candidates.sort(key=lambda x: x[0].get("priority", 0), reverse=True)
             else:
                 # cheapest (default): subscription/free 视为 0 元, 永远最便宜
-                # 排序 key: (price, family_bonus, -priority) — Phase 2.6 加 family_bonus tie-break
+                # 排序 key: (price, family_bonus, member_priority, -channel_priority)
+                # V4.6.4 (Issue 3): 加 member_priority tie-break
                 def sort_key(item):
-                    ch, _model_id, price, family_bonus = item
+                    ch, _model_id, price, family_bonus, member_priority = item
                     billing = ch.get("billing_mode", "pay_per_token")
                     if billing in ("subscription", "free"):
-                        return (0.0, family_bonus, -ch.get("priority", 0))
+                        return (0.0, family_bonus, member_priority, -ch.get("priority", 0))
                     return (
                         price if price is not None else 999.0,
                         family_bonus,
+                        member_priority,
                         -ch.get("priority", 0),
                     )
                 candidates.sort(key=sort_key)
 
-            best_ch, best_model, _, _ = candidates[0]
+            best_ch, best_model, _, _, _ = candidates[0]
 
             # 4) 注入调试字段 (Phase 2.5 响应头用)
-            # V4.6.4 fix: 保留 select_best_channel 已经注入的 _actual_model
-            #   - 精确路由: select_best_channel 内部已设 _actual_model = model (== best_model)
-            #   - fallback 路由: select_best_channel 已设 _actual_model = channel 支持的 model
-            #     (例如 best_model = "deepseek-v2.5", 但 _actual_model = "deepseek-ai/DeepSeek-V3")
-            #   - 不要用 best_model (组 member 名) 覆盖, 否则 fallback 路径的 model 替换会失效
-            if not best_ch.get("_actual_model"):
-                # 兜底: select_best_channel 没设 (理论不应该, 但安全起见)
-                best_ch["_actual_model"] = best_model
+            best_ch["_actual_model"] = best_model
             best_ch["_group_id"] = current
-            # 用 _actual_model 查 registry (不是 best_model)
-            # 如果是 fallback, _actual_model 可能是 channel 支持的 model (不在 registry)
-            actual_model_for_lookup = best_ch["_actual_model"]
-            registry = self._registry_cache.get(actual_model_for_lookup) or self._registry_cache.get(best_model)
+            registry = self._registry_cache.get(best_model)
             if registry:
                 best_ch["_registry_tier"] = registry.tier
                 best_ch["_registry_family"] = registry.family
@@ -1091,12 +1069,11 @@ class RouteEngine:
                 best_ch["_registry_capabilities"] = registry.capabilities
 
             logger.info(
-                f"组路由: {group_id} -> {best_ch['_actual_model']} via {best_ch['name']} "
+                f"组路由: {group_id} -> {best_model} via {best_ch['name']} "
                 f"(strategy={strategy}, "
                 f"members={len(members)}, candidates={len(candidates)}, "
                 f"skipped={skipped}, "
-                f"prefs={prefs if prefs else '{}'}, "
-                f"requested_model={best_model})"
+                f"prefs={prefs if prefs else '{}'})"
             )
             return best_ch
 
