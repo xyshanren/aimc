@@ -26,7 +26,38 @@ logger = logging.getLogger(__name__)
 
 
 # P0-4 (2026-08-14): router cache TTL + db file mtime 监听
+# - 避免 "db 改了必须 systemctl restart" 的运维陷阱
+# - TTL 默认 60s (跟 db write 频次匹配: pricing_sync 86400s, manual_import 即时)
+# - mtime 检查比 TTL 更灵敏: db 文件被外部进程改 (sqlite3 CLI / 修复脚本 /
+#   dashboard 操作) 立即生效, 不需要等 60s TTL
 ROUTER_CACHE_TTL_SECONDS = int(os.getenv("AIMC_ROUTER_CACHE_TTL", "60"))
+
+
+def _has_multimodal_content(messages):
+    """P0-3 (2026-08-14): 判断 messages 是否含 multimodal content (image/audio/file)
+
+    检测 OpenAI / Anthropic 两种 content 格式:
+    - content: "string" (纯文本)
+    - content: [{"type": "image_url"|"image"|"input_audio"|"audio"|"file", ...}, ...]
+
+    Returns:
+        True = 含 multimodal, False = 纯文本或 None
+    """
+    if not messages:
+        return False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") in (
+                    "image_url", "image", "input_audio", "audio", "file",
+                ):
+                    return True
+    return False
 
 
 class RouteEngine:
@@ -45,17 +76,15 @@ class RouteEngine:
         # 现有: 渠道列表（含账号和价格信息）
         self._channels_cache: list[dict] = []
         self._last_refresh: datetime | None = None
-        # P0-4: db file mtime
-        self._last_db_mtime: float | None = None
+        # P0-4: db file mtime 监听 (cache 自动失效)
+        self._last_db_mtime: float | None = None  # 上次加载时 db 文件 mtime
         # Phase 2.4: 模型组路由元信息
         self._registry_cache: dict = {}        # model_id -> ModelRegistry ORM
         self._groups_cache: dict = {}          # group_id -> ModelGroup ORM
         self._group_members_cache: dict = {}   # group_id -> [model_id]
-        # V4.6.4 (2026-08-14): member priority tie-break (Issue 3)
-        # 场景: 同 group 内多个 member 走同一个 channel (如 minimax_compat),
-        # 价格/配额/优先级都一致 → 需用 model_group_members.priority tie-break
-        # (数字越小越优先, e.g. deepseek-v4-pro priority=100 > minimax-m2.7 priority=120)
-        self._member_priority_cache: dict = {} # group_id -> {model_id: priority}
+        # V4.6.4 (C3 of fix-branch): member priority tie-break
+        # group_id -> {model_id: priority}  (越小越优先, 同价时生效)
+        self._member_priority_cache: dict = {}
         # V4.5.1: 能力评分 (model_cards) — sort_key tie-break
         self._cards_cache: dict = {}           # model_id -> [ModelCard ORM]
         # V4.6.1: least-used tie-break (同 channel 多账号轮询)
@@ -71,6 +100,8 @@ class RouteEngine:
         - model group 成员调整 -> invalidate_group(group_id)
         全量刷新会重新加载所有 channels + accounts + prices + quotas + groups,
         在 100+ channel 场景下 ~5s 阻塞窗口, 没必要.
+
+        P0-4 (2026-08-14): 加载完记录 db file mtime, 给 _auto_refresh_if_stale 用
         """
         from db.engine import async_session_factory
 
@@ -80,42 +111,61 @@ class RouteEngine:
             await self._load_cards_cache(session)
 
         self._last_refresh = datetime.now()
-        # P0-4: 记录 db 文件 mtime
+        # P0-4: 记录 db 文件 mtime (用于后续 stale 检测)
         try:
             db_path = Path(settings.db_path)
             if db_path.exists():
                 self._last_db_mtime = db_path.stat().st_mtime
         except Exception as e:
-            logger.debug(f"[P0-4] 记录 db mtime 失败: {e}")
+            logger.debug(f"[P0-4] 记录 db mtime 失败 (非致命): {e}")
         logger.info(
             f"路由缓存已全量刷新: {len(self._channels_cache)} 个可用渠道账号"
         )
 
     async def _auto_refresh_if_stale(self) -> bool:
-        # P0-4 2026-08-14: cache stale 时自动 refresh
+        """P0-4 (2026-08-14): cache stale 时自动刷新, 避免 "db 改了必须重启 service"
 
-        # 触发条件 (满足任一):
-        # 1. TTL 超时 > AIMC_ROUTER_CACHE_TTL (默认 60s)
-        # 2. db file mtime 变化 (sqlite3 CLI, 修复脚本, dashboard)
+        触发条件 (满足任一):
+        1. TTL 超时: 距离上次 refresh > AIMC_ROUTER_CACHE_TTL (默认 60s)
+        2. db mtime 变了: 外部进程改了 db 文件 (sqlite3 CLI / 修复脚本 / dashboard 操作)
+
+        调用位置: select_channel / get_candidates / get_models_with_metadata 等
+        入口方法前, 让 cache 总是新鲜。
+
+        Returns:
+            True = 本次触发了 refresh, False = cache 仍然新鲜
+        """
+        # 还没初始化过 (首次调用), 强制 refresh
         if self._last_refresh is None:
             await self.refresh_cache()
             return True
+
+        # 检查 TTL
         ttl_age = (datetime.now() - self._last_refresh).total_seconds()
         if ttl_age > ROUTER_CACHE_TTL_SECONDS:
-            logger.debug(f"[P0-4] cache TTL 超时 ({ttl_age:.1f}s), 自动 refresh")
+            logger.debug(
+                f"[P0-4] cache TTL 超时 ({ttl_age:.1f}s > {ROUTER_CACHE_TTL_SECONDS}s), "
+                f"自动 refresh"
+            )
             await self.refresh_cache()
             return True
+
+        # 检查 db file mtime
         try:
             db_path = Path(settings.db_path)
             if not db_path.exists():
                 return False
             current_mtime = db_path.stat().st_mtime
             if self._last_db_mtime is None or current_mtime > self._last_db_mtime:
-                logger.debug(f"[P0-4] db mtime 变化, 自动 refresh")
+                logger.debug(
+                    f"[P0-4] db mtime 变化 ({self._last_db_mtime} -> {current_mtime}), "
+                    f"自动 refresh"
+                )
                 await self.refresh_cache()
                 return True
         except Exception as e:
-            logger.debug(f"[P0-4] mtime 检查失败: {e}")
+            logger.debug(f"[P0-4] mtime 检查失败 (非致命): {e}")
+
         return False
 
     async def invalidate_channel(self, channel_id: int) -> None:
@@ -338,19 +388,10 @@ class RouteEngine:
         return entries
 
     async def _load_groups_cache(self, session) -> None:
-        """Phase 4 v2 (I6): 从给定 session 加载 groups cache (内部辅助)
-
-        V4.6.4 fix (2026-08-14): 防御性 group_id 归一化
-        - 历史上 model_group_members.group_id 被污染过 int string (如 '1')
-          而 model_groups.group_id 是 string (如 'tier:flagship'), 导致
-          _group_members_cache key 跟 _groups_cache key 不一致, 永远查不到 -> 503.
-        - 修复: 加载时把 int string 通过 model_groups.id 反查转成对应 string.
-          不在 model_groups 里的 group_id 记录 warning + skip (避免再次污染).
-        """
+        """Phase 4 v2 (I6): 从给定 session 加载 groups cache (内部辅助)"""
         from db.models import (
             ModelRegistry, ModelGroup, ModelGroupMember,
         )
-        from db.normalizers import normalize_model_id  # 防 def use, 跟其他模块一致
 
         # 1) model_registry: model_id → ORM
         reg_result = await session.execute(
@@ -364,14 +405,13 @@ class RouteEngine:
             f"(family: {set(r.family for r in self._registry_cache.values())})"
         )
 
-        # 2) model_groups: group_id → ORM (同时建 id -> group_id 反查表, 给 step 3 防御用)
+        # 2) model_groups: group_id → ORM
         grp_result = await session.execute(
             select(ModelGroup).where(ModelGroup.enabled == 1)
         )
-        groups = grp_result.scalars().all()
-        self._groups_cache = {g.group_id: g for g in groups}
-        # V4.6.4: int id -> string group_id 反查 (member.group_id='1' 防御用)
-        id_to_gid: dict[int, str] = {g.id: g.group_id for g in groups if g.id is not None}
+        self._groups_cache = {
+            g.group_id: g for g in grp_result.scalars().all()
+        }
         logger.info(
             f"路由缓存: {len(self._groups_cache)} 个 model group "
             f"({list(self._groups_cache.keys())})"
@@ -383,39 +423,11 @@ class RouteEngine:
             select(ModelGroupMember).where(ModelGroupMember.is_active == 1)
         )
         self._group_members_cache = {}
-        # V4.6.4 (Issue 3): 同时 build member priority cache (组内 tie-break)
-        self._member_priority_cache = {}
-        skipped_invalid = 0
         for m in mem_result.scalars().all():
-            gid = m.group_id
-            # V4.6.4 fix: 防御性 group_id 规范化
-            # - 如果是 int string ('1' '2' ...) -> 通过 id_to_gid 反查成 string
-            # - 如果不在 _groups_cache 里 -> warning + skip (污染数据, 不能进 cache)
-            if gid in self._groups_cache:
-                normalized_gid = gid
-            elif gid.isdigit() and int(gid) in id_to_gid:
-                normalized_gid = id_to_gid[int(gid)]
-                logger.warning(
-                    f"[V4.6.4] model_group_members.group_id={gid!r} (int string) "
-                    f"归一化到 {normalized_gid!r} (model_id={m.model_id})"
-                )
-            else:
-                logger.warning(
-                    f"[V4.6.4] model_group_members.group_id={gid!r} 不在 model_groups "
-                    f"({list(self._groups_cache.keys())}), skip (id={m.id})"
-                )
-                skipped_invalid += 1
-                continue
-            self._group_members_cache.setdefault(normalized_gid, []).append(m.model_id)
-            # V4.6.4: 存 member priority (group_id -> model_id -> priority)
-            # 没显式设 priority 时, 默认 100 (跟 ORM default 一致)
-            self._member_priority_cache.setdefault(normalized_gid, {})[m.model_id] = (
-                m.priority if m.priority is not None else 100
-            )
+            self._group_members_cache.setdefault(m.group_id, []).append(m.model_id)
         logger.info(
             f"路由缓存: {sum(len(v) for v in self._group_members_cache.values())} "
             f"个 group members 跨 {len(self._group_members_cache)} 个组"
-            f"{f' (跳过 {skipped_invalid} 条 group_id 无效)' if skipped_invalid else ''}"
         )
 
     # ===========================================================
@@ -499,11 +511,13 @@ class RouteEngine:
             return False
         return True
 
-    def select_best_channel(self, model: str) -> Optional[dict]:
+    def select_best_channel(self, model: str, messages: Optional[list] = None) -> Optional[dict]:
         """核心决策：为指定模型选择最优渠道
 
         Args:
             model: 请求的模型名称
+            messages: P0-3 (2026-08-14) — 请求的 messages 列表, 用于判断是否含 multimodal content
+                    纯文本请求时, 跳过 multimodal channel (它们拒纯文本, 上游 400)
 
         Returns:
             最优渠道字典，或 None（无可用渠道）
@@ -883,7 +897,8 @@ class RouteEngine:
     # Phase 2.4: 模型组路由 (tier:/scene: 前缀 + fallback chain)
     # ===========================================================
 
-    def select_channel(self, model: str, prefs: Optional[dict] = None) -> Optional[dict]:
+    def select_channel(self, model: str, prefs: Optional[dict] = None,
+                      messages: Optional[list] = None) -> Optional[dict]:
         """Phase 2.4 入口: 按 model 字符串分发
 
         - "tier:xxx" / "scene:xxx" → _select_by_group (组路由 + fallback chain)
@@ -901,14 +916,18 @@ class RouteEngine:
         - _actual_model: 实际命中的精确 model_id
         - _group_id: 命中的 model group (e.g. "tier:balanced")
         - _registry_tier: 命中 model 的能力档
+
+        P0-4 (2026-08-14): stale check 由 caller (gateway/routes.py) 显式 await
+        _auto_refresh_if_stale, 避免在 sync 入口处 fire-and-forget 引入 race condition。
         """
         if model.startswith("tier:") or model.startswith("scene:"):
-            return self._select_by_group(model, prefs=prefs)
+            return self._select_by_group(model, prefs=prefs, messages=messages)
         # 精确模型路由 Phase 2.6 不实现偏好 (跟 design §4.5 一致)
-        return self.select_best_channel(model)
+        return self.select_best_channel(model, messages=messages)
 
     def _select_by_group(
-        self, group_id: str, prefs: Optional[dict] = None
+        self, group_id: str, prefs: Optional[dict] = None,
+        messages: Optional[list] = None,
     ) -> Optional[dict]:
         """模型组路由: 在 group 内选最优 (model, channel) 三元组
 
@@ -1018,8 +1037,20 @@ class RouteEngine:
                     skipped += 1
                     continue
 
+                # P0-3 (2026-08-14): 纯文本请求跳过 multimodal candidate
+                # 背景: multimodal model (modality=multimodal) 拒纯文本 → 上游 400
+                # 修复: messages 不含 image/audio/file 时, 跳过 multimodal member
+                # 例外: tier:vision 组用户显式选 multimodal (但仍可走 text model fallback)
+                has_mm = _has_multimodal_content(messages)
+                if not has_mm and registry.modality == "multimodal":
+                    logger.debug(
+                        f"  [{current}] {model_id} modality=multimodal 但请求纯文本, 跳过"
+                    )
+                    skipped += 1
+                    continue
+
                 # 跑精确模型路由 (复用 select_best_channel)
-                best = self.select_best_channel(model_id)
+                best = self.select_best_channel(model_id, messages=messages)
                 if not best:
                     logger.debug(f"  [{current}] {model_id} 无可用渠道, 跳过")
                     skipped += 1
@@ -1054,18 +1085,7 @@ class RouteEngine:
                     if registry.family == prefs["prefer_family"]:
                         family_bonus = 0
 
-                # V4.6.4 (Issue 3): member_priority tie-break (组内排序)
-                # 场景: 同 group 内多个 member 走同一个 channel (如 minimax_compat),
-                # 价格 / family_bonus / channel_priority 都一致时 → 需用
-                # model_group_members.priority tie-break (越小越优先, e.g.
-                # deepseek-v4-pro priority=100 > minimax-m2.7 priority=120)
-                member_priority = (
-                    self._member_priority_cache.get(current, {}).get(model_id, 100)
-                )
-
-                candidates.append(
-                    (best, model_id, input_price, family_bonus, member_priority)
-                )
+                candidates.append((best, model_id, input_price, family_bonus))
 
             if not candidates:
                 logger.warning(
@@ -1079,26 +1099,24 @@ class RouteEngine:
             # 3) 跨 member 排序 (按组策略)
             strategy = group.strategy or "cheapest"
             if strategy == "priority":
-                # priority 策略: channel.priority DESC (family_bonus + member_priority 忽略)
+                # priority 策略: channel.priority DESC (family_bonus 忽略)
                 candidates.sort(key=lambda x: x[0].get("priority", 0), reverse=True)
             else:
                 # cheapest (default): subscription/free 视为 0 元, 永远最便宜
-                # 排序 key: (price, family_bonus, member_priority, -channel_priority)
-                # V4.6.4 (Issue 3): 加 member_priority tie-break
+                # 排序 key: (price, family_bonus, -priority) — Phase 2.6 加 family_bonus tie-break
                 def sort_key(item):
-                    ch, _model_id, price, family_bonus, member_priority = item
+                    ch, _model_id, price, family_bonus = item
                     billing = ch.get("billing_mode", "pay_per_token")
                     if billing in ("subscription", "free"):
-                        return (0.0, family_bonus, member_priority, -ch.get("priority", 0))
+                        return (0.0, family_bonus, -ch.get("priority", 0))
                     return (
                         price if price is not None else 999.0,
                         family_bonus,
-                        member_priority,
                         -ch.get("priority", 0),
                     )
                 candidates.sort(key=sort_key)
 
-            best_ch, best_model, _, _, _ = candidates[0]
+            best_ch, best_model, _, _ = candidates[0]
 
             # 4) 注入调试字段 (Phase 2.5 响应头用)
             best_ch["_actual_model"] = best_model

@@ -92,30 +92,12 @@ async def chat_completions(request: Request):
     # 路由决策: select_channel (Phase 2.4 入口, 精确模型 + 模型组)
     # - "deepseek-chat" → 走原精确模型路由
     # - "tier:balanced" / "scene:code" → 走组路由 + fallback chain
-    # P0-4 2026-08-14: 路由前先 auto-refresh stale cache
-    # 避免 db 改了必须 systemctl restart 的运维陷阱
+    # P0-4 (2026-08-14): 路由前先 auto-refresh stale cache
+    # - 避免 "db 改了必须 systemctl restart" 的运维陷阱
+    # - TTL (默认 60s) + db mtime 监听, db 变更立即生效
     await route_engine._auto_refresh_if_stale()
-    channel = route_engine.select_channel(model, prefs=prefs)
-    # P0-6 2026-08-14: 多维限额检查 (rpm/tpm/concurrent/daily/weekly/5h)
-    # post-check: 选了 channel 后判断. 后续可改成 router 内候选过滤
-    if channel is not None:
-        from gateway.quota import check_account_quota
-        from db.engine import async_session_factory
-        async with async_session_factory() as qsession:
-            allowed, reason = await check_account_quota(
-                qsession,
-                channel["account_id"],
-                estimated_tokens=(body_json.get("max_tokens") or 100) * 2,
-            )
-            if not allowed:
-                return JSONResponse(
-                    status_code=429,
-                    content={"error": {
-                        "message": f"Quota exceeded: {reason}",
-                        "type": "rate_limit_error",
-                    }},
-                    headers={"retry-after": "60"},
-                )
+    # P0-3 (2026-08-14): 传 messages 给 router, 让纯文本请求跳过 multimodal candidate
+    channel = route_engine.select_channel(model, prefs=prefs, messages=body_json.get("messages"))
     if channel is None:
         return JSONResponse(
             status_code=503,
