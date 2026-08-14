@@ -35,19 +35,49 @@ def _resolve_effective_base_url(channel):
     return db_base_url
 
 
-def _resolve_effective_base_url(channel):
-    # P1-12: 解析 channel 实际使用的 base_url
-    # 优先级: db.api_base ?? SENSENOVA_BASE_URL env (sensenova only) ?? db.base_url
+def _inject_prompt_cache(body, channel):
+    # P1-8: 给 request body 注入 prompt cache 标记
+    # 支持 2 种 cache 协议 (按 channel.api_style):
+    # 1. Anthropic 风格: messages[0] (system) + messages[1] (first user) 加 cache_control
+    # 2. OpenAI 风格: 加 prompt_cache_key parameter (用 system content hash)
+    # 触发条件 (caller 保证): channel.supports_prompt_cache=1
+    try:
+        body_json = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return body
 
-    api_base = (channel.get("api_base") or "").strip()
-    if api_base:
-        return api_base.rstrip("/")
-    db_base_url = (channel.get("base_url") or "").rstrip("/")
-    if channel.get("provider") == "sensenova":
-        env_override = os.getenv("SENSENOVA_BASE_URL", "").strip().rstrip("/")
-        if env_override and env_override != db_base_url:
-            return env_override
-    return db_base_url
+    messages = body_json.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return body
+
+    api_style = (channel.get("api_style") or "openai").lower()
+
+    if api_style == "anthropic":
+        # Anthropic 风格: 给 system + 第一条 user 加 cache_control: ephemeral
+        for msg in messages[:2]:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("cache_control"):
+                continue
+            msg["cache_control"] = {"type": "ephemeral"}
+    else:
+        # OpenAI 风格: prompt_cache_key parameter
+        import hashlib
+        system_content = ""
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                content = msg.get("content")
+                if isinstance(content, str):
+                    system_content = content
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            system_content += part.get("text", "")
+                break
+        cache_key = hashlib.sha256(system_content.encode("utf-8")).hexdigest()[:16]
+        body_json["prompt_cache_key"] = cache_key
+
+    return json.dumps(body_json, ensure_ascii=False).encode("utf-8")
 
 
 def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
@@ -164,6 +194,16 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
     # Phase 2.5: 构造 X-AIMC-* 响应头 (在 group 路由时注入 _actual_model 等)
     # V4.6.4: 传 actual_model 让 _build_aimc_headers 用 fallback 后的真实 model 名
     aimc_headers = _build_aimc_headers(channel, actual_model)
+
+    # P1-8 (2026-08-14): prompt cache headers 注入
+    # 只在 channel.supports_prompt_cache=1 时启用
+    # Anthropic 风格: messages[0] (system) 加 cache_control: {type: "ephemeral"}
+    # OpenAI 风格: 加 prompt_cache_key parameter (用 system content hash)
+    if channel.get("supports_prompt_cache"):
+        try:
+            body = _inject_prompt_cache(body, channel)
+        except Exception as e:
+            logger.warning(f"[P1-8] prompt cache 注入失败 (非致命): {e}")
 
     base_url = _resolve_effective_base_url(channel)
     target_url = f"{base_url.rstrip('/')}/chat/completions"
@@ -320,12 +360,19 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
         cache_read_input_tokens = None
         cache_creation_input_tokens = None
 
-        # OpenAI: usage.prompt_tokens_details.cached_tokens
+        # OpenAI 标准: usage.prompt_tokens_details.cached_tokens
         prompt_details = usage.get("prompt_tokens_details")
         if isinstance(prompt_details, dict):
             v = prompt_details.get("cached_tokens")
             if isinstance(v, int):
                 cached_input_tokens = v
+
+        # P1-8: SF 自定义字段 (跟 OpenAI 标准不同名)
+        # SF usage.prompt_cache_hit_tokens (cache 命中) + prompt_cache_miss_tokens (未命中)
+        # 同时存在时优先用 SF 字段 (更准)
+        v = usage.get("prompt_cache_hit_tokens")
+        if isinstance(v, int):
+            cached_input_tokens = v
 
         # Anthropic: usage.cache_read_input_tokens + cache_creation_input_tokens
         v = usage.get("cache_read_input_tokens")
@@ -389,6 +436,9 @@ async def _write_usage_log(
                 output_tokens=output_tokens,
                 status_code=status_code,
                 latency_ms=latency_ms,
+                cached_input_tokens=cached_input_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
             )
             session.add(log)
             await session.commit()
