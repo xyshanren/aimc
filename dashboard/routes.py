@@ -26,6 +26,7 @@ from db.models import (
     ModelCapabilitiesLog,
     CrossSourceDiscrepancy,
     SettingsRuntime,
+    ModelChangeSuggestion, GroupChangeSuggestion,
 )
 
 logger = logging.getLogger(__name__)
@@ -501,6 +502,189 @@ async def get_cache_stats(days: int = 7, session: AsyncSession = Depends(get_ses
         "saved_cost_cny": round(total_saved, 4),
         "by_channel": by_channel,
         "by_model": by_model,
+    }
+
+
+@router.get("/api/suggestions")
+async def get_suggestions(
+    status: str = "pending",
+    suggestion_type: str = "all",  # "model" / "group" / "all"
+    session: AsyncSession = Depends(get_session),
+):
+    """方案 A (2026-08-14): 模型/分组 建议列表
+
+    Query params:
+    - status: pending / approved / rejected / applied (default pending)
+    - suggestion_type: model / group / all (default all)
+    """
+    result = {"model": [], "group": []}
+
+    if suggestion_type in ("model", "all"):
+        m_stmt = (
+            select(ModelChangeSuggestion)
+            .where(ModelChangeSuggestion.status == status)
+            .order_by(ModelChangeSuggestion.confidence.desc())
+        )
+        model_rows = (await session.execute(m_stmt)).scalars().all()
+        result["model"] = [
+            {
+                "id": m.id,
+                "model_id": m.model_id,
+                "change_type": m.change_type,
+                "suggested_value": m.suggested_value,
+                "current_value": m.current_value,
+                "reason": m.reason,
+                "confidence": m.confidence,
+                "based_on": json.loads(m.based_on) if m.based_on else None,
+                "status": m.status,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+                "reviewed_at": m.reviewed_at.isoformat() if m.reviewed_at else None,
+                "reviewed_by": m.reviewed_by,
+                "applied_at": m.applied_at.isoformat() if m.applied_at else None,
+            }
+            for m in model_rows
+        ]
+
+    if suggestion_type in ("group", "all"):
+        g_stmt = (
+            select(GroupChangeSuggestion)
+            .where(GroupChangeSuggestion.status == status)
+            .order_by(GroupChangeSuggestion.confidence.desc())
+        )
+        group_rows = (await session.execute(g_stmt)).scalars().all()
+        result["group"] = [
+            {
+                "id": g.id,
+                "group_id": g.group_id,
+                "change_type": g.change_type,
+                "target_groups": g.target_groups,
+                "suggested_config": g.suggested_config,
+                "reason": g.reason,
+                "confidence": g.confidence,
+                "based_on": json.loads(g.based_on) if g.based_on else None,
+                "status": g.status,
+                "created_at": g.created_at.isoformat() if g.created_at else None,
+                "reviewed_at": g.reviewed_at.isoformat() if g.reviewed_at else None,
+                "reviewed_by": g.reviewed_by,
+                "applied_at": g.applied_at.isoformat() if g.applied_at else None,
+            }
+            for g in group_rows
+        ]
+
+    return result
+
+
+@router.post("/api/suggestions/{suggestion_type}/{suggestion_id}/approve")
+async def approve_suggestion(
+    suggestion_type: str,  # "model" / "group"
+    suggestion_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """方案 A (2026-08-14): 批准单条建议
+
+    Body: {"reviewed_by": "username"}
+    改 status='pending' -> 'approved' (后续 apply_suggestions.py 跑会真正改 db)
+    """
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    reviewed_by = body.get("reviewed_by", "dashboard")
+
+    model_cls = ModelChangeSuggestion if suggestion_type == "model" else GroupChangeSuggestion
+    s = (await session.execute(
+        select(model_cls).where(model_cls.id == suggestion_id)
+    )).scalars().first()
+    if not s:
+        raise HTTPException(status_code=404, detail=f"{suggestion_type} suggestion {suggestion_id} not found")
+    if s.status != "pending":
+        raise HTTPException(status_code=400, detail=f"建议当前 status='{s.status}', 只能批准 pending")
+
+    s.status = "approved"
+    s.reviewed_at = func.now()
+    s.reviewed_by = reviewed_by
+    await session.commit()
+    return {"ok": True, "id": suggestion_id, "status": "approved"}
+
+
+@router.post("/api/suggestions/{suggestion_type}/{suggestion_id}/reject")
+async def reject_suggestion(
+    suggestion_type: str,
+    suggestion_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """方案 A (2026-08-14): 拒绝单条建议"""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    reviewed_by = body.get("reviewed_by", "dashboard")
+
+    model_cls = ModelChangeSuggestion if suggestion_type == "model" else GroupChangeSuggestion
+    s = (await session.execute(
+        select(model_cls).where(model_cls.id == suggestion_id)
+    )).scalars().first()
+    if not s:
+        raise HTTPException(status_code=404, detail=f"{suggestion_type} suggestion {suggestion_id} not found")
+
+    s.status = "rejected"
+    s.reviewed_at = func.now()
+    s.reviewed_by = reviewed_by
+    await session.commit()
+    return {"ok": True, "id": suggestion_id, "status": "rejected"}
+
+
+@router.post("/api/suggestions/apply-all")
+async def apply_all_approved_suggestions(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """方案 A (2026-08-14): 触发 apply_suggestions.py (server-side 跑)
+
+    Body: {"min_confidence": 0.5, "reviewed_by": "username"}
+    内部: 读 approved 建议, 直接 UPDATE db, 写 applied_at
+    """
+    from scripts.apply_suggestions import apply_model_suggestion, apply_group_suggestion
+
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    min_conf = body.get("min_confidence", 0.0)
+    reviewed_by = body.get("reviewed_by", "dashboard_apply")
+
+    n_model = n_group = 0
+    errors = []
+
+    m_stmt = (
+        select(ModelChangeSuggestion)
+        .where(ModelChangeSuggestion.status == "approved")
+        .where(ModelChangeSuggestion.confidence >= min_conf)
+    )
+    for s in (await session.execute(m_stmt)).scalars().all():
+        try:
+            await apply_model_suggestion(session, s, apply=True)
+            s.applied_at = func.now()
+            s.status = "applied"
+            s.reviewed_by = reviewed_by
+            n_model += 1
+        except Exception as e:
+            errors.append(f"model {s.id}: {e}")
+
+    g_stmt = (
+        select(GroupChangeSuggestion)
+        .where(GroupChangeSuggestion.status == "approved")
+        .where(GroupChangeSuggestion.confidence >= min_conf)
+    )
+    for s in (await session.execute(g_stmt)).scalars().all():
+        try:
+            await apply_group_suggestion(session, s, apply=True)
+            s.applied_at = func.now()
+            s.status = "applied"
+            s.reviewed_by = reviewed_by
+            n_group += 1
+        except Exception as e:
+            errors.append(f"group {s.id}: {e}")
+
+    await session.commit()
+    return {
+        "ok": True,
+        "applied_model": n_model,
+        "applied_group": n_group,
+        "errors": errors,
     }
 
 

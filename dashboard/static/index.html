@@ -41,6 +41,21 @@
         </section>
 
         <!-- 阶段1 (2026-08-14): prompt cache 节省成本 -->
+        <!-- 方案A (2026-08-14): 模型分组建议中心 -->
+        <section class="card" id="suggestions-section">
+            <h2>模型分组建议 <span class="subtitle">方案A · 待审/已批</span></h2>
+            <div class="summary-row">
+                <span class="summary-item">待审: <strong id="sg-pending">--</strong></span>
+                <span class="summary-item">已批: <strong id="sg-approved">--</strong></span>
+                <span class="summary-item">已应用: <strong id="sg-applied">--</strong></span>
+                <button class="btn btn-primary" onclick="applyAllSuggestions()" style="margin-left:auto;">一键应用已批准</button>
+                <button class="btn btn-secondary" onclick="loadSuggestions()">刷新</button>
+            </div>
+            <div id="suggestions-list">
+                <div style="color:#6a737d;">加载中...</div>
+            </div>
+        </section>
+
         <section class="card" id="cache-stats-section">
             <h2>Prompt Cache 节省 <span class="subtitle">近 7 天 · P1-8</span></h2>
             <div class="summary-row" id="cache-stats-summary">

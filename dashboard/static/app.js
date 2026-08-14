@@ -594,6 +594,112 @@ async function loadUsageChart() {
 // 页面加载完成后初始化图表
 document.addEventListener('DOMContentLoaded', loadUsageChart);
 document.addEventListener('DOMContentLoaded', loadCacheStats);  // 阶段1 (2026-08-14)
+document.addEventListener('DOMContentLoaded', loadSuggestions);  // 方案A (2026-08-14)
+
+// 方案A (2026-08-14): 模型分组建议
+async function loadSuggestions() {
+    try {
+        // 拉 pending 建议 + 统计
+        const [pendingResp, approvedResp, appliedResp] = await Promise.all([
+            authFetch('/dashboard/api/suggestions?status=pending'),
+            authFetch('/dashboard/api/suggestions?status=approved'),
+            authFetch('/dashboard/api/suggestions?status=applied'),
+        ]);
+        const pending = pendingResp.ok ? await pendingResp.json() : {model: [], group: []};
+        const approved = approvedResp.ok ? await approvedResp.json() : {model: [], group: []};
+        const applied = appliedResp.ok ? await appliedResp.json() : {model: [], group: []};
+
+        document.getElementById('sg-pending').textContent = pending.model.length + pending.group.length;
+        document.getElementById('sg-approved').textContent = approved.model.length + approved.group.length;
+        document.getElementById('sg-applied').textContent = applied.model.length + applied.group.length;
+
+        const list = document.getElementById('suggestions-list');
+        if (!list) return;
+
+        if (pending.model.length === 0 && pending.group.length === 0) {
+            list.innerHTML = '<div style="color:#6a737d;padding:12px;">暂无待审建议</div>';
+            return;
+        }
+
+        let html = '<table class="suggestions-table"><thead><tr><th>类型</th><th>对象</th><th>变更</th><th>置信度</th><th>理由</th><th>操作</th></tr></thead><tbody>';
+        for (const m of pending.model) {
+            html += '<tr>';
+            html += '<td>🟢 model</td>';
+            html += `<td>${esc(m.model_id)}</td>`;
+            html += `<td>${esc(m.current_value || '(空)')} → <strong>${esc(m.suggested_value)}</strong></td>`;
+            html += `<td><span class="confidence-badge conf-${Math.floor((m.confidence || 0) * 10)}">${((m.confidence || 0) * 100).toFixed(0)}%</span></td>`;
+            html += `<td><small>${esc(m.reason || '')}</small></td>`;
+            html += `<td>`;
+            html += `<button class="btn btn-sm btn-success" onclick="approveSuggestion('model', ${m.id})">批准</button> `;
+            html += `<button class="btn btn-sm btn-danger" onclick="rejectSuggestion('model', ${m.id})">拒绝</button>`;
+            html += `</td>`;
+            html += '</tr>';
+        }
+        for (const g of pending.group) {
+            html += '<tr>';
+            html += '<td>🟡 group</td>';
+            html += `<td>${esc(g.group_id)}</td>`;
+            html += `<td>${esc(g.change_type)} ${esc(g.target_groups || '')}</td>`;
+            html += `<td><span class="confidence-badge conf-${Math.floor((g.confidence || 0) * 10)}">${((g.confidence || 0) * 100).toFixed(0)}%</span></td>`;
+            html += `<td><small>${esc(g.reason || '')}</small></td>`;
+            html += `<td>`;
+            html += `<button class="btn btn-sm btn-success" onclick="approveSuggestion('group', ${g.id})">批准</button> `;
+            html += `<button class="btn btn-sm btn-danger" onclick="rejectSuggestion('group', ${g.id})">拒绝</button>`;
+            html += `</td>`;
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        list.innerHTML = html;
+    } catch (e) {
+        console.warn('Suggestions load failed:', e);
+    }
+}
+
+async function approveSuggestion(type, id) {
+    if (!confirm(`批准此建议? (类型=${type}, id=${id})\n批准后下次 "一键应用" 会真正改 db`)) return;
+    const resp = await authFetch(`/dashboard/api/suggestions/${type}/${id}/approve`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({reviewed_by: 'dashboard_user'}),
+    });
+    if (resp.ok) {
+        alert('已批准');
+        loadSuggestions();
+    } else {
+        alert('失败: ' + resp.statusText);
+    }
+}
+
+async function rejectSuggestion(type, id) {
+    if (!confirm(`拒绝此建议? (类型=${type}, id=${id})`)) return;
+    const resp = await authFetch(`/dashboard/api/suggestions/${type}/${id}/reject`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({reviewed_by: 'dashboard_user'}),
+    });
+    if (resp.ok) {
+        alert('已拒绝');
+        loadSuggestions();
+    } else {
+        alert('失败: ' + resp.statusText);
+    }
+}
+
+async function applyAllSuggestions() {
+    if (!confirm('一键应用所有已批准建议?\n\n此操作会直接改 db (tier / group_member), 不可逆\n\n建议先 review 列表再 apply')) return;
+    const resp = await authFetch('/dashboard/api/suggestions/apply-all', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({min_confidence: 0.0, reviewed_by: 'dashboard_user'}),
+    });
+    if (resp.ok) {
+        const data = await resp.json();
+        alert(`应用完成:\nmodel: ${data.applied_model}\ngroup: ${data.applied_group}\nerrors: ${data.errors.length}`);
+        loadSuggestions();
+    } else {
+        alert('失败: ' + resp.statusText);
+    }
+}
 
 // ============================================================
 // V4.5: 周报查看页 (与 dashboard/static/index.html #weekly-report-section 配套)
