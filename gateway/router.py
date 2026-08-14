@@ -370,6 +370,9 @@ class RouteEngine:
                 "name": ch.name,
                 "provider": ch.provider,
                 "base_url": ch.base_url,
+                "api_base": ch.api_base,  # P1-12 (2026-08-14): dashboard 可改
+                "api_style": ch.api_style or "openai",  # P1-12: 协议风格
+                "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: cache 支持
                 "priority": ch.priority,
                 "provider_type": ch.provider_type,
                 "billing_mode": ch.billing_mode,

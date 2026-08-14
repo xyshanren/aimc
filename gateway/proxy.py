@@ -6,6 +6,7 @@
 """
 
 import json
+import os
 import time
 import logging
 import asyncio
@@ -18,6 +19,21 @@ from starlette.datastructures import Headers
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_effective_base_url(channel):
+    # P1-12: 解析 channel 实际使用的 base_url
+    # 优先级: db.api_base ?? SENSENOVA_BASE_URL env (sensenova only) ?? db.base_url
+
+    api_base = (channel.get("api_base") or "").strip()
+    if api_base:
+        return api_base.rstrip("/")
+    db_base_url = (channel.get("base_url") or "").rstrip("/")
+    if channel.get("provider") == "sensenova":
+        env_override = os.getenv("SENSENOVA_BASE_URL", "").strip().rstrip("/")
+        if env_override and env_override != db_base_url:
+            return env_override
+    return db_base_url
 
 
 def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
@@ -135,7 +151,8 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
     # V4.6.4: 传 actual_model 让 _build_aimc_headers 用 fallback 后的真实 model 名
     aimc_headers = _build_aimc_headers(channel, actual_model)
 
-    target_url = f"{channel['base_url'].rstrip('/')}/chat/completions"
+    base_url = _resolve_effective_base_url(channel)
+    target_url = f"{base_url.rstrip('/')}/chat/completions"
 
     start_time = time.time()
 

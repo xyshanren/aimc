@@ -43,6 +43,25 @@ class Channel(Base):
         Text, nullable=False, server_default="pay_per_token",
         comment="pay_per_token(按量) / subscription(订阅制) / free(免费)",
     )
+    # P1-12 (2026-08-14): 实际 base_url (覆盖 db.base_url, 改 dashboard 即可生效不需要 restart)
+    # 优先级: db.api_base ?? db.base_url ?? SENSENOVA_BASE_URL env (router/proxy 实现)
+    # 用例: dashboard 临时切到备份 base_url 不需要重启 service
+    api_base = Column(
+        Text, nullable=True,
+        comment="实际 base_url (覆盖 db.base_url, NULL=用 db.base_url)",
+    )
+    # P1-12: 协议风格 — 决定 router/proxy 走 OpenAI 格式还是 Anthropic 格式
+    # 后续 P1-8 用这个字段决定是否注入 cache_control headers
+    api_style = Column(
+        Text, nullable=True, server_default="openai",
+        comment="协议风格: openai / anthropic (决定 cache_control headers 格式)",
+    )
+    # P1-12: 是否支持 prompt cache — router/proxy 用这个字段决定是否注入 cache headers
+    # 硅基流动/DeepSeek 支持, qwen/智谱/sensenova/minimax 不支持
+    supports_prompt_cache = Column(
+        Integer, nullable=False, server_default="0",
+        comment="0=不支持 prompt cache, 1=支持 (router 据此注入 cache headers)",
+    )
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

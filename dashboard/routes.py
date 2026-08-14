@@ -194,7 +194,7 @@ async def dashboard_auth_logout():
 
 @router.get("/api/channels")
 async def get_channels_status(session: AsyncSession = Depends(get_session)):
-    """渠道状态列表"""
+    """渠道状态列表 (P1-12: 加 api_base / api_style / supports_prompt_cache)"""
     stmt = select(Channel).order_by(Channel.provider)
     result = await session.execute(stmt)
     channels = result.scalars().all()
@@ -206,11 +206,77 @@ async def get_channels_status(session: AsyncSession = Depends(get_session)):
             "provider": ch.provider,
             "status": ch.status,
             "priority": ch.priority,
+            "base_url": ch.base_url,
+            "api_base": ch.api_base,  # P1-12: 实际 base_url (覆盖 db.base_url)
+            "api_style": ch.api_style or "openai",  # P1-12: openai / anthropic
+            "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: 0/1
             "accounts": len(ch.accounts),
             "active_accounts": len([a for a in ch.accounts if a.status == "active"]),
         }
         for ch in channels
     ]
+
+
+@router.put("/api/channels/{channel_id}")
+async def update_channel(channel_id: int, request: Request,
+                        session: AsyncSession = Depends(get_session)):
+    """P1-12 (2026-08-14): 编辑 channel 字段 (api_base / api_style / supports_prompt_cache / base_url / status / priority)
+
+    Body (JSON, 全部可选):
+    {
+        "base_url": "...",                  # 默认 base_url
+        "api_base": "...",                  # 实际 base_url (覆盖 base_url)
+        "api_style": "openai" | "anthropic",
+        "supports_prompt_cache": 0 | 1,
+        "status": "active" | "disabled",
+        "priority": 0
+    }
+
+    改完后调用 route_engine.invalidate_channel(channel_id) 让 router cache 立即刷新
+    """
+    from gateway.router import route_engine
+
+    body = await request.json()
+
+    ch = (await session.execute(
+        select(Channel).where(Channel.id == channel_id)
+    )).scalars().first()
+    if not ch:
+        raise HTTPException(status_code=404, detail=f"Channel {channel_id} not found")
+
+    # 记录原值（用于 dashboard 显示 diff）
+    before = {
+        "base_url": ch.base_url,
+        "api_base": ch.api_base,
+        "api_style": ch.api_style,
+        "supports_prompt_cache": ch.supports_prompt_cache,
+        "status": ch.status,
+        "priority": ch.priority,
+    }
+
+    # 更新字段
+    allowed_fields = {"base_url", "api_base", "api_style", "supports_prompt_cache", "status", "priority"}
+    for field, value in body.items():
+        if field in allowed_fields:
+            setattr(ch, field, value)
+    await session.commit()
+
+    # P1-12 + P0-4: 触发 router cache 立即刷新 (不等 TTL)
+    try:
+        await route_engine.invalidate_channel(channel_id)
+        logger.info(f"P1-12: channel {ch.name} ({channel_id}) 更新 + cache invalidated")
+    except Exception as e:
+        logger.warning(f"P1-12: invalidate_channel failed (non-fatal): {e}")
+
+    after = {
+        "base_url": ch.base_url,
+        "api_base": ch.api_base,
+        "api_style": ch.api_style,
+        "supports_prompt_cache": ch.supports_prompt_cache,
+        "status": ch.status,
+        "priority": ch.priority,
+    }
+    return {"ok": True, "before": before, "after": after}
 
 
 @router.get("/api/promotions")
