@@ -92,6 +92,9 @@ async def chat_completions(request: Request):
     # 路由决策: select_channel (Phase 2.4 入口, 精确模型 + 模型组)
     # - "deepseek-chat" → 走原精确模型路由
     # - "tier:balanced" / "scene:code" → 走组路由 + fallback chain
+    # P0-4 2026-08-14: 路由前先 auto-refresh stale cache
+    # 避免 db 改了必须 systemctl restart 的运维陷阱
+    await route_engine._auto_refresh_if_stale()
     channel = route_engine.select_channel(model, prefs=prefs)
     if channel is None:
         return JSONResponse(
