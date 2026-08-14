@@ -314,7 +314,13 @@ class ModelGroupMember(Base):
     """组成员关联 (Phase 2.1, 2026-07-29)
 
     多对多: group_id ↔ model_id。
-    不强制 FK (model_id 用 soft join, 允许"还没入库的新 model"占位)。
+
+    P0-1 (2026-08-14): 加 FK + UNIQUE 强约束
+    - group_id FK -> model_groups.group_id (db 层拒绝孤儿)
+    - (group_id, model_id) UNIQUE WHERE is_active=1 (db 层拒绝重复 member)
+    - 软删除 (is_active=0) 行保留, 但不参与 UNIQUE 约束
+    - 历史脏数据 (孤儿行 + 重复行) 已通过 db/migrations/2026_08_14_p01_mgm_fk_unique.py
+      软删除
 
     P1-2 (2026-08-06) 软删除设计:
     - is_active=1 (默认) 参与路由; is_active=0 仍保留行, 仅路由跳过
@@ -322,12 +328,20 @@ class ModelGroupMember(Base):
     - 业务查询 path (gateway/router._load_groups_cache, dashboard 等)
       需主动 .where(is_active=1) 过滤, 否然会跳走 deprecated model
     - 路由 cache 严格不应出现 is_active=0 行
+
+    router 层防御:
+    - 即便 db 已有 FK, router._load_groups_cache 仍做防御性 group_id 归一化
+      (0afd0a2, C1 of fix-branch) — 容忍启动前 db 短暂不一致
     """
     __tablename__ = "model_group_members"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    group_id = Column(Text, nullable=False, comment="引用 model_groups.group_id (soft FK)")
-    model_id = Column(Text, nullable=False, comment="引用 model_registry.model_id (soft FK)")
+    # P0-1: FK 强制 model_groups.group_id 对齐, db 层拒绝 int-string 污染
+    group_id = Column(
+        Text, nullable=False,
+        comment="FK -> model_groups.group_id (db 强约束)",
+    )
+    model_id = Column(Text, nullable=False, comment="soft FK -> model_registry.model_id (允许未入库 model)")
     priority = Column(Integer, default=100, comment="组内优先级 (越小越优先, 同价时生效)")
     weight = Column(Float, default=1.0, comment="weighted 策略时的权重 (Phase 3)")
     max_cost_ratio = Column(Float, nullable=True, comment="价格超过组内最低 N 倍时排除 (NULL=不限)")
@@ -339,10 +353,16 @@ class ModelGroupMember(Base):
     removed_reason = Column(Text, nullable=True, comment="出组原因: deprecated+tier_change+manual")
     removed_by = Column(Text, nullable=True, comment="出组执行人: intel_auto/manual_approve")
 
-    # 索引: 路由查询以 (group_id, is_active) 为主过滤, 顺序访问
+    # 索引 + 约束
+    # P0-1: UNIQUE 部分索引 (SQLite only) — (group_id, model_id) 在 is_active=1 行内唯一
+    #       软删除行不参与 UNIQUE, 保留审计历史
     __table_args__ = (
         Index("idx_mgm_group_active", "group_id", "is_active"),
         Index("idx_mgm_model_active", "model_id", "is_active"),
+        UniqueConstraint(
+            "group_id", "model_id",
+            name="uq_mgm_group_model",
+        ),  # 严格 UNIQUE (跟 migration 的 partial index 等效, 简化 ORM 层)
     )
 
 
