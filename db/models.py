@@ -278,6 +278,26 @@ class UsageLog(Base):
     cost_estimate = Column(Float, nullable=True, comment="估算费用（元）")
     status_code = Column(Integer, nullable=True)
     latency_ms = Column(Integer, nullable=True, comment="响应延迟（毫秒）")
+    # P0-3 follow-up (2026-08-14): prompt cache token 统计
+    # - cached_input_tokens: OpenAI 风格的 cache hit tokens
+    #   (usage.prompt_tokens_details.cached_tokens)
+    # - cache_read_input_tokens: Anthropic 风格的 cache read tokens
+    #   (usage.cache_read_input_tokens)
+    # - cache_creation_input_tokens: Anthropic 风格的 cache write tokens
+    #   (usage.cache_creation_input_tokens)
+    # - NULL = 上游不支持 prompt cache 或 0 cache tokens
+    cached_input_tokens = Column(
+        Integer, nullable=True,
+        comment="OpenAI-style: 缓存命中 token 数 (usage.prompt_tokens_details.cached_tokens)",
+    )
+    cache_read_input_tokens = Column(
+        Integer, nullable=True,
+        comment="Anthropic-style: 缓存读取 token 数 (usage.cache_read_input_tokens)",
+    )
+    cache_creation_input_tokens = Column(
+        Integer, nullable=True,
+        comment="Anthropic-style: 缓存写入 token 数 (usage.cache_creation_input_tokens)",
+    )
     created_at = Column(DateTime, default=func.now())
 
 

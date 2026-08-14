@@ -24,6 +24,20 @@ logger = logging.getLogger(__name__)
 def _resolve_effective_base_url(channel):
     # P1-12: 解析 channel 实际使用的 base_url
     # 优先级: db.api_base ?? SENSENOVA_BASE_URL env (sensenova only) ?? db.base_url
+    api_base = (channel.get("api_base") or "").strip()
+    if api_base:
+        return api_base.rstrip("/")
+    db_base_url = (channel.get("base_url") or "").rstrip("/")
+    if channel.get("provider") == "sensenova":
+        env_override = os.getenv("SENSENOVA_BASE_URL", "").strip().rstrip("/")
+        if env_override and env_override != db_base_url:
+            return env_override
+    return db_base_url
+
+
+def _resolve_effective_base_url(channel):
+    # P1-12: 解析 channel 实际使用的 base_url
+    # 优先级: db.api_base ?? SENSENOVA_BASE_URL env (sensenova only) ?? db.base_url
 
     api_base = (channel.get("api_base") or "").strip()
     if api_base:
@@ -300,6 +314,27 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
             or requested_model
             or data.get("model", "")
         )
+
+        # P0-3 follow-up: 解析 cached_tokens (OpenAI + Anthropic 风格)
+        cached_input_tokens = None
+        cache_read_input_tokens = None
+        cache_creation_input_tokens = None
+
+        # OpenAI: usage.prompt_tokens_details.cached_tokens
+        prompt_details = usage.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict):
+            v = prompt_details.get("cached_tokens")
+            if isinstance(v, int):
+                cached_input_tokens = v
+
+        # Anthropic: usage.cache_read_input_tokens + cache_creation_input_tokens
+        v = usage.get("cache_read_input_tokens")
+        if isinstance(v, int):
+            cache_read_input_tokens = v
+        v = usage.get("cache_creation_input_tokens")
+        if isinstance(v, int):
+            cache_creation_input_tokens = v
+
         # 创建异步任务写入数据库
         asyncio.get_event_loop().create_task(
             _write_usage_log(
@@ -311,6 +346,9 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
                 status_code=response.status_code,
                 latency_ms=latency_ms,
                 group_id=group_id,
+                cached_input_tokens=cached_input_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
             )
         )
     except Exception:
@@ -326,6 +364,9 @@ async def _write_usage_log(
     status_code: int,
     latency_ms: int,
     group_id: str | None = None,
+    cached_input_tokens=None,
+    cache_read_input_tokens=None,
+    cache_creation_input_tokens=None,
 ):
     """写入用量日志到数据库
 
