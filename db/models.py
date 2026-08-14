@@ -83,21 +83,49 @@ class Account(Base):
 
 
 class PriceSnapshot(Base):
-    """价格快照表（支持峰谷时段）"""
+    """价格快照表（支持峰谷时段 + 缓存价格 + 优惠期）"""
     __tablename__ = "price_snapshots"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
-    model = Column(Text, nullable=False, comment="模型名: deepseek-chat/qwen-max")
+    model = Column(Text, nullable=False, comment="归一化 model_id (e.g. glm-5.2, 跟 model_registry.model_id 对齐)")
     price_type = Column(Text, default="normal", comment="normal/peak/offpeak/cache_hit/free")
     time_range = Column(Text, default="全天", comment='时段: "00:00-08:00" 或 "全天"')
-    input_price = Column(Float, nullable=True, comment="输入价格（元/百万tokens）")
-    output_price = Column(Float, nullable=True, comment="输出价格（元/百万tokens）")
+    input_price = Column(Float, nullable=True, comment="输入价格（默认货币元/百万tokens）")
+    output_price = Column(Float, nullable=True, comment="输出价格")
     unit = Column(Text, default="元/百万tokens")
-    effective_from = Column(Text, nullable=True, comment="生效日期")
+    effective_from = Column(Text, nullable=True, comment="生效日期 (ISO date 或 datetime)")
     effective_to = Column(Text, nullable=True, comment="失效日期，NULL=长期有效")
     source = Column(Text, nullable=True, comment="来源: manual/crawler/api")
     created_at = Column(DateTime, default=func.now())
+
+    # P0-2 (2026-08-14): 缓存价格 + 优惠期 + raw_model_id 双轨
+    raw_model_id = Column(
+        Text, nullable=True,
+        comment="上游原始 model_id (e.g. zai-org/GLM-5.2), proxy 用这个发请求",
+    )
+    cached_input_price = Column(
+        Float, nullable=True,
+        comment="缓存命中输入价 (元/百万tokens), NULL=不支持或未定价. "
+                "硅基流动/DeepSeek 等支持 prompt cache 的渠道用这个",
+    )
+    cache_write_price = Column(
+        Float, nullable=True,
+        comment="缓存写入价 (元/百万tokens), NULL=不收费. 部分渠道缓存命中免费但写入收费",
+    )
+    currency = Column(
+        Text, nullable=False, server_default="CNY",
+        comment="货币单位 (默认 CNY), 跨渠道价格比较时归一化用",
+    )
+    is_promotion = Column(
+        Integer, nullable=False, server_default="0",
+        comment="0=日常价格, 1=优惠期价格 (跟 effective_from/to 联动, 优惠期过自动失效)",
+    )
+
+    # P0-2: UNIQUE 索引 (channel_id, model) — 避免重复录入
+    __table_args__ = (
+        Index("uq_ps_channel_model", "channel_id", "model", unique=True),
+    )
 
     # 关系
     channel = relationship("Channel", back_populates="price_snapshots")
@@ -264,6 +292,12 @@ class ModelRegistry(Base):
     - benchmark_scores 仅 Dashboard 展示用，不参与路由
     - capabilities 是 JSON 字符串，SQLAlchemy 不解析，应用层 json.loads
     - model_id 规范: {family}-{version}[-{variant}]，如 deepseek-v4-pro
+
+    P0-2 (2026-08-14): 加 raw_ids JSON + supports_prompt_cache
+    - raw_ids: 各渠道上游原始 model_id 映射, proxy 用这个反查发请求
+      (e.g. {"siliconflow": "zai-org/GLM-5.2", "deepseek": "glm-5.2"})
+    - supports_prompt_cache: 是否支持 prompt cache (0/1), router/proxy
+      看到这个字段才注入 cache_control headers
     """
     __tablename__ = "model_registry"
 
@@ -282,6 +316,17 @@ class ModelRegistry(Base):
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # P0-2 扩展
+    raw_ids = Column(
+        Text, nullable=True,
+        comment="JSON: 各渠道上游原始 model_id, {\"siliconflow\": \"zai-org/GLM-5.2\", ...}. "
+                "proxy 发请求前从 model_id 反查 raw_ids[channel.name]",
+    )
+    supports_prompt_cache = Column(
+        Integer, nullable=False, server_default="0",
+        comment="0=不支持 prompt cache, 1=支持 (e.g. siliconflow/deepseek 支持, qwen 不支持)",
+    )
 
 
 class ModelGroup(Base):
