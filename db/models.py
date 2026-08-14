@@ -76,6 +76,14 @@ class Account(Base):
         Integer, nullable=False, server_default="1",
         comment="密文用的 master key 版本 (1=current, 2=next, ...)",
     )
+    # P0-6 (2026-08-14): quota_plan 标识账户所属的 plan 类型
+    # 跟 account_quotas 表联动 — 不同 plan 有不同的限额维度配置
+    # 值: 'token_plan_max' (minimax 年度) / 'free_trial' (sensenova 试用) /
+    #     'pay_as_you_go' (其他按量付费) — 后续可扩展
+    quota_plan = Column(
+        Text, nullable=True,
+        comment="账户 plan 类型 (跟 account_quotas 配置联动)",
+    )
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -178,6 +186,59 @@ class ChannelQuota(Base):
     # 关系
     channel = relationship("Channel", back_populates="quotas")
     account = relationship("Account", back_populates="quotas")
+
+
+class AccountQuota(Base):
+    """P0-6 (2026-08-14): 多维限额定义 (一行 = 一个限额维度)
+
+    替代 ChannelQuota 的简单 RPM/TPM 表达, 支持厂商实际的多维限额:
+    - rpm / tpm: 每分钟请求数 / token 数
+    - daily_tokens / weekly_tokens / 5h_tokens: 日/周/5小时窗口 token 数
+    - concurrent: 并发请求数 (in-flight count)
+    - balance_cny: 余额 (元, 永久, 定期 sync)
+
+    每个 (account_id, dimension) 只允许 1 行 (UNIQUE INDEX)
+    """
+    __tablename__ = "account_quotas"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    dimension = Column(
+        Text, nullable=False,
+        comment="rpm / tpm / daily_tokens / weekly_tokens / 5h_tokens / concurrent / balance_cny",
+    )
+    limit_value = Column(Float, nullable=False, comment="限制值 (token 数 / 请求数 / 余额元)")
+    window_seconds = Column(
+        Integer, nullable=True,
+        comment="窗口长度 (秒), NULL=永久 (余额) 或 N/A (rpm 并发)",
+    )
+    reset_strategy = Column(
+        Text, nullable=False, server_default="rolling",
+        comment="rolling (滑动窗口) / fixed_daily / fixed_weekly / never (永久, 余额)",
+    )
+    enabled = Column(Integer, nullable=False, server_default="1", comment="0=禁用")
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    notes = Column(Text, nullable=True, comment="人工备注: 来源 URL / 厂商文档引用")
+
+
+class AccountQuotaUsage(Base):
+    """P0-6 (2026-08-14): 实时限额使用量
+
+    (account_id, dimension) 联合主键, 一行 = 一个账户一个维度的当前窗口
+
+    rolling window: window_start = 最早一次未超时的请求时间
+    fixed_daily/weekly: window_start = 周期起点
+    never (余额): used_value 不变 (单独维护, 不在 usage 表)
+
+    router pre-check 时读 + 累加; proxy 成功后再次累加 (input + output tokens)
+    """
+    __tablename__ = "account_quota_usage"
+
+    account_id = Column(Integer, ForeignKey("accounts.id"), primary_key=True, nullable=False)
+    dimension = Column(Text, primary_key=True, nullable=False)
+    window_start = Column(DateTime, nullable=True)
+    used_value = Column(Float, nullable=False, server_default="0")
+    last_updated = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
 class UsageLog(Base):
