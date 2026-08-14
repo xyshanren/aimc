@@ -79,7 +79,9 @@ def main() -> int:
         for f in staged_files
     )
     if model_triggered:
+
         print("[pre-commit] 检测到 model_registry 相关文件修改, 跑 db 一致性检查...")
+
         try:
             result = subprocess.run(
                 ["python", "scripts/check_model_consistency.py", "--check", "db"],
@@ -108,6 +110,7 @@ def main() -> int:
             print(result.stdout)
         else:
             print(f"[pre-commit] OK: model_registry db 一致性通过")
+
 
     return 0
 

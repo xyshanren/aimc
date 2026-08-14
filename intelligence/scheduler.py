@@ -116,9 +116,19 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # Phase 4 v4.3.1 (2026-08-13): 月度跑 1 次官方源审查 (防止 commit 后漂移未察觉)
+    from apscheduler.triggers.cron import CronTrigger
+    scheduler.add_job(
+        _monthly_official_audit_task,
+        trigger=CronTrigger.from_crontab("0 6 1 * *"),  # 每月 1 日 6:00 AM
+        id="monthly_official_audit",
+        name="月度官方源审查",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
-        f"调度器已启动 (持久化模式), 共 {len(sources) + 3} 个定时任务, "
+        f"调度器已启动 (持久化模式), 共 {len(sources) + 4} 个定时任务, "
         f"jobstore={settings.db_path}"
     )
 
@@ -356,3 +366,47 @@ async def _cross_source_detection_task():
         )
     except Exception as e:
         logger.error(f"跨源验证失败: {e}", exc_info=True)
+
+
+async def _monthly_official_audit_task():
+    """Phase 4 v4.3.1 (2026-08-13): 月度官方源审查
+
+    爬 5 家厂商官方 API 文档 (DeepSeek/Kimi/MiniMax/Qwen/GLM),
+    跟 model_registry model_id 集合 diff,
+    发现漂移 → Bark/Server酱/Feishu 告警.
+
+    复用 scripts/check_model_consistency.check_official_consistency
+    """
+    try:
+        from db.engine import async_session_factory
+        from scripts.check_model_consistency import check_official_consistency
+
+        async with async_session_factory() as session:
+            diffs = await check_official_consistency(session)
+
+        # 统计漂移
+        official_only_total = sum(len(d.official_only) for d in diffs)
+        registry_only_total = sum(len(d.registry_only) for d in diffs)
+        fetch_errors = sum(1 for d in diffs if d.fetch_error)
+
+        logger.info(
+            f"月度官方源审查完成: 官方漂移 {official_only_total} 个, "
+            f"registry 漂移 {registry_only_total} 个, 爬取失败 {fetch_errors} 个"
+        )
+
+        # 有漂移或爬取失败 → 告警
+        if official_only_total > 0 or registry_only_total > 0 or fetch_errors > 0:
+            try:
+                from intelligence.alerter import send_alert
+                msg = (
+                    f"月度官方源审查发现漂移:\n"
+                    f"- 官方有 / registry 无: {official_only_total} 个 model\n"
+                    f"- registry 有 / 官方无: {registry_only_total} 个 model\n"
+                    f"- 爬取失败: {fetch_errors} 个厂商\n"
+                    f"建议: 跑 python scripts/check_model_consistency.py --check official 查看详情"
+                )
+                await send_alert(msg)
+            except Exception as e:
+                logger.warning(f"月度审查告警发送失败 (非阻断): {e}")
+    except Exception as e:
+        logger.error(f"月度官方源审查失败: {e}", exc_info=True)

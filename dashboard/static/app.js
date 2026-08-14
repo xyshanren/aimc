@@ -63,10 +63,15 @@ function renderPromotions(container) {
     try {
         const data = JSON.parse(container.textContent);
         if (!Array.isArray(data) || data.length === 0) {
+            // Phase 4 v4.3.1 (2026-08-13): 9 家厂商 announcement source 已补齐
+            // (deepseek/glm/原有 + kimi/minimax/qwen/hunyuan/sensenova/stepfun/moonshot 7 家新增)
+            // 数据为空说明 scheduler 尚未完成首次采集, 或该厂商无新优惠, 不是 "source 未接"
             container.innerHTML = `
                 <p class="loading">暂无优惠情报</p>
-                <p class="meta">优惠采集需要在 intelligence/sources/ 接 news/announcement source;
-                    当前 9 家厂商仅配置了 model_list 源, Phase 2A 单独规划时补齐.</p>
+                <p class="meta">9 家厂商 announcement source 已配置 (intelligence/sources/*AnnouncementSource);
+                    数据为空说明 scheduler 尚未完成首次采集 (默认 30 分钟一次),
+                    或该厂商当前无新优惠发布.
+                    <br>手动触发: <code>POST /dashboard/api/sources/run-now?provider=&lt;name&gt;</code></p>
             `;
             return;
         }
@@ -92,19 +97,45 @@ function renderPrices(container) {
             container.innerHTML = '<p class="loading">暂无价格数据</p>';
             return;
         }
-        let html = '<table><thead><tr><th>模型</th><th>渠道</th><th>类型</th><th>时段</th><th>输入价</th><th>输出价</th></tr></thead><tbody>';
-        data.forEach(p => {
-            html += `<tr>
-                <td>${esc(p.model)}</td>
-                <td>${esc(p.channel_name)}</td>
-                <td>${esc(p.price_type)}</td>
-                <td>${esc(p.time_range)}</td>
-                <td class="price-low">${esc(p.input_price ?? '-')}</td>
-                <td>${esc(p.output_price ?? '-')}</td>
-            </tr>`;
-        });
-        html += '</tbody></table>';
-        container.innerHTML = html;
+        // Phase 4 v4.3.1 (2026-08-13): 按 price_type 分组渲染
+        // - normal: 默认
+        // - cache_hit: 上下文缓存命中 (0元)
+        // - free: 完全免费
+        // - peak/offpeak: 峰谷时段
+        const TYPE_ORDER = ['free', 'cache_hit', 'normal', 'peak', 'offpeak'];
+        const TYPE_LABEL = {
+            'free': '免费',
+            'cache_hit': '缓存命中',
+            'normal': '常规',
+            'peak': '峰时',
+            'offpeak': '谷时',
+        };
+        const grouped = {};
+        for (const p of data) {
+            const t = p.price_type || 'normal';
+            if (!grouped[t]) grouped[t] = [];
+            grouped[t].push(p);
+        }
+        let html = '';
+        for (const type of TYPE_ORDER) {
+            const items = grouped[type];
+            if (!items || items.length === 0) continue;
+            const label = TYPE_LABEL[type] || type;
+            html += `<h3 class="price-section-title"><span class="price-type-badge price-type-${esc(type)}">${esc(label)}</span> <span class="meta">${items.length} 条</span></h3>`;
+            html += '<table><thead><tr><th>模型</th><th>渠道</th><th>时段</th><th>输入价</th><th>输出价</th></tr></thead><tbody>';
+            for (const p of items) {
+                const priceLowClass = type === 'free' ? 'price-zero' : (p.input_price === 0 ? 'price-zero' : '');
+                html += `<tr>
+                    <td><code>${esc(p.model)}</code></td>
+                    <td>${esc(p.channel_name)}</td>
+                    <td>${esc(p.time_range)}</td>
+                    <td class="${priceLowClass}">${esc(p.input_price ?? '-')}</td>
+                    <td class="${priceLowClass}">${esc(p.output_price ?? '-')}</td>
+                </tr>`;
+            }
+            html += '</tbody></table>';
+        }
+        container.innerHTML = html || '<p class="loading">暂无价格数据</p>';
     } catch (e) {
         // 非 JSON 响应
     }

@@ -176,7 +176,7 @@ query → 轻量分类器(BERT) → P(强模型赢) → 与阈值 α 比较
 
 - **定位**：混元自研 + 第三方模型聚合
 - **特点**：
-  - 集成 GLM-5.1、Kimi-K2.5、MiniMax-M2.7
+  - 集成 GLM-5.1、Kimi-K2.5、minimax-m2.7
   - Token Plan 套餐制
   - 兼容多种 AI 编程工具
 - **对 AIMC 的意义**：第三方渠道，套餐内调用可能零边际成本
@@ -229,7 +229,7 @@ query → 轻量分类器(BERT) → P(强模型赢) → 与阈值 α 比较
 
 解决的核心问题：
 ```
-Agent 请求: model="deepseek-chat"
+Agent 请求: model="deepseek-v4-flash"
 AIMC 内部:
   - DeepSeek 官方有 V4-Pro、V4-Flash、V3
   - 硅基流动也提供 DeepSeek-V3（更便宜）
@@ -470,7 +470,7 @@ groups:
 ```
 Agent 请求
     │
-    ├── model="deepseek-chat"（精确模型名）
+    ├── model="deepseek-v4-flash"（精确模型名）
     │       → 走现有逻辑：在提供该模型的渠道中选最优
     │
     ├── model="tier:balanced"（模型组名）
@@ -527,7 +527,7 @@ Agent 有三种请求方式，**向后兼容**：
 ```python
 # 方式1: 精确模型名（现有行为不变）
 response = client.chat.completions.create(
-    model="deepseek-chat",  # 精确指定，AIMC 只选渠道
+    model="deepseek-v4-flash",  # 精确指定，AIMC 只选渠道
     messages=[...]
 )
 
@@ -557,8 +557,8 @@ response = client.chat.completions.create(
 {
   "object": "list",
   "data": [
-    {"id": "deepseek-chat", "object": "model", "owned_by": "aimc"},
     {"id": "deepseek-v4-flash", "object": "model", "owned_by": "aimc"},
+    {"id": "deepseek-v4-pro", "object": "model", "owned_by": "aimc"},
     {"id": "qwen-plus", "object": "model", "owned_by": "aimc"},
     {"id": "glm-4-air", "object": "model", "owned_by": "aimc"},
     

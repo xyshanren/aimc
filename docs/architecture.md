@@ -28,7 +28,7 @@
 ```
 +---------------------------------------------------------------+
 |                    用户 / Agent / 客户端                         |
-|         (OpenAI SDK, model="deepseek-chat" 或 "tier:balanced") |
+|         (OpenAI SDK, model="deepseek-v4-flash" 或 "tier:balanced") |
 +-----------------------------+---------------------------------+
                               |
                               v
@@ -75,7 +75,7 @@
 - **同档多替代**：DeepSeek-V4-Flash、Qwen-Plus、GLM-4-Air 能力相近但价格不同
 - **第三方聚合**：硅基流动提供市面大部分开源模型；火山引擎/腾讯云/阿里云也代理第三方模型
 
-如果 hermes-agent-cn 只能写死 `model="deepseek-chat"`，则永远用不到更便宜的同级替代品。
+如果 hermes-agent-cn 只能写死 `model="deepseek-v4-flash"`，则永远用不到更便宜的同级替代品。
 
 ### 4.2 三维模型组织
 
@@ -113,7 +113,7 @@ local        — 本地部署（如 Ollama、vLLM 自建）
 |------|------|------|
 | `tier:` | 按能力档分组 | `tier:flagship`、`tier:balanced`、`tier:light` |
 | `scene:` | 按使用场景分组 | `scene:code`、`scene:free`、`scene:long-context` |
-| 无前缀 | 精确模型名（现有行为） | `deepseek-chat`、`qwen-plus` |
+| 无前缀 | 精确模型名（现有行为） | `deepseek-v4-flash`、`qwen-plus` |
 
 #### 组内路由策略
 
@@ -171,7 +171,7 @@ tier:flagship → tier:strong → tier:balanced → tier:light → tier:free
 
 ```python
 # 方式1: 精确模型名（向后兼容，行为不变）
-client.chat.completions.create(model="deepseek-chat", ...)
+client.chat.completions.create(model="deepseek-v4-flash", ...)
 
 # 方式2: 能力档（推荐，AIMC 在档内跨模型选最便宜）
 client.chat.completions.create(model="tier:balanced", ...)
@@ -207,8 +207,8 @@ X-AIMC-Route-Reason: cheapest_in_group
 {
   "object": "list",
   "data": [
-    {"id": "deepseek-chat", "object": "model", "owned_by": "aimc"},
     {"id": "deepseek-v4-flash", "object": "model", "owned_by": "aimc"},
+    {"id": "deepseek-v4-pro", "object": "model", "owned_by": "aimc"},
     {"id": "qwen-plus", "object": "model", "owned_by": "aimc"},
     {"id": "glm-4-air", "object": "model", "owned_by": "aimc"},
 

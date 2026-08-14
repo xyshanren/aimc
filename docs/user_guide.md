@@ -200,7 +200,7 @@ client = OpenAI(
 
 # 非流式
 response = client.chat.completions.create(
-    model="deepseek-chat",                   # AIMC 自动选最便宜渠道
+    model="deepseek-v4-flash",            # AIMC 自动选最便宜渠道
     messages=[{"role": "user", "content": "你好"}],
 )
 print(response.choices[0].message.content)
@@ -227,7 +227,7 @@ const client = new OpenAI({
 });
 
 const response = await client.chat.completions.create({
-  model: 'deepseek-chat',
+  model: 'deepseek-v4-flash',
   messages: [{ role: 'user', content: 'Hello' }],
 });
 console.log(response.choices[0].message.content);
@@ -240,7 +240,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-aimc-key" \
   -d '{
-    "model": "deepseek-chat",
+    "model": "deepseek-v4-flash",
     "messages": [{"role": "user", "content": "Hello"}]
   }'
 ```
@@ -287,7 +287,7 @@ response = client.chat.completions.create(
 **响应头可观测**: AIMC 在响应头返回实际命中信息:
 
 ```http
-X-AIMC-Actual-Model: deepseek-chat
+X-AIMC-Actual-Model: deepseek-v4-flash
 X-AIMC-Channel: deepseek_official
 X-AIMC-Account: deepseek_01
 X-AIMC-Group-Id: tier:balanced

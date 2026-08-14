@@ -443,3 +443,32 @@ footer a {
 .status-badge.status-deprecated { background: rgba(255, 173, 31, 0.2); color: #ffad1f; }
 .status-badge.status-preview   { background: rgba(29, 155, 240, 0.2); color: #1d9bf0; }
 .status-badge.status-missing   { background: rgba(244, 33, 46, 0.2); color: #f4212e; }
+
+/* Phase 4 v4.3.1 (2026-08-13): 价格类型徽章 (normal/cache_hit/free/peak/offpeak) */
+.price-type-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.85em;
+    font-weight: 600;
+    margin-right: 6px;
+}
+.price-type-badge.price-type-free      { background: rgba(0, 186, 124, 0.25); color: #00ba7c; border: 1px solid #00ba7c; }
+.price-type-badge.price-type-cache-hit { background: rgba(29, 155, 240, 0.25); color: #1d9bf0; border: 1px solid #1d9bf0; }
+.price-type-badge.price-type-normal    { background: rgba(120, 120, 120, 0.2); color: #a0a0a0; border: 1px solid #707070; }
+.price-type-badge.price-type-peak      { background: rgba(255, 173, 31, 0.2); color: #ffad1f; border: 1px solid #ffad1f; }
+.price-type-badge.price-type-offpeak   { background: rgba(0, 186, 124, 0.15); color: #00ba7c; border: 1px dashed #00ba7c; }
+
+.price-section-title {
+    margin: 18px 0 8px 0;
+    font-size: 0.95em;
+    color: #888;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.price-zero {
+    color: #00ba7c;
+    font-weight: 600;
+}
