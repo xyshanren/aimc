@@ -126,6 +126,16 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # 方案A (2026-08-14): 每周一 09:00 跑 suggest_changes
+    # 跟周报生成对齐: 周一 09:00 跑完 suggest_changes, 周报 09:00 拉取 pending 建议
+    scheduler.add_job(
+        _weekly_suggest_changes_task,
+        trigger=CronTrigger.from_crontab("0 9 * * 1"),  # 每周一 09:00
+        id="weekly_suggest_changes",
+        name="周建议生成 (方案A)",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         f"调度器已启动 (持久化模式), 共 {len(sources) + 4} 个定时任务, "
@@ -410,3 +420,50 @@ async def _monthly_official_audit_task():
                 logger.warning(f"月度审查告警发送失败 (非阻断): {e}")
     except Exception as e:
         logger.error(f"月度官方源审查失败: {e}", exc_info=True)
+
+
+async def _weekly_suggest_changes_task():
+    """方案A (2026-08-14): 每周一 09:00 跑 suggest_changes
+
+    流程:
+    1. 跑 intelligence/analytics/suggest_changes.py (默认 shadow mode 写 log)
+    2. 写入 db (status=pending) 等 dashboard review
+    3. 周报 09:00 拉取 pending/approved 建议, 推到 Bark/Feishu
+
+    设计:
+    - 跟周报生成同时间 (周一 09:00) 保证建议能在周报里看到
+    - shadow mode 默认开: 不写 db, 只写 auto_apply_shadow.log (为远期自动应用积累数据)
+    - 半年后看 shadow log 跟人工批准的一致率, 决定是否开真自动应用
+
+    失败模式:
+    - 最小数据门槛不满足 (usage_logs < 30) → 跳过, 不报错
+    - 数据源 query 失败 → log error, 下周重试
+    """
+    try:
+        from intelligence.analytics.suggest_changes import main as suggest_main
+        # 用 subprocess 跑 (跟 scripts/ 风格一致, 不在 scheduler 进程内)
+        import subprocess
+        import sys as _sys
+        result = subprocess.run(
+            [_sys.executable, "-m", "intelligence.analytics.suggest_changes",
+             "--apply"],  # 生产模式: 写 db (周报需要读)
+            cwd="/home/lxc/aimc",  # TODO: 改 config-based path
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode == 0:
+            logger.info("方案A: 周建议生成完成 (--apply)")
+            # 提取建议数 (从 stdout 找 "总计: X model + Y group")
+            for line in result.stdout.splitlines():
+                if "总计:" in line:
+                    logger.info(f"  {line.strip()}")
+                    break
+        else:
+            logger.error(f"方案A: 周建议生成失败 (rc={result.returncode})")
+            logger.error(f"  stdout: {result.stdout[-500:]}")
+            logger.error(f"  stderr: {result.stderr[-500:]}")
+    except subprocess.TimeoutExpired:
+        logger.error("方案A: 周建议生成超时 (>120s)")
+    except Exception as e:
+        logger.error(f"方案A: 周建议生成异常: {e}", exc_info=True)
