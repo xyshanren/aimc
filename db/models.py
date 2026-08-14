@@ -583,6 +583,92 @@ class CrossSourceDiscrepancy(Base):
 Index("idx_cross_source_status", CrossSourceDiscrepancy.status, CrossSourceDiscrepancy.model_id)
 
 
+class ModelChangeSuggestion(Base):
+    """方案 A (2026-08-14): 单 model 调整建议
+
+    - tier_change: tier 升降 (基于 model_cards.score 跟当前 tier 平均比较)
+    - add_to_group: model 应该加进某个 group
+    - remove_from_group: model 应该从 group 移除 (长期不用)
+
+    流程:
+    1. intelligence/analytics/suggest_changes.py 写入 status='pending'
+    2. dashboard \"建议中心\" 人工 review, 点批准/拒绝
+    3. scripts/apply_suggestions.py 直接 UPDATE db + 写 applied_at
+
+    不直接改 model_group_members 或 model_registry.tier (那是 seed_model_groups.py 的事),
+    让 db 状态最新 + seed 脚本可重新生成 (如果需要 git-tracked).
+    """
+    __tablename__ = "model_change_suggestions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_id = Column(Text, nullable=False)
+    change_type = Column(
+        Text, nullable=False,
+        comment="tier_change / add_to_group / remove_from_group",
+    )
+    suggested_value = Column(Text, nullable=True, comment="新 tier / group_id")
+    current_value = Column(Text, nullable=True, comment="当前 tier / group_id (NULL=未加入)")
+    reason = Column(Text, nullable=True, comment="markdown 解释, 含置信度逻辑")
+    confidence = Column(
+        Float, nullable=True,
+        comment="0-1, 越高越可信 (基于 model_cards / usage / price / cache 4 数据源)",
+    )
+    based_on = Column(
+        Text, nullable=True,
+        comment="JSON: {\"score\": 85, \"old_tier\": \"T2\", \"avg_tier_T0_score\": 80}",
+    )
+    status = Column(
+        Text, nullable=False, server_default="pending",
+        comment="pending / approved / rejected / applied",
+    )
+    created_at = Column(DateTime, default=func.now())
+    reviewed_at = Column(DateTime, nullable=True)
+    reviewed_by = Column(Text, nullable=True)
+    applied_at = Column(DateTime, nullable=True)
+
+
+class GroupChangeSuggestion(Base):
+    """方案 A (2026-08-14): 组级别调整建议
+
+    - create: 新增 group (基于 usage_logs fallback 503 比例)
+    - merge: 合并 2 个 group (低使用率)
+    - delete: 删除 group (0 使用率)
+    - rename: 重命名 (跟实际 model 不匹配)
+
+    同 model_change_suggestions 流程
+    """
+    __tablename__ = "group_change_suggestions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Text, nullable=False)
+    change_type = Column(
+        Text, nullable=False,
+        comment="create / merge / delete / rename",
+    )
+    suggested_config = Column(
+        Text, nullable=True,
+        comment="JSON: fallback_group / strategy / require_vision 等",
+    )
+    target_groups = Column(
+        Text, nullable=True,
+        comment="merge 时: \"tier:strong,tier:balanced\"; delete 时: NULL",
+    )
+    reason = Column(Text, nullable=True)
+    confidence = Column(Float, nullable=True)
+    based_on = Column(Text, nullable=True, comment="JSON: {\"usage_pct\": {...}}")
+    status = Column(Text, nullable=False, server_default="pending")
+    created_at = Column(DateTime, default=func.now())
+    reviewed_at = Column(DateTime, nullable=True)
+    reviewed_by = Column(Text, nullable=True)
+    applied_at = Column(DateTime, nullable=True)
+
+
+Index("idx_mcs_status", ModelChangeSuggestion.status, ModelChangeSuggestion.created_at)
+Index("idx_mcs_model", ModelChangeSuggestion.model_id, ModelChangeSuggestion.change_type)
+Index("idx_gcs_status", GroupChangeSuggestion.status, GroupChangeSuggestion.created_at)
+Index("idx_gcs_group", GroupChangeSuggestion.group_id, GroupChangeSuggestion.change_type)
+
+
 class SettingsRuntime(Base):
     """Runtime settings override (API-Sec-2, 2026-07-29)
 
