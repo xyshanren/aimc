@@ -7,7 +7,7 @@ import logging
 import re
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import field_validator
+from pydantic import field_validator, Field
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,19 @@ class Settings(BaseSettings):
     db_path: str = "./data/aimc.db"
 
     # === 网关鉴权 ===
-    api_key: str = ""  # 留空则不鉴权
+    api_key: str = ""  # 留空则不鉴权 (/v1/* OpenAI/Anthropic API)
+
+    # P1-7 (2026-08-14): dashboard 鉴权 (跟 api_key 分开, 独立管理)
+    # - 未设 = 维持 legacy 行为 (LAN 内裸开, 跟你 brief 里的"已知遗留"一致)
+    # - 设了 = /dashboard/* 路径需要 token 校验 (header 或 ?token=)
+    # - 跟 api_key 分开的原因: dashboard 数据敏感 (账号/限额/优惠), 应该独立管理
+    # - env var 用 AIMC_DASHBOARD_TOKEN (跟 api_key 的 AIMC_API_KEY 命名一致)
+    dashboard_token: str = Field(default="", validation_alias="AIMC_DASHBOARD_TOKEN")
+
+    @property
+    def dashboard_auth_enabled(self) -> bool:
+        """P1-7: dashboard 是否启用鉴权"""
+        return bool(self.dashboard_token)
 
     # === AI 解析引擎 ===
     openai_api_key: str = ""

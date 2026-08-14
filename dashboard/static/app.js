@@ -1,7 +1,55 @@
 /**
  * AIMC Dashboard 前端逻辑
  * 使用 htmx 进行局部刷新，Chart.js 绘制用量图表
+ * P1-7 (2026-08-14): 加 dashboard auth (跟 api_key 分开)
  */
+
+// ============================================================
+// P1-7: dashboard 鉴权 (跟 api_key 分开)
+// ============================================================
+
+const DASHBOARD_TOKEN_KEY = 'aimc_dashboard_token';
+
+// fetch wrapper: 自动加 Authorization header (如果 localStorage 里有 token)
+async function authFetch(url, opts = {}) {
+    const token = localStorage.getItem(DASHBOARD_TOKEN_KEY);
+    if (token) {
+        opts.headers = opts.headers || {};
+        opts.headers['Authorization'] = 'Bearer ' + token;
+    }
+    const resp = await fetch(url, opts);
+    // 401 = token 失效/缺失, 跳 login
+    if (resp.status === 401 && !url.includes('/dashboard/login') && !url.includes('/dashboard/api/auth/')) {
+        localStorage.removeItem(DASHBOARD_TOKEN_KEY);
+        location.href = '/dashboard/login?next=' + encodeURIComponent(location.pathname);
+    }
+    return resp;
+}
+
+// 启动时检查鉴权状态 (auth_enabled 时缺 token 跳 login)
+(async function checkAuthOnLoad() {
+    try {
+        const resp = await fetch('/dashboard/api/auth/status');
+        const data = await resp.json();
+        if (data.auth_enabled) {
+            // 鉴权启用: 检查 localStorage 是否有 token
+            const token = localStorage.getItem(DASHBOARD_TOKEN_KEY);
+            if (!token) {
+                location.href = '/dashboard/login?next=' + encodeURIComponent(location.pathname);
+                return;
+            }
+            // 验证 token 有效性
+            const verifyResp = await authFetch('/dashboard/api/auth/status');
+            if (!verifyResp.ok) {
+                localStorage.removeItem(DASHBOARD_TOKEN_KEY);
+                location.href = '/dashboard/login?next=' + encodeURIComponent(location.pathname);
+            }
+        }
+        // auth_enabled=false: legacy, 啥也不做
+    } catch (e) {
+        console.warn('Dashboard auth check failed (non-fatal):', e);
+    }
+})();
 
 // HTML 转义，防止 XSS
 function esc(str) {
@@ -10,6 +58,25 @@ function esc(str) {
     div.textContent = String(str);
     return div.innerHTML;
 }
+
+// P1-7: 给 htmx 全局加 Authorization header (dashboard token)
+document.body.addEventListener('htmx:configRequest', function(event) {
+    const token = localStorage.getItem(DASHBOARD_TOKEN_KEY);
+    if (token) {
+        event.detail.headers['Authorization'] = 'Bearer ' + token;
+    }
+});
+
+// P1-7: htmx 收到 401 时跳 login
+document.body.addEventListener('htmx:responseError', function(event) {
+    if (event.detail.xhr.status === 401) {
+        const path = event.detail.pathInfo?.requestPath || event.detail.path || '';
+        if (!path.includes('/dashboard/login') && !path.includes('/dashboard/api/auth/')) {
+            localStorage.removeItem(DASHBOARD_TOKEN_KEY);
+            location.href = '/dashboard/login?next=' + encodeURIComponent(location.pathname);
+        }
+    }
+});
 
 // htmx 响应渲染：渠道列表
 document.body.addEventListener('htmx:afterSwap', function(event) {
@@ -63,16 +130,7 @@ function renderPromotions(container) {
     try {
         const data = JSON.parse(container.textContent);
         if (!Array.isArray(data) || data.length === 0) {
-            // Phase 4 v4.3.1 (2026-08-13): 9 家厂商 announcement source 已补齐
-            // (deepseek/glm/原有 + kimi/minimax/qwen/hunyuan/sensenova/stepfun/moonshot 7 家新增)
-            // 数据为空说明 scheduler 尚未完成首次采集, 或该厂商无新优惠, 不是 "source 未接"
-            container.innerHTML = `
-                <p class="loading">暂无优惠情报</p>
-                <p class="meta">9 家厂商 announcement source 已配置 (intelligence/sources/*AnnouncementSource);
-                    数据为空说明 scheduler 尚未完成首次采集 (默认 30 分钟一次),
-                    或该厂商当前无新优惠发布.
-                    <br>手动触发: <code>POST /dashboard/api/sources/run-now?provider=&lt;name&gt;</code></p>
-            `;
+            container.innerHTML = '<p class="loading">暂无优惠情报</p>';
             return;
         }
         let html = '';
@@ -97,45 +155,19 @@ function renderPrices(container) {
             container.innerHTML = '<p class="loading">暂无价格数据</p>';
             return;
         }
-        // Phase 4 v4.3.1 (2026-08-13): 按 price_type 分组渲染
-        // - normal: 默认
-        // - cache_hit: 上下文缓存命中 (0元)
-        // - free: 完全免费
-        // - peak/offpeak: 峰谷时段
-        const TYPE_ORDER = ['free', 'cache_hit', 'normal', 'peak', 'offpeak'];
-        const TYPE_LABEL = {
-            'free': '免费',
-            'cache_hit': '缓存命中',
-            'normal': '常规',
-            'peak': '峰时',
-            'offpeak': '谷时',
-        };
-        const grouped = {};
-        for (const p of data) {
-            const t = p.price_type || 'normal';
-            if (!grouped[t]) grouped[t] = [];
-            grouped[t].push(p);
-        }
-        let html = '';
-        for (const type of TYPE_ORDER) {
-            const items = grouped[type];
-            if (!items || items.length === 0) continue;
-            const label = TYPE_LABEL[type] || type;
-            html += `<h3 class="price-section-title"><span class="price-type-badge price-type-${esc(type)}">${esc(label)}</span> <span class="meta">${items.length} 条</span></h3>`;
-            html += '<table><thead><tr><th>模型</th><th>渠道</th><th>时段</th><th>输入价</th><th>输出价</th></tr></thead><tbody>';
-            for (const p of items) {
-                const priceLowClass = type === 'free' ? 'price-zero' : (p.input_price === 0 ? 'price-zero' : '');
-                html += `<tr>
-                    <td><code>${esc(p.model)}</code></td>
-                    <td>${esc(p.channel_name)}</td>
-                    <td>${esc(p.time_range)}</td>
-                    <td class="${priceLowClass}">${esc(p.input_price ?? '-')}</td>
-                    <td class="${priceLowClass}">${esc(p.output_price ?? '-')}</td>
-                </tr>`;
-            }
-            html += '</tbody></table>';
-        }
-        container.innerHTML = html || '<p class="loading">暂无价格数据</p>';
+        let html = '<table><thead><tr><th>模型</th><th>渠道</th><th>类型</th><th>时段</th><th>输入价</th><th>输出价</th></tr></thead><tbody>';
+        data.forEach(p => {
+            html += `<tr>
+                <td>${esc(p.model)}</td>
+                <td>${esc(p.channel_name)}</td>
+                <td>${esc(p.price_type)}</td>
+                <td>${esc(p.time_range)}</td>
+                <td class="price-low">${esc(p.input_price ?? '-')}</td>
+                <td>${esc(p.output_price ?? '-')}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
     } catch (e) {
         // 非 JSON 响应
     }
@@ -150,7 +182,7 @@ function renderRegistryModels(container) {
             return;
         }
         let html = `<p class="meta">共 ${esc(data.count)} 个 model (按 family + tier 排序)</p>`;
-        html += '<table><thead><tr><th>model_id</th><th>family</th><th>tier</th><th>capabilities</th><th>ctx</th><th title="是否开源权重">开源</th><th>状态</th></tr></thead><tbody>';
+        html += '<table><thead><tr><th>model_id</th><th>family</th><th>tier</th><th>capabilities</th><th>ctx</th><th>open</th><th>状态</th></tr></thead><tbody>';
         let prevFamily = null;
         for (const m of data.models) {
             if (m.family !== prevFamily) {
@@ -196,27 +228,8 @@ function renderRegistryGroups(container) {
                 ${caps.length ? `<p class="caps">要求 capabilities: ${esc(caps.join(', '))}</p>` : ''}
                 ${ctxMin ? `<p class="meta">min_context=${esc(ctxMin)}</p>` : ''}
                 <details><summary>members (${g.members.length})</summary><ul>`;
-            // Phase 2a+ fix (2026-08-13): 每个 member 加 registry status 徽章
-            // 让 UI 能看到 "在组里但 registry 标 deprecated / 不在 registry" 的成员
             for (const m of g.members) {
-                const status = m.status || 'missing';
-                const tier = m.tier || '';
-                const tierMark = tier ? ` <span class="meta">(${esc(tier)})</span>` : '';
-                let statusBadge;
-                if (status === 'active') {
-                    statusBadge = '<span class="status-badge status-active">active</span>';
-                } else if (status === 'deprecated') {
-                    statusBadge = '<span class="status-badge status-deprecated">deprecated</span>';
-                } else if (status === 'preview') {
-                    statusBadge = '<span class="status-badge status-preview">preview</span>';
-                } else {
-                    statusBadge = '<span class="status-badge status-missing">未注册</span>';
-                }
-                html += `<li>
-                    <code>${esc(m.model_id)}</code>${tierMark}
-                    <span class="meta">priority=${esc(m.priority)}</span>
-                    ${statusBadge}
-                </li>`;
+                html += `<li><code>${esc(m.model_id)}</code> <span class="meta">priority=${esc(m.priority)}</span></li>`;
             }
             html += '</ul></details></div>';
         }
@@ -535,3 +548,268 @@ async function loadUsageChart() {
 
 // 页面加载完成后初始化图表
 document.addEventListener('DOMContentLoaded', loadUsageChart);
+
+// ============================================================
+// V4.5: 周报查看页 (与 dashboard/static/index.html #weekly-report-section 配套)
+// ============================================================
+
+async function loadReportsList() {
+    // 加载 reports/ 下所有周报元信息, 填充 select options + meta
+    const sel = document.getElementById('report-select');
+    const meta = document.getElementById('report-meta');
+    if (!sel || !meta) return;
+    try {
+        const resp = await fetch('/dashboard/api/reports');
+        const data = await resp.json();
+
+        // 清空, 重建 options (保留 "最新" 默认项)
+        sel.innerHTML = '<option value="latest">最新</option>';
+        (data.reports || []).forEach(r => {
+            const opt = document.createElement('option');
+            opt.value = r.date;
+            opt.textContent = r.date;
+            sel.appendChild(opt);
+        });
+
+        if (data.latest && data.latest.modified_at) {
+            const m = new Date(data.latest.modified_at * 1000);
+            meta.textContent = `最新报告生成于 ${m.toLocaleString('zh-CN')} · 共 ${data.count} 期`;
+        } else {
+            meta.textContent = `未生成过周报 — 请先跑 python scripts/generate_weekly_report.py`;
+        }
+    } catch (e) {
+        meta.textContent = `加载周报列表失败: ${e.message}`;
+    }
+}
+
+function loadWeeklyReport(value) {
+    // select 切换时调 — value="latest" 拿 latest, 否则拿指定日期
+    const url = value === 'latest' || !value
+        ? '/dashboard/api/reports/latest'
+        : '/dashboard/api/reports/' + value;
+    const content = document.getElementById('weekly-report-content');
+    if (!content) return;
+    content.innerHTML = '<p class="loading">加载中...</p>';
+    fetch(url)
+        .then(r => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r.text();
+        })
+        .then(html => {
+            content.innerHTML = html;
+        })
+        .catch(e => {
+            content.innerHTML = `<p class="error">加载周报失败: ${esc(e.message)}</p>`;
+        });
+}
+
+document.addEventListener('DOMContentLoaded', loadReportsList);
+
+// ============================================================
+// V4.6: Dashboard 账号管理 (列表 / 加 / 启停 / 轮换 / 过期扫描)
+// 与 dashboard/routes.py /api/accounts/* 配套
+// ============================================================
+
+async function loadActiveChannels() {
+    // 填充加账号表单的 provider select
+    const sel = document.getElementById('acct-provider');
+    if (!sel) return;
+    try {
+        const resp = await fetch('/dashboard/api/channels/active');
+        const data = await resp.json();
+        sel.innerHTML = '<option value="">-- 选择 provider --</option>';
+        (data.channels || []).forEach(ch => {
+            const opt = document.createElement('option');
+            opt.value = ch.provider;
+            opt.textContent = `${ch.provider} (${ch.name})`;
+            sel.appendChild(opt);
+        });
+    } catch (e) {
+        sel.innerHTML = `<option value="">加载失败: ${esc(e.message)}</option>`;
+    }
+}
+
+async function loadAccounts() {
+    // 重新拉列表 — 同 hx-get 同样的 URL, 但用 fetch 强制刷新
+    const container = document.getElementById('accounts-list');
+    const meta = document.getElementById('accounts-meta');
+    if (meta) meta.textContent = '加载中...';
+    try {
+        const resp = await fetch('/dashboard/api/accounts');
+        const data = await resp.json();
+        renderAccounts(data);
+        if (meta) {
+            const active = (data.accounts || []).filter(a => a.status === 'active').length;
+            meta.textContent = `共 ${data.count} 个账号 · ${active} 个 active`;
+        }
+    } catch (e) {
+        if (meta) meta.textContent = `加载失败: ${esc(e.message)}`;
+        if (container) container.innerHTML = `<p class="error">加载失败: ${esc(e.message)}</p>`;
+    }
+}
+
+function renderAccounts(data) {
+    const container = document.getElementById('accounts-list');
+    if (!container) return;
+    const items = data.accounts || [];
+    if (items.length === 0) {
+        container.innerHTML = '<p class="loading">✓ 当前无账号 — 点上方 "+ 加新账号" 添加</p>';
+        return;
+    }
+
+    let html = '<table><thead><tr><th>ID</th><th>Provider</th><th>账号名</th><th>状态</th><th>已用/总额</th><th>过期</th><th>Key</th><th>备注</th><th>操作</th></tr></thead><tbody>';
+    for (const a of items) {
+        const quota = a.quota_total
+            ? `${a.quota_used.toLocaleString()} / ${a.quota_total.toLocaleString()} (${a.quota_pct ?? 0}%)`
+            : '∅';
+        const expires = a.expires_at ? a.expires_at.slice(0, 10) : '∅';
+        const notes = a.notes || '';
+        const status = a.status;
+        const actions = [];
+        if (status !== 'active') {
+            actions.push(`<button class="btn-sm btn-enable" onclick="toggleAccount(${a.id}, 'active', this)">启用</button>`);
+        } else {
+            actions.push(`<button class="btn-sm btn-disable" onclick="toggleAccount(${a.id}, 'disabled', this)">禁用</button>`);
+        }
+        actions.push(`<button class="btn-sm btn-rotate" onclick="rotateAccountKey(${a.id}, this)">轮换</button>`);
+        html += `<tr>
+            <td>${a.id}</td>
+            <td>${esc(a.provider)}</td>
+            <td><code>${esc(a.account_name)}</code></td>
+            <td class="status-${esc(status)}">${esc(status)}</td>
+            <td>${quota}</td>
+            <td>${esc(expires)}</td>
+            <td><code class="key-display">${esc(a.key_display)}</code></td>
+            <td class="notes">${esc(notes)}</td>
+            <td class="row-actions">${actions.join(' ')}</td>
+        </tr>`;
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+async function toggleAccount(accountId, newStatus, btn) {
+    if (!confirm(`确定将账号 #${accountId} 切换为 ${newStatus}?`)) return;
+    btn.disabled = true;
+    try {
+        const resp = await fetch(`/dashboard/api/accounts/${accountId}/${newStatus === 'active' ? 'enable' : 'disable'}`, {
+            method: 'POST',
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            await loadAccounts();
+        } else {
+            alert('操作失败: ' + (data.detail || resp.statusText));
+            btn.disabled = false;
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+        btn.disabled = false;
+    }
+}
+
+async function rotateAccountKey(accountId, btn) {
+    const newKey = prompt(`为账号 #${accountId} 输入新 API Key\n(明文仅本次提交到后端, 加密入库)`);
+    if (!newKey) return;
+    btn.disabled = true;
+    try {
+        const resp = await fetch(`/dashboard/api/accounts/${accountId}/rotate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_key: newKey }),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            await loadAccounts();
+        } else {
+            alert('轮换失败: ' + (data.detail || resp.statusText));
+            btn.disabled = false;
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+        btn.disabled = false;
+    }
+}
+
+async function submitNewAccount() {
+    const provider = document.getElementById('acct-provider').value;
+    const name = document.getElementById('acct-name').value.trim();
+    const apiKey = document.getElementById('acct-api-key').value;
+    const quotaTotalRaw = document.getElementById('acct-quota-total').value;
+    const expiresAt = document.getElementById('acct-expires-at').value;
+    const notes = document.getElementById('acct-notes').value.trim();
+    const feedback = document.getElementById('acct-add-feedback');
+
+    if (!provider) { feedback.textContent = '❌ 请选择 provider'; feedback.className = 'feedback error'; return; }
+    if (!name) { feedback.textContent = '❌ 请输入账号名'; feedback.className = 'feedback error'; return; }
+    if (!apiKey) { feedback.textContent = '❌ 请输入 API Key'; feedback.className = 'feedback error'; return; }
+
+    const payload = { provider, name, api_key: apiKey };
+    if (quotaTotalRaw) payload.quota_total = parseInt(quotaTotalRaw, 10);
+    if (expiresAt) payload.expires_at = expiresAt;
+    if (notes) payload.notes = notes;
+
+    feedback.textContent = '提交中...';
+    feedback.className = 'feedback';
+    try {
+        const resp = await fetch('/dashboard/api/accounts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            feedback.textContent = `✅ 账号 #${data.account.id} 创建成功 (${data.account.account_name})`;
+            feedback.className = 'feedback success';
+            // 清空表单
+            document.getElementById('acct-name').value = '';
+            document.getElementById('acct-api-key').value = '';
+            document.getElementById('acct-quota-total').value = '';
+            document.getElementById('acct-expires-at').value = '';
+            document.getElementById('acct-notes').value = '';
+            await loadAccounts();
+        } else {
+            feedback.textContent = '❌ ' + (data.detail || resp.statusText);
+            feedback.className = 'feedback error';
+        }
+    } catch (e) {
+        feedback.textContent = '❌ 网络错误: ' + e.message;
+        feedback.className = 'feedback error';
+    }
+}
+
+async function triggerExpireCheck() {
+    if (!confirm('扫描并标记所有 expires_at < now 的账号为 expired?')) return;
+    try {
+        const resp = await fetch('/dashboard/api/accounts/expire-check', { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            alert(`扫描完成 — ${data.expired_count} 个账号标记为 expired`);
+            await loadAccounts();
+        } else {
+            alert('扫描失败: ' + (data.detail || resp.statusText));
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+    }
+}
+
+// htmx 渲染: accounts-list
+document.body.addEventListener('htmx:afterSwap', function(event) {
+    if (event.detail.target.id === 'accounts-list') {
+        try {
+            const data = JSON.parse(event.detail.target.textContent);
+            renderAccounts(data);
+            const meta = document.getElementById('accounts-meta');
+            if (meta) {
+                const active = (data.accounts || []).filter(a => a.status === 'active').length;
+                meta.textContent = `共 ${data.count} 个账号 · ${active} 个 active`;
+            }
+        } catch (e) {
+            // 非 JSON — 忽略
+        }
+    }
+});
+
+// 页面加载时拉 active channels 填表单
+document.addEventListener('DOMContentLoaded', loadActiveChannels);
