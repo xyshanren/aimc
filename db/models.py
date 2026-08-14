@@ -68,6 +68,14 @@ class Account(Base):
     last_rotated_at = Column(DateTime, nullable=True, comment="最后轮换时间 (manual_import.py 写入)")
     expires_at = Column(DateTime, nullable=True, comment="用户自定过期时间 (NULL=无)")
     notes = Column(Text, nullable=True, comment="用户备注 (V4.5 fix: add_account.py --notes)")
+    # P0-5 (2026-08-14): encryption_version 标记 ciphertext 用哪个 master key 加密
+    # - 1 = 当前 AIMC_MASTER_KEY (Fernet, 64 hex chars) — 现状
+    # - 2 = 未来 AIMC_MASTER_KEY_V2 — 预留, reencrypt 后用
+    # 让 reencrypt_accounts.py 可以区分新旧密文, 启动时校验可定位"key 版本错"
+    encryption_version = Column(
+        Integer, nullable=False, server_default="1",
+        comment="密文用的 master key 版本 (1=current, 2=next, ...)",
+    )
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

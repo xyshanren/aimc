@@ -3,8 +3,13 @@
 基于 pydantic-settings 从环境变量 / .env 文件加载配置。
 """
 
+import logging
+import re
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -27,6 +32,33 @@ class Settings(BaseSettings):
     # 丢了 = 全部 ciphertext 不可解 = 永久性数据丢失, 务必存到密码管理器
     aimc_master_key: str = ""
 
+    @field_validator("aimc_master_key")
+    @classmethod
+    def _validate_master_key(cls, v: str) -> str:
+        """P0-5 (2026-08-14): 启动时校验 master_key 格式, 不通过则抛错
+
+        背景: 历史上 master key 改过但 ciphertext 没重加密, 5/6 账号解密失败
+        (POST_V464_FIXES.md issue 1 的下游症状). 启动校验可以:
+        - 提早发现 key 配置错 (不是 router 跑到一半才发现)
+        - 校验格式 (防止把 placeholder 当真 key 用)
+
+        校验规则 (跟 scripts/migrate_encrypt_keys.py / scripts/gen_master_key.py 一致):
+        - 64 字符 hex (Fernet generate_key 返回后 hex 化, d1c7c12 升级)
+        - 空字符串允许 (= 不启用加密, 但 db 里 ciphertext 必须也空)
+        """
+        if not v:
+            return v  # 空允许 (没账号就没加密)
+        if not re.match(r"^[0-9a-fA-F]{64}$", v):
+            raise ValueError(
+                f"AIMC_MASTER_KEY 格式错: 期望 64 字符 hex, 实际 {len(v)} 字符 "
+                f"(开头 {v[:8]}...). 重新生成: python scripts/gen_master_key.py"
+            )
+        logger.info(
+            f"[P0-5] AIMC_MASTER_KEY 校验通过 (hex 64 字符, "
+            f"encryption_version=1 兼容)"
+        )
+        return v
+
     # === 数据库 ===
     db_path: str = "./data/aimc.db"
 
@@ -34,14 +66,6 @@ class Settings(BaseSettings):
     api_key: str = ""  # 留空则不鉴权
 
     # === AI 解析引擎 ===
-    # env 映射 (pydantic-settings 自动从 env var 读):
-    #   - openai_api_key  <- OPENAI_API_KEY
-    #   - openai_base_url <- OPENAI_BASE_URL
-    #   - parse_model     <- PARSE_MODEL
-    # .env 没配时,使用以下默认值
-    # V4.6.4 (2026-08-13): parse_model 默认仍为 gpt-4o-mini (向后兼容),
-    #   .env 可改为任何 OpenAI-compatible model 名 (如 MiniMax-M2.7 / MiniMax-M3 /
-    #   deepseek-reasoner 等). thinking model 会自动被 parser.py 预处理脱去 <think> 块
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     parse_model: str = "gpt-4o-mini"
