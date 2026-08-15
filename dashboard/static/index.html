@@ -56,6 +56,20 @@
             </div>
         </section>
 
+        <!-- 阶段2 (2026-08-14): 数据新鲜度 (apscheduler job_health) -->
+        <section class="card" id="data-freshness-section">
+            <h2>数据新鲜度 <span class="subtitle">阶段2 · job_health</span></h2>
+            <div class="summary-row">
+                <span class="summary-item">总 job: <strong id="df-total">--</strong></span>
+                <span class="summary-item">健康: <strong id="df-healthy">--</strong></span>
+                <span class="summary-item">告警: <strong id="df-warning">--</strong></span>
+                <span class="summary-item">过期: <strong id="df-stale">--</strong></span>
+            </div>
+            <div id="data-freshness-list">
+                <div style="color:#6a737d;">加载中...</div>
+            </div>
+        </section>
+
         <section class="card" id="cache-stats-section">
             <h2>Prompt Cache 节省 <span class="subtitle">近 7 天 · P1-8</span></h2>
             <div class="summary-row" id="cache-stats-summary">

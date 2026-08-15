@@ -354,6 +354,66 @@ def _approx_channel_saved(channel_id: int, cached_t: int, cache_price_map: dict)
     return cached_t * avg_cip * 9 / 1_000_000
 
 
+@router.get("/api/data-freshness")
+async def get_data_freshness(session: AsyncSession = Depends(get_session)):
+    """阶段2 (2026-08-14): APScheduler job 数据新鲜度
+
+    读 job_health 表, 按 last_success_at 倒序, 返回每个 job 的
+    last_success / last_error / 距今多久 / total_runs / total_failures.
+
+    用途: dashboard "数据新鲜度" 卡片
+    - 显示 "优惠情报 X 小时前更新" (last_success_at)
+    - 高亮失败 job (last_error_at 近 + total_failures > 0)
+    """
+    from datetime import datetime
+    from db.models import JobHealth
+
+    now = datetime.now()
+    rows = (await session.execute(
+        select(JobHealth).order_by(JobHealth.last_success_at.desc().nulls_last())
+    )).scalars().all()
+
+    def time_ago(dt: Optional[datetime]) -> Optional[str]:
+        if dt is None:
+            return None
+        delta = (now - dt).total_seconds()
+        if delta < 60:
+            return f"{int(delta)}秒前"
+        if delta < 3600:
+            return f"{int(delta // 60)}分钟前"
+        if delta < 86400:
+            return f"{int(delta // 3600)}小时前"
+        return f"{int(delta // 86400)}天前"
+
+    return {
+        "now": now.isoformat(),
+        "jobs": [
+            {
+                "job_id": r.job_id,
+                "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
+                "last_run_ago": time_ago(r.last_run_at),
+                "last_success_at": r.last_success_at.isoformat() if r.last_success_at else None,
+                "last_success_ago": time_ago(r.last_success_at),
+                "last_error_at": r.last_error_at.isoformat() if r.last_error_at else None,
+                "last_error_ago": time_ago(r.last_error_at),
+                "last_error_msg": (r.last_error_msg or "")[:200] if r.last_error_msg else None,
+                "last_duration_ms": r.last_duration_ms,
+                "total_runs": r.total_runs or 0,
+                "total_successes": r.total_successes or 0,
+                "total_failures": r.total_failures or 0,
+                # 健康度: "healthy" (last_success < 1d) / "warning" (1-3d) / "stale" (>3d) / "unknown" (没成功过)
+                "health": (
+                    "healthy" if r.last_success_at and (now - r.last_success_at).total_seconds() < 86400
+                    else "warning" if r.last_success_at and (now - r.last_success_at).total_seconds() < 3 * 86400
+                    else "stale" if r.last_success_at
+                    else "unknown"
+                ),
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/api/cache/stats")
 async def get_cache_stats(days: int = 7, session: AsyncSession = Depends(get_session)):
     """阶段1 (2026-08-14): prompt cache 节省成本统计

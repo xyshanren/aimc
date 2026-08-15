@@ -669,6 +669,32 @@ Index("idx_gcs_status", GroupChangeSuggestion.status, GroupChangeSuggestion.crea
 Index("idx_gcs_group", GroupChangeSuggestion.group_id, GroupChangeSuggestion.change_type)
 
 
+class JobHealth(Base):
+    """阶段2 (2026-08-14): APScheduler job 健康状态
+
+    用途:
+    - dashboard 显示 \"数据新鲜度\" (last_success_at 距今多久)
+    - 失败告警 (last_error_at + last_error_msg)
+    - 累计统计 (total_runs / successes / failures)
+
+    跟 apscheduler_jobs 表独立 (后者由 apscheduler 自己管理, 只存 schedule)
+    """
+    __tablename__ = "job_health"
+
+    job_id = Column(Text, primary_key=True)
+    last_run_at = Column(DateTime, nullable=True)
+    last_success_at = Column(DateTime, nullable=True)
+    last_error_at = Column(DateTime, nullable=True)
+    last_error_msg = Column(Text, nullable=True)
+    last_duration_ms = Column(Integer, nullable=True)
+    total_runs = Column(Integer, nullable=False, server_default="0")
+    total_successes = Column(Integer, nullable=False, server_default="0")
+    total_failures = Column(Integer, nullable=False, server_default="0")
+
+
+Index("idx_job_health_last_success", JobHealth.last_success_at)
+
+
 class SettingsRuntime(Base):
     """Runtime settings override (API-Sec-2, 2026-07-29)
 

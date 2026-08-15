@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -42,7 +43,17 @@ def _build_scheduler() -> AsyncIOScheduler:
         tablename="apscheduler_jobs",
     )
 
-    return AsyncIOScheduler(jobstores={"default": jobstore})
+    scheduler = AsyncIOScheduler(jobstores={"default": jobstore})
+    # 阶段2 (2026-08-14): scheduler 全局默认
+    # - coalesce=True: 堆积任务合并到最新 1 次 (避免服务挂掉后补跑累积)
+    # - max_instances=1: 同一 job 不并发 (避免同 provider 多 source 同时抓被限流)
+    # - misfire_grace_time=300: 5 分钟内的延迟任务仍执行 (宽容)
+    scheduler.job_defaults = {
+        "coalesce": True,
+        "max_instances": 1,
+        "misfire_grace_time": 300,
+    }
+    return scheduler
 
 
 # 模块级 scheduler 单例（持久化模式）
@@ -66,27 +77,48 @@ async def start_scheduler():
 
     sources = get_all_sources()
 
+    # 阶段2 (2026-08-14): 按 provider 合并成 batch job
+    # - 每个厂商 1 个 batch job, 串联该 provider 所有 source_types
+    # - 31 个 crawl_* 合并成 ~10 个 batch (deepseek/glm/qwen/siliconflow/...)
+    # - 减少 apscheduler_jobs 表行数 + 减少错峰计算
+    # - 保留每个 source 独立的 fire-and-forget 行为
+    from collections import defaultdict
+    by_provider: dict[str, list] = defaultdict(list)
     for source in sources:
-        # Phase 3.1: poll_interval fallback (按 source_type 默认频率)
-        poll_interval = source.poll_interval or DEFAULT_POLL_INTERVALS.get(
-            source.source_type, 900
-        )
-        # 用 provider + source_type 作为 job id 后缀
-        job_id = f"crawl_{source.provider}_{source.source_type}"
+        by_provider[source.provider].append(source)
+
+    # 删旧 per-source job (一次性迁移)
+    for source in sources:
+        old_job_id = f"crawl_{source.provider}_{source.source_type}"
+        try:
+            scheduler.remove_job(old_job_id)
+            logger.info(f"阶段2: 移除旧 per-source job {old_job_id}")
+        except Exception:
+            pass  # job 不存在 OK
+
+    for provider, provider_sources in by_provider.items():
+        # batch 间隔 = 该 provider 所有 source 的最短 poll_interval
+        # (高频 source 拉低 batch 间隔, 低频 source 跟上)
+        intervals = [
+            s.poll_interval or DEFAULT_POLL_INTERVALS.get(s.source_type, 900)
+            for s in provider_sources
+        ]
+        batch_interval = min(intervals) if intervals else 3600
+        # 限频: batch 内每个 source 至少间隔 30s (避免同时 fetch 撞限流)
         scheduler.add_job(
-            _run_source_task,
+            _run_provider_batch,
             trigger=IntervalTrigger(
-                seconds=poll_interval,
-                jitter=min(300, max(1, poll_interval // 20)),
+                seconds=batch_interval,
+                jitter=min(300, max(1, batch_interval // 20)),
             ),
-            args=[source],
-            id=job_id,
-            name=f"采集: {source.provider}/{source.source_type} ({poll_interval}s)",
+            args=[provider, provider_sources],
+            id=f"batch_crawl_{provider}",
+            name=f"批量采集: {provider} ({batch_interval}s, {len(provider_sources)} sources)",
             replace_existing=True,
         )
         logger.info(
-            f"注册采集任务: {source.provider}/{source.source_type} "
-            f"(间隔 {poll_interval}s, {poll_interval // 3600}h, 带随机错峰)"
+            f"注册批量采集: {provider} ({len(provider_sources)} sources, "
+            f"间隔 {batch_interval}s)"
         )
 
     # 路由缓存定时刷新
@@ -136,6 +168,52 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # 阶段2 (2026-08-14): 注册 apscheduler event listener
+    # 同步写 job_health 表 (last_run_at / last_success_at / last_error_at / last_duration_ms)
+    # 不阻塞 scheduler, 失败仅 log
+    def _record_job_event(event):
+        """apscheduler event listener (sync): 写 job_health
+
+        注意: 这是 sync 函数, 用 sync db session 写 (避免 asyncio 嵌套)
+        """
+        from datetime import datetime as _dt
+        import sys as _sys
+        print(f"[job_health LISTENER] FIRED for {event.job_id}, success={event.exception is None}", file=_sys.stderr, flush=True)
+        try:
+            from db.engine import engine as _async_engine
+            from sqlalchemy.orm import Session as _SyncSession
+            from db.models import JobHealth as _JobHealth
+            job_id = event.job_id
+            now = _dt.now()
+            success = event.exception is None
+            duration_ms = int(event.scheduled_call_time.timestamp() * 1000) if event.scheduled_call_time else None
+
+            with _SyncSession(_async_engine.sync_engine) as s:
+                jh = s.get(_JobHealth, job_id)
+                if jh is None:
+                    jh = _JobHealth(job_id=job_id, total_runs=0, total_successes=0, total_failures=0)
+                    s.add(jh)
+                jh.last_run_at = now
+                jh.total_runs = (jh.total_runs or 0) + 1
+                if success:
+                    jh.last_success_at = now
+                    jh.last_error_at = None
+                    jh.last_error_msg = None
+                    jh.last_duration_ms = duration_ms
+                    jh.total_successes = (jh.total_successes or 0) + 1
+                else:
+                    jh.last_error_at = now
+                    jh.last_error_msg = str(event.exception)[:500]
+                    jh.total_failures = (jh.total_failures or 0) + 1
+                s.commit()
+            print(f"[job_health] wrote for {job_id}", file=_sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[job_health] 写失败 (非致命): {e}", file=_sys.stderr, flush=True)
+            logger.debug(f"[job_health] 写失败 (非致命): {e}")
+
+    scheduler.add_listener(_record_job_event, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
+    logger.info("[阶段2] 注册 apscheduler event listener -> 写 job_health")
+
     scheduler.start()
     logger.info(
         f"调度器已启动 (持久化模式), 共 {len(sources) + 4} 个定时任务, "
@@ -181,6 +259,31 @@ async def run_source_now(provider: str) -> int:
 
     logger.info(f"手动触发 {provider}: 启动 {count} 个 task")
     return count
+
+
+async def _run_provider_batch(provider: str, sources: list):
+    """阶段2 (2026-08-14): 批量采集 1 个 provider 的所有 sources
+
+    跟 _run_source_task 一样的 fire-and-forget 行为, 但:
+    - 同一个 provider 的所有 source 一起触发 (announcement + model_list + price_aggregator)
+    - 顺序触发 (避免同 provider 多 source 同时 fetch 撞限流)
+    - 单个 source 失败不影响其他
+
+    Args:
+        provider: 厂商标识 (e.g. "deepseek")
+        sources: 该 provider 的 Source 列表
+    """
+    logger.info(f"[batch_crawl_{provider}] 启动 {len(sources)} 个 source")
+    for source in sources:
+        try:
+            await _run_source_task(source)
+        except Exception as e:
+            logger.warning(
+                f"[batch_crawl_{provider}] source {source.provider}/{source.source_type} "
+                f"失败: {e}"
+            )
+            # 继续下一个 source (不阻断)
+            continue
 
 
 async def _run_source_task(source):

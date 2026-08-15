@@ -503,6 +503,41 @@ function renderCrossSource(container) {
     }
 }
 
+// 阶段2 (2026-08-14): 数据新鲜度 (job_health)
+async function loadDataFreshness() {
+    try {
+        const resp = await authFetch('/dashboard/api/data-freshness');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const jobs = data.jobs || [];
+        document.getElementById('df-total').textContent = jobs.length;
+        document.getElementById('df-healthy').textContent = jobs.filter(j => j.health === 'healthy').length;
+        document.getElementById('df-warning').textContent = jobs.filter(j => j.health === 'warning').length;
+        document.getElementById('df-stale').textContent = jobs.filter(j => j.health === 'stale').length;
+
+        const list = document.getElementById('data-freshness-list');
+        if (jobs.length === 0) {
+            list.innerHTML = '<div style="color:#6a737d;padding:12px;">暂无数据 (listener 待 apscheduler 任务执行)</div>';
+            return;
+        }
+        let html = '<table class="cache-table"><thead><tr><th>Job</th><th>上次成功</th><th>上次失败</th><th>健康度</th><th>运行/成功/失败</th></tr></thead><tbody>';
+        for (const j of jobs) {
+            const healthColor = {healthy: '#28a745', warning: '#d29922', stale: '#d73a49', unknown: '#6a737d'}[j.health];
+            html += '<tr>';
+            html += `<td><code>${esc(j.job_id)}</code></td>`;
+            html += `<td>${esc(j.last_success_ago || '从未')}</td>`;
+            html += `<td>${j.last_error_ago ? `<span style="color:#d73a49;">${esc(j.last_error_ago)}</span>` : '-'}</td>`;
+            html += `<td><span style="color:${healthColor};font-weight:bold;">${j.health}</span></td>`;
+            html += `<td>${j.total_runs}/${j.total_successes}/${j.total_failures}</td>`;
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        list.innerHTML = html;
+    } catch (e) {
+        console.warn('Data freshness load failed:', e);
+    }
+}
+
 // 阶段1 (2026-08-14): prompt cache 节省成本统计
 async function loadCacheStats() {
     try {
@@ -593,6 +628,7 @@ async function loadUsageChart() {
 
 // 页面加载完成后初始化图表
 document.addEventListener('DOMContentLoaded', loadUsageChart);
+document.addEventListener('DOMContentLoaded', loadDataFreshness);  // 阶段2 (2026-08-14)
 document.addEventListener('DOMContentLoaded', loadCacheStats);  // 阶段1 (2026-08-14)
 document.addEventListener('DOMContentLoaded', loadSuggestions);  // 方案A (2026-08-14)
 
