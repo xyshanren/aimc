@@ -308,6 +308,22 @@ async def _forward_normal(
     latency_ms = int((time.time() - start_time) * 1000)
     logger.info(f"[Normal] {channel['name']} -> {response.status_code} ({latency_ms}ms)")
 
+    # P1-15 (2026-08-15): 429 (quota/plan 耗尽) 标记 cooldown
+    # 场景: minimax TokenPlanMax 用量到上限 -> 上游 429 "已达到 Token Plan 用量上限"
+    # 处理: 标记该 account cooldown (避免反复撞), routes.py retry loop 会选其他 channel
+    if response.status_code == 429:
+        try:
+            from gateway.cooldown import cooldown_manager
+            cooldown_manager.mark_failure(
+                channel["account_id"], reason="upstream_429_quota_exhausted"
+            )
+            logger.warning(
+                f"P1-15: {channel['name']} 429 (quota/plan), 标记 cooldown "
+                f"account_id={channel['account_id']}"
+            )
+        except Exception as e:
+            logger.debug(f"P1-15: mark_failure 失败 (非致命): {e}")
+
     # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
     if response.status_code in (401, 403, 500, 502, 503, 504):
         _schedule_alert(channel, response)
@@ -360,19 +376,12 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
         cache_read_input_tokens = None
         cache_creation_input_tokens = None
 
-        # OpenAI 标准: usage.prompt_tokens_details.cached_tokens
+        # OpenAI: usage.prompt_tokens_details.cached_tokens
         prompt_details = usage.get("prompt_tokens_details")
         if isinstance(prompt_details, dict):
             v = prompt_details.get("cached_tokens")
             if isinstance(v, int):
                 cached_input_tokens = v
-
-        # P1-8: SF 自定义字段 (跟 OpenAI 标准不同名)
-        # SF usage.prompt_cache_hit_tokens (cache 命中) + prompt_cache_miss_tokens (未命中)
-        # 同时存在时优先用 SF 字段 (更准)
-        v = usage.get("prompt_cache_hit_tokens")
-        if isinstance(v, int):
-            cached_input_tokens = v
 
         # Anthropic: usage.cache_read_input_tokens + cache_creation_input_tokens
         v = usage.get("cache_read_input_tokens")
@@ -436,9 +445,6 @@ async def _write_usage_log(
                 output_tokens=output_tokens,
                 status_code=status_code,
                 latency_ms=latency_ms,
-                cached_input_tokens=cached_input_tokens,
-                cache_read_input_tokens=cache_read_input_tokens,
-                cache_creation_input_tokens=cache_creation_input_tokens,
             )
             session.add(log)
             await session.commit()

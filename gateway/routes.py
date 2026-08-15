@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from gateway.proxy import forward_request
 from gateway.router import route_engine
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -96,26 +97,83 @@ async def chat_completions(request: Request):
     # - 避免 "db 改了必须 systemctl restart" 的运维陷阱
     # - TTL (默认 60s) + db mtime 监听, db 变更立即生效
     await route_engine._auto_refresh_if_stale()
-    # P0-3 (2026-08-14): 传 messages 给 router, 让纯文本请求跳过 multimodal candidate
-    channel = route_engine.select_channel(model, prefs=prefs, messages=body_json.get("messages"))
-    if channel is None:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": {
-                    "message": f"No available channel for model: {model}",
-                    "type": "service_unavailable",
-                }
-            },
+    # P1-15 (2026-08-15): 组路由失败自动 failover
+    # 场景: minimax TokenPlan 429 (quota 耗尽) / 上游 5xx 时,
+    #       mark_failure (proxy 层) 后 router 会跳过 cooldown account,
+    #       重新 select_channel 得到下一个候选, 重试
+    # 限制:
+    # - 只对非流式重试 (流式 SSE 已开始不能安全重发)
+    # - 最多 max_fallback_retries 次 (config.py, 默认 2)
+    # - 精确模型路由 (非 tier:) 只试 1 次 (fallback 到聚合平台由 router 内部处理)
+    is_stream = bool(body_json.get("stream", False))
+    max_retries = settings.max_fallback_retries if model.startswith(("tier:", "scene:")) else 0
+
+    for attempt in range(max_retries + 1):
+        # P0-3 (2026-08-14): 传 messages 给 router, 让纯文本请求跳过 multimodal candidate
+        if attempt == 0:
+            channel = route_engine.select_channel(model, prefs=prefs, messages=body_json.get("messages"))
+        else:
+            # 重试: 重新选 (cooldown account 已被 router 跳过)
+            await route_engine._auto_refresh_if_stale()
+            channel = route_engine.select_channel(model, prefs=prefs, messages=body_json.get("messages"))
+
+        if channel is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": {
+                        "message": f"No available channel for model: {model}",
+                        "type": "service_unavailable",
+                    }
+                },
+            )
+
+        # P0-6 (2026-08-14): 多维限额检查 (rpm/tpm/concurrent/daily/weekly/5h)
+        if channel is not None:
+            from gateway.quota import check_account_quota
+            from db.engine import async_session_factory
+            async with async_session_factory() as qsession:
+                allowed, reason = await check_account_quota(
+                    qsession,
+                    channel["account_id"],
+                    estimated_tokens=(body_json.get("max_tokens") or 100) * 2,
+                )
+                if not allowed:
+                    return JSONResponse(
+                        status_code=429,
+                        content={"error": {
+                            "message": f"Quota exceeded: {reason}",
+                            "type": "rate_limit_error",
+                        }},
+                        headers={"retry-after": "60"},
+                    )
+
+        # 透传请求到上游 (Phase 2.5: 传 requested_model 用于响应头 X-AIMC-Actual-Model)
+        # V4.6.4: 传 channel._actual_model 作为 actual_model
+        actual_model = channel.get("_actual_model") or model
+        response = await forward_request(
+            channel, body, request.headers,
+            requested_model=model,
+            actual_model=actual_model,
         )
 
-    # 透传请求到上游 (Phase 2.5: 传 requested_model 用于响应头 X-AIMC-Actual-Model)
-    # V4.6.4: 传 channel._actual_model 作为 actual_model
-    #   - 精确路由时 = requested_model (无替换)
-    #   - fallback 路由时 = channel 支持的 model (proxy 层会替换 body.model)
-    actual_model = channel.get("_actual_model") or model
-    return await forward_request(
-        channel, body, request.headers,
-        requested_model=model,
-        actual_model=actual_model,
+        # P1-15: 非流式 + 429/5xx + 还有重试机会 -> 继续下一候选
+        if (not is_stream) and response.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
+            from gateway.cooldown import cooldown_manager
+            cooldown_manager.mark_failure(
+                channel["account_id"], reason=f"upstream_{response.status_code}"
+            )
+            logger.warning(
+                f"P1-15: {channel['name']} {response.status_code}, "
+                f"failover 到下一候选 (attempt {attempt + 1}/{max_retries})"
+            )
+            continue
+
+        return response
+
+    # 兜底 (理论上到不了这)
+    from fastapi.responses import JSONResponse as _JR
+    return _JR(
+        status_code=503,
+        content={"error": {"message": "All upstream channels failed", "type": "service_unavailable"}},
     )

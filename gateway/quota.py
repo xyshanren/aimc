@@ -70,9 +70,15 @@ async def _check_dimension(
     if dim == "balance_cny":
         # 余额是永久值, 直接读
         usage = await _get_or_create_usage(session, account_id, dim)
-        # balance_cny: used_value 实际是当前余额 (元), 不是已用
-        # 这里简化: 假设 used_value 是余额, 跟 limit_value 比较
-        # 实际场景余额需要定期 sync, 不在 quota_check 里
+        # P1-15 fix (2026-08-15): 余额只在 "sync 过" 时检查
+        # - balance_cny 需要定期从上游 sync (e.g. deepseek 余额查询 API)
+        # - 未 sync 时 used_value=0 (初始值), 不能当作 "余额耗尽"
+        # - 用 window_start 作为 "是否 sync 过" 标记:
+        #   * window_start IS NULL = 从未 sync -> 跳过 (不拦截, 视作未知)
+        #   * window_start 非空 = sync 过 -> used_value 是余额, <=0 拦截
+        # - 幂等: sync 脚本设置 window_start=CURRENT_TIMESTAMP + used_value=余额
+        if usage.window_start is None:
+            return True, None  # 未 sync, 不拦截 (余额未知)
         if usage.used_value <= 0:
             return False, f"账户余额耗尽 ({usage.used_value:.2f} 元)"
         return True, None
