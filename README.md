@@ -23,11 +23,76 @@ AIMC（AI Model Compass）是一款专为个人开发者设计的**轻量级 LLM
 - **告警驱动多账号 (V4.4)** — 80%/100% 配额 + NoActiveAccount + CostRising 4 类告警
 - **Dashboard 账号管理 UI (V4.6)** — 无需 SSH, Web 加/轮换/启用/禁用账号
 - **Dashboard 周报查看页 (V4.5)** — Web 渲染历史 Markdown 周报
-- **稳定期使用分析 (V4.6.4+)** — `scripts/analyze_usage.py` 从 usage_logs 自动提取 V4.7+ 优先级信号 (Shannon entropy / 4xx 占比 / 时段差异 / 自动 failover 命中率)
 - **自愈循环** — AI 解析置信度评估，高置信自动入库，低置信告警人工
 - **极简部署** — 单进程、单文件数据库、零外部依赖
 
-**当前状态**：V4.6 全章完成，进入稳定期（详见 `docs/development-plan.md` §7）。
+## 近期变更（2026-08-14 一日内 14 个 commit）
+
+> 以下功能自上次 README 更新后新增。完整 commit 列表见 `git log --oneline | head -20`
+
+### 鉴权分层（P1-7）
+- `AIMC_API_KEY` 保护 `/v1/*` API（OpenAI / Anthropic 兼容协议）
+- `AIMC_DASHBOARD_TOKEN` 保护 `/dashboard/*`（**新加**，跟 API key 分开管理）
+- 三种 token 传递方式：Authorization header / Cookie / `?token=` query
+- 留空 = legacy 行为（LAN 内裸开，兼容旧部署）
+
+### Prompt Cache 真正实现（P1-8）
+- 自动注入 `cache_control` 字段（Anthropic 风格）/ `prompt_cache_key`（OpenAI 风格）
+- 只在 `channel.supports_prompt_cache=1` 时启用
+- 硅基流动 Qwen3-32B 实测 cache 命中率 4.6%，节省成本约 ¥0.004 / 7 天
+- dashboard "Prompt Cache 节省" 卡片：按渠道 / TOP 10 model 实时统计
+
+### 模型 / 分组调整建议（方案A）
+- 4 个数据源综合分析（model_cards / usage / price / cache hit rate）
+- 4 个 model 规则 + 4 个 group 规则
+- 置信度 0–1，按 confidence DESC 排序
+- **dashboard "建议中心"** UI：批准 / 拒绝 / 一键应用
+- **周报集成**：周一 09:00 跑完 suggest_changes → 周报自动显示建议
+- **影子模式**：`intelligence/auto_apply_shadow.log` 积累数据，为远期自动应用做准备
+
+### 多维限额（P0-6）
+- `account_quotas` + `account_quota_usage` 表，支持 7 种限额维度：
+  - `rpm` / `tpm`（每分钟请求/Token）
+  - `daily_tokens` / `weekly_tokens` / `5h_tokens`（窗口累计）
+  - `concurrent`（并发请求数）
+  - `balance_cny`（余额元）
+- minimax TokenPlanMax 5h + 周 rolling 限额已配置
+- sensenova 免费试用 + 并发限制
+- routes.py 路由后 `await check_account_quota()`，超额返 429 + `retry-after`
+
+### Router 强化（Phase 0-3）
+- **C1 防御**：router cache 启动时容错 group_id 双形（int-string / string）
+- **C2 6 tier 重组**：flagship / strong / balanced / light / vision / code
+- **C3 priority tie-break**：同价同分时按 priority 排序
+- **P0-3 multimodal 跳过**：纯文本请求跳过 modality=multimodal candidate（修 flagship 选 m3 拒纯文本的根因）
+- **P0-4 TTL + mtime**：router cache 60s 自动 refresh，db 修改 60s 内生效
+- **P0-7 score-based**：5 维加权（价格 0.4 / 配额 0.3 / 成功 0.2 / recency 0.05 / priority 0.05）替代 round-robin
+- **P0-7 weights 调权**：dashboard `PUT /api/settings/router-score-weights` 改权重，60s 内 refresh 生效
+
+### Channels 灵活配置（P1-12）
+- `channels` 表加 3 列：`api_base` / `api_style` / `supports_prompt_cache`
+- dashboard 改 base_url 不需 restart service
+- `api_style` 区分 OpenAI / Anthropic 协议（后续 P2-20 用）
+- 兼容 `SENSENOVA_BASE_URL` env 覆盖
+
+### 数据通路完整性
+- `usage_logs` 加 `cached_input_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` 3 列
+- 硅基流动 9 个 model 的 cache 价格已 hardcode（Qwen2.5/3 + DeepSeek V3/R1）
+- `job_health` 表 + apscheduler event listener：每个 job 的 last_run / last_success / last_error / 累计成功失败
+- dashboard "数据新鲜度" 卡片：38 → 20 jobs 后清晰展示每个 job 的健康度
+
+### Scheduler 优化（阶段 2）
+- 38 → 20 jobs：31 个 crawl_* 合并成 15 个 batch_crawl_<provider>
+- `coalesce=True`：堆积任务合并到最新 1 次
+- `max_instances=1`：同 job 不并发（避免限流）
+- `misfire_grace_time=300`：5 分钟内延迟任务仍执行
+- 启动时自动清理旧 per-source job（migration 脚本）
+
+### 关键 Bug 修复
+- **P0-5 encryption_version**：accounts 加 version 列，master_key 启动校验 64 字符 hex（错格式直接启动失败）
+- **P0-8 listener greenlet_spawn**：用独立 `sync_engine`（`create_engine + check_same_thread=False`），避免 async 进程里用 sync Session 冲突
+- **P1-7 dashboard 鉴权**：跟 api_key 分开，跟 `authFetch` JS 集成
+- **routes.py 漏传 actual_model**：proxy.py body.model 改写恢复，body 不再透传 "tier:flagship" 给上游
 
 ## 系统架构
 
@@ -155,33 +220,6 @@ response = client.chat.completions.create(model="tier:flagship", messages=...)
 response = client.chat.completions.create(model="scene:longctx", messages=...)
 ```
 
-## 稳定期跟踪（V4.7+ 决策依据）
-
-V4.6 全章完成后进入稳定期。为驱动后续迭代选择，需累积使用反馈：
-
-```bash
-# 每周跑一次: 使用分析 + Markdown 报告 (含 V4.7+ 优先级建议)
-python scripts/analyze_usage.py --days 7
-
-# 每月跑一次: 月度趋势
-python scripts/analyze_usage.py --days 30
-
-# JSON 输出（给 Dashboard / 其他脚本消费）
-python scripts/analyze_usage.py --json-only
-```
-
-**报告维度**：
-- **status 分布**：V4.6.1 Cooldown 是否生效
-- **多账号分散度**：Shannon entropy + 最大账号占比
-- **model 集中度 / 4xx Top 5**：V4.7+ 缓存 / drop_params 信号
-- **时段分布**：V4.7+ 智能调度价值
-- **自动 failover 命中率**：V4.6.1 验证
-- **V4.7+ 决策建议**：根据上述信号自动列出
-
-报告输出：`reports/usage_analysis_latest.md`（人读）/ `--json-only` 模式只输出 JSON。
-
-**判定准则**：任何 V4.7+ 候选项的启动 = 该信号连续 4 周出现 + 决策建议触发 + 时间充裕。
-
 ## 项目结构
 
 ```
@@ -210,24 +248,19 @@ aimc/
 ├── db/                     # 数据库层
 ├── schemas/                # Pydantic 模型
 ├── dashboard/              # 极简 Dashboard
-├── scripts/                # 运维脚本
-│   ├── multi_account_import.py  # V4.6.1 多账号批量导入
-│   ├── generate_weekly_report.py # V4.4.B 周报生成
-│   ├── aggregate_weekly_feedback.py # V4.4.B 周报反债聚合
-│   └── analyze_usage.py   # 稳定期使用分析 (V4.7+ 决策依据)
+├── scripts/                # 运维脚本 (含 V4.6.1 multi_account_import.py)
 ├── security/               # API-Sec-1 XOR+Base64 加密 (V4.5)
 └── docs/                   # 项目文档
 ```
 
 ## 文档
 
-- [用户使用指引（完整版）](docs/user_guide.md) — **推荐首次使用阅读** (安装/接入账号/Dashboard/运维/FAQ)
 - [架构设计文档](docs/architecture.md) — 系统设计与数据模型（含 Phase 2 多维模型组 + V4.6.1 CooldownManager）
-- [开发计划](docs/development-plan.md) — 路线总览 (Phase 1/2.5/2/3/4 + API-Sec-1/2/3 + V4.4-V4.6 + §7 稳定期跟踪)
+- [开发计划](docs/development-plan.md) — 路线总览 (Phase 1/2.5/2/3/4 + API-Sec-1/2/3 + V4.4-V4.6)
 - [V4.4 设计文档](docs/v44-feedback-and-alert-design.md) — 隐式反馈 + 告警驱动多账号
 - [Phase 2 设计文档](docs/phase2-design.md) — 模型组设计 + 实施步骤
 - [API Key 安全设计](docs/api-key-security.md) — 加密方案 + 现状盘点
-- [快速开始指南](docs/quickstart.md) — 极简版安装配置（user_guide.md 的精简子集）
+- [快速开始指南](docs/quickstart.md) — 安装、配置、部署
 - [API 接口文档](docs/api.md) — 网关接口说明
 - [竞品调研](docs/competitive-research.md) — OpenRouter/9Router/LiteLLM/RouteLLM 对比
 - [E2E 测试报告](docs/e2e-results.md) — hermes-agent-cn 集成联调结果
