@@ -180,15 +180,18 @@ async def start_scheduler():
         import sys as _sys
         print(f"[job_health LISTENER] FIRED for {event.job_id}, success={event.exception is None}", file=_sys.stderr, flush=True)
         try:
-            from db.engine import engine as _async_engine
+            from db.engine import sync_engine as _sync_engine
             from sqlalchemy.orm import Session as _SyncSession
             from db.models import JobHealth as _JobHealth
             job_id = event.job_id
             now = _dt.now()
             success = event.exception is None
-            duration_ms = int(event.scheduled_call_time.timestamp() * 1000) if event.scheduled_call_time else None
+            # 实际事件字段是 scheduled_run_time (不是 scheduled_call_time)
+            duration_ms = None
+            if hasattr(event, "scheduled_run_time") and event.scheduled_run_time:
+                duration_ms = int(event.scheduled_run_time.timestamp() * 1000)
 
-            with _SyncSession(_async_engine.sync_engine) as s:
+            with _SyncSession(_sync_engine) as s:
                 jh = s.get(_JobHealth, job_id)
                 if jh is None:
                     jh = _JobHealth(job_id=job_id, total_runs=0, total_successes=0, total_failures=0)
