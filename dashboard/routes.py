@@ -1051,6 +1051,7 @@ ALLOWED_RUNTIME_KEYS = {
     "serverchan_key",
     "feishu_webhook_url",
     "price_alert_threshold",  # Phase 4 E2: 价格波动告警阈值 (百分比字符串)
+    "router_score_weights",   # P0-7: router score 5 维权重 (JSON)
 }
 
 
@@ -1092,6 +1093,99 @@ async def get_alert_settings(session: AsyncSession = Depends(get_session)):
             "is_override": override_val is not None,
         }
     return result
+
+
+@router.get("/api/settings/router-score-weights")
+async def get_router_score_weights(session: AsyncSession = Depends(get_session)):
+    """P0-7 (2026-08-14): 读 router score weights
+
+    返回当前生效的 5 维权重:
+    - weights: 当前值 (从 settings_runtime 读, 缺则用 router __init__ 默认值)
+    - defaults: router __init__ 写死的兜底值
+    - sum: 5 个权重之和 (应该接近 1.0)
+    """
+    import json as _json
+    from db.models import SettingsRuntime
+    from gateway.router import route_engine
+
+    defaults = {
+        "W_PRICE": 0.40, "W_QUOTA": 0.30, "W_SUCCESS": 0.20,
+        "W_RECENCY": 0.05, "W_PRIORITY": 0.05,
+    }
+    row = (await session.execute(
+        select(SettingsRuntime).where(SettingsRuntime.key == "router_score_weights")
+    )).scalars().first()
+    override = None
+    if row is not None and row.value is not None:
+        try:
+            override = _json.loads(row.value)
+        except Exception:
+            pass
+    weights = override if override is not None else route_engine._score_weights
+    return {
+        "weights": weights,
+        "defaults": defaults,
+        "override": override,
+        "sum": round(sum(weights.values()), 4),
+        "description": {
+            "W_PRICE": "价格分数权重 (越便宜分越高, 0-1)",
+            "W_QUOTA": "配额分数权重 (剩余越多分越高)",
+            "W_SUCCESS": "成功率分数权重 (cooldown 跳过, 1h 内 0.5, 1h 外 1.0)",
+            "W_RECENCY": "最近路由时间权重 (越久没用越优先)",
+            "W_PRIORITY": "渠道优先级权重 (priority/100)",
+        },
+    }
+
+
+@router.put("/api/settings/router-score-weights")
+async def set_router_score_weights(
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """P0-7 (2026-08-14): 改 router score weights
+
+    Body:
+    {
+        "weights": {
+            "W_PRICE": 0.5,    # 价格优先 (省钱)
+            "W_QUOTA": 0.2,
+            "W_SUCCESS": 0.2,
+            "W_RECENCY": 0.05,
+            "W_PRIORITY": 0.05
+        }
+    }
+
+    校验:
+    - 必须含 5 个 W_* 字段
+    - 每个值在 [0, 1] 范围
+    - sum 应接近 1.0 (但不强求)
+
+    写 db 后, router cache 60s 内自动 refresh (P0-4 TTL).
+    想立即生效: POST /api/cache/refresh
+    """
+    import json as _json
+    if not isinstance(payload, dict) or "weights" not in payload:
+        raise HTTPException(status_code=400, detail="body must be {weights: {...}}")
+    weights = payload["weights"]
+    if not isinstance(weights, dict):
+        raise HTTPException(status_code=400, detail="weights must be dict")
+
+    required = {"W_PRICE", "W_QUOTA", "W_SUCCESS", "W_RECENCY", "W_PRIORITY"}
+    missing = required - set(weights.keys())
+    extra = set(weights.keys()) - required
+    if missing or extra:
+        raise HTTPException(
+            status_code=400,
+            detail=f"weights must have exactly {sorted(required)}, missing={sorted(missing)}, extra={sorted(extra)}",
+        )
+    for k, v in weights.items():
+        if not isinstance(v, (int, float)) or v < 0 or v > 1:
+            raise HTTPException(status_code=400, detail=f"{k}={v} must be number in [0, 1]")
+
+    value = _json.dumps(weights, ensure_ascii=False)
+    await crud.set_runtime_setting(session, "router_score_weights", value)
+    await session.commit()
+    return {"ok": True, "weights": weights, "note": "router cache 60s 内 refresh"}
 
 
 @router.put("/api/settings/alert")

@@ -90,6 +90,12 @@ class RouteEngine:
         # V4.6.1: least-used tie-break (同 channel 多账号轮询)
         # account_id → 最近路由选中的时间戳 (time.time())
         self._account_last_used: dict[int, float] = {}
+        # P0-7 (2026-08-14): score weights 缓存, 从 settings_runtime 表读
+        # 后续 dashboard 可调, 不需改代码
+        self._score_weights: dict = {
+            "W_PRICE": 0.40, "W_QUOTA": 0.30, "W_SUCCESS": 0.20,
+            "W_RECENCY": 0.05, "W_PRIORITY": 0.05,
+        }
 
     async def refresh_cache(self):
         """从数据库刷新渠道缓存到内存 (全量)
@@ -109,6 +115,8 @@ class RouteEngine:
             await self._load_channels_cache(session)
             await self._load_groups_cache(session)
             await self._load_cards_cache(session)
+            # P0-7: 从 settings_runtime 表读 score weights (dashboard 可改)
+            await self._load_score_weights(session)
 
         self._last_refresh = datetime.now()
         # P0-4: 记录 db 文件 mtime (用于后续 stale 检测)
@@ -454,6 +462,40 @@ class RouteEngine:
             f"跨 {len(self._cards_cache)} 个 model"
         )
 
+    async def _load_score_weights(self, session) -> None:
+        """P0-7 (2026-08-14): 从 settings_runtime 表读 score weights
+
+        设计:
+        - key = "router_score_weights"
+        - value = JSON string: {"W_PRICE": 0.4, "W_QUOTA": 0.3, "W_SUCCESS": 0.2, "W_RECENCY": 0.05, "W_PRIORITY": 0.05}
+        - 缺失或解析失败 → 用 __init__ 的默认值 (兜底)
+        - dashboard PUT /api/settings/router-weights 写入, 下次 refresh_cache (60s TTL) 生效
+        - 不支持部分更新: 改一两个 weight 必须传全部 5 个
+        """
+        import json as _json
+        from db.models import SettingsRuntime
+        try:
+            row = (await session.execute(
+                select(SettingsRuntime).where(SettingsRuntime.key == "router_score_weights")
+            )).scalars().first()
+            if row is None or row.value is None:
+                logger.debug("router_score_weights 未设置, 用 __init__ 默认值")
+                return
+            parsed = _json.loads(row.value)
+            # 校验: 必须含 5 个 W_* 字段 + 数值 + sum ~ 1.0
+            required = {"W_PRICE", "W_QUOTA", "W_SUCCESS", "W_RECENCY", "W_PRIORITY"}
+            if not required.issubset(parsed.keys()):
+                logger.warning(f"router_score_weights 缺字段: {set(required) - set(parsed.keys())}")
+                return
+            for k, v in parsed.items():
+                if not isinstance(v, (int, float)) or v < 0 or v > 1:
+                    logger.warning(f"router_score_weights.{k}={v} 不在 [0,1] 范围")
+                    return
+            self._score_weights = parsed
+            logger.info(f"P0-7: 加载 score weights: {parsed}")
+        except Exception as e:
+            logger.warning(f"P0-7: 读 score weights 失败 (用默认值): {e}")
+
     def score_bonus(self, model: str) -> float:
         """V4.5.1: model 的能力评分加成 [0.0, 1.0].
 
@@ -594,7 +636,13 @@ class RouteEngine:
         # weights 起步: 0.4 / 0.3 / 0.2 / 0.05 / 0.05 (价格为主, 配额为辅)
         # 后续可通过 settings_runtime 表或 config 调
         import time as _t
-        W_PRICE, W_QUOTA, W_SUCCESS, W_RECENCY, W_PRIORITY = 0.40, 0.30, 0.20, 0.05, 0.05
+        # P0-7 (2026-08-14): 从 settings_runtime 表读 (dashboard 可改)
+        # 缺失时 fallback __init__ 默认值
+        W_PRICE = self._score_weights["W_PRICE"]
+        W_QUOTA = self._score_weights["W_QUOTA"]
+        W_SUCCESS = self._score_weights["W_SUCCESS"]
+        W_RECENCY = self._score_weights["W_RECENCY"]
+        W_PRIORITY = self._score_weights["W_PRIORITY"]
 
         prices = [p.get("input_price") or 0 for _, p in candidates]
         max_price = max(prices) if prices else 1
