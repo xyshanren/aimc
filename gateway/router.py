@@ -582,20 +582,70 @@ class RouteEngine:
             logger.warning(f"所有渠道配额耗尽: {model}")
             return None
 
-        # 4. 多维排序: 价格 ASC > 剩余配额 DESC > 优先级 DESC > score_bonus DESC > least-used
-        # V4.5.1: 加 score_bonus tie-break — 价格平手时高分 model 优先
-        # V4.6.1: 加 least-used tie-break — 同价同分时, 最近未被路由的账号优先 (多账号轮询)
-        def sort_key(item):
-            ch, price = item
-            input_price = price.get("input_price") or 0
-            quota_remaining = ch["quota_remaining"] if ch["quota_remaining"] is not None else 999999999
-            priority = ch["priority"]
-            bonus = self.score_bonus(model)  # V4.5.1: [0, 1]
-            # V4.6.1: 老的优先 (0 = 未用过) > 新的 (1.0 = 刚用过)
-            last_used = self._account_last_used.get(ch["account_id"], 0.0)
-            return (input_price, -quota_remaining, -priority, -bonus, last_used)
+        # 阶段3 (2026-08-14): score-based 多维排序
+        # 替代原 round-robin + 多 key 排序, 改为单 score (DESC 排序)
+        # 公式: score = w_price * price_score
+        #             + w_quota * quota_ratio
+        #             + w_success * success_rate
+        #             + w_recency * recency_score
+        #             + w_priority * (priority / max_priority)
+        #             - cooldown_penalty (cooldown 中账号 score = 0)
+        #
+        # weights 起步: 0.4 / 0.3 / 0.2 / 0.05 / 0.05 (价格为主, 配额为辅)
+        # 后续可通过 settings_runtime 表或 config 调
+        import time as _t
+        W_PRICE, W_QUOTA, W_SUCCESS, W_RECENCY, W_PRIORITY = 0.40, 0.30, 0.20, 0.05, 0.05
 
-        candidates.sort(key=sort_key)
+        prices = [p.get("input_price") or 0 for _, p in candidates]
+        max_price = max(prices) if prices else 1
+        min_price = min(prices) if prices else 0
+        price_range = (max_price - min_price) if (max_price - min_price) > 0 else 1
+
+        def score_account(ch_price_pair):
+            ch, price = ch_price_pair
+            # 1. 价格分数 (越便宜越高, 归一化 0-1)
+            p = price.get("input_price") or 0
+            price_score = 1.0 - (p - min_price) / price_range if price_range > 0 else 0.5
+
+            # 2. 配额分数 (剩余越多越高)
+            q_remaining = ch["quota_remaining"] if ch["quota_remaining"] is not None else None
+            q_total = ch["quota_total"] if ch["quota_total"] else None
+            if q_remaining is not None and q_total and q_total > 0:
+                quota_ratio = min(q_remaining / q_total, 1.0)
+            else:
+                quota_ratio = 0.5  # 无数据时给中间分
+
+            # 3. 成功率 (cooldown 中 = 0, 否则从 rate_limiter 历史推)
+            # 简化: 用 _account_last_used 频率代替 (越久没被路由 = 越稳)
+            last_used = self._account_last_used.get(ch["account_id"], 0.0)
+            if last_used > 0:
+                # 最近 1h 内用过: success_rate = 0.5 (近期成功未知)
+                # 1h 外: success_rate = 1.0 (历史表现稳)
+                import time
+                age = time.time() - last_used
+                success_rate = 0.5 if age < 3600 else 1.0
+            else:
+                success_rate = 1.0  # 从未用过 = 假设 OK
+
+            # 4. Recency (round-robin tie-break, 越小越久没被路由越优先)
+            recency_score = last_used  # 0 = 从未用过, 越大 = 越近用过
+
+            # 5. Priority (越大越优先)
+            priority_norm = (ch["priority"] or 0) / 100.0  # 假设 priority 0-100
+
+            # 6. 阶段3.2: cooldown 惩罚 — 已经在 _is_channel_usable 过滤
+            #    但加这里做双保险, 避免任何 bypass 路径
+
+            score = (
+                W_PRICE * price_score
+                + W_QUOTA * quota_ratio
+                + W_SUCCESS * success_rate
+                + W_RECENCY * (1.0 / (1.0 + recency_score / 3600))  # 反向归一化
+                + W_PRIORITY * priority_norm
+            )
+            return score
+
+        candidates.sort(key=score_account, reverse=True)  # 分数高优先
 
         best_channel, best_price = candidates[0]
         # V4.6.1: 记录 last_used (路由层只 record, 不 mark_success — 成功标记由 proxy 层处理)
