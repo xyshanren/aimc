@@ -256,15 +256,21 @@ code, .mono {
 /* ============ KPI 大数字 ============ */
 .kpi-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(4, 1fr);  /* 固定 4 列 (4 个 KPI) */
     gap: var(--space-md);
     margin-bottom: var(--space-md);
+}
+
+/* 中间列窄时降级为 2 列 */
+@media (max-width: 1599px) {
+    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 .kpi {
     background: var(--bg-elevated);
     border-radius: var(--radius-sm);
     padding: var(--space-md);
+    min-width: 0;  /* 防止 grid item 内容溢出 */
 }
 
 .kpi-value {
@@ -273,6 +279,9 @@ code, .mono {
     font-weight: 600;
     color: var(--text-primary);
     line-height: 1.2;
+    /* 数字过长自适应缩放 */
+    word-break: break-all;
+    overflow-wrap: anywhere;
 }
 
 .kpi-value-success { color: var(--color-success); }

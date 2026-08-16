@@ -1254,15 +1254,12 @@ setInterval(() => {
 
 
 // === 阶段P0-UI v3 (2026-08-16): 限额预警 + 修复之前漏的 ===
+// === 阶段P0-UI v4 (2026-08-16): 限额预警 紧凑渲染 ===
 
-// 限额预警 (左下) - 查 db account_quota_usage > 70% limit
 async function loadQuotaWarning() {
     try {
-        // 后端暂无 /dashboard/api/quota-warning 端点, 简化: 从 cache-stats / usage 推断
-        // 或者调用 accounts + account_quotas (如果有)
         const list = document.getElementById("quota-warning-list");
         if (!list) return;
-        // 暂时从 usage logs 推断 (5h / daily tokens)
         const resp = await authFetch("/dashboard/api/accounts");
         if (!resp.ok) {
             list.innerHTML = '<div class="empty">⚠️ 后端 API 暂未提供</div>';
@@ -1274,17 +1271,43 @@ async function loadQuotaWarning() {
             list.innerHTML = '<div class="empty">无账号</div>';
             return;
         }
-        let html = '<div class="flex-col gap-sm">';
-        for (const a of accounts.slice(0, 8)) {
-            const status = a.status || 'active';
-            const color = status === 'active' ? 'var(--color-success)' : (status === 'expired' ? 'var(--color-danger)' : 'var(--text-muted)');
-            html += '<div class="flex gap-sm" style="font-size:12px;">';
-            html += '<span class="status-dot-small" style="background:' + color + ';"></span>';
-            html += '<code class="text-mono">' + esc(a.account_name || '—') + '</code>';
-            html += '<span class="text-muted">' + esc(status) + '</span>';
-            html += '</div>';
+        // 4 个 KPI: 总数 / active / expired / cooldown (从 quota_usage 推断)
+        let active = 0, expired = 0, total = accounts.length;
+        for (const a of accounts) {
+            const s = a.status || 'active';
+            if (s === 'active') active++;
+            else if (s === 'expired') expired++;
         }
+        const inactive = total - active - expired;
+
+        let html = '<div class="kpi-grid" style="grid-template-columns: repeat(2, 1fr); margin-bottom: var(--space-sm);">';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;">' + total + '</div><div class="kpi-label">总账号</div></div>';
+        html += '<div class="kpi"><div class="kpi-value kpi-value-success" style="font-size:16px;">' + active + '</div><div class="kpi-label">Active</div></div>';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;color:var(--color-danger);">' + expired + '</div><div class="kpi-label">Expired</div></div>';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;color:var(--text-muted);">' + inactive + '</div><div class="kpi-label">Inactive</div></div>';
         html += '</div>';
+
+        // 列表: 只显示 expired/inactive 的 (active 不需要预警)
+        const warned = accounts.filter(a => {
+            const s = a.status || 'active';
+            return s !== 'active';
+        });
+        if (warned.length > 0) {
+            html += '<div class="text-muted" style="font-size:11px;margin-top:var(--space-sm);">⚠️ ' + warned.length + ' 个账号需要关注:</div>';
+            html += '<div class="flex-col gap-sm" style="margin-top:var(--space-sm);">';
+            for (const a of warned.slice(0, 5)) {
+                const status = a.status || 'active';
+                const color = status === 'expired' ? 'var(--color-danger)' : 'var(--text-muted)';
+                html += '<div class="flex gap-sm" style="font-size:12px;">';
+                html += '<span class="status-dot-small" style="background:' + color + ';"></span>';
+                html += '<code class="text-mono" style="font-size:11px;">' + esc(a.account_name || '—') + '</code>';
+                html += '<span class="text-muted" style="font-size:11px;">' + esc(status) + '</span>';
+                html += '</div>';
+            }
+            html += '</div>';
+        } else {
+            html += '<div class="text-success" style="font-size:12px;margin-top:var(--space-sm);">✓ 所有账号 active</div>';
+        }
         list.innerHTML = html;
     } catch (e) {
         console.warn("quota warning failed:", e);
