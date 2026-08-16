@@ -5,6 +5,12 @@
 
 ---
 
+
+## 📦 历史归档说明
+
+> **本文档已归档**（2026-08-15 文档重组时迁移到 docs/archive/）。
+> 新内容见 [docs/index.md](../index.md) 或相关 [docs/dev/](../dev/) / [docs/user/](../user/) 文档。
+
 ## 一、竞品调研
 
 ### 1.1 OpenRouter
@@ -176,7 +182,7 @@ query → 轻量分类器(BERT) → P(强模型赢) → 与阈值 α 比较
 
 - **定位**：混元自研 + 第三方模型聚合
 - **特点**：
-  - 集成 GLM-5.1、Kimi-K2.5、minimax-m2.7
+  - 集成 GLM-5.1、Kimi-K2.5、MiniMax-M2.7
   - Token Plan 套餐制
   - 兼容多种 AI 编程工具
 - **对 AIMC 的意义**：第三方渠道，套餐内调用可能零边际成本
@@ -229,7 +235,7 @@ query → 轻量分类器(BERT) → P(强模型赢) → 与阈值 α 比较
 
 解决的核心问题：
 ```
-Agent 请求: model="deepseek-v4-flash"
+Agent 请求: model="deepseek-chat"
 AIMC 内部:
   - DeepSeek 官方有 V4-Pro、V4-Flash、V3
   - 硅基流动也提供 DeepSeek-V3（更便宜）
@@ -449,7 +455,7 @@ groups:
     display_name: "轻量免费组"
     tier: T3
     strategy: cheapest
-    members: [qwen-2.5-7b, glm-4-9b, deepseek-r1-distill-7b]
+    members: [qwen2.5-7b, glm-4-9b, deepseek-r1-distill-7b]
 
   # 按场景分组（可选）
   - group_id: "scene:code"
@@ -462,7 +468,7 @@ groups:
   - group_id: "scene:free"
     display_name: "零成本组"
     strategy: priority
-    members: [qwen-2.5-7b-sf-free, glm-4-9b-sf-free, deepseek-r1-7b-sf-free]
+    members: [qwen2.5-7b-sf-free, glm-4-9b-sf-free, deepseek-r1-7b-sf-free]
 ```
 
 ### 3.5 路由决策流程（升级版）
@@ -470,7 +476,7 @@ groups:
 ```
 Agent 请求
     │
-    ├── model="deepseek-v4-flash"（精确模型名）
+    ├── model="deepseek-chat"（精确模型名）
     │       → 走现有逻辑：在提供该模型的渠道中选最优
     │
     ├── model="tier:balanced"（模型组名）
@@ -527,7 +533,7 @@ Agent 有三种请求方式，**向后兼容**：
 ```python
 # 方式1: 精确模型名（现有行为不变）
 response = client.chat.completions.create(
-    model="deepseek-v4-flash",  # 精确指定，AIMC 只选渠道
+    model="deepseek-chat",  # 精确指定，AIMC 只选渠道
     messages=[...]
 )
 
@@ -557,8 +563,8 @@ response = client.chat.completions.create(
 {
   "object": "list",
   "data": [
+    {"id": "deepseek-chat", "object": "model", "owned_by": "aimc"},
     {"id": "deepseek-v4-flash", "object": "model", "owned_by": "aimc"},
-    {"id": "deepseek-v4-pro", "object": "model", "owned_by": "aimc"},
     {"id": "qwen-plus", "object": "model", "owned_by": "aimc"},
     {"id": "glm-4-air", "object": "model", "owned_by": "aimc"},
     

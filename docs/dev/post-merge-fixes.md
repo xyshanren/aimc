@@ -131,13 +131,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"tier:vision","messages":[{"role":"user","content":"ping"}],"max_tokens":10}' \
+  -d '{"model":"tier:flagship","messages":[{"role":"user","content":"ping"}],"max_tokens":10}' \
   | grep -i x-aimc
 # 期望: x-aimc-actual-model: minimax-m3, x-aimc-actual-channel: minimax_compat
 
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"minimax-m3","messages":[{"role":"user","content":"ping"}],"max_tokens":10}' \
+  -d '{"model":"tier:vision","messages":[{"role":"user","content":"ping"}],"max_tokens":10}' \
   | grep -i x-aimc
 # 期望: x-aimc-actual-model: minimax-m3, x-aimc-actual-channel: minimax_compat
 ```
@@ -178,15 +178,16 @@ done
 
 ## 已知遗留问题 (不阻塞, 提给项目侧)
 
-1. `gateway/router.py` 的 `model_group_members.group_id` cache key 类型
-   不一致 (问题 1, 应该在 router 层适配, 不只是 db 修复)
-2. `tier:flagship` 选 m2.7 不是 m3 (问题 3, router multimodal 处理)
-3. `seed_model_groups.py` 仍漏 `scene:free` (问题 4, 永久修复)
-4. `manual_import.py` 的 `deepseek_official` cfg 仍引用
-   `deepseek-chat` / `deepseek-reasoner` 老 model (已 commit `1d011e2`
-   修了 deepseek 部分, 但 price_snapshots 里仍有 2 个老行)
-5. `check_model_consistency.py` 仍报 2 个 deepseek 老 model ERROR
-   (需 `cleanup_deepseek_old_prices.py` 类似脚本)
+1. 5 个账号 ciphertext 解密失败 → 跟项目侧 master key 不一致, 未修 (不影响路由, 靠 active_status 过滤)
+2. 6 个虚标 model 残留 (kimi-k3 / qwen-max 等) → 已通过本地 4 脚本清理
+3. 项目侧 6 个 issue 草稿 → 已发；项目侧 v2 方案：4 commit (C1-C4) 在 fix/group-gid-routing-2026-08-14 分支 (待 push)
+4. 硅基流动 raw_id vs model_registry 归一化错配 → 等项目侧 C4 schema 加 raw_model 字段
+5. tier:flagship 命中 m2.7 不是 v4-pro → 等项目侧 C3 sort_key 加 member_priority tie-break
+6. 本地 Ollama (qwen3-vl:4b) → 未接入 (之前决定不用本地模型)
+7. dashboard 鉴权 → LAN 内无鉴权 (用户确认不处理)
+
+当前端到端可用性
+9/9 group + 直调 HTTP 200，service 健康跑着，db 干净 (check_model_consistency.py 0 ERROR)。
 
 ---
 
@@ -205,7 +206,7 @@ manual_import.py          (项目侧已有, 创建 channels)
 refresh_siliconflow_models.py  (项目侧已有, 91 个 price_snapshot)
        │
        ▼
-normalize_minimax_prices.py --apply   (8 个大写 → 小写)
+normalize_siliconflow_prices.py --apply   (8 个大写 → 小写)
        │
        ▼
 seed_model_groups.py      (项目侧已有, 但漏 scene:free)
@@ -233,13 +234,30 @@ systemctl --user restart aimc  (router cache 重建)
 - 2026-08-13: cb5acb0 (proxy 修复) 修 1005111 引入的 NameError
 - 2026-08-14: 2ab00f2 (合并 feat/intel-announcements) 触发 5 个 db 漂移症状
 - 2026-08-14: 9a14b71 (4 db 修复脚本) 本指南
-
----
-
-**作者**: 用户 + agent 协作
-**最后更新**: 2026-08-14
-**相关 commit**: `9a14b71`
-
+- 2026-08-14: 5f9711a (Phase 0: merge fix-branch)
+- 2026-08-14: c54dd48 (P0-1: ModelGroupMember FK + UNIQUE 强约束)
+- 2026-08-14: df01e78 (P0-2: price_snapshots + model_registry schema 扩展)
+- 2026-08-14: 356d9f8 (P0-3: 纯文本请求跳过 multimodal candidate)
+- 2026-08-14: 388c00e (P0-4: router cache TTL + db mtime 监听)
+- 2026-08-14: 7a74176 (P0-5: accounts.encryption_version + master_key 启动校验)
+- 2026-08-14: d36c384 (P0-6: 多维限额模型)
+- 2026-08-14: 038e1ff (P1-7: dashboard 鉴权 (跟 api_key 分开))
+- 2026-08-14: eec77d2 (P1-12: channels api_base + api_style + supports_prompt_cache)
+- 2026-08-14: a2a9d6b (P1-8: prompt cache 真正实现)
+- 2026-08-14: 08a8002 (P0-3 follow-up: usage_logs 加 cached_tokens + SF cache 价格填充)
+- 2026-08-14: 3ea4412 (阶段1: cache 节省成本可视化)
+- 2026-08-14: d67c9b4 (方案A: 建议生成器 + 置信度 + shadow mode)
+- 2026-08-14: ae8843b (方案A: 建议中心 UI + apply 脚本)
+- 2026-08-14: c284e5b (方案A: 周报 + scheduler weekly trigger)
+- 2026-08-14: 59deb96 (阶段2: 38→20 jobs + 数据新鲜度)
+- 2026-08-14: 7cf09e8 (阶段3: score-based 路由)
+- 2026-08-15: d7114f9 (P0-7: score weights dashboard 可调)
+- 2026-08-15: 88f072a (P0-8: listener sync_engine 修复)
+- 2026-08-15: 503f215 (阶段C: README 同步)
+- 2026-08-15: c7967a4 (阶段B: SF 53 行真实价格)
+- 2026-08-15: f287a9d (P1-15: 上游 429 failover)
+- 2026-08-15: 5eab24a (C: 74 测试)
+- 2026-08-15: 05fed73 (D: POST_V464_FIXES.md 同步)
 
 ---
 
@@ -384,7 +402,7 @@ curl -s http://127.0.0.1:8080/dashboard/api/suggestions?status=pending | python3
 
 | 项 | 工作量 | 价值 | 推荐 |
 |----|--------|------|------|
-| 单元测试 CI（GitHub Actions） | 0.3d | ⭐⭐⭐ | 高 |
+| 单元测试 CI（GitHub Actions） | 0.3d | �⭐⭐ | 高 |
 | P2-17 Prometheus /metrics | 0.4d | ⭐⭐⭐ | 中 |
 | P2-19 自动应用（基于 shadow log） | 0.5d | ⭐⭐ | 中（需 3-6 月 shadow log 累积） |
 | Anthropic Messages API 端点（P2-20） | 0.5d | ⭐⭐ | 低（当前 OpenAI 协议为主） |
