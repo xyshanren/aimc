@@ -173,72 +173,98 @@ function renderPrices(container) {
     }
 }
 
-// Phase 2.9: model_registry + model_group 渲染
+// === P0-UI v5: model_registry + model_group 渲染 ===
 function renderRegistryModels(container) {
     try {
         const data = JSON.parse(container.textContent);
         if (!data || !data.models || data.models.length === 0) {
-            container.innerHTML = '<p class="loading">暂无 model registry 数据</p>';
+            container.innerHTML = '<div class="empty">暂无 model registry 数据</div>';
             return;
         }
-        let html = `<p class="meta">共 ${esc(data.count)} 个 model (按 family + tier 排序)</p>`;
-        html += '<table><thead><tr><th>model_id</th><th>family</th><th>tier</th><th>capabilities</th><th>ctx</th><th>open</th><th>状态</th></tr></thead><tbody>';
-        let prevFamily = null;
+        let html = '<div class="text-muted" style="margin-bottom:var(--space-sm);font-size:12px;">共 ' + esc(data.count) + ' 个 model</div>';
+        html += '<div style="max-height:480px;overflow-y:auto;border:1px solid var(--border-default);border-radius:var(--radius-md);">';
+        html += '<table style="font-size:12px;"><thead><tr><th>Model</th><th>Family</th><th class="mono">Tier</th><th class="mono">Ctx</th><th>Capabilities</th><th class="mono">Status</th></tr></thead><tbody>';
         for (const m of data.models) {
-            if (m.family !== prevFamily) {
-                // family 分组 (可选高亮, 这里仅逻辑分组, 视觉一致)
-                prevFamily = m.family;
-            }
-            const caps = m.capabilities ? JSON.parse(m.capabilities) : [];
-            const ctx = m.context_length ? (m.context_length >= 1024 ? Math.round(m.context_length / 1024) + 'k' : m.context_length) : '?';
-            html += `<tr>
-                <td><code>${esc(m.model_id)}</code></td>
-                <td>${esc(m.family)}</td>
-                <td>${esc(m.tier)}</td>
-                <td class="caps">${esc(caps.join(', '))}</td>
-                <td>${esc(ctx)}</td>
-                <td>${m.is_open_source ? '✓' : '·'}</td>
-                <td>${esc(m.status)}</td>
-            </tr>`;
+            const caps = m.capabilities ? (Array.isArray(m.capabilities) ? m.capabilities : JSON.parse(m.capabilities)) : [];
+            const tier = m.tier || '?';
+            html += '<tr>';
+            html += '<td><code class="text-mono" style="font-size:11px;">' + esc(m.model_id) + '</code></td>';
+            html += '<td style="font-size:11px;">' + esc(m.family || '') + '</td>';
+            html += '<td class="mono" style="font-weight:600;">T' + esc(tier) + '</td>';
+            html += '<td class="mono">' + (m.context_length ? Math.round(m.context_length / 1000) + 'k' : '?') + '</td>';
+            html += '<td style="font-size:10px;color:var(--text-muted);">' + caps.slice(0, 3).map(esc).join(', ') + (caps.length > 3 ? '...' : '') + '</td>';
+            html += '<td class="mono" style="font-size:11px;">' + esc(m.status || 'active') + '</td>';
+            html += '</tr>';
         }
         html += '</tbody></table>';
+        html += '</div>';
         container.innerHTML = html;
     } catch (e) {
         console.error('renderRegistryModels failed:', e);
-        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+        container.innerHTML = '<div class="empty">渲染失败: ' + esc(e.message) + '</div>';
     }
 }
 
+
+// === P0-UI v5 (2026-08-16): renderRegistryGroups + renderRegistryModels 优化 ===
+
+// 替换 renderRegistryGroups: 用表格而不是 list, 每个 group 独立卡片
 function renderRegistryGroups(container) {
     try {
         const data = JSON.parse(container.textContent);
         if (!data || !data.groups || data.groups.length === 0) {
-            container.innerHTML = '<p class="loading">暂无 model group 数据</p>';
+            container.innerHTML = '<div class="empty">暂无 model group 数据</div>';
             return;
         }
-        let html = `<p class="meta">共 ${esc(data.group_count)} 个 group, ${esc(data.member_count)} 个 member</p>`;
+
+        // 顶部 summary
+        let html = '<div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: var(--space-md);">';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:18px;">' + esc(data.group_count) + '</div><div class="kpi-label">Groups</div></div>';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:18px;">' + esc(data.member_count) + '</div><div class="kpi-label">Members</div></div>';
+        const tiers = [...new Set(data.groups.map(g => g.tier).filter(Boolean))];
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:18px;">' + esc(tiers.length) + '</div><div class="kpi-label">Tiers</div></div>';
+        html += '</div>';
+
+        // 每个 group 一个折叠卡片
         for (const g of data.groups) {
-            const caps = g.capabilities ? JSON.parse(g.capabilities) : [];
+            const caps = g.capabilities ? (Array.isArray(g.capabilities) ? g.capabilities : JSON.parse(g.capabilities)) : [];
             const tier = g.tier || '*';
             const fallback = g.fallback_group || '(无降级)';
             const ctxMin = g.min_context || 0;
-            html += `<div class="group-card">
-                <h3><code>${esc(g.group_id)}</code> <span class="tier">${esc(tier)}</span></h3>
-                <p class="desc">${esc(g.display_name || '')} | strategy=${esc(g.strategy)} | fallback=${esc(fallback)}</p>
-                ${caps.length ? `<p class="caps">要求 capabilities: ${esc(caps.join(', '))}</p>` : ''}
-                ${ctxMin ? `<p class="meta">min_context=${esc(ctxMin)}</p>` : ''}
-                <details><summary>members (${g.members.length})</summary><ul>`;
-            for (const m of g.members) {
-                html += `<li><code>${esc(m.model_id)}</code> <span class="meta">priority=${esc(m.priority)}</span></li>`;
+            const strat = g.strategy || 'cheapest';
+
+            html += '<div class="group-card">';
+            // header: group_id + tier + summary
+            html += '<div class="flex gap-md" style="align-items:center;flex-wrap:wrap;">';
+            html += '<strong class="text-mono" style="font-size:14px;">' + esc(g.group_id) + '</strong>';
+            html += '<span class="tier">T' + esc(tier) + '</span>';
+            html += '<span class="text-muted" style="font-size:11px;">' + esc(strat) + '</span>';
+            if (fallback !== '(无降级)') html += '<span class="text-muted" style="font-size:11px;">fallback=' + esc(fallback) + '</span>';
+            if (ctxMin) html += '<span class="text-muted" style="font-size:11px;">ctx&gt;=' + esc(ctxMin) + '</span>';
+            if (caps.length) html += '<span class="text-muted" style="font-size:11px;">caps: ' + caps.map(esc).join(', ') + '</span>';
+            html += '</div>';
+
+            // members 表格
+            if (g.members && g.members.length > 0) {
+                html += '<table style="margin-top:var(--space-sm);"><thead><tr><th>Model</th><th class="mono">Priority</th></tr></thead><tbody>';
+                for (const m of g.members) {
+                    html += '<tr><td><code class="text-mono">' + esc(m.model_id) + '</code></td><td class="mono">' + esc(m.priority) + '</td></tr>';
+                }
+                html += '</tbody></table>';
+            } else {
+                html += '<div class="text-muted" style="font-size:11px;margin-top:var(--space-sm);">无 member</div>';
             }
-            html += '</ul></details></div>';
+            html += '</div>';
         }
         container.innerHTML = html;
     } catch (e) {
         console.error('renderRegistryGroups failed:', e);
-        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+        container.innerHTML = '<div class="empty">渲染失败: ' + esc(e.message) + '</div>';
     }
 }
+
+
+
 
 // Phase 3.A: Group 路由命中率渲染 (Dashboard 唯一路径)
 function renderGroupRouting(container) {
@@ -1318,3 +1344,23 @@ async function loadQuotaWarning() {
 
 document.addEventListener("DOMContentLoaded", loadQuotaWarning);
 setInterval(loadQuotaWarning, 60000);
+// === P0-UI v5: 周报 markdown 渲染 ===
+// 周报 raw markdown → 用 marked.js 渲染成 HTML
+// htmx 自动加载 + 我们需要拦截 raw markdown 转成 HTML
+
+document.body.addEventListener('htmx:afterSwap', function(event) {
+    if (event.detail.target.id === 'weekly-report-content') {
+        try {
+            const md = event.detail.target.textContent;
+            // 检查是否含 markdown 标记
+            if (md && (md.includes('# ') || md.includes('## ') || md.includes('### ') || md.includes('**'))) {
+                // marked.js 全局函数
+                if (typeof marked !== 'undefined') {
+                    event.detail.target.innerHTML = marked.parse(md);
+                }
+            }
+        } catch (e) {
+            console.warn('weekly report render:', e);
+        }
+    }
+});
