@@ -130,7 +130,7 @@
         </details>
 
         <details class="card-folding">
-            <summary><span class="card-title-main">周报</span><span class="card-title-sub">V4.4.B · 每周一 09:00 推送</span></summary>
+            <summary><span class="card-title-main">周报</span><span class="card-title-sub">每周一 09:00 推送</span></summary>
             <div class="card-body">
                 <div class="report-toolbar">
                     <select id="report-select" onchange="loadWeeklyReport(this.value)"><option value="latest">最新</option></select>
@@ -159,7 +159,7 @@
         </div>
 
         <details class="card-folding">
-            <summary><span class="card-title-main">账号管理</span><span class="card-title-sub">V4.6 · 加账号无需重启</span></summary>
+            <summary><span class="card-title-main">账号管理</span><span class="card-title-sub">加账号无需重启</span></summary>
             <div class="card-body">
                 <div class="accounts-toolbar">
                     <button class="btn btn-sm" onclick="loadAccounts()">刷新列表</button>
@@ -188,7 +188,7 @@
         </details>
 
         <details class="card-folding">
-            <summary><span class="card-title-main">优惠情报</span><span class="card-title-sub">V4.4.D · 多厂商活动</span></summary>
+            <summary><span class="card-title-main">优惠情报</span><span class="card-title-sub">多厂商活动</span></summary>
             <div class="card-body">
                 <div id="promotions-list" hx-get="/dashboard/api/promotions" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
             </div>
