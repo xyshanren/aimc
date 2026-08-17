@@ -304,8 +304,9 @@ function renderGroupRouting(container) {
                 html += '<table><thead><tr><th>实际 model</th><th>次数</th><th>占比</th><th>分布</th></tr></thead><tbody>';
                 for (const m of dist) {
                     const pct = m.percentage || 0;
-                    html += `<tr>
-                        <td><code>${esc(m.model)}</code></td>
+                    const modelName = m.model || "(未知)";
+                html += `<tr>
+                        <td><code class="${m.model ? 'text-mono' : 'text-muted'}" style="font-size:11px;">${esc(modelName)}</code></td>
                         <td>${esc(m.count)}</td>
                         <td>${esc(pct.toFixed(1))}%</td>
                         <td><div class="bar-track"><div class="bar-fill" style="width:${esc(pct)}%"></div></div></td>
@@ -327,7 +328,8 @@ function renderGroupRouting(container) {
             if (top.length > 0) {
                 html += '<table><thead><tr><th>model</th><th>次数</th></tr></thead><tbody>';
                 for (const m of top) {
-                    html += `<tr><td><code>${esc(m.model)}</code></td><td>${esc(m.count)}</td></tr>`;
+                    const mName = m.model || "(未知)";
+                    html += `<tr><td><code class="${m.model ? 'text-mono' : 'text-muted'}" style="font-size:11px;">${esc(mName)}</code></td><td>${esc(m.count)}</td></tr>`;
                 }
                 html += '</tbody></table>';
             }
@@ -841,7 +843,6 @@ async function loadActiveChannels() {
 }
 
 async function loadAccounts() {
-    // 重新拉列表 — 同 hx-get 同样的 URL, 但用 fetch 强制刷新
     const container = document.getElementById('accounts-list');
     const meta = document.getElementById('accounts-meta');
     if (meta) meta.textContent = '加载中...';
@@ -850,12 +851,21 @@ async function loadAccounts() {
         const data = await resp.json();
         renderAccounts(data);
         if (meta) {
-            const active = (data.accounts || []).filter(a => a.status === 'active').length;
-            meta.textContent = `共 ${data.count} 个账号 · ${active} 个 active`;
+            const items = data.accounts || [];
+            const active = items.filter(a => a.status === 'active').length;
+            const byProvider = {};
+            for (const a of items) {
+                byProvider[a.provider] = (byProvider[a.provider] || 0) + 1;
+            }
+            const providerSummary = Object.entries(byProvider)
+                .sort((a, b) => b[1] - a[1])
+                .map(([p, n]) => p + '=' + n)
+                .join(', ');
+            meta.textContent = '共 ' + data.count + ' 个账号 · ' + active + ' 个 active · ' + providerSummary;
         }
     } catch (e) {
-        if (meta) meta.textContent = `加载失败: ${esc(e.message)}`;
-        if (container) container.innerHTML = `<p class="error">加载失败: ${esc(e.message)}</p>`;
+        if (meta) meta.textContent = '加载失败: ' + e.message;
+        if (container) container.innerHTML = '<p class="error">加载失败: ' + e.message + '</p>';
     }
 }
 
@@ -864,40 +874,52 @@ function renderAccounts(data) {
     if (!container) return;
     const items = data.accounts || [];
     if (items.length === 0) {
-        container.innerHTML = '<p class="loading">✓ 当前无账号 — 点上方 "+ 加新账号" 添加</p>';
+        container.innerHTML = '<p class="loading">当前无账号 — 点上方 "+ 加新账号" 添加</p>';
         return;
     }
-
-    let html = '<table><thead><tr><th>ID</th><th>Provider</th><th>账号名</th><th>状态</th><th>已用/总额</th><th>过期</th><th>Key</th><th>备注</th><th>操作</th></tr></thead><tbody>';
+    const byProvider = {};
+    for (const a of items) {
+        byProvider[a.provider] = (byProvider[a.provider] || 0) + 1;
+    }
+    const multiProvider = Object.entries(byProvider).filter((kv) => kv[1] > 1);
+    let explanation = '';
+    if (multiProvider.length > 0) {
+        explanation = '<div class="info-banner"><strong>💡 多账号说明:</strong> ';
+        explanation += multiProvider.map(function(kv){return kv[0] + ' 有 <strong>' + kv[1] + '</strong> 个账号'}).join('，');
+        explanation += ' 用于分散频限 + 故障转移。<br>';
+        explanation += '重复的 <code>test_01</code> 是手动测试用的多账号，可在操作列禁用不需要的。</div>';
+    }
+    let html = explanation + '<table><thead><tr><th>ID</th><th>账号名</th><th>状态</th><th>已用/总额</th><th>过期</th><th>Key</th><th>备注</th><th>操作</th></tr></thead><tbody>';
     for (const a of items) {
         const quota = a.quota_total
-            ? `${a.quota_used.toLocaleString()} / ${a.quota_total.toLocaleString()} (${a.quota_pct ?? 0}%)`
-            : '∅';
-        const expires = a.expires_at ? a.expires_at.slice(0, 10) : '∅';
+            ? a.quota_used.toLocaleString() + ' / ' + a.quota_total.toLocaleString() + ' (' + (a.quota_pct || 0) + '%)'
+            : '-';
+        const expires = a.expires_at ? a.expires_at.slice(0, 10) : '-';
         const notes = a.notes || '';
         const status = a.status;
         const actions = [];
-        if (status !== 'active') {
-            actions.push(`<button class="btn-sm btn-enable" onclick="toggleAccount(${a.id}, 'active', this)">启用</button>`);
+        if (status !== "active") {
+            actions.push('<button class="btn-sm btn-enable" data-action="enable" data-id="' + a.id + '">启用</button>');
         } else {
-            actions.push(`<button class="btn-sm btn-disable" onclick="toggleAccount(${a.id}, 'disabled', this)">禁用</button>`);
+            actions.push('<button class="btn-sm btn-disable" data-action="disable" data-id="' + a.id + '">禁用</button>');
         }
-        actions.push(`<button class="btn-sm btn-rotate" onclick="rotateAccountKey(${a.id}, this)">轮换</button>`);
-        html += `<tr>
-            <td>${a.id}</td>
-            <td>${esc(a.provider)}</td>
-            <td><code>${esc(a.account_name)}</code></td>
-            <td class="status-${esc(status)}">${esc(status)}</td>
-            <td>${quota}</td>
-            <td>${esc(expires)}</td>
-            <td><code class="key-display">${esc(a.key_display)}</code></td>
-            <td class="notes">${esc(notes)}</td>
-            <td class="row-actions">${actions.join(' ')}</td>
-        </tr>`;
+        actions.push('<button class="btn-sm btn-rotate" data-action="rotate" data-id="' + a.id + '">轮换</button>');
+        html += '<tr>'
+            + '<td>' + a.id + '</td>'
+            + '<td><code>' + a.provider + '/' + esc(a.account_name) + '</code></td>'
+            + '<td class="status-' + status + '">' + status + '</td>'
+            + '<td>' + quota + '</td>'
+            + '<td>' + expires + '</td>'
+            + '<td><code class="key-display">' + esc(a.key_display) + '</code></td>'
+            + '<td class="notes">' + esc(notes) + '</td>'
+            + '<td class="row-actions">' + actions.join(' ') + '</td>'
+            + '</tr>';
     }
     html += '</tbody></table>';
     container.innerHTML = html;
 }
+
+
 
 async function toggleAccount(accountId, newStatus, btn) {
     if (!confirm(`确定将账号 #${accountId} 切换为 ${newStatus}?`)) return;
@@ -1362,5 +1384,19 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
         } catch (e) {
             console.warn('weekly report render:', e);
         }
+    }
+});// === P0-UI v6: 账号管理 - data-action click 委托 (避免 onclick 嵌套引号) ===
+
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = parseInt(btn.dataset.id, 10);
+    if (action === 'enable') {
+        toggleAccount(id, 'active', btn);
+    } else if (action === 'disable') {
+        toggleAccount(id, 'disabled', btn);
+    } else if (action === 'rotate') {
+        rotateAccountKey(id, btn);
     }
 });
