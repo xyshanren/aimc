@@ -147,22 +147,6 @@ async def handle_parse_result(content: str, source):
     if ai_result and source.source_type == "price_aggregator":
         await _handle_price_aggregator_result(ai_result, source)
 
-    # === 1.7 Phase 4 v4.3 (2026-08-13): intelligence_kind=pricing 走新 writer ===
-    # 跟 legacy _handle_price_aggregator_result (正则解析 text) 并存,
-    # 优先用新 writer (AI 结构化字段 models[].pricing), legacy 作为 fallback
-    if (
-        ai_result
-        and ai_result.intelligence_kind == "pricing"
-        and source.source_type == "price_aggregator"
-    ):
-        try:
-            from intelligence.pricing_writer import write_pricing_snapshots_from_parse
-            await write_pricing_snapshots_from_parse(ai_result, source.provider)
-        except Exception as e:
-            logger.warning(
-                "pricing_writer 失败 (非阻断): provider=%s err=%s", source.provider, e
-            )
-
     # === 2. AI 成功 + 置信度足够 → 入库 ===
     if ai_result and (
         (ai_result.is_promotion and ai_result.confidence >= settings.parse_confidence_threshold)
@@ -445,15 +429,20 @@ async def handle_fetch_error(source, error: str):
                 await session.commit()
             else:
                 # DB 没对应行（首次失败）→ upsert 一条
-                await crud.upsert_intel_source(
+                # 修复 V4.6.4: crud.upsert_intel_source 内部 hardcode status="active",
+                # 不能从 caller 再传 status (multiple values for keyword arg)
+                # 解决: 先 upsert (默认 status=active), 然后 update status
+                new_source = await crud.upsert_intel_source(
                     session,
                     provider=source.provider,
                     url=source.url,
                     source_type=getattr(source, "source_type", "web_page"),
                     poll_interval=getattr(source, "poll_interval", 900),
-                    status="error" if source.error_count >= 3 else "active",
                     error_count=source.error_count,
                 )
+                # 显式 update status (避免硬编码冲突)
+                if source.error_count >= 3:
+                    new_source.status = "error"
                 await session.commit()
 
             if source.error_count == 1:
