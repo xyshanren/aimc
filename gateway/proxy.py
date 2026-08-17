@@ -5,6 +5,37 @@
 - 非流式请求：直接返回上游 JSON 响应
 """
 
+# V4.6.4: 剥离请求里的 thinking 相关字段 (个人项目偏好 agent loop 更快)
+# 默认上游 (minimax-m2.7) 即使不传 enable_thinking 也输出 thinking, 吃 token + 加延迟
+# proxy 层在转发前主动剥离这些字段
+THINKING_FIELDS_TO_STRIP = (
+    "thinking",
+    "enable_thinking",
+    "reasoning_effort",
+    "extended_thinking",
+)
+
+
+def _strip_thinking_fields(body_dict: dict) -> dict:
+    """V4.6.4+: 剥离 body 字典里的 thinking 相关字段 (返回新 dict, 不修改原对象)
+
+    Args:
+        body_dict: 已解析的 request body (dict)
+
+    Returns:
+        新 dict (剥离了 thinking/enable_thinking/reasoning_effort/extended_thinking)
+
+    Notes:
+        - 只剥离顶层字段 (不递归 messages 内部, agent 可能把 reasoning 放 message 里)
+        - immutable: 不修改输入 dict
+    """
+    if not any(k in body_dict for k in THINKING_FIELDS_TO_STRIP):
+        return body_dict  # 没有 thinking 字段, 避免创建新 dict
+
+    out = {k: v for k, v in body_dict.items() if k not in THINKING_FIELDS_TO_STRIP}
+    return out
+
+
 import json
 import os
 import time
@@ -156,6 +187,23 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
     # 例: 用户请求 deepseek-v2.5, channel 只有 deepseek-ai/DeepSeek-V3
     # 替换 body.model = channel 支持的 model, 上游能识别
     actual_model = actual_model or requested_model
+
+    # V4.6.4: thinking 剥离 (默认启用, channel.disable_thinking_pass_through=1)
+    # 某些上游 (minimax deepthink) 即使不传 enable_thinking 也强制输出 thinking.
+    # 剥离 request 里的 thinking/enable_thinking/reasoning_effort/extended_thinking 字段
+    # → 节省 token + agent loop 更快
+    if channel.get("disable_thinking_pass_through", 1):
+        try:
+            import json as _tjson
+            _body_dict = _tjson.loads(body)
+            _stripped_body = _strip_thinking_fields(_body_dict)
+            if _stripped_body is not _body_dict:  # 有字段被剥离
+                _stripped = [k for k in THINKING_FIELDS_TO_STRIP if k in _body_dict]
+                body = _tjson.dumps(_stripped_body, ensure_ascii=False).encode("utf-8")
+                logger.info(f"[V4.6.4 thinking 剥离] channel={channel.get('name')} stripped={_stripped}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass  # 非 JSON body, 跳过
+
     if actual_model != requested_model:
         try:
             import json as _json_mod
