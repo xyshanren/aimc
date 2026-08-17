@@ -439,12 +439,32 @@ tbody tr:hover {
     color: var(--text-primary);
     font-size: 13px;
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: background 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
     user-select: none;
 }
 
-.btn:hover { background: var(--bg-hover); }
-.btn:active { transform: scale(0.97); }
+.btn:hover {
+    background: var(--bg-hover);
+    transform: translateY(-1px);  /* 短微浮起 */
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.btn:active {
+    transform: translateY(0);  /* 按下回弹 */
+    box-shadow: none;
+}
+
+.btn:focus-visible {
+    outline: 2px solid var(--color-info);
+    outline-offset: 2px;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
 
 .btn-primary {
     background: var(--color-info);
@@ -458,11 +478,15 @@ tbody tr:hover {
     color: white;
     border-color: var(--color-success);
 }
+.btn-success:hover { background: #2ea043; }
 
 .btn-danger {
     background: transparent;
     color: var(--color-danger);
     border-color: var(--color-danger);
+}
+.btn-danger:hover {
+    background: rgba(248, 81, 73, 0.1);
 }
 
 .btn-sm { padding: 3px 8px; font-size: 11px; }
@@ -528,13 +552,48 @@ details.card-folding > summary {
 }
 
 details.card-folding > summary::after {
-    content: '�';
-    color: var(--text-muted);
+    content: '';
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-right: 2px solid var(--text-muted);
+    border-bottom: 2px solid var(--text-muted);
+    transform: rotate(-45deg);  /* 关闭状态: › 指向右下 */
     transition: transform 0.2s ease;
+    margin-right: 4px;
 }
 
 details.card-folding[open] > summary::after {
-    transform: rotate(180deg);
+    transform: rotate(45deg);   /* 打开状态: ‹ 旋转 90° → ↓ 指向下方 */
+}
+
+details.accounts-form-details > summary {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    padding: var(--space-sm) 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+details.accounts-form-details > summary::marker {
+    content: '';
+}
+
+details.accounts-form-details > summary::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid var(--text-muted);
+    border-bottom: 2px solid var(--text-muted);
+    transform: rotate(-45deg);
+    transition: transform 0.2s ease;
+}
+
+details.accounts-form-details[open] > summary::before {
+    transform: rotate(45deg);
 }
 
 details.card-folding > .card-body {
@@ -594,379 +653,4 @@ details.card-folding > .card-body {
     color: var(--text-primary);
     font-family: var(--font-mono);
     margin-left: 4px;
-}
-/* === P0-UI v5 (2026-08-16): group-card / gr-group-card / bar-track / registry table 样式 === */
-
-.group-card,
-.gr-group-card {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-muted);
-    border-radius: var(--radius-md);
-    padding: var(--space-md);
-    margin-bottom: var(--space-md);
-}
-
-.gr-group-card.unmatched {
-    border-color: var(--text-muted);
-    opacity: 0.85;
-}
-
-.group-card h3,
-.gr-group-card h4 {
-    margin: 0 0 var(--space-sm) 0;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-primary);
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-}
-
-.group-card .tier,
-.gr-group-card .tier {
-    background: var(--bg-surface);
-    color: var(--color-accent);
-    padding: 2px var(--space-sm);
-    border-radius: var(--radius-sm);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 600;
-}
-
-.group-card .desc,
-.gr-group-card .desc {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin: var(--space-xs) 0;
-}
-
-.group-card .caps {
-    font-size: 11px;
-    color: var(--text-muted);
-    margin: var(--space-xs) 0;
-}
-
-.group-card .meta,
-.gr-group-card .meta {
-    font-size: 11px;
-    color: var(--text-muted);
-    margin: var(--space-xs) 0;
-}
-
-/* Group cards 的 members list (折叠 <details>) */
-.group-card details,
-.gr-group-card details {
-    margin-top: var(--space-sm);
-}
-
-.group-card details > summary,
-.gr-group-card details > summary {
-    cursor: pointer;
-    color: var(--text-secondary);
-    font-size: 12px;
-    padding: var(--space-xs) 0;
-    user-select: none;
-}
-
-.group-card details > summary::marker,
-.gr-group-card details > summary::marker {
-    content: '+';
-}
-
-.group-card details[open] > summary::marker,
-.gr-group-card details[open] > summary::marker {
-    content: '\2212';
-}
-
-.group-card ul,
-.gr-group-card ul {
-    list-style: none;
-    padding: 0;
-    margin: var(--space-sm) 0 0 0;
-}
-
-.group-card li,
-.gr-group-card li {
-    padding: 4px 0;
-    border-bottom: 1px solid var(--border-muted);
-    font-size: 12px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: var(--space-sm);
-}
-
-.group-card li:last-child,
-.gr-group-card li:last-child {
-    border-bottom: none;
-}
-
-/* Channels chip (group-routing) */
-.chip {
-    display: inline-block;
-    background: var(--bg-surface);
-    color: var(--text-primary);
-    padding: 2px var(--space-sm);
-    border-radius: var(--radius-sm);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    border: 1px solid var(--border-muted);
-}
-
-/* Bar 进度条 (group-routing 分布) */
-.bar-track {
-    width: 100%;
-    height: 6px;
-    background: var(--bg-surface);
-    border-radius: 3px;
-    overflow: hidden;
-    min-width: 60px;
-}
-
-.bar-fill {
-    height: 100%;
-    background: var(--color-info);
-    transition: width 0.3s ease;
-}
-
-/* registry models 表格优化 (限宽 + 单色行) */
-#registry-models-list table,
-#registry-groups-list table {
-    font-size: 12px;
-}
-
-#registry-models-list td,
-#registry-groups-list td {
-    padding: 6px var(--space-md);
-}
-
-/* table 美化 (alternating rows) */
-table tbody tr:nth-child(even) {
-    background: rgba(255, 255, 255, 0.02);
-}
-
-/* status-bar-route 显示调整 */
-.status-bar-route {
-    flex: 1;
-    text-align: center;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}/* === P0-UI v6: 周报 markdown 渲染样式 === */
-
-#weekly-report-content {
-    font-size: 13px;
-    line-height: 1.7;
-    color: var(--text-primary);
-}
-
-#weekly-report-content h1 {
-    font-size: 22px;
-    font-weight: 700;
-    color: var(--text-primary);
-    margin: var(--space-md) 0 var(--space-lg);
-    padding-bottom: var(--space-sm);
-    border-bottom: 1px solid var(--border-default);
-}
-
-#weekly-report-content h2 {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--text-primary);
-    margin: var(--space-lg) 0 var(--space-md);
-}
-
-#weekly-report-content h3 {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin: var(--space-md) 0 var(--space-sm);
-}
-
-#weekly-report-content p {
-    margin: var(--space-sm) 0;
-    color: var(--text-secondary);
-}
-
-#weekly-report-content ul,
-#weekly-report-content ol {
-    margin: var(--space-sm) 0;
-    padding-left: var(--space-xl);
-    color: var(--text-secondary);
-}
-
-#weekly-report-content li {
-    margin: 4px 0;
-}
-
-#weekly-report-content code {
-    background: var(--bg-elevated);
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 12px;
-    color: var(--color-accent);
-    border: 1px solid var(--border-muted);
-}
-
-#weekly-report-content strong {
-    color: var(--text-primary);
-    font-weight: 600;
-}
-
-#weekly-report-content hr {
-    border: none;
-    border-top: 1px solid var(--border-muted);
-    margin: var(--space-lg) 0;
-}
-
-#weekly-report-content table {
-    margin: var(--space-sm) 0;
-    border-collapse: collapse;
-}
-
-#weekly-report-content em {
-    color: var(--text-muted);
-    font-style: italic;
-}
-
-/* 周报内部链接 */
-#weekly-report-content a {
-    color: var(--text-link);
-}
-
-/* 周报 inline emoji 不换行 */
-#weekly-report-content {
-    word-break: keep-all;
-}/* === P0-UI v6: 加新账号表单 + 账号管理列样式 === */
-
-.accounts-form {
-    padding: var(--space-md);
-    background: var(--bg-elevated);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--border-muted);
-}
-
-.accounts-form .form-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-md);
-    margin-bottom: var(--space-md);
-    align-items: start;
-}
-
-.accounts-form .form-row:last-of-type {
-    margin-bottom: 0;
-}
-
-.accounts-form label {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xs);
-    font-size: 11px;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-    font-weight: 500;
-}
-
-.accounts-form input,
-.accounts-form select {
-    padding: 6px var(--space-md);
-    background: var(--bg-surface);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-sm);
-    color: var(--text-primary);
-    font-size: 13px;
-    font-family: var(--font-sans);
-    outline: none;
-    transition: border-color 0.15s ease;
-}
-
-.accounts-form input:focus,
-.accounts-form select:focus {
-    border-color: var(--color-info);
-    box-shadow: var(--shadow-glow);
-}
-
-.accounts-form input[type="password"] {
-    font-family: var(--font-mono);
-    letter-spacing: 1px;
-}
-
-.accounts-form .form-row > button {
-    align-self: end;
-}
-
-.accounts-form .feedback {
-    font-size: 12px;
-    margin-left: var(--space-md);
-}
-
-.accounts-form .feedback.success { color: var(--color-success); }
-.accounts-form .feedback.error { color: var(--color-danger); }
-
-/* 单独一行的 label (api_key, notes) */
-.accounts-form .form-row.single {
-    grid-template-columns: 1fr;
-}
-
-/* 表格内 column header 颜色更柔和 */
-.accounts-form table thead th {
-    color: var(--text-secondary);
-    font-weight: 500;
-}
-
-/* 已用/总额 列宽固定 */
-.accounts-form th:nth-child(4),
-.accounts-form th:nth-child(5),
-.accounts-form td:nth-child(4),
-.accounts-form td:nth-child(5) {
-    text-align: right;
-    font-family: var(--font-mono);
-    font-size: 12px;
-}
-
-/* 账号管理 toolbar 优化 */
-.accounts-toolbar {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    margin-bottom: var(--space-md);
-    flex-wrap: wrap;
-}
-
-.accounts-toolbar .meta {
-    margin-left: auto;
-    color: var(--text-muted);
-    font-size: 12px;
-}/* === P0-UI v6: info banner (账号管理说明) === */
-
-.info-banner {
-    background: rgba(88, 166, 255, 0.08);
-    border: 1px solid rgba(88, 166, 255, 0.3);
-    border-radius: var(--radius-md);
-    padding: var(--space-md);
-    margin-bottom: var(--space-md);
-    font-size: 12px;
-    line-height: 1.6;
-    color: var(--text-secondary);
-}
-
-.info-banner strong {
-    color: var(--color-info);
-}
-
-.info-banner code {
-    background: var(--bg-elevated);
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 11px;
-    color: var(--color-accent);
-    border: 1px solid var(--border-muted);
-}
-
-.info-banner a {
-    color: var(--text-link);
 }

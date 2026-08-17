@@ -182,7 +182,7 @@ function renderRegistryModels(container) {
             return;
         }
         let html = '<div class="text-muted" style="margin-bottom:var(--space-sm);font-size:12px;">共 ' + esc(data.count) + ' 个 model</div>';
-        html += '<div style="max-height:480px;overflow-y:auto;border:1px solid var(--border-default);border-radius:var(--radius-md);">';
+        html += '<div class="scroll-y-320">';
         html += '<table style="font-size:12px;"><thead><tr><th>Model</th><th>Family</th><th class="mono">Tier</th><th class="mono">Ctx</th><th>Capabilities</th><th class="mono">Status</th></tr></thead><tbody>';
         for (const m of data.models) {
             const caps = m.capabilities ? (Array.isArray(m.capabilities) ? m.capabilities : JSON.parse(m.capabilities)) : [];
@@ -889,7 +889,7 @@ function renderAccounts(data) {
         explanation += ' 用于分散频限 + 故障转移。<br>';
         explanation += '重复的 <code>test_01</code> 是手动测试用的多账号，可在操作列禁用不需要的。</div>';
     }
-    let html = explanation + '<table><thead><tr><th>ID</th><th>账号名</th><th>状态</th><th>已用/总额</th><th>过期</th><th>Key</th><th>备注</th><th>操作</th></tr></thead><tbody>';
+    let html = explanation + '<div class="scroll-y-300"><table><thead><tr><th>ID</th><th>账号名</th><th>状态</th><th>已用/总额</th><th>过期</th><th>Key</th><th>备注</th><th>操作</th></tr></thead><tbody>';
     for (const a of items) {
         const quota = a.quota_total
             ? a.quota_used.toLocaleString() + ' / ' + a.quota_total.toLocaleString() + ' (' + (a.quota_pct || 0) + '%)'
@@ -1222,7 +1222,7 @@ async function loadCacheStatsList() {
         // TOP 10 model
         if (data.by_model && data.by_model.length > 0) {
             html += '<h3 style="font-size:11px;color:var(--text-muted);text-transform:uppercase;margin:16px 0 8px;">TOP 10 Model</h3>';
-            html += '<table><thead><tr><th>Model</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono">命中率</th><th class="mono">节省</th></tr></thead><tbody>';
+            html += '<div class="scroll-y-260"><table><thead><tr><th>Model</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono">命中率</th><th class="mono">节省</th></tr></thead><tbody>';
             for (const m of data.by_model.slice(0, 10)) {
                 html += '<tr>';
                 html += `<td><code class="text-mono">${esc(m.model || '—')}</code></td>`;
