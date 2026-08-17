@@ -440,23 +440,43 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
             cache_creation_input_tokens = v
 
         # 创建异步任务写入数据库
-        asyncio.get_event_loop().create_task(
-            _write_usage_log(
-                channel_id=channel.get("id"),
-                account_id=channel.get("account_id"),
-                model=actual_model,
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
-                status_code=response.status_code,
-                latency_ms=latency_ms,
-                group_id=group_id,
-                cached_input_tokens=cached_input_tokens,
-                cache_read_input_tokens=cache_read_input_tokens,
-                cache_creation_input_tokens=cache_creation_input_tokens,
+        # 修复 V4.6.4: 用 asyncio.create_task 替代 asyncio.get_event_loop().create_task
+        # 之前: get_event_loop() 在 Python 3.12 + uvicorn 多 worker 场景下可能返回错的 loop 或 RuntimeError
+        # 现在: 直接用 asyncio.create_task (Python 3.10+ 推荐)
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(
+                _write_usage_log(
+                    channel_id=channel.get("id"),
+                    account_id=channel.get("account_id"),
+                    model=actual_model,
+                    input_tokens=usage.get("prompt_tokens", 0),
+                    output_tokens=usage.get("completion_tokens", 0),
+                    status_code=response.status_code,
+                    latency_ms=latency_ms,
+                    group_id=group_id,
+                    cached_input_tokens=cached_input_tokens,
+                    cache_read_input_tokens=cache_read_input_tokens,
+                    cache_creation_input_tokens=cache_creation_input_tokens,
+                )
             )
-        )
+            # V4.6.4: 添加回调, task 失败时 log 错误 (之前静默)
+            task.add_done_callback(_log_task_result)
+        except RuntimeError as e:
+            # 没有 running loop (不可能在 FastAPI handler 里, 但兜底)
+            logger.warning(f"V4.6.4: asyncio.create_task 失败: {e}, 跳过本次 usage_log")
     except Exception:
         pass  # 用量记录失败不影响主流程
+
+
+def _log_task_result(task: asyncio.Task) -> None:
+    """V4.6.4: create_task 失败回调 — 让 _write_usage_log 异常可见"""
+    try:
+        exc = task.exception()
+        if exc:
+            logger.warning(f"用量日志写入失败 (task 异常): {exc}")
+    except asyncio.CancelledError:
+        pass
 
 
 async def _write_usage_log(
@@ -493,6 +513,10 @@ async def _write_usage_log(
                 output_tokens=output_tokens,
                 status_code=status_code,
                 latency_ms=latency_ms,
+                # P0-3 follow-up: 3 个 cache token 字段
+                cached_input_tokens=cached_input_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
             )
             session.add(log)
             await session.commit()
@@ -530,13 +554,16 @@ def _schedule_alert(channel: dict, response: httpx.Response):
     # throttle key: 同 channel + 同 status 共用, 不同 status (401 vs 500) 独立告警
     throttle_key = f"{channel_name}:{status}"
     try:
-        asyncio.get_event_loop().create_task(
+        loop = asyncio.get_running_loop()
+        loop.create_task(
             _send_alert_async(msg, key=throttle_key)
         )
     except RuntimeError:
         # 没 event loop (e.g. 关闭时), 同步发
-        import logging
-        logging.getLogger(__name__).warning(f"[alerter fallback] {msg}")
+        logger.warning(f"[alerter fallback] {msg}")
+    except Exception as e:
+        # V4.6.4: 静默错误 — 之前 _schedule_alert 失败完全没 log
+        logger.warning(f"V4.6.4: _schedule_alert task 调度失败: {e}")
 
 
 async def _send_alert_async(message: str, key: str | None = None):
