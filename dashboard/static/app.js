@@ -190,7 +190,7 @@ function renderRegistryModels(container) {
             html += '<tr>';
             html += '<td><code class="text-mono" style="font-size:11px;">' + esc(m.model_id) + '</code></td>';
             html += '<td style="font-size:11px;">' + esc(m.family || '') + '</td>';
-            html += '<td class="mono" style="font-weight:600;">T' + esc(tier) + '</td>';
+            html += '<td class="mono" style="font-weight:600;">' + esc(tier) + '</td>';
             html += '<td class="mono">' + (m.context_length ? Math.round(m.context_length / 1000) + 'k' : '?') + '</td>';
             html += '<td style="font-size:10px;color:var(--text-muted);">' + caps.slice(0, 3).map(esc).join(', ') + (caps.length > 3 ? '...' : '') + '</td>';
             html += '<td class="mono" style="font-size:11px;">' + esc(m.status || 'active') + '</td>';
@@ -237,7 +237,7 @@ function renderRegistryGroups(container) {
             // header: group_id + tier + summary
             html += '<div class="flex gap-md" style="align-items:center;flex-wrap:wrap;">';
             html += '<strong class="text-mono" style="font-size:14px;">' + esc(g.group_id) + '</strong>';
-            html += '<span class="tier">T' + esc(tier) + '</span>';
+            html += '<span class="tier">' + esc(tier) + '</span>';
             html += '<span class="text-muted" style="font-size:11px;">' + esc(strat) + '</span>';
             if (fallback !== '(无降级)') html += '<span class="text-muted" style="font-size:11px;">fallback=' + esc(fallback) + '</span>';
             if (ctxMin) html += '<span class="text-muted" style="font-size:11px;">ctx&gt;=' + esc(ctxMin) + '</span>';
