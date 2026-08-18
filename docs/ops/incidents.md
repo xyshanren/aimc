@@ -334,7 +334,7 @@ ORDER BY errors DESC;
 - **任何人访问 `/dashboard/api/channels` 都能拿到完整数据 (200 + JSON)**
 
 **已修复**:
-1. 添加 `AIMC_DASHBOARD_TOKEN=0f7638e0120de9f18d9903158c68f6839c1a8e82aa6148790adf443825d3d727` 到 `.env`
+1. 添加 `AIMC_DASHBOARD_TOKEN=<redacted-64-hex-from-vm-only>` 到 `.env`
 2. 重启服务
 3. 验证: 错 token 401, 无 token 401, 对 token 200
 
