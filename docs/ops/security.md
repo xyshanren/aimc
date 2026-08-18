@@ -1,0 +1,251 @@
+# 公网部署安全指南
+
+> 受众：把 AIMC 部署到公网云服务器 + 多人共用的运维
+> 前提：项目当前在**内网单人**使用，本指南是**未来公网部署**的参考
+> 触发条件：需要给团队成员（> 1 人）从外部网络访问 AIMC
+
+---
+
+## 1. 当前安全现状（内网单人）
+
+### 已具备
+
+- ✅ **网关 API Key 鉴权**（`/v1/*`）— `AIMC_API_KEY` 必填，Bearer header 校验
+- ✅ **Dashboard Token 鉴权**（`/dashboard/*`）— `AIMC_DASHBOARD_TOKEN`，支持 header/cookie/query
+- ✅ **账号 key Fernet 加密**（P0-5）— 厂商 API key 加密入库
+- ✅ **多维限额**（P0-6）— 防止单 channel 滥用
+- ✅ **74+ tests** — 鉴权 / 限额 / cooldown 等核心路径有测试
+
+### 已知缺口（**内网不严重，公网必须修**）
+
+- ❌ **HTTPS / TLS** — AIMC 监听 8080 是明文 HTTP，token / 请求体裸传
+- ❌ **Cookie 安全** — `aimc_dashboard_token` 没 `Secure` / `HttpOnly` / `SameSite` 标记
+- ❌ **暴力破解防护** — 登录失败无锁定，攻击者可枚举 token
+- ❌ **审计日志** — 无"谁在什么时候改了什么"记录
+- ❌ **速率限制** — 网关有 fallback 限速，但**没有针对登录的限速**
+
+---
+
+## 2. 公网部署方案对比（按国内团队 + 国内服务器）
+
+### 方案 A：自建 nginx + Let's Encrypt
+
+**适合**：完全控制、0 持续成本、长期方案
+
+**步骤**：
+1. 域名注册（国内域名约 ¥50/年，必须 ICP 备案）
+2. 云服务器需有公网 IP（阿里云/腾讯云弹性公网 IP，~¥20/月）
+3. 安装 nginx + certbot，自动签发 Let's Encrypt SSL 证书
+4. nginx 反向代理 AIMC（127.0.0.1:8080）
+5. AIMC 内部加 Cookie 安全标记
+
+**成本**：
+- 服务器 +1 GB RAM
+- 域名 ¥50/年（+ ICP 备案 7-20 天）
+- 弹性 IP ¥20/月
+- 实施 0.7d
+
+**合规**：✅ 国内服务器 + 国内流量，完全合规
+
+---
+
+### 方案 B：Cloudflare Load Balancer / 反向代理
+
+**适合**：HTTPS 外包给 Cloudflare，但 AIMC 仍 HTTP（依赖外部）
+
+**步骤**：
+1. AIMC 服务保持 HTTP（监听 0.0.0.0:8080，公网可达）
+2. Cloudflare 配 Origin Server + SSL/TLS 加密模式 "Full"
+3. 域名解析走 Cloudflare DNS（自动 SSL）
+
+**成本**：
+- 服务器不变
+- 域名 ¥50/年（**必须 ICP 备案**）
+- Cloudflare 免费层
+- 实施 0.1d
+
+**合规**：✅ 但**需要 ICP 备案**（用国内 Cloudflare 节点）
+
+---
+
+### 方案 C2：Cloudflare Tunnel（**推荐**）
+
+**适合**：5-10 人小团队，**0 证书管理、0 公网 IP、0 持续成本**
+
+**原理**：
+- AIMC 监听 127.0.0.1（只本地）
+- `cloudflared` 客户端建立**出站**连接到 Cloudflare 边缘
+- 团队通过 `https://aimc.your-domain.com` 访问
+- **不需要公网 IP**、**不需要 ICP 备案**（用 Cloudflare 边缘节点）、**不需要 nginx**
+
+**步骤**：
+```bash
+# 1. 装 cloudflared
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb
+sudo dpkg -i /tmp/cloudflared.deb
+
+# 2. 登录（浏览器授权）
+cloudflared tunnel login
+
+# 3. 创建 tunnel
+cloudflared tunnel create aimc
+# 记录 tunnel UUID: <TUNNEL_UUID>
+
+# 4. 配置文件 /home/lxc/.cloudflared/config.yml
+tunnel: <TUNNEL_UUID>
+credentials-file: /home/lxc/.cloudflared/<TUNNEL_UUID>.json
+ingress:
+  - hostname: aimc.your-domain.com
+    service: http://127.0.0.1:8080
+  - service: http_status:404
+
+# 5. DNS 路由 + 启动
+cloudflared tunnel route dns aimc aimc.your-domain.com
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
+```
+
+**成本**：
+- 服务器不变
+- 域名 ¥50/年（**不需要 ICP 备案**，Cloudflare 海外节点中转）
+- Cloudflare Tunnel 免费（个人使用无限流量）
+- 实施 10-15 分钟
+
+**合规**：✅ 国内服务器 + 国内流量
+**安全**：
+- AIMC 仍 0 公网端口暴露
+- 自动 HTTPS（Cloudflare 签发）
+- DDOS 防护（Cloudflare 边缘）
+
+---
+
+### 方案 C3：Cloudflare Tunnel + 免费子域名（**最简**）
+
+如果连域名钱都不花：
+```bash
+cloudflared tunnel --url http://127.0.0.1:8080
+# 输出: https://xxxx.trycloudflare.com
+```
+
+- 0 元
+- 10 秒配置
+- 缺点：URL 每次启动变
+
+**适合**：临时测试 / 个人 / 1-2 人
+
+---
+
+## 3. 方案对比表
+
+| 维度 | A 自建 nginx | B CF 反代 | **C2 CF Tunnel (推荐)** | C3 免费子域 |
+|------|-------------|-----------|------------------------|-------------|
+| 实施成本 | 0.7d | 0.1d | **10-15 分钟** | 10 秒 |
+| 服务器变更 | +nginx/certbot | 不变 | **不变** | 不变 |
+| 公网 IP | 必须 | 必须 | **不需要** | 不需要 |
+| 域名 ICP 备案 | 必须（国内 IP） | 必须 | **不需要** | 不需要 |
+| 域名费用 | ¥50/年 | ¥50/年 | **¥50/年**（可选） | 免费 |
+| 持续成本 | 0 | 0 | **0** | 0 |
+| HTTPS | Let's Encrypt | Cloudflare | **Cloudflare** | Cloudflare |
+| DDOS 防护 | 无 | 强 | **强** | 强 |
+| 端口暴露 | 80/443 | 80/443 | **0** | 0 |
+| 适用规模 | 50+ 人 | 50+ 人 | **5-10 人** | 1-2 人 |
+| 维护负担 | 中（证书续期） | 低 | **极低** | 极低 |
+
+---
+
+## 4. 推荐路径
+
+### 短期（部署前 1 周）
+
+**选 C2（Cloudflare Tunnel）**：
+- 10-15 分钟配置
+- 0 证书管理
+- AIMC 仍 0 公网端口暴露（最安全）
+- 后续可无缝升级到 A
+
+### 中期（团队 > 10 人 / 需要域名稳定）
+
+**升级到 A（自建 nginx）**：
+- 完全控制
+- 0 持续成本
+- 一次性配置
+
+### 长期（流量大 / 需要自建监控）
+
+**保持 C2 或升级到 B（Cloudflare Load Balancer）**：
+- 取决于具体需求
+
+---
+
+## 5. 配合 AIMC 自身的安全改动（无论选哪个方案）
+
+无论用 C2 / B / A，**AIMC 内部**都应该加这些（10-20 行代码）：
+
+```python
+# gateway/middleware.py 加 cookie 安全头
+response.set_cookie(
+    "aimc_dashboard_token",
+    token,
+    httponly=True,
+    secure=True,        # HTTPS only（公网必备）
+    samesite="strict",  # CSRF 防护
+    max_age=7 * 24 * 3600,
+)
+```
+
+```python
+# gateway/routes.py 加 login 失败锁定
+# 5 次错误锁 5 分钟（按 IP 计数）
+```
+
+```python
+# gateway/middleware.py 加操作审计
+# 任何 PUT / POST 写操作都记 audit_log
+```
+
+---
+
+## 6. 触发本指南的检查清单
+
+部署前 1 周，按这个顺序：
+
+- [ ] 决定方案（C2 / B / A）
+- [ ] 注册域名（如需要）+ ICP 备案（仅 A/B）
+- [ ] 装 cloudflared / nginx
+- [ ] 配置 SSL 证书
+- [ ] AIMC 监听改为 127.0.0.1（C2）/ 0.0.0.0 + 防火墙白名单（A/B）
+- [ ] 加 cookie 安全头 + 登录锁定
+- [ ] 验证：从外部用 https://aimc.your-domain.com 访问能正常工作
+- [ ] 验证：HTTP 访问自动 301 到 HTTPS
+- [ ] 验证：错误的 API Key 仍然 401
+- [ ] 备份：cloudflared 配置 + AIMC .env + db
+
+---
+
+## 7. 法律合规要点（国内）
+
+**不需要 ICP 备案**的场景：
+- AIMC 部署在**国内云服务器**（阿里云/腾讯云/华为云）
+- 团队**国内访问**
+- 用 **Cloudflare Tunnel**（Cloudflare 边缘节点中转）
+
+**需要 ICP 备案**的场景：
+- 域名解析到**国内 IP**（公网）
+- AIMC 监听 **0.0.0.0:80/443**
+
+**绝对禁止**：
+- ❌ 翻墙（个人 VPN 访问 Google）
+- ❌ 未经许可的"VPN 服务"（法律上属于"国际联网服务"）
+
+**不涉及**（你的场景）：
+- ✅ 公司用 WireGuard / Tailscale 让员工访问公司内网（合规灰色，但**有先例合法**）
+- ✅ 用 Cloudflare Tunnel（CDN 厂商）做安全加速
+
+---
+
+**作者**：用户 + agent 协作
+**决策日期**：2026-08-17
+**触发时间**：部署到公网云服务器前 1 周
+**推荐方案**：C2（Cloudflare Tunnel）
+**实施时间**：~15 分钟
+**持续成本**：¥0（域名可选）
