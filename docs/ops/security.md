@@ -243,9 +243,94 @@ response.set_cookie(
 
 ---
 
+## 8. 决策记录（2026-08-17 用户讨论结果）
+
+### 用户实际情况
+- **云服务器**：阿里云（SSH 别名 `aliy-hy`），2 vCPU / 1.8 GB RAM / 40 GB 磁盘
+- **配置够用**：3-5 人团队，AIMC + cloudflared ≈ 200-300MB RAM，仍有余量
+- **升级触发**：> 5 人 / 高频调用时升到 4GB
+- **已做防护**：fail2ban SSH + DROP rpcbind 端口 + 公钥认证 + 阿里云安骑士 + 混合云备份
+- **决策选 C2（Cloudflare Tunnel）** + 阿里云 .cn 域名（首年 ¥9）
+
+### 域名策略
+- **推荐**：阿里云 `.cn` 域名（如 `aimc.your-domain.cn`），首年 ¥9
+- **实名**：需要身份证（个人）/营业执照（企业）
+- **Cloudflare 配海外节点中转**（香港/新加坡），免 ICP 备案
+- **延迟**：阿里云深圳 → Cloudflare HK 节点 ≈ 30-50ms（用户几乎无感）
+
+### 取消公网 IP 决策
+- **暂保留**（建议）：公网 IP 仍提供 SSH + 应急 fallback
+- **不取消的理由**：Cloudflare 挂了 / tunnel 配置错 → 完全失联
+- **未来 1 个月稳定后**再考虑释放 EIP（设带宽 0）
+- **如果保留**：必须用防火墙白名单 Cloudflare IP 段（`https://www.cloudflare.com/ips/`），其他全 deny
+
+### 实施步骤（部署前 1 周）
+
+```bash
+# 1. 阿里云注册 .cn 域名 (aimc.your-domain.cn, ¥9 首年)
+#    控制台 → 域名 → 注册 .cn → 实名 (身份证) → 审核 1-3 天
+
+# 2. Cloudflare 加域名 (your-domain.cn), 改 NS 记录到 Cloudflare
+#    Cloudflare 控制台 → 添加站点 → 选 Free 计划
+
+# 3. 装 cloudflared 到 aliy-hy
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cf.deb
+sudo dpkg -i /tmp/cf.deb
+
+# 4. 登录 + 创建 tunnel
+cloudflared tunnel login
+cloudflared tunnel create aimc
+# 记录 TUNNEL_UUID
+
+# 5. 配置 /home/lxc/.cloudflared/config.yml
+cat > /home/lxc/.cloudflared/config.yml << EOF
+tunnel: <TUNNEL_UUID>
+credentials-file: /home/lxc/.cloudflared/<TUNNEL_UUID>.json
+ingress:
+  - hostname: aimc.your-domain.cn
+    service: http://127.0.0.1:8080
+  - service: http_status:404
+EOF
+
+# 6. 改 AIMC 监听 127.0.0.1 (而不是 0.0.0.0)
+#    main.py 或 systemd unit: --host 127.0.0.1
+
+# 7. 配 Cloudflare DNS
+cloudflared tunnel route dns aimc aimc.your-domain.cn
+
+# 8. 启动 + 开机自启
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
+
+# 9. 防火墙 (INPUT policy 改 DROP, 白名单 Cloudflare + SSH)
+# 阿里云安全组: 入站 22 (SSH) + 80/443 (可选)  (如果用 tunnel 只需要 22)
+# iptables INPUT 改 DROP, 加 accept 规则
+
+# 10. 验证
+curl https://aimc.your-domain.cn/health
+# 应返 200 OK
+```
+
+### 成本清单
+
+| 项 | 一次性 | 年度 |
+|---|--------|------|
+| .cn 域名 | ¥0 | ¥9（续费 ¥30-50/年）|
+| Cloudflare Tunnel | ¥0 | ¥0 |
+| 阿里云 ECS（当前）| ¥0 | 现有 |
+| **合计** | — | **¥9-50/年** |
+
+### 公网 IP 决策时间表
+
+- **部署后 1 个月**（验证 Tunnel 稳定）：考虑释放 EIP（带宽设 0，不花钱）
+- **保留 SSH 应急**：把 22 端口 IP 白名单设到你的家 IP / 公司 IP
+- **完全无公网**：仅 Tailscale / Cloudflare Tunnel 访问
+
+---
+
 **作者**：用户 + agent 协作
 **决策日期**：2026-08-17
 **触发时间**：部署到公网云服务器前 1 周
-**推荐方案**：C2（Cloudflare Tunnel）
-**实施时间**：~15 分钟
-**持续成本**：¥0（域名可选）
+**推荐方案**：C2（Cloudflare Tunnel） + 阿里云 .cn 域名
+**实施时间**：~30 分钟（含域名注册 + 实名审核 1-3 天）
+**持续成本**：首年 ¥9（域名）+ 续费 ¥30-50/年
