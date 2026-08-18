@@ -629,6 +629,7 @@ details.accounts-form-details[open] > summary::before {
     text-transform: uppercase;
     letter-spacing: 0.3px;
     font-weight: 500;
+    min-width: 0;  /* 关键: flex 子默认 min-width: auto, 会让 input 不能比 intrinsic min 缩 */
 }
 
 .accounts-form input,
@@ -643,6 +644,8 @@ details.accounts-form-details[open] > summary::before {
     outline: none;
     transition: border-color 0.15s ease;
     min-width: 0;  /* grid item 防止溢出 */
+    width: 100%;  /* 撑满父 (label flex column) */
+    box-sizing: border-box;
 }
 
 .accounts-form input:focus,
@@ -654,6 +657,17 @@ details.accounts-form-details[open] > summary::before {
 .accounts-form input[type="password"] {
     font-family: var(--font-mono);
     letter-spacing: 1px;
+}
+
+/* Chrome/Firefox 的 date input 天然 intrinsic min-width 较宽 (~220px),
+   即使父 grid 1fr + label min-width: 0 也可能溢出.
+   强制 max-width 100% + min-width: 0 + box-sizing 确保它跟着容器缩.
+*/
+.accounts-form input[type="date"] {
+    max-width: 100%;
+    min-width: 0;
+    width: 100%;
+    padding: 5px var(--space-sm);  /* 略小 padding 减总宽 */
 }
 
 .accounts-form .form-row > button {
