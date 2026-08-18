@@ -1,0 +1,15 @@
+// === P0-UI v6: 账号管理 - data-action click 委托 (避免 onclick 嵌套引号) ===
+
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = parseInt(btn.dataset.id, 10);
+    if (action === 'enable') {
+        toggleAccount(id, 'active', btn);
+    } else if (action === 'disable') {
+        toggleAccount(id, 'disabled', btn);
+    } else if (action === 'rotate') {
+        rotateAccountKey(id, btn);
+    }
+});

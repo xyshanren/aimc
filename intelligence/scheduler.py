@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -42,7 +43,17 @@ def _build_scheduler() -> AsyncIOScheduler:
         tablename="apscheduler_jobs",
     )
 
-    return AsyncIOScheduler(jobstores={"default": jobstore})
+    scheduler = AsyncIOScheduler(jobstores={"default": jobstore})
+    # 阶段2 (2026-08-14): scheduler 全局默认
+    # - coalesce=True: 堆积任务合并到最新 1 次 (避免服务挂掉后补跑累积)
+    # - max_instances=1: 同一 job 不并发 (避免同 provider 多 source 同时抓被限流)
+    # - misfire_grace_time=300: 5 分钟内的延迟任务仍执行 (宽容)
+    scheduler.job_defaults = {
+        "coalesce": True,
+        "max_instances": 1,
+        "misfire_grace_time": 300,
+    }
+    return scheduler
 
 
 # 模块级 scheduler 单例（持久化模式）
@@ -66,27 +77,48 @@ async def start_scheduler():
 
     sources = get_all_sources()
 
+    # 阶段2 (2026-08-14): 按 provider 合并成 batch job
+    # - 每个厂商 1 个 batch job, 串联该 provider 所有 source_types
+    # - 31 个 crawl_* 合并成 ~10 个 batch (deepseek/glm/qwen/siliconflow/...)
+    # - 减少 apscheduler_jobs 表行数 + 减少错峰计算
+    # - 保留每个 source 独立的 fire-and-forget 行为
+    from collections import defaultdict
+    by_provider: dict[str, list] = defaultdict(list)
     for source in sources:
-        # Phase 3.1: poll_interval fallback (按 source_type 默认频率)
-        poll_interval = source.poll_interval or DEFAULT_POLL_INTERVALS.get(
-            source.source_type, 900
-        )
-        # 用 provider + source_type 作为 job id 后缀
-        job_id = f"crawl_{source.provider}_{source.source_type}"
+        by_provider[source.provider].append(source)
+
+    # 删旧 per-source job (一次性迁移)
+    for source in sources:
+        old_job_id = f"crawl_{source.provider}_{source.source_type}"
+        try:
+            scheduler.remove_job(old_job_id)
+            logger.info(f"阶段2: 移除旧 per-source job {old_job_id}")
+        except Exception:
+            pass  # job 不存在 OK
+
+    for provider, provider_sources in by_provider.items():
+        # batch 间隔 = 该 provider 所有 source 的最短 poll_interval
+        # (高频 source 拉低 batch 间隔, 低频 source 跟上)
+        intervals = [
+            s.poll_interval or DEFAULT_POLL_INTERVALS.get(s.source_type, 900)
+            for s in provider_sources
+        ]
+        batch_interval = min(intervals) if intervals else 3600
+        # 限频: batch 内每个 source 至少间隔 30s (避免同时 fetch 撞限流)
         scheduler.add_job(
-            _run_source_task,
+            _run_provider_batch,
             trigger=IntervalTrigger(
-                seconds=poll_interval,
-                jitter=min(300, max(1, poll_interval // 20)),
+                seconds=batch_interval,
+                jitter=min(300, max(1, batch_interval // 20)),
             ),
-            args=[source],
-            id=job_id,
-            name=f"采集: {source.provider}/{source.source_type} ({poll_interval}s)",
+            args=[provider, provider_sources],
+            id=f"batch_crawl_{provider}",
+            name=f"批量采集: {provider} ({batch_interval}s, {len(provider_sources)} sources)",
             replace_existing=True,
         )
         logger.info(
-            f"注册采集任务: {source.provider}/{source.source_type} "
-            f"(间隔 {poll_interval}s, {poll_interval // 3600}h, 带随机错峰)"
+            f"注册批量采集: {provider} ({len(provider_sources)} sources, "
+            f"间隔 {batch_interval}s)"
         )
 
     # 路由缓存定时刷新
@@ -116,14 +148,74 @@ async def start_scheduler():
         replace_existing=True,
     )
 
-    # V4.4: 每天检查账号配额、active 账号和月成本告警
+    # Phase 4 v4.3.1 (2026-08-13): 月度跑 1 次官方源审查 (防止 commit 后漂移未察觉)
+    from apscheduler.triggers.cron import CronTrigger
     scheduler.add_job(
-        _v44_alert_task,
-        trigger=IntervalTrigger(hours=24),
-        id="v44_alert_checks",
-        name="V4.4 账号与成本告警",
+        _monthly_official_audit_task,
+        trigger=CronTrigger.from_crontab("0 6 1 * *"),  # 每月 1 日 6:00 AM
+        id="monthly_official_audit",
+        name="月度官方源审查",
         replace_existing=True,
     )
+
+    # 方案A (2026-08-14): 每周一 09:00 跑 suggest_changes
+    # 跟周报生成对齐: 周一 09:00 跑完 suggest_changes, 周报 09:00 拉取 pending 建议
+    scheduler.add_job(
+        _weekly_suggest_changes_task,
+        trigger=CronTrigger.from_crontab("0 9 * * 1"),  # 每周一 09:00
+        id="weekly_suggest_changes",
+        name="周建议生成 (方案A)",
+        replace_existing=True,
+    )
+
+    # 阶段2 (2026-08-14): 注册 apscheduler event listener
+    # 同步写 job_health 表 (last_run_at / last_success_at / last_error_at / last_duration_ms)
+    # 不阻塞 scheduler, 失败仅 log
+    def _record_job_event(event):
+        """apscheduler event listener (sync): 写 job_health
+
+        注意: 这是 sync 函数, 用 sync db session 写 (避免 asyncio 嵌套)
+        """
+        from datetime import datetime as _dt
+        import sys as _sys
+        print(f"[job_health LISTENER] FIRED for {event.job_id}, success={event.exception is None}", file=_sys.stderr, flush=True)
+        try:
+            from db.engine import sync_engine as _sync_engine
+            from sqlalchemy.orm import Session as _SyncSession
+            from db.models import JobHealth as _JobHealth
+            job_id = event.job_id
+            now = _dt.now()
+            success = event.exception is None
+            # 实际事件字段是 scheduled_run_time (不是 scheduled_call_time)
+            duration_ms = None
+            if hasattr(event, "scheduled_run_time") and event.scheduled_run_time:
+                duration_ms = int(event.scheduled_run_time.timestamp() * 1000)
+
+            with _SyncSession(_sync_engine) as s:
+                jh = s.get(_JobHealth, job_id)
+                if jh is None:
+                    jh = _JobHealth(job_id=job_id, total_runs=0, total_successes=0, total_failures=0)
+                    s.add(jh)
+                jh.last_run_at = now
+                jh.total_runs = (jh.total_runs or 0) + 1
+                if success:
+                    jh.last_success_at = now
+                    jh.last_error_at = None
+                    jh.last_error_msg = None
+                    jh.last_duration_ms = duration_ms
+                    jh.total_successes = (jh.total_successes or 0) + 1
+                else:
+                    jh.last_error_at = now
+                    jh.last_error_msg = str(event.exception)[:500]
+                    jh.total_failures = (jh.total_failures or 0) + 1
+                s.commit()
+            print(f"[job_health] wrote for {job_id}", file=_sys.stderr, flush=True)
+        except Exception as e:
+            print(f"[job_health] 写失败 (非致命): {e}", file=_sys.stderr, flush=True)
+            logger.debug(f"[job_health] 写失败 (非致命): {e}")
+
+    scheduler.add_listener(_record_job_event, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
+    logger.info("[阶段2] 注册 apscheduler event listener -> 写 job_health")
 
     scheduler.start()
     logger.info(
@@ -170,6 +262,31 @@ async def run_source_now(provider: str) -> int:
 
     logger.info(f"手动触发 {provider}: 启动 {count} 个 task")
     return count
+
+
+async def _run_provider_batch(provider: str, sources: list):
+    """阶段2 (2026-08-14): 批量采集 1 个 provider 的所有 sources
+
+    跟 _run_source_task 一样的 fire-and-forget 行为, 但:
+    - 同一个 provider 的所有 source 一起触发 (announcement + model_list + price_aggregator)
+    - 顺序触发 (避免同 provider 多 source 同时 fetch 撞限流)
+    - 单个 source 失败不影响其他
+
+    Args:
+        provider: 厂商标识 (e.g. "deepseek")
+        sources: 该 provider 的 Source 列表
+    """
+    logger.info(f"[batch_crawl_{provider}] 启动 {len(sources)} 个 source")
+    for source in sources:
+        try:
+            await _run_source_task(source)
+        except Exception as e:
+            logger.warning(
+                f"[batch_crawl_{provider}] source {source.provider}/{source.source_type} "
+                f"失败: {e}"
+            )
+            # 继续下一个 source (不阻断)
+            continue
 
 
 async def _run_source_task(source):
@@ -233,6 +350,21 @@ async def _run_source_task(source):
                 logger.info(
                     f"API 抽取成功: {source.provider} → {len(model_ids)} 个 model"
                 )
+                # Phase 2a+ fix (2026-08-13): 同时把 model_ids 同步到硅基流动 channel
+                # price_snapshots. 让 /v1/models 在重启后立刻可见, 不需要等 router cache
+                # 仅硅基流动启用, 其他厂商暂不动 (避免污染)
+                if source.provider == "siliconflow":
+                    try:
+                        from db.engine import async_session_factory
+                        from scripts._siliconflow_sync import sync_siliconflow_models_to_price_snapshots
+                        async with async_session_factory() as session:
+                            added = await sync_siliconflow_models_to_price_snapshots(session, model_ids)
+                        if added:
+                            logger.info(
+                                f"硅基流动 model 列表同步: 新增 {added} 条 price_snapshots"
+                            )
+                    except Exception as e:
+                        logger.warning(f"硅基流动 price_snapshots 同步失败 (非阻断): {e}")
             except FetchApiError as e:
                 # 401/403/404 → 不可重试, 降级 HTML
                 # 5xx/timeout → 已重试完仍失败, 降级 HTML
@@ -339,16 +471,6 @@ async def _check_key_rotation_task():
         logger.error(f"key 轮换检查失败: {e}", exc_info=True)
 
 
-async def _v44_alert_task():
-    """V4.4: 每天执行四类告警检查。"""
-    try:
-        from intelligence.v44_alerts import check_all_alerts
-        count = await check_all_alerts()
-        logger.info("V4.4 告警检查完成: %d 条", count)
-    except Exception as e:
-        logger.error("V4.4 告警检查失败: %s", e, exc_info=True)
-
-
 async def _cross_source_detection_task():
     """Phase 4 E3: 每天 1 次跨源交叉验证，检测后入库到 cross_source_discrepancies"""
     try:
@@ -360,3 +482,94 @@ async def _cross_source_detection_task():
         )
     except Exception as e:
         logger.error(f"跨源验证失败: {e}", exc_info=True)
+
+
+async def _monthly_official_audit_task():
+    """Phase 4 v4.3.1 (2026-08-13): 月度官方源审查
+
+    爬 5 家厂商官方 API 文档 (DeepSeek/Kimi/MiniMax/Qwen/GLM),
+    跟 model_registry model_id 集合 diff,
+    发现漂移 → Bark/Server酱/Feishu 告警.
+
+    复用 scripts/check_model_consistency.check_official_consistency
+    """
+    try:
+        from db.engine import async_session_factory
+        from scripts.check_model_consistency import check_official_consistency
+
+        async with async_session_factory() as session:
+            diffs = await check_official_consistency(session)
+
+        # 统计漂移
+        official_only_total = sum(len(d.official_only) for d in diffs)
+        registry_only_total = sum(len(d.registry_only) for d in diffs)
+        fetch_errors = sum(1 for d in diffs if d.fetch_error)
+
+        logger.info(
+            f"月度官方源审查完成: 官方漂移 {official_only_total} 个, "
+            f"registry 漂移 {registry_only_total} 个, 爬取失败 {fetch_errors} 个"
+        )
+
+        # 有漂移或爬取失败 → 告警
+        if official_only_total > 0 or registry_only_total > 0 or fetch_errors > 0:
+            try:
+                from intelligence.alerter import send_alert
+                msg = (
+                    f"月度官方源审查发现漂移:\n"
+                    f"- 官方有 / registry 无: {official_only_total} 个 model\n"
+                    f"- registry 有 / 官方无: {registry_only_total} 个 model\n"
+                    f"- 爬取失败: {fetch_errors} 个厂商\n"
+                    f"建议: 跑 python scripts/check_model_consistency.py --check official 查看详情"
+                )
+                await send_alert(msg)
+            except Exception as e:
+                logger.warning(f"月度审查告警发送失败 (非阻断): {e}")
+    except Exception as e:
+        logger.error(f"月度官方源审查失败: {e}", exc_info=True)
+
+
+async def _weekly_suggest_changes_task():
+    """方案A (2026-08-14): 每周一 09:00 跑 suggest_changes
+
+    流程:
+    1. 跑 intelligence/analytics/suggest_changes.py (默认 shadow mode 写 log)
+    2. 写入 db (status=pending) 等 dashboard review
+    3. 周报 09:00 拉取 pending/approved 建议, 推到 Bark/Feishu
+
+    设计:
+    - 跟周报生成同时间 (周一 09:00) 保证建议能在周报里看到
+    - shadow mode 默认开: 不写 db, 只写 auto_apply_shadow.log (为远期自动应用积累数据)
+    - 半年后看 shadow log 跟人工批准的一致率, 决定是否开真自动应用
+
+    失败模式:
+    - 最小数据门槛不满足 (usage_logs < 30) → 跳过, 不报错
+    - 数据源 query 失败 → log error, 下周重试
+    """
+    try:
+        from intelligence.analytics.suggest_changes import main as suggest_main
+        # 用 subprocess 跑 (跟 scripts/ 风格一致, 不在 scheduler 进程内)
+        import subprocess
+        import sys as _sys
+        result = subprocess.run(
+            [_sys.executable, "-m", "intelligence.analytics.suggest_changes",
+             "--apply"],  # 生产模式: 写 db (周报需要读)
+            cwd="/home/lxc/aimc",  # TODO: 改 config-based path
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode == 0:
+            logger.info("方案A: 周建议生成完成 (--apply)")
+            # 提取建议数 (从 stdout 找 "总计: X model + Y group")
+            for line in result.stdout.splitlines():
+                if "总计:" in line:
+                    logger.info(f"  {line.strip()}")
+                    break
+        else:
+            logger.error(f"方案A: 周建议生成失败 (rc={result.returncode})")
+            logger.error(f"  stdout: {result.stdout[-500:]}")
+            logger.error(f"  stderr: {result.stderr[-500:]}")
+    except subprocess.TimeoutExpired:
+        logger.error("方案A: 周建议生成超时 (>120s)")
+    except Exception as e:
+        logger.error(f"方案A: 周建议生成异常: {e}", exc_info=True)

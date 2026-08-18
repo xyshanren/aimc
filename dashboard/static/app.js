@@ -1,7 +1,55 @@
 /**
  * AIMC Dashboard 前端逻辑
  * 使用 htmx 进行局部刷新，Chart.js 绘制用量图表
+ * P1-7 (2026-08-14): 加 dashboard auth (跟 api_key 分开)
  */
+
+// ============================================================
+// P1-7: dashboard 鉴权 (跟 api_key 分开)
+// ============================================================
+
+const DASHBOARD_TOKEN_KEY = 'aimc_dashboard_token';
+
+// fetch wrapper: 自动加 Authorization header (如果 localStorage 里有 token)
+async function authFetch(url, opts = {}) {
+    const token = localStorage.getItem(DASHBOARD_TOKEN_KEY);
+    if (token) {
+        opts.headers = opts.headers || {};
+        opts.headers['Authorization'] = 'Bearer ' + token;
+    }
+    const resp = await fetch(url, opts);
+    // 401 = token 失效/缺失, 跳 login
+    if (resp.status === 401 && !url.includes('/dashboard/login') && !url.includes('/dashboard/api/auth/')) {
+        localStorage.removeItem(DASHBOARD_TOKEN_KEY);
+        location.href = '/dashboard/login?next=' + encodeURIComponent(location.pathname);
+    }
+    return resp;
+}
+
+// 启动时检查鉴权状态 (auth_enabled 时缺 token 跳 login)
+(async function checkAuthOnLoad() {
+    try {
+        const resp = await fetch('/dashboard/api/auth/status');
+        const data = await resp.json();
+        if (data.auth_enabled) {
+            // 鉴权启用: 检查 localStorage 是否有 token
+            const token = localStorage.getItem(DASHBOARD_TOKEN_KEY);
+            if (!token) {
+                location.href = '/dashboard/login?next=' + encodeURIComponent(location.pathname);
+                return;
+            }
+            // 验证 token 有效性
+            const verifyResp = await authFetch('/dashboard/api/auth/status');
+            if (!verifyResp.ok) {
+                localStorage.removeItem(DASHBOARD_TOKEN_KEY);
+                location.href = '/dashboard/login?next=' + encodeURIComponent(location.pathname);
+            }
+        }
+        // auth_enabled=false: legacy, 啥也不做
+    } catch (e) {
+        console.warn('Dashboard auth check failed (non-fatal):', e);
+    }
+})();
 
 // HTML 转义，防止 XSS
 function esc(str) {
@@ -10,6 +58,25 @@ function esc(str) {
     div.textContent = String(str);
     return div.innerHTML;
 }
+
+// P1-7: 给 htmx 全局加 Authorization header (dashboard token)
+document.body.addEventListener('htmx:configRequest', function(event) {
+    const token = localStorage.getItem(DASHBOARD_TOKEN_KEY);
+    if (token) {
+        event.detail.headers['Authorization'] = 'Bearer ' + token;
+    }
+});
+
+// P1-7: htmx 收到 401 时跳 login
+document.body.addEventListener('htmx:responseError', function(event) {
+    if (event.detail.xhr.status === 401) {
+        const path = event.detail.pathInfo?.requestPath || event.detail.path || '';
+        if (!path.includes('/dashboard/login') && !path.includes('/dashboard/api/auth/')) {
+            localStorage.removeItem(DASHBOARD_TOKEN_KEY);
+            location.href = '/dashboard/login?next=' + encodeURIComponent(location.pathname);
+        }
+    }
+});
 
 // htmx 响应渲染：渠道列表
 document.body.addEventListener('htmx:afterSwap', function(event) {
@@ -436,6 +503,86 @@ function renderCrossSource(container) {
     }
 }
 
+// 阶段2 (2026-08-14): 数据新鲜度 (job_health)
+async function loadDataFreshness() {
+    try {
+        const resp = await authFetch('/dashboard/api/data-freshness');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const jobs = data.jobs || [];
+        document.getElementById('df-total').textContent = jobs.length;
+        document.getElementById('df-healthy').textContent = jobs.filter(j => j.health === 'healthy').length;
+        document.getElementById('df-warning').textContent = jobs.filter(j => j.health === 'warning').length;
+        document.getElementById('df-stale').textContent = jobs.filter(j => j.health === 'stale').length;
+
+        const list = document.getElementById('data-freshness-list');
+        if (jobs.length === 0) {
+            list.innerHTML = '<div style="color:#6a737d;padding:12px;">暂无数据 (listener 待 apscheduler 任务执行)</div>';
+            return;
+        }
+        let html = '<table class="cache-table"><thead><tr><th>Job</th><th>上次成功</th><th>上次失败</th><th>健康度</th><th>运行/成功/失败</th></tr></thead><tbody>';
+        for (const j of jobs) {
+            const healthColor = {healthy: '#28a745', warning: '#d29922', stale: '#d73a49', unknown: '#6a737d'}[j.health];
+            html += '<tr>';
+            html += `<td><code>${esc(j.job_id)}</code></td>`;
+            html += `<td>${esc(j.last_success_ago || '从未')}</td>`;
+            html += `<td>${j.last_error_ago ? `<span style="color:#d73a49;">${esc(j.last_error_ago)}</span>` : '-'}</td>`;
+            html += `<td><span style="color:${healthColor};font-weight:bold;">${j.health}</span></td>`;
+            html += `<td>${j.total_runs}/${j.total_successes}/${j.total_failures}</td>`;
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        list.innerHTML = html;
+    } catch (e) {
+        console.warn('Data freshness load failed:', e);
+    }
+}
+
+// 阶段1 (2026-08-14): prompt cache 节省成本统计
+async function loadCacheStats() {
+    try {
+        const resp = await authFetch('/dashboard/api/cache/stats?days=7');
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        // 顶部 summary
+        const savedEl = document.getElementById('cache-saved');
+        const tokensEl = document.getElementById('cache-tokens');
+        const pctEl = document.getElementById('cache-hit-pct');
+        if (savedEl) savedEl.textContent = '¥' + (data.saved_cost_cny || 0).toFixed(4);
+        if (tokensEl) tokensEl.textContent = (data.total_cached_tokens || 0).toLocaleString();
+        if (pctEl) pctEl.textContent = (data.hit_rate_pct || 0).toFixed(1);
+
+        // 按渠道
+        const chList = document.getElementById('cache-channel-list');
+        if (chList && data.by_channel && data.by_channel.length > 0) {
+            let html = '<table class="cache-table"><thead><tr><th>渠道</th><th>Input</th><th>Cached</th><th>命中率</th><th>节省</th></tr></thead><tbody>';
+            for (const c of data.by_channel) {
+                html += `<tr><td>${esc(c.channel_name)}</td><td>${c.input_tokens.toLocaleString()}</td><td>${c.cached_tokens.toLocaleString()}</td><td>${c.hit_rate_pct.toFixed(1)}%</td><td>¥${c.saved_cost_cny.toFixed(4)}</td></tr>`;
+            }
+            html += '</tbody></table>';
+            chList.innerHTML = html;
+        } else if (chList) {
+            chList.innerHTML = '<div style="color:#6a737d;font-size:13px;">暂无 cache 数据</div>';
+        }
+
+        // 按 model (TOP 10)
+        const mList = document.getElementById('cache-model-list');
+        if (mList && data.by_model && data.by_model.length > 0) {
+            let html = '<table class="cache-table"><thead><tr><th>Model</th><th>Input</th><th>Cached</th><th>命中率</th><th>节省</th></tr></thead><tbody>';
+            for (const m of data.by_model) {
+                html += `<tr><td>${esc(m.model)}</td><td>${m.input_tokens.toLocaleString()}</td><td>${m.cached_tokens.toLocaleString()}</td><td>${m.hit_rate_pct.toFixed(1)}%</td><td>¥${m.saved_cost_cny.toFixed(4)}</td></tr>`;
+            }
+            html += '</tbody></table>';
+            mList.innerHTML = html;
+        } else if (mList) {
+            mList.innerHTML = '<div style="color:#6a737d;font-size:13px;">暂无 cache 数据</div>';
+        }
+    } catch (e) {
+        console.warn('Cache stats load failed:', e);
+    }
+}
+
 // 用量统计图表
 async function loadUsageChart() {
     try {
@@ -481,6 +628,114 @@ async function loadUsageChart() {
 
 // 页面加载完成后初始化图表
 document.addEventListener('DOMContentLoaded', loadUsageChart);
+document.addEventListener('DOMContentLoaded', loadDataFreshness);  // 阶段2 (2026-08-14)
+document.addEventListener('DOMContentLoaded', loadCacheStats);  // 阶段1 (2026-08-14)
+document.addEventListener('DOMContentLoaded', loadSuggestions);  // 方案A (2026-08-14)
+
+// 方案A (2026-08-14): 模型分组建议
+async function loadSuggestions() {
+    try {
+        // 拉 pending 建议 + 统计
+        const [pendingResp, approvedResp, appliedResp] = await Promise.all([
+            authFetch('/dashboard/api/suggestions?status=pending'),
+            authFetch('/dashboard/api/suggestions?status=approved'),
+            authFetch('/dashboard/api/suggestions?status=applied'),
+        ]);
+        const pending = pendingResp.ok ? await pendingResp.json() : {model: [], group: []};
+        const approved = approvedResp.ok ? await approvedResp.json() : {model: [], group: []};
+        const applied = appliedResp.ok ? await appliedResp.json() : {model: [], group: []};
+
+        document.getElementById('sg-pending').textContent = pending.model.length + pending.group.length;
+        document.getElementById('sg-approved').textContent = approved.model.length + approved.group.length;
+        document.getElementById('sg-applied').textContent = applied.model.length + applied.group.length;
+
+        const list = document.getElementById('suggestions-list');
+        if (!list) return;
+
+        if (pending.model.length === 0 && pending.group.length === 0) {
+            list.innerHTML = '<div style="color:#6a737d;padding:12px;">暂无待审建议</div>';
+            return;
+        }
+
+        let html = '<table class="suggestions-table"><thead><tr><th>类型</th><th>对象</th><th>变更</th><th>置信度</th><th>理由</th><th>操作</th></tr></thead><tbody>';
+        for (const m of pending.model) {
+            html += '<tr>';
+            html += '<td>🟢 model</td>';
+            html += `<td>${esc(m.model_id)}</td>`;
+            html += `<td>${esc(m.current_value || '(空)')} → <strong>${esc(m.suggested_value)}</strong></td>`;
+            html += `<td><span class="confidence-badge conf-${Math.floor((m.confidence || 0) * 10)}">${((m.confidence || 0) * 100).toFixed(0)}%</span></td>`;
+            html += `<td><small>${esc(m.reason || '')}</small></td>`;
+            html += `<td>`;
+            html += `<button class="btn btn-sm btn-success" onclick="approveSuggestion('model', ${m.id})">批准</button> `;
+            html += `<button class="btn btn-sm btn-danger" onclick="rejectSuggestion('model', ${m.id})">拒绝</button>`;
+            html += `</td>`;
+            html += '</tr>';
+        }
+        for (const g of pending.group) {
+            html += '<tr>';
+            html += '<td>🟡 group</td>';
+            html += `<td>${esc(g.group_id)}</td>`;
+            html += `<td>${esc(g.change_type)} ${esc(g.target_groups || '')}</td>`;
+            html += `<td><span class="confidence-badge conf-${Math.floor((g.confidence || 0) * 10)}">${((g.confidence || 0) * 100).toFixed(0)}%</span></td>`;
+            html += `<td><small>${esc(g.reason || '')}</small></td>`;
+            html += `<td>`;
+            html += `<button class="btn btn-sm btn-success" onclick="approveSuggestion('group', ${g.id})">批准</button> `;
+            html += `<button class="btn btn-sm btn-danger" onclick="rejectSuggestion('group', ${g.id})">拒绝</button>`;
+            html += `</td>`;
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        list.innerHTML = html;
+    } catch (e) {
+        console.warn('Suggestions load failed:', e);
+    }
+}
+
+async function approveSuggestion(type, id) {
+    if (!confirm(`批准此建议? (类型=${type}, id=${id})\n批准后下次 "一键应用" 会真正改 db`)) return;
+    const resp = await authFetch(`/dashboard/api/suggestions/${type}/${id}/approve`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({reviewed_by: 'dashboard_user'}),
+    });
+    if (resp.ok) {
+        alert('已批准');
+        loadSuggestions();
+    } else {
+        alert('失败: ' + resp.statusText);
+    }
+}
+
+async function rejectSuggestion(type, id) {
+    if (!confirm(`拒绝此建议? (类型=${type}, id=${id})`)) return;
+    const resp = await authFetch(`/dashboard/api/suggestions/${type}/${id}/reject`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({reviewed_by: 'dashboard_user'}),
+    });
+    if (resp.ok) {
+        alert('已拒绝');
+        loadSuggestions();
+    } else {
+        alert('失败: ' + resp.statusText);
+    }
+}
+
+async function applyAllSuggestions() {
+    if (!confirm('一键应用所有已批准建议?\n\n此操作会直接改 db (tier / group_member), 不可逆\n\n建议先 review 列表再 apply')) return;
+    const resp = await authFetch('/dashboard/api/suggestions/apply-all', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({min_confidence: 0.0, reviewed_by: 'dashboard_user'}),
+    });
+    if (resp.ok) {
+        const data = await resp.json();
+        alert(`应用完成:\nmodel: ${data.applied_model}\ngroup: ${data.applied_group}\nerrors: ${data.errors.length}`);
+        loadSuggestions();
+    } else {
+        alert('失败: ' + resp.statusText);
+    }
+}
 
 // ============================================================
 // V4.5: 周报查看页 (与 dashboard/static/index.html #weekly-report-section 配套)

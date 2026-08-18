@@ -1,0 +1,88 @@
+/* === P0-UI v6: 周报 markdown 渲染样式 === */
+
+#weekly-report-content {
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text-primary);
+}
+
+#weekly-report-content h1 {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: var(--space-md) 0 var(--space-lg);
+    padding-bottom: var(--space-sm);
+    border-bottom: 1px solid var(--border-default);
+}
+
+#weekly-report-content h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: var(--space-lg) 0 var(--space-md);
+}
+
+#weekly-report-content h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: var(--space-md) 0 var(--space-sm);
+}
+
+#weekly-report-content p {
+    margin: var(--space-sm) 0;
+    color: var(--text-secondary);
+}
+
+#weekly-report-content ul,
+#weekly-report-content ol {
+    margin: var(--space-sm) 0;
+    padding-left: var(--space-xl);
+    color: var(--text-secondary);
+}
+
+#weekly-report-content li {
+    margin: 4px 0;
+}
+
+#weekly-report-content code {
+    background: var(--bg-elevated);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 12px;
+    color: var(--color-accent);
+    border: 1px solid var(--border-muted);
+}
+
+#weekly-report-content strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+#weekly-report-content hr {
+    border: none;
+    border-top: 1px solid var(--border-muted);
+    margin: var(--space-lg) 0;
+}
+
+#weekly-report-content table {
+    margin: var(--space-sm) 0;
+    border-collapse: collapse;
+}
+
+#weekly-report-content em {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* 周报内部链接 */
+#weekly-report-content a {
+    color: var(--text-link);
+}
+
+/* 周报 inline emoji 不换行 */
+#weekly-report-content {
+    word-break: keep-all;
+}

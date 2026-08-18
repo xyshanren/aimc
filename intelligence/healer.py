@@ -429,15 +429,20 @@ async def handle_fetch_error(source, error: str):
                 await session.commit()
             else:
                 # DB 没对应行（首次失败）→ upsert 一条
-                await crud.upsert_intel_source(
+                # 修复 V4.6.4: crud.upsert_intel_source 内部 hardcode status="active",
+                # 不能从 caller 再传 status (multiple values for keyword arg)
+                # 解决: 先 upsert (默认 status=active), 然后 update status
+                new_source = await crud.upsert_intel_source(
                     session,
                     provider=source.provider,
                     url=source.url,
                     source_type=getattr(source, "source_type", "web_page"),
                     poll_interval=getattr(source, "poll_interval", 900),
-                    status="error" if source.error_count >= 3 else "active",
                     error_count=source.error_count,
                 )
+                # 显式 update status (避免硬编码冲突)
+                if source.error_count >= 3:
+                    new_source.status = "error"
                 await session.commit()
 
             if source.error_count == 1:

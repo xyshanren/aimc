@@ -11,8 +11,10 @@
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, date
+from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import select, and_
@@ -21,6 +23,41 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# P0-4 (2026-08-14): router cache TTL + db file mtime 监听
+# - 避免 "db 改了必须 systemctl restart" 的运维陷阱
+# - TTL 默认 60s (跟 db write 频次匹配: pricing_sync 86400s, manual_import 即时)
+# - mtime 检查比 TTL 更灵敏: db 文件被外部进程改 (sqlite3 CLI / 修复脚本 /
+#   dashboard 操作) 立即生效, 不需要等 60s TTL
+ROUTER_CACHE_TTL_SECONDS = int(os.getenv("AIMC_ROUTER_CACHE_TTL", "60"))
+
+
+def _has_multimodal_content(messages):
+    """P0-3 (2026-08-14): 判断 messages 是否含 multimodal content (image/audio/file)
+
+    检测 OpenAI / Anthropic 两种 content 格式:
+    - content: "string" (纯文本)
+    - content: [{"type": "image_url"|"image"|"input_audio"|"audio"|"file", ...}, ...]
+
+    Returns:
+        True = 含 multimodal, False = 纯文本或 None
+    """
+    if not messages:
+        return False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") in (
+                    "image_url", "image", "input_audio", "audio", "file",
+                ):
+                    return True
+    return False
 
 
 class RouteEngine:
@@ -39,15 +76,26 @@ class RouteEngine:
         # 现有: 渠道列表（含账号和价格信息）
         self._channels_cache: list[dict] = []
         self._last_refresh: datetime | None = None
+        # P0-4: db file mtime 监听 (cache 自动失效)
+        self._last_db_mtime: float | None = None  # 上次加载时 db 文件 mtime
         # Phase 2.4: 模型组路由元信息
         self._registry_cache: dict = {}        # model_id -> ModelRegistry ORM
         self._groups_cache: dict = {}          # group_id -> ModelGroup ORM
         self._group_members_cache: dict = {}   # group_id -> [model_id]
+        # V4.6.4 (C3 of fix-branch): member priority tie-break
+        # group_id -> {model_id: priority}  (越小越优先, 同价时生效)
+        self._member_priority_cache: dict = {}
         # V4.5.1: 能力评分 (model_cards) — sort_key tie-break
         self._cards_cache: dict = {}           # model_id -> [ModelCard ORM]
         # V4.6.1: least-used tie-break (同 channel 多账号轮询)
         # account_id → 最近路由选中的时间戳 (time.time())
         self._account_last_used: dict[int, float] = {}
+        # P0-7 (2026-08-14): score weights 缓存, 从 settings_runtime 表读
+        # 后续 dashboard 可调, 不需改代码
+        self._score_weights: dict = {
+            "W_PRICE": 0.40, "W_QUOTA": 0.30, "W_SUCCESS": 0.20,
+            "W_RECENCY": 0.05, "W_PRIORITY": 0.05,
+        }
 
     async def refresh_cache(self):
         """从数据库刷新渠道缓存到内存 (全量)
@@ -58,6 +106,8 @@ class RouteEngine:
         - model group 成员调整 -> invalidate_group(group_id)
         全量刷新会重新加载所有 channels + accounts + prices + quotas + groups,
         在 100+ channel 场景下 ~5s 阻塞窗口, 没必要.
+
+        P0-4 (2026-08-14): 加载完记录 db file mtime, 给 _auto_refresh_if_stale 用
         """
         from db.engine import async_session_factory
 
@@ -65,11 +115,66 @@ class RouteEngine:
             await self._load_channels_cache(session)
             await self._load_groups_cache(session)
             await self._load_cards_cache(session)
+            # P0-7: 从 settings_runtime 表读 score weights (dashboard 可改)
+            await self._load_score_weights(session)
 
         self._last_refresh = datetime.now()
+        # P0-4: 记录 db 文件 mtime (用于后续 stale 检测)
+        try:
+            db_path = Path(settings.db_path)
+            if db_path.exists():
+                self._last_db_mtime = db_path.stat().st_mtime
+        except Exception as e:
+            logger.debug(f"[P0-4] 记录 db mtime 失败 (非致命): {e}")
         logger.info(
             f"路由缓存已全量刷新: {len(self._channels_cache)} 个可用渠道账号"
         )
+
+    async def _auto_refresh_if_stale(self) -> bool:
+        """P0-4 (2026-08-14): cache stale 时自动刷新, 避免 "db 改了必须重启 service"
+
+        触发条件 (满足任一):
+        1. TTL 超时: 距离上次 refresh > AIMC_ROUTER_CACHE_TTL (默认 60s)
+        2. db mtime 变了: 外部进程改了 db 文件 (sqlite3 CLI / 修复脚本 / dashboard 操作)
+
+        调用位置: select_channel / get_candidates / get_models_with_metadata 等
+        入口方法前, 让 cache 总是新鲜。
+
+        Returns:
+            True = 本次触发了 refresh, False = cache 仍然新鲜
+        """
+        # 还没初始化过 (首次调用), 强制 refresh
+        if self._last_refresh is None:
+            await self.refresh_cache()
+            return True
+
+        # 检查 TTL
+        ttl_age = (datetime.now() - self._last_refresh).total_seconds()
+        if ttl_age > ROUTER_CACHE_TTL_SECONDS:
+            logger.debug(
+                f"[P0-4] cache TTL 超时 ({ttl_age:.1f}s > {ROUTER_CACHE_TTL_SECONDS}s), "
+                f"自动 refresh"
+            )
+            await self.refresh_cache()
+            return True
+
+        # 检查 db file mtime
+        try:
+            db_path = Path(settings.db_path)
+            if not db_path.exists():
+                return False
+            current_mtime = db_path.stat().st_mtime
+            if self._last_db_mtime is None or current_mtime > self._last_db_mtime:
+                logger.debug(
+                    f"[P0-4] db mtime 变化 ({self._last_db_mtime} -> {current_mtime}), "
+                    f"自动 refresh"
+                )
+                await self.refresh_cache()
+                return True
+        except Exception as e:
+            logger.debug(f"[P0-4] mtime 检查失败 (非致命): {e}")
+
+        return False
 
     async def invalidate_channel(self, channel_id: int) -> None:
         """Phase 4 v2 (I6): 精准刷新单个 channel
@@ -273,6 +378,10 @@ class RouteEngine:
                 "name": ch.name,
                 "provider": ch.provider,
                 "base_url": ch.base_url,
+                "api_base": ch.api_base,  # P1-12 (2026-08-14): dashboard 可改
+                "api_style": ch.api_style or "openai",  # P1-12: 协议风格
+                "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: cache 支持
+                "disable_thinking_pass_through": ch.disable_thinking_pass_through,  # V4.6.4: thinking 剥离
                 "priority": ch.priority,
                 "provider_type": ch.provider_type,
                 "billing_mode": ch.billing_mode,
@@ -354,6 +463,40 @@ class RouteEngine:
             f"跨 {len(self._cards_cache)} 个 model"
         )
 
+    async def _load_score_weights(self, session) -> None:
+        """P0-7 (2026-08-14): 从 settings_runtime 表读 score weights
+
+        设计:
+        - key = "router_score_weights"
+        - value = JSON string: {"W_PRICE": 0.4, "W_QUOTA": 0.3, "W_SUCCESS": 0.2, "W_RECENCY": 0.05, "W_PRIORITY": 0.05}
+        - 缺失或解析失败 → 用 __init__ 的默认值 (兜底)
+        - dashboard PUT /api/settings/router-weights 写入, 下次 refresh_cache (60s TTL) 生效
+        - 不支持部分更新: 改一两个 weight 必须传全部 5 个
+        """
+        import json as _json
+        from db.models import SettingsRuntime
+        try:
+            row = (await session.execute(
+                select(SettingsRuntime).where(SettingsRuntime.key == "router_score_weights")
+            )).scalars().first()
+            if row is None or row.value is None:
+                logger.debug("router_score_weights 未设置, 用 __init__ 默认值")
+                return
+            parsed = _json.loads(row.value)
+            # 校验: 必须含 5 个 W_* 字段 + 数值 + sum ~ 1.0
+            required = {"W_PRICE", "W_QUOTA", "W_SUCCESS", "W_RECENCY", "W_PRIORITY"}
+            if not required.issubset(parsed.keys()):
+                logger.warning(f"router_score_weights 缺字段: {set(required) - set(parsed.keys())}")
+                return
+            for k, v in parsed.items():
+                if not isinstance(v, (int, float)) or v < 0 or v > 1:
+                    logger.warning(f"router_score_weights.{k}={v} 不在 [0,1] 范围")
+                    return
+            self._score_weights = parsed
+            logger.info(f"P0-7: 加载 score weights: {parsed}")
+        except Exception as e:
+            logger.warning(f"P0-7: 读 score weights 失败 (用默认值): {e}")
+
     def score_bonus(self, model: str) -> float:
         """V4.5.1: model 的能力评分加成 [0.0, 1.0].
 
@@ -414,11 +557,13 @@ class RouteEngine:
             return False
         return True
 
-    def select_best_channel(self, model: str) -> Optional[dict]:
+    def select_best_channel(self, model: str, messages: Optional[list] = None) -> Optional[dict]:
         """核心决策：为指定模型选择最优渠道
 
         Args:
             model: 请求的模型名称
+            messages: P0-3 (2026-08-14) — 请求的 messages 列表, 用于判断是否含 multimodal content
+                    纯文本请求时, 跳过 multimodal channel (它们拒纯文本, 上游 400)
 
         Returns:
             最优渠道字典，或 None（无可用渠道）
@@ -433,6 +578,11 @@ class RouteEngine:
         for ch in self._channels_cache:
             price_info = self._get_current_price(ch, model, current_hour)
             if price_info is not None:
+                # V4.6.5: 给 channel 加 _channel_model 给 proxy body 替换
+                # 当 price_model != model (e.g. "zai-org/GLM-4.5V" vs "glm-4.5v"), 上游用 price_model
+                if price_info.get("model") != model:
+                    ch["_channel_model"] = price_info["model"]
+                    logger.debug(f"[V4.6.5] _channel_model: {model} -> {price_info['model']} (channel={ch['name']})")
                 candidates.append((ch, price_info))
 
         if not candidates:
@@ -440,6 +590,10 @@ class RouteEngine:
             for ch in self._channels_cache:
                 price_info = self._get_fuzzy_price(ch, model, current_hour)
                 if price_info is not None:
+                    # V4.6.5: fuzzy match 同样存 _channel_model (可能 prefix-stripped)
+                    if price_info.get("model") != model:
+                        ch["_channel_model"] = price_info["model"]
+                        logger.debug(f"[V4.6.5 fuzzy] _channel_model: {model} -> {price_info['model']} (channel={ch['name']})")
                     candidates.append((ch, price_info))
 
         if not candidates:
@@ -447,10 +601,24 @@ class RouteEngine:
             # (默认是聚合平台, 例如硅基流动: 1 个 key 通吃 100+ model)
             fallback = self._get_fallback_channel()
             if fallback and self._is_channel_usable(fallback):
-                logger.info(
-                    f"无可用渠道支持模型: {model}, fallback 到 {fallback['name']} "
-                    f"(priority={fallback['priority']})"
-                )
+                # V4.6.4 增强 (2026-08-18): 模糊匹配, 把 upstream model name 传给 proxy
+                # - registry: glm-4.5v
+                # - siliconflow upstream: zai-org/GLM-4.5V
+                # - 直接发 glm-4.5v -> upstream 20012 (model not exist)
+                # - 我们用 fuzzy 找到的 price_model 替换, 上游能识别
+                fuzzy_price = self._get_fuzzy_price(fallback, model, current_hour)
+                if fuzzy_price:
+                    fallback["_channel_model"] = fuzzy_price["model"]  # proxy 用这个
+                    logger.info(
+                        f"无可用渠道支持模型: {model}, fallback 到 {fallback['name']} "
+                        f"-> upstream model={fuzzy_price['model']} (priority={fallback['priority']})"
+                    )
+                else:
+                    fallback["_channel_model"] = model  # 没匹配到, 透传
+                    logger.info(
+                        f"无可用渠道支持模型: {model}, fallback 到 {fallback['name']} "
+                        f"(透传 model name, priority={fallback['priority']})"
+                    )
                 return fallback
             logger.warning(f"无可用渠道支持模型: {model}")
             return None
@@ -480,20 +648,76 @@ class RouteEngine:
             logger.warning(f"所有渠道配额耗尽: {model}")
             return None
 
-        # 4. 多维排序: 价格 ASC > 剩余配额 DESC > 优先级 DESC > score_bonus DESC > least-used
-        # V4.5.1: 加 score_bonus tie-break — 价格平手时高分 model 优先
-        # V4.6.1: 加 least-used tie-break — 同价同分时, 最近未被路由的账号优先 (多账号轮询)
-        def sort_key(item):
-            ch, price = item
-            input_price = price.get("input_price") or 0
-            quota_remaining = ch["quota_remaining"] if ch["quota_remaining"] is not None else 999999999
-            priority = ch["priority"]
-            bonus = self.score_bonus(model)  # V4.5.1: [0, 1]
-            # V4.6.1: 老的优先 (0 = 未用过) > 新的 (1.0 = 刚用过)
-            last_used = self._account_last_used.get(ch["account_id"], 0.0)
-            return (input_price, -quota_remaining, -priority, -bonus, last_used)
+        # 阶段3 (2026-08-14): score-based 多维排序
+        # 替代原 round-robin + 多 key 排序, 改为单 score (DESC 排序)
+        # 公式: score = w_price * price_score
+        #             + w_quota * quota_ratio
+        #             + w_success * success_rate
+        #             + w_recency * recency_score
+        #             + w_priority * (priority / max_priority)
+        #             - cooldown_penalty (cooldown 中账号 score = 0)
+        #
+        # weights 起步: 0.4 / 0.3 / 0.2 / 0.05 / 0.05 (价格为主, 配额为辅)
+        # 后续可通过 settings_runtime 表或 config 调
+        import time as _t
+        # P0-7 (2026-08-14): 从 settings_runtime 表读 (dashboard 可改)
+        # 缺失时 fallback __init__ 默认值
+        W_PRICE = self._score_weights["W_PRICE"]
+        W_QUOTA = self._score_weights["W_QUOTA"]
+        W_SUCCESS = self._score_weights["W_SUCCESS"]
+        W_RECENCY = self._score_weights["W_RECENCY"]
+        W_PRIORITY = self._score_weights["W_PRIORITY"]
 
-        candidates.sort(key=sort_key)
+        prices = [p.get("input_price") or 0 for _, p in candidates]
+        max_price = max(prices) if prices else 1
+        min_price = min(prices) if prices else 0
+        price_range = (max_price - min_price) if (max_price - min_price) > 0 else 1
+
+        def score_account(ch_price_pair):
+            ch, price = ch_price_pair
+            # 1. 价格分数 (越便宜越高, 归一化 0-1)
+            p = price.get("input_price") or 0
+            price_score = 1.0 - (p - min_price) / price_range if price_range > 0 else 0.5
+
+            # 2. 配额分数 (剩余越多越高)
+            q_remaining = ch["quota_remaining"] if ch["quota_remaining"] is not None else None
+            q_total = ch["quota_total"] if ch["quota_total"] else None
+            if q_remaining is not None and q_total and q_total > 0:
+                quota_ratio = min(q_remaining / q_total, 1.0)
+            else:
+                quota_ratio = 0.5  # 无数据时给中间分
+
+            # 3. 成功率 (cooldown 中 = 0, 否则从 rate_limiter 历史推)
+            # 简化: 用 _account_last_used 频率代替 (越久没被路由 = 越稳)
+            last_used = self._account_last_used.get(ch["account_id"], 0.0)
+            if last_used > 0:
+                # 最近 1h 内用过: success_rate = 0.5 (近期成功未知)
+                # 1h 外: success_rate = 1.0 (历史表现稳)
+                import time
+                age = time.time() - last_used
+                success_rate = 0.5 if age < 3600 else 1.0
+            else:
+                success_rate = 1.0  # 从未用过 = 假设 OK
+
+            # 4. Recency (round-robin tie-break, 越小越久没被路由越优先)
+            recency_score = last_used  # 0 = 从未用过, 越大 = 越近用过
+
+            # 5. Priority (越大越优先)
+            priority_norm = (ch["priority"] or 0) / 100.0  # 假设 priority 0-100
+
+            # 6. 阶段3.2: cooldown 惩罚 — 已经在 _is_channel_usable 过滤
+            #    但加这里做双保险, 避免任何 bypass 路径
+
+            score = (
+                W_PRICE * price_score
+                + W_QUOTA * quota_ratio
+                + W_SUCCESS * success_rate
+                + W_RECENCY * (1.0 / (1.0 + recency_score / 3600))  # 反向归一化
+                + W_PRIORITY * priority_norm
+            )
+            return score
+
+        candidates.sort(key=score_account, reverse=True)  # 分数高优先
 
         best_channel, best_price = candidates[0]
         # V4.6.1: 记录 last_used (路由层只 record, 不 mark_success — 成功标记由 proxy 层处理)
@@ -505,7 +729,10 @@ class RouteEngine:
 
         # Phase 3.E: 精确路由响应头增强 — 注入 _registry_* 字段
         # 跟 _select_by_group 保持一致, 让 _build_aimc_headers 不用关心路由类型
-        best_channel["_actual_model"] = model
+        # V4.6.5: _channel_model 在前面 candidates.append 阶段已设置 (fuzzy 匹配时),
+        # 不要在这里覆盖. 但精确匹配时 (_channel_model 未设), 透传 model name.
+        if "_channel_model" not in best_channel:
+            best_channel["_channel_model"] = model
         reg = self._registry_cache.get(model)
         if reg:
             best_channel["_registry_tier"] = reg.tier
@@ -524,12 +751,46 @@ class RouteEngine:
         return None
 
     def _get_fuzzy_price(self, channel: dict, model: str, current_hour: int) -> Optional[dict]:
-        """模糊匹配模型名（支持前缀匹配）"""
+        """模糊匹配模型名（V4.6.4 增强, 2026-08-18）
+
+        匹配规则:
+        - 前缀匹配：deepseek-chat 匹配 deepseek
+        - 命名空间剥离：zai-org/GLM-4.5V 匹配 glm-4.5v
+        - 嵌套后缀：qwen-qwen3-vl-32b-thinking 匹配 Qwen/Qwen3-VL-32B-Thinking
+        - 末段匹配：glm-4.5v 末尾 '4.5v' 出现于 'GLM-4.5V' 即可
+        - 共同子串：剥前缀后 2 段 5+ 字符完全相同
+
+        例子 (硅基流动):
+        - registry "glm-4.5v"  -> price "zai-org/GLM-4.5V"  → match (剥前缀, 末段 "glm-4.5v" == "glm-4.5v")
+        - registry "qwen-qwen3-vl-32b-instruct" -> price "Qwen/Qwen3-VL-32B-Instruct"
+          → match (剥前缀, 末段 "qwen3-vl-32b-instruct" 重叠 "qwen-qwen3-vl-32b-instruct")
+        """
         model_lower = model.lower()
+        # 剥 model 的可能前缀 (e.g. "qwen-" / "deepseek-")
+        model_stripped = model_lower
+        for prefix in ("qwen-", "deepseek-", "minimax-", "baai-", "zai-"):
+            if model_stripped.startswith(prefix):
+                model_stripped = model_stripped[len(prefix):]
+
         for p in channel["prices"]:
             price_model = p["model"].lower()
-            # 前缀匹配：deepseek-chat 匹配 deepseek
-            if model_lower.startswith(price_model) or price_model.startswith(model_lower):
+            # 剥掉 provider 前缀 (e.g. "zai-org/", "qwen/", "deepseek-ai/")
+            price_stripped = price_model.split("/")[-1] if "/" in price_model else price_model
+
+            match = (
+                model_lower.startswith(price_model)  # "glm-4.5v" in "zai-org/..."
+                or price_model.startswith(model_lower)  # "zai-org/..." in "glm-4.5v"
+                or model_lower.startswith(price_stripped)  # "glm-4.5v" startswith "glm-4.5v"
+                or price_stripped.startswith(model_lower)
+                or model_lower in price_stripped
+                or price_stripped in model_lower
+                # V4.6.4 fix 2: 剥前缀后 末段重叠
+                or model_stripped and price_stripped and (
+                    model_stripped in price_stripped
+                    or price_stripped in model_stripped
+                )
+            )
+            if match:
                 if self._match_time_range(p["time_range"], current_hour):
                     return p
         return None
@@ -780,6 +1041,64 @@ class RouteEngine:
             })
         return results
 
+    def get_models_for_openai_sdk(self, include_models: bool = False) -> list[dict]:
+        """V4.6.4+: 返回 OpenAI SDK 兼容的 /v1/models 列表
+
+        模式 2 (用户偏好):
+        - 默认: 只返回 group (每个 group 当成 OpenAI model, agent SDK 直接用 tier:xxx)
+        - include_models=true: 同时返回精确 model (调试/手动调用)
+
+        OpenAI 标准字段: id / object / created / owned_by
+        AIMC 扩展: aimc_metadata.type ("group" | "model"), 详细字段
+
+        之前 (V4.6.3 之前): /v1/models 只返回精确 model, agent SDK 严格模式
+        调 tier:xxx 报 "model not in model list" 错.
+        现在: group 在 data 列表里, SDK 直接接受.
+        """
+        import time
+
+        data = []
+
+        # 1) 优先: 每个 group 当成 model (主用)
+        for g in self.get_groups_with_metadata():
+            data.append({
+                "id": g["id"],  # e.g. "tier:flagship"
+                "object": "model",
+                "created": int(time.time()),  # OpenAI SDK 需要 int timestamp
+                "owned_by": "aimc",
+                "aimc_metadata": {
+                    "type": "group",
+                    "display_name": g["display_name"],
+                    "tier": g["tier"],
+                    "capabilities": g["capabilities"],
+                    "strategy": g["strategy"],
+                    "fallback_group": g["fallback_group"],
+                    "fallback_chain": g["aimc_metadata"]["fallback_chain"],
+                    "members": g["members"],
+                    "member_count": g["member_count"],
+                    "member_tiers": g["aimc_metadata"]["member_tiers"],
+                    "min_context": g["aimc_metadata"]["min_context"],
+                    "require_vision": g["aimc_metadata"]["require_vision"],
+                    "enabled": g["enabled"],
+                },
+            })
+
+        # 2) 可选: 精确 model (给 admin / 调试)
+        if include_models:
+            for m in self.get_models_with_metadata():
+                # 加 type 标记 + 保留原 metadata
+                meta = dict(m.get("aimc_metadata", {}))
+                meta["type"] = "model"
+                data.append({
+                    "id": m["id"],
+                    "object": "model",
+                    "created": int(time.time()),
+                    "owned_by": m.get("owned_by", "aimc"),
+                    "aimc_metadata": meta,
+                })
+
+        return data
+
     def get_candidates(self, model: str) -> list[dict]:
         """获取指定模型的所有候选渠道（用于 fallback）"""
         current_hour = datetime.now().hour
@@ -798,7 +1117,8 @@ class RouteEngine:
     # Phase 2.4: 模型组路由 (tier:/scene: 前缀 + fallback chain)
     # ===========================================================
 
-    def select_channel(self, model: str, prefs: Optional[dict] = None) -> Optional[dict]:
+    def select_channel(self, model: str, prefs: Optional[dict] = None,
+                      messages: Optional[list] = None) -> Optional[dict]:
         """Phase 2.4 入口: 按 model 字符串分发
 
         - "tier:xxx" / "scene:xxx" → _select_by_group (组路由 + fallback chain)
@@ -816,14 +1136,23 @@ class RouteEngine:
         - _actual_model: 实际命中的精确 model_id
         - _group_id: 命中的 model group (e.g. "tier:balanced")
         - _registry_tier: 命中 model 的能力档
+
+        P0-4 (2026-08-14): stale check 由 caller (gateway/routes.py) 显式 await
+        _auto_refresh_if_stale, 避免在 sync 入口处 fire-and-forget 引入 race condition。
         """
-        if model.startswith("tier:") or model.startswith("scene:"):
-            return self._select_by_group(model, prefs=prefs)
+        # V4.6.5 (2026-08-18): 支持 tier:xxx/model_name 格式
+        # 解析 group_id (剥离 /model_suffix)
+        group_model = model
+        if "/" in model:
+            group_model = model.split("/")[0]  # "tier:vision/glm-4.5v" -> "tier:vision"
+        if group_model.startswith("tier:") or group_model.startswith("scene:"):
+            return self._select_by_group(group_model, prefs=prefs, messages=messages)
         # 精确模型路由 Phase 2.6 不实现偏好 (跟 design §4.5 一致)
-        return self.select_best_channel(model)
+        return self.select_best_channel(model, messages=messages)
 
     def _select_by_group(
-        self, group_id: str, prefs: Optional[dict] = None
+        self, group_id: str, prefs: Optional[dict] = None,
+        messages: Optional[list] = None,
     ) -> Optional[dict]:
         """模型组路由: 在 group 内选最优 (model, channel) 三元组
 
@@ -933,8 +1262,20 @@ class RouteEngine:
                     skipped += 1
                     continue
 
+                # P0-3 (2026-08-14): 纯文本请求跳过 multimodal candidate
+                # 背景: multimodal model (modality=multimodal) 拒纯文本 → 上游 400
+                # 修复: messages 不含 image/audio/file 时, 跳过 multimodal member
+                # 例外: tier:vision 组用户显式选 multimodal (但仍可走 text model fallback)
+                has_mm = _has_multimodal_content(messages)
+                if not has_mm and registry.modality == "multimodal":
+                    logger.debug(
+                        f"  [{current}] {model_id} modality=multimodal 但请求纯文本, 跳过"
+                    )
+                    skipped += 1
+                    continue
+
                 # 跑精确模型路由 (复用 select_best_channel)
-                best = self.select_best_channel(model_id)
+                best = self.select_best_channel(model_id, messages=messages)
                 if not best:
                     logger.debug(f"  [{current}] {model_id} 无可用渠道, 跳过")
                     skipped += 1
@@ -969,7 +1310,8 @@ class RouteEngine:
                     if registry.family == prefs["prefer_family"]:
                         family_bonus = 0
 
-                candidates.append((best, model_id, input_price, family_bonus))
+                # V4.6.5: 同时存 _channel_model (proxy body 替换用), 防止被后续 member 覆盖
+                candidates.append((best, model_id, input_price, family_bonus, best.get("_channel_model")))
 
             if not candidates:
                 logger.warning(
@@ -989,7 +1331,7 @@ class RouteEngine:
                 # cheapest (default): subscription/free 视为 0 元, 永远最便宜
                 # 排序 key: (price, family_bonus, -priority) — Phase 2.6 加 family_bonus tie-break
                 def sort_key(item):
-                    ch, _model_id, price, family_bonus = item
+                    ch, _model_id, price, family_bonus, _ch_model = item
                     billing = ch.get("billing_mode", "pay_per_token")
                     if billing in ("subscription", "free"):
                         return (0.0, family_bonus, -ch.get("priority", 0))
@@ -1000,10 +1342,16 @@ class RouteEngine:
                     )
                 candidates.sort(key=sort_key)
 
-            best_ch, best_model, _, _ = candidates[0]
+            best_ch, best_model, _, _, correct_channel_model = candidates[0]
 
-            # 4) 注入调试字段 (Phase 2.5 响应头用)
-            best_ch["_actual_model"] = best_model
+            # V4.6.5 (2026-08-18): 关键修复
+            # _channel_model 作为 tuple 第 5 元素存入 candidates, sort 后取回.
+            # sort 后 channel dict._channel_model 已被污染 (最后 checked member 覆盖),
+            # 必须用 tuple 里存的 correct_channel_model.
+            # _channel_model = proxy body 替换用的 price model (e.g. zai-org/GLM-4.5V)
+            # _registry_model = 响应头用的 registry model_id (e.g. glm-4.5v)
+            best_ch["_channel_model"] = correct_channel_model
+            best_ch["_registry_model"] = best_model
             best_ch["_group_id"] = current
             registry = self._registry_cache.get(best_model)
             if registry:

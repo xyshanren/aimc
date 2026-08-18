@@ -21,6 +21,7 @@ from db import crud
 from db.engine import async_session_factory
 from db.init_db import init_db
 from db.models import ModelFeedbackSummary
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +226,123 @@ def render_actions(this_week: WeekStats) -> list[str]:
     return lines
 
 
+async def _load_pending_suggestions(session, days: int = 7) -> dict:
+    """方案A (2026-08-14): 加载最近 N 天的 pending / approved 建议
+
+    Returns:
+        {"model": [...], "group": [...], "total_pending": int, "total_approved": int}
+    """
+    from datetime import datetime, timedelta
+    from db.models import ModelChangeSuggestion, GroupChangeSuggestion
+
+    cutoff = datetime.now() - timedelta(days=days)
+    result = {"model": [], "group": [], "total_pending": 0, "total_approved": 0}
+
+    m_stmt = (
+        select(ModelChangeSuggestion)
+        .where(ModelChangeSuggestion.created_at >= cutoff)
+        .where(ModelChangeSuggestion.status.in_(["pending", "approved"]))
+        .order_by(ModelChangeSuggestion.confidence.desc())
+    )
+    for s in (await session.execute(m_stmt)).scalars().all():
+        result["model"].append({
+            "model_id": s.model_id,
+            "change_type": s.change_type,
+            "suggested_value": s.suggested_value,
+            "current_value": s.current_value,
+            "confidence": s.confidence or 0,
+            "reason": s.reason or "",
+            "status": s.status,
+        })
+        if s.status == "pending":
+            result["total_pending"] += 1
+        elif s.status == "approved":
+            result["total_approved"] += 1
+
+    g_stmt = (
+        select(GroupChangeSuggestion)
+        .where(GroupChangeSuggestion.created_at >= cutoff)
+        .where(GroupChangeSuggestion.status.in_(["pending", "approved"]))
+        .order_by(GroupChangeSuggestion.confidence.desc())
+    )
+    for s in (await session.execute(g_stmt)).scalars().all():
+        result["group"].append({
+            "group_id": s.group_id,
+            "change_type": s.change_type,
+            "target_groups": s.target_groups,
+            "confidence": s.confidence or 0,
+            "reason": s.reason or "",
+            "status": s.status,
+        })
+        if s.status == "pending":
+            result["total_pending"] += 1
+        elif s.status == "approved":
+            result["total_approved"] += 1
+
+    return result
+
+
+def render_suggestions(sugs: dict) -> list[str]:
+    """方案A (2026-08-14): 渲染 "模型分组建议" 章节到周报
+
+    按 confidence DESC 显示 (高置信度先), 状态用 emoji 标注:
+    - 🟢 pending: 待审
+    - ✅ approved: 已批 (可一键应用)
+    """
+    lines = [
+        "## 🔧 模型分组建议 (方案A)",
+        "",
+        f"- 🟢 待审: **{sugs['total_pending']}** 条",
+        f"- ✅ 已批: **{sugs['total_approved']}** 条 (可一键应用)",
+        "",
+    ]
+
+    if not sugs["model"] and not sugs["group"]:
+        lines.append("_本周无新建议_")
+        lines.append("")
+        return lines
+
+    # Model 建议 (按 confidence DESC, limit 10)
+    model_shown = 0
+    for s in sugs["model"][:10]:
+        emoji = "🟢" if s["status"] == "pending" else "✅"
+        cur = s["current_value"] or "(空)"
+        sug = s["suggested_value"] or "?"
+        conf_pct = int(s["confidence"] * 100)
+        lines.append(
+            f"- {emoji} `{s['model_id']}`: {s['change_type']} "
+            f"`{cur}` → `{sug}` "
+            f"(置信度 {conf_pct}%)"
+        )
+        lines.append(f"  - {s['reason']}")
+        model_shown += 1
+    if len(sugs["model"]) > model_shown:
+        lines.append(f"  - _...还有 {len(sugs['model']) - model_shown} 条 model 建议_")
+
+    # Group 建议 (limit 5)
+    group_shown = 0
+    for s in sugs["group"][:5]:
+        emoji = "🟢" if s["status"] == "pending" else "✅"
+        tgt = s["target_groups"] or ""
+        conf_pct = int(s["confidence"] * 100)
+        lines.append(
+            f"- {emoji} group `{s['group_id']}`: {s['change_type']} {tgt} "
+            f"(置信度 {conf_pct}%)"
+        )
+        lines.append(f"  - {s['reason']}")
+        group_shown += 1
+    if len(sugs["group"]) > group_shown:
+        lines.append(f"  - _...还有 {len(sugs['group']) - group_shown} 条 group 建议_")
+
+    lines.append("")
+    lines.append("### 申请方式")
+    lines.append("")
+    lines.append("- Dashboard: 建议中心 tab (http://your-host:8080/dashboard/)")
+    lines.append("- 或 CLI: `python scripts/apply_suggestions.py --apply` (应用已批建议)")
+    lines.append("")
+    return lines
+
+
 async def generate(
     period_start: Optional[datetime] = None,
     output_dir: Path = REPORTS_DIR,
@@ -247,6 +365,8 @@ async def generate(
     async with async_session_factory() as session:
         this_week = await collect_week(session, period_start)
         last_week = await collect_week(session, last_week_start)
+        # 方案A (2026-08-14): 加载 pending/approved 建议
+        sugs = await _load_pending_suggestions(session, days=7)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -260,6 +380,8 @@ async def generate(
     sections.extend(render_top_models(this_week))
     sections.extend(render_trends(this_week, last_week))
     sections.extend(render_alerts(this_week))
+    # 方案A (2026-08-14): 模型分组建议章节
+    sections.extend(render_suggestions(sugs))
     sections.extend(render_actions(this_week))
 
     body = "\n".join(sections)

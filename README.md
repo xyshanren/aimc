@@ -6,212 +6,90 @@ AIMC（AI Model Compass）是一款专为个人开发者设计的**轻量级 LLM
 
 它持续监控 DeepSeek、Qwen、GLM 等主流厂商的定价与活动变动，结合实时时段与频限状态，在完全不侵入业务代码的前提下，将你的 API 请求自动透传路由至当前最具成本效益的渠道。旨在用最低的维护成本，榨干每一分优惠额度。
 
+## 📖 文档
+
+**→ 所有文档：[docs/index.md](docs/index.md)**（按用户 / 开发者 / 运维分类）
+
+新用户从 [docs/user/install.md](docs/user/install.md) 开始；开发者从 [docs/dev/setup.md](docs/dev/setup.md) 开始。
+
 ## 核心特性
 
 - **智能路由** — 基于时段/价格/配额/频限多维权重，自动选择最优渠道
-- **多维模型组 (Phase 2)** — 按 `tier:xxx` / `scene:xxx` 前缀调用，AIMC 在组内跨 model 选最便宜；支持 Agent 偏好 (prefer_family / exclude_providers / max_input_price)
-- **零侵入透传** — 兼容 OpenAI SDK，流式/非流式原样透传，不解析 SSE
-- **情报聚合** — 定时爬取厂商定价页+活动页，AI 结构化提取优惠信息
-- **频限管理** — 内存滑动窗口追踪 QPM/TPM/并发/日限额，自动切换
-- **多账号 least-used + Cooldown (V4.6.1)** — 同厂商多账号轮询分散流量；失败账号自动冷却跳过，冷却期后自动恢复
-- **能力评分路由 (V4.5)** — whichllm 启发，model_cards 加权 tie-break，价格平手时高分 model 优先
-- **多源 benchmark 加权 (V4.6.3)** — LMSYS / OpenCompass / LiveBench / SuperCLUE / Artificial Analysis 融合，reliability × recency 加权
-- **响应头可观测 (Phase 2.5 + Phase 3.E)** — `X-AIMC-Actual-Model/Channel/Group-Id/Tier/Capabilities` 告诉 Agent 实际命中
-- **API Key 加密 (API-Sec-1)** — DB 文件泄露 ≠ channel key 泄露（XOR+Base64 轻量化，零外部依赖）
-- **告警 throttle (Phase 2.5)** — 同 key 60s 内只发 1 次，防止飞书刷屏
-- **周报自动生成 (V4.4.B)** — 周一 9:00 自动 Markdown 周报 + Bark 推送关键结论
-- **告警驱动多账号 (V4.4)** — 80%/100% 配额 + NoActiveAccount + CostRising 4 类告警
-- **Dashboard 账号管理 UI (V4.6)** — 无需 SSH, Web 加/轮换/启用/禁用账号
-- **Dashboard 周报查看页 (V4.5)** — Web 渲染历史 Markdown 周报
-- **自愈循环** — AI 解析置信度评估，高置信自动入库，低置信告警人工
-- **极简部署** — 单进程、单文件数据库、零外部依赖
-
-## 系统架构
-
-```
-用户 (OpenAI SDK / HTTP)
-        │
-        ▼
-┌─────────────────────────────────┐
-│     自研网关层 (FastAPI)         │
-│  路由引擎 │ 频限器 │ 流式透传    │
-└────────────────┬────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│     SQLite (WAL 模式，单文件)    │
-│  渠道 │ 价格 │ 优惠 │ 用量日志   │
-└────────────────▲────────────────┘
-                 │
-┌────────────────┴────────────────┐
-│     情报采集层 (同进程异步)       │
-│  爬虫 │ Diff检测 │ AI解析 │ 告警 │
-└─────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────┐
-│     极简 Dashboard (htmx)       │
-│  优惠排行 │ 渠道状态 │ 用量统计  │
-└─────────────────────────────────┘
-```
-
-## 技术栈
-
-| 层级 | 选型 | 理由 |
-|------|------|------|
-| 网关框架 | FastAPI + httpx | 原生异步，流式透传 |
-| 数据库 | SQLite (WAL) + SQLAlchemy 2.0 | 零运维，单文件 |
-| 定时调度 | APScheduler | 轻量，同进程 |
-| 爬虫引擎 | Playwright (async) | JS 渲染支持 |
-| AI 解析 | gpt-4o-mini (or MiniMax/OpenAI 兼容) | 成本极低 |
-| 告警推送 | 飞书 / Bark / Server酱 | 国内首选，无需翻墙 |
-| Dashboard | htmx + Chart.js | 零构建 |
+- **多维模型组 (Phase 2)** — 按 `tier:xxx` / `scene:xxx` 前缀调用，AIMC 在组内跨 model 选最便宜
+- **零侵入透传** — 兼容 OpenAI SDK，流式/非流式原样透传
+- **情报聚合** — 定时爬取厂商定价页 + 活动页，AI 结构化提取优惠信息
+- **多维限额** — 7 维度（rpm/tpm/daily/weekly/5h/concurrent/balance），超限自动 failover
+- **Prompt Cache 真实集成** — 自动注入 `cache_control`（Anthropic）/ `prompt_cache_key`（OpenAI），cache 命中省钱
+- **多账号 cooldown + score-based 选择** — 失败账号自动冷却，5 维加权选最优
+- **Dashboard 账号管理 UI** — 无需 SSH，Web 加/轮换/启用/禁用账号
+- **周报自动生成 + 建议中心** — 周一 09:00 周报 + 自动发现 model 错配建议
+- **稳定期使用分析** — `scripts/analyze_usage.py` 自动提取 V4.7+ 优先级信号
 
 ## 快速开始
 
 ```bash
-# 1. 安装依赖
+# 1. 安装
+git clone git@gitee.com:XiaoYRecluse/aimc.git
+cd aimc
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. 配置环境变量
+# 2. 配置
 cp .env.example .env
-# 编辑 .env 填入 API Key 等配置
+# 编辑 .env 填入 API Key
 
-# 3. 初始化数据库 + 录入渠道
-python scripts/manual_import.py
+# 3. 启动
+python scripts/manual_import.py    # 录入渠道
+python main.py                       # 启动网关 (默认 :8080)
 
-# 4. 启动网关
-uvicorn main:app --host 0.0.0.0 --port 8080
-```
-
-启动后，将 OpenAI SDK 的 `base_url` 指向 `http://localhost:8080/v1` 即可：
-
-```python
+# 4. 使用（OpenAI SDK）
 from openai import OpenAI
-
 client = OpenAI(
     base_url="http://localhost:8080/v1",
-    api_key="your-aimc-key",  # 如配置了 AIMC_API_KEY
+    api_key="your-aimc-key",
 )
-
 response = client.chat.completions.create(
-    model="deepseek-chat",  # 自动路由到最便宜的渠道
+    model="deepseek-v4-pro",  # 或 "tier:flagship" / "scene:code"
     messages=[{"role": "user", "content": "Hello!"}],
 )
 ```
 
-## 本地模型接入（Ollama / vllm / LM Studio / llama.cpp）
-
-AIMC 支持把本地跑的模型统一接入，享受跨云端/本地的智能路由。例如：
-- `tier:light` 组里有云端免费档 + 本地小模型，AIMC 自动选最便宜的（本地永远 0 元）
-- `scene:code` 组里同时有 DeepSeek-Coder 云端版 + 本地 Qwen2.5-Coder
-
-支持的本地服务（OpenAI 兼容协议）：
-
-| 服务        | 默认端口    | 默认 base_url                  |
-|-------------|------------|--------------------------------|
-| Ollama      | 11434      | `http://localhost:11434/v1`    |
-| vllm        | 8000       | `http://localhost:8000/v1`     |
-| LM Studio   | 1234       | `http://localhost:1234/v1`     |
-| llama.cpp   | 8080       | `http://localhost:8080/v1`     |
-
-**接入步骤（1 分钟）**：
-
-```bash
-# 1. 确认本地服务在跑（Ollama 示例）
-ollama serve   # 默认监听 :11434
-ollama pull qwen2:7b
-
-# 2. （可选）自定义 base_url — 编辑 .env
-# OLLAMA_BASE_URL=http://192.168.1.100:11434/v1
-
-# 3. 运行接入脚本（自动探测 4 个服务 + 列出可用 model + 让你选）
-python scripts/seed_local_channel.py
-
-# 4. 重启 uvicorn 或 POST /dashboard/api/cache/refresh 刷新路由缓存
-
-# 5. 验证
-curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("qwen2"))'
-```
-
-**特性**：
-- `provider_type='local'` 自动识别，proxy 跳过 Authorization header
-- `billing_mode='free'` 价格视为 0，路由时 `cheapest` 策略永远优先本地（节省云端费用 + 流量）
-- 频限给 `qpm=9999`（本地无上游限速），但仍记录 TPM 用于成本/用量观测
-- 模型名直接透传本地（如 `qwen2:7b`、`deepseek-r1:7b`），不需要改写
-
-**典型用法 — 任务分级走不同档位**：
-```python
-# 后台日志摘要 → 本地小模型（免费）
-response = client.chat.completions.create(model="tier:light", messages=...)
-
-# 复杂代码生成 → 云端旗舰
-response = client.chat.completions.create(model="tier:flagship", messages=...)
-
-# 长上下文 RAG → 长上下文档
-response = client.chat.completions.create(model="scene:longctx", messages=...)
-```
+更详细的安装 / 接入 / Dashboard / 故障排查见 [docs/user/](docs/user/)。
 
 ## 项目结构
 
 ```
 aimc/
-├── main.py                 # 入口
-├── config.py               # 全局配置
-├── gateway/                # 网关核心
-│   ├── app.py              # FastAPI 工厂
-│   ├── routes.py           # API 端点
-│   ├── proxy.py            # 流式透传 + cooldown hook (V4.6.1)
-│   ├── router.py           # 路由决策引擎 + least-used (V4.6.1)
-│   ├── cooldown.py         # CooldownManager (V4.6.1)
-│   ├── limiter.py          # 频限器
-│   ├── fallback.py         # 故障转移
-│   └── middleware.py       # 日志/鉴权
-├── intelligence/           # 情报采集层
-│   ├── scheduler.py        # 定时调度
-│   ├── fetcher.py          # 页面抓取
-│   ├── differ.py           # Diff 检测
-│   ├── parser.py           # AI 解析
-│   ├── healer.py           # 自愈循环
-│   ├── alerter.py          # 告警推送
-│   ├── price_alert.py      # 价格波动告警 (V4.4)
-│   ├── benchmark_aggregator.py # 多源 benchmark 加权 (V4.6.3)
-│   └── sources/            # 采集源插件
-├── db/                     # 数据库层
-├── schemas/                # Pydantic 模型
-├── dashboard/              # 极简 Dashboard
-├── scripts/                # 运维脚本 (含 V4.6.1 multi_account_import.py)
-├── security/               # API-Sec-1 XOR+Base64 加密 (V4.5)
-└── docs/                   # 项目文档
+├── gateway/                # 网关核心 (router / proxy / quota / cooldown)
+├── intelligence/           # 情报采集 (scheduler / sources / analytics)
+├── db/                     # 数据库层 (含 7 个 migration)
+├── dashboard/              # Dashboard 后端 (FastAPI routes) + 前端 (htmx + chart.js)
+├── scripts/                # 运维脚本 (sync_prices / apply_suggestions / weekly_report)
+├── tests/                  # 74 个测试 (pytest, 9.6s)
+└── docs/                   # 完整文档 (见 docs/index.md)
 ```
 
-## 文档
+## 技术栈
 
-- [架构设计文档](docs/architecture.md) — 系统设计与数据模型（含 Phase 2 多维模型组 + V4.6.1 CooldownManager）
-- [开发计划](docs/development-plan.md) — 路线总览 (Phase 1/2.5/2/3/4 + API-Sec-1/2/3 + V4.4-V4.6)
-- [V4.4 设计文档](docs/v44-feedback-and-alert-design.md) — 隐式反馈 + 告警驱动多账号
-- [Phase 2 设计文档](docs/phase2-design.md) — 模型组设计 + 实施步骤
-- [API Key 安全设计](docs/api-key-security.md) — 加密方案 + 现状盘点
-- [快速开始指南](docs/quickstart.md) — 安装、配置、部署
-- [API 接口文档](docs/api.md) — 网关接口说明
-- [竞品调研](docs/competitive-research.md) — OpenRouter/9Router/LiteLLM/RouteLLM 对比
-- [E2E 测试报告](docs/e2e-results.md) — hermes-agent-cn 集成联调结果
+| 层级 | 选型 |
+|------|------|
+| 网关 | FastAPI + httpx |
+| 数据库 | SQLite (WAL) + SQLAlchemy 2.0 |
+| 调度 | APScheduler |
+| 爬虫 | Playwright (async) |
+| Dashboard | htmx + Chart.js |
+| 测试 | pytest + pytest-asyncio |
 
-## 设计原则
+## 最近变更（2026-08-14~15）
 
-1. **自用优先** — 允许半自动，不追求 100% 无人值守
-2. **情报层 > 网关层** — 情报发现是核心差异化价值
-3. **先跑通再优化** — 快速验证核心价值
-4. **保持简单** — 单进程部署，零外部依赖
-5. **精细化运营** — 峰谷定价、频限追踪、多账号兜底
+21 个 commit 架构整改完成：
+- **P0-1~6**：db 强约束 / cache 同步 / multimodal 跳过 / TTL / encryption / 多维限额
+- **P1-7~12**：dashboard 鉴权 / prompt cache / channels 灵活配置
+- **阶段 1/2/3**：cache 可视化 / 38→20 jobs / score-based 路由
+- **方案 A**：模型/分组 调整建议（4 model + 4 group 规则 + 置信度 + dashboard UI）
+- **阶段 B/C/D**：SF 53 行真实价格 / 74 tests / 文档同步
 
-## 参与贡献
-
-1. Fork 本仓库
-2. 新建 Feature 分支 (`git checkout -b feature/xxx`)
-3. 提交代码 (`git commit -m 'feat: xxx'`)
-4. 推送分支 (`git push origin feature/xxx`)
-5. 新建 Pull Request
+详细列表见 [docs/dev/post-merge-fixes.md](docs/dev/post-merge-fixes.md)。
 
 ## 许可证
 

@@ -4,6 +4,12 @@
 > 关联：hermes-agent-cn 集成 PR (草案见 [hermes-agent-cn-integration-pr.md](hermes-agent-cn-integration-pr.md), 已提给 hermes-agent-cn 仓库)
 > AIMC 侧 commit：`c4b6f1e` (3.E 响应头增强) + `6358378` (联调 E2E)
 
+
+## 📦 历史归档说明
+
+> **本文档已归档**（2026-08-15 文档重组时迁移到 docs/archive/）。
+> 新内容见 [docs/index.md](../index.md) 或相关 [docs/dev/](../dev/) / [docs/user/](../user/) 文档。
+
 ## 一、联调范围
 
 AIMC 侧为配合 hermes-agent-cn 集成 PR，准备了 3 个能力：

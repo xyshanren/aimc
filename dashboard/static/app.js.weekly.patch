@@ -1,0 +1,20 @@
+// === P0-UI v5: 周报 markdown 渲染 ===
+// 周报 raw markdown → 用 marked.js 渲染成 HTML
+// htmx 自动加载 + 我们需要拦截 raw markdown 转成 HTML
+
+document.body.addEventListener('htmx:afterSwap', function(event) {
+    if (event.detail.target.id === 'weekly-report-content') {
+        try {
+            const md = event.detail.target.textContent;
+            // 检查是否含 markdown 标记
+            if (md && (md.includes('# ') || md.includes('## ') || md.includes('### ') || md.includes('**'))) {
+                // marked.js 全局函数
+                if (typeof marked !== 'undefined') {
+                    event.detail.target.innerHTML = marked.parse(md);
+                }
+            }
+        } catch (e) {
+            console.warn('weekly report render:', e);
+        }
+    }
+});

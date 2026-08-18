@@ -5,10 +5,43 @@
 - 非流式请求：直接返回上游 JSON 响应
 """
 
+# V4.6.4: 剥离请求里的 thinking 相关字段 (个人项目偏好 agent loop 更快)
+# 默认上游 (minimax-m2.7) 即使不传 enable_thinking 也输出 thinking, 吃 token + 加延迟
+# proxy 层在转发前主动剥离这些字段
+THINKING_FIELDS_TO_STRIP = (
+    "thinking",
+    "enable_thinking",
+    "reasoning_effort",
+    "extended_thinking",
+)
+
+
+def _strip_thinking_fields(body_dict: dict) -> dict:
+    """V4.6.4+: 剥离 body 字典里的 thinking 相关字段 (返回新 dict, 不修改原对象)
+
+    Args:
+        body_dict: 已解析的 request body (dict)
+
+    Returns:
+        新 dict (剥离了 thinking/enable_thinking/reasoning_effort/extended_thinking)
+
+    Notes:
+        - 只剥离顶层字段 (不递归 messages 内部, agent 可能把 reasoning 放 message 里)
+        - immutable: 不修改输入 dict
+    """
+    if not any(k in body_dict for k in THINKING_FIELDS_TO_STRIP):
+        return body_dict  # 没有 thinking 字段, 避免创建新 dict
+
+    out = {k: v for k, v in body_dict.items() if k not in THINKING_FIELDS_TO_STRIP}
+    return out
+
+
 import json
+import os
 import time
 import logging
 import asyncio
+from typing import Optional
 
 import httpx
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -19,33 +52,63 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 
-# V4.6.1: 视为上游失败的 status_code (跟现有 _schedule_alert 一致)
-_FAILURE_STATUS_CODES = frozenset((401, 403, 500, 502, 503, 504))
+def _resolve_effective_base_url(channel):
+    # P1-12: 解析 channel 实际使用的 base_url
+    # 优先级: db.api_base ?? SENSENOVA_BASE_URL env (sensenova only) ?? db.base_url
+    api_base = (channel.get("api_base") or "").strip()
+    if api_base:
+        return api_base.rstrip("/")
+    db_base_url = (channel.get("base_url") or "").rstrip("/")
+    if channel.get("provider") == "sensenova":
+        env_override = os.getenv("SENSENOVA_BASE_URL", "").strip().rstrip("/")
+        if env_override and env_override != db_base_url:
+            return env_override
+    return db_base_url
 
 
-def _update_cooldown(channel: dict, status_code: int) -> None:
-    """V4.6.1: 根据 status_code 更新账号 cooldown 状态.
-
-    - 2xx (成功) → mark_success: 清空失败计数 + 冷却
-    - 401/403/5xx (失败) → mark_failure: 累计失败, 达到阈值进入冷却
-    - 其他 (3xx/4xx 其他) → 不动 (e.g. 400 是请求方问题, 不应让账号冷却)
-
-    调用点是 _forward_stream / _forward_normal 拿到 status_code 后立刻调用,
-    不阻塞主响应, 不抛异常 (失败仅 log).
-    """
+def _inject_prompt_cache(body, channel):
+    # P1-8: 给 request body 注入 prompt cache 标记
+    # 支持 2 种 cache 协议 (按 channel.api_style):
+    # 1. Anthropic 风格: messages[0] (system) + messages[1] (first user) 加 cache_control
+    # 2. OpenAI 风格: 加 prompt_cache_key parameter (用 system content hash)
+    # 触发条件 (caller 保证): channel.supports_prompt_cache=1
     try:
-        account_id = channel.get("account_id")
-        if account_id is None:
-            return
-        from gateway.cooldown import cooldown_manager
-        if status_code in _FAILURE_STATUS_CODES:
-            cooldown_manager.mark_failure(
-                account_id, reason=f"HTTP {status_code}"
-            )
-        elif 200 <= status_code < 300:
-            cooldown_manager.mark_success(account_id)
-    except Exception as e:  # 永不阻断主流程
-        logger.warning(f"_update_cooldown 异常 (忽略): {e}")
+        body_json = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return body
+
+    messages = body_json.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return body
+
+    api_style = (channel.get("api_style") or "openai").lower()
+
+    if api_style == "anthropic":
+        # Anthropic 风格: 给 system + 第一条 user 加 cache_control: ephemeral
+        for msg in messages[:2]:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("cache_control"):
+                continue
+            msg["cache_control"] = {"type": "ephemeral"}
+    else:
+        # OpenAI 风格: prompt_cache_key parameter
+        import hashlib
+        system_content = ""
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                content = msg.get("content")
+                if isinstance(content, str):
+                    system_content = content
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            system_content += part.get("text", "")
+                break
+        cache_key = hashlib.sha256(system_content.encode("utf-8")).hexdigest()[:16]
+        body_json["prompt_cache_key"] = cache_key
+
+    return json.dumps(body_json, ensure_ascii=False).encode("utf-8")
 
 
 def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
@@ -72,12 +135,14 @@ def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
       所以精确路由时 _actual_model = requested_model 也成立 (不污染)
     """
     headers = {}
+    # V4.6.5: 区分三个字段
+    # - _registry_model: registry model_id (响应头用, e.g. glm-4.5v)
+    # - _channel_model: fuzzy 匹配的 price model (body 替换用, e.g. zai-org/GLM-4.5V)
+    # - _actual_model: V4.6.4 兼容, 精确路由时用 requested_model
     is_group_request = requested_model.startswith(("tier:", "scene:"))
-    if is_group_request and channel.get("_actual_model"):
-        # 组路由: 用 _actual_model (Phase 2.4 注入)
-        actual_model = channel["_actual_model"]
+    if is_group_request and channel.get("_registry_model"):
+        actual_model = channel["_registry_model"]
     else:
-        # 精确路由: 用 requested_model (忽略 channel 里可能残留的 _actual_model 污染)
         actual_model = requested_model
     if actual_model:
         headers["X-AIMC-Actual-Model"] = actual_model
@@ -106,18 +171,60 @@ def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
     return headers
 
 
-async def forward_request(channel: dict, body: bytes, headers: Headers, requested_model: str = ""):
+async def forward_request(channel: dict, body: bytes, headers: Headers, requested_model: str = "", actual_model: Optional[str] = None):
     """将请求透传到上游渠道
 
     Args:
         channel: 渠道信息字典，包含 base_url, api_key 等
         body: 原始请求体字节
         headers: 原始请求头
-        requested_model: 请求的 model 字符串 (Phase 2.5 用于响应头 X-AIMC-Actual-Model)
+        requested_model: 请求的 model 字符串 (用户原始请求, 用于响应头 X-AIMC-Actual-Model)
+        actual_model: V4.6.4+ — router fallback 路径选择的 channel 模型名
+                      (可能跟 requested_model 不同, 此时会替换 body.model)
 
     Returns:
         StreamingResponse 或 JSONResponse
     """
+    # V4.6.4: fallback 路径 router 选了 channel 但 model 名跟用户请求的不同
+    # 例: 用户请求 deepseek-v2.5, channel 只有 deepseek-ai/DeepSeek-V3
+    # 替换 body.model = channel 支持的 model, 上游能识别
+    actual_model = actual_model or requested_model
+
+    # V4.6.4: thinking 剥离 (默认启用, channel.disable_thinking_pass_through=1)
+    # 某些上游 (minimax deepthink) 即使不传 enable_thinking 也强制输出 thinking.
+    # 剥离 request 里的 thinking/enable_thinking/reasoning_effort/extended_thinking 字段
+    # → 节省 token + agent loop 更快
+    if channel.get("disable_thinking_pass_through", 1):
+        try:
+            import json as _tjson
+            _body_dict = _tjson.loads(body)
+            _stripped_body = _strip_thinking_fields(_body_dict)
+            if _stripped_body is not _body_dict:  # 有字段被剥离
+                _stripped = [k for k in THINKING_FIELDS_TO_STRIP if k in _body_dict]
+                body = _tjson.dumps(_stripped_body, ensure_ascii=False).encode("utf-8")
+                logger.info(f"[V4.6.4 thinking 剥离] channel={channel.get('name')} stripped={_stripped}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass  # 非 JSON body, 跳过
+
+    # V4.6.5: body 替换用 _channel_model (router fuzzy 匹配的 price model, 上游认识)
+    # _channel_model 由 router._select_by_group / router.select_best_channel 写入
+    # (e.g. zai-org/GLM-4.5V for glm-4.5v). 跟 _actual_model (响应头用 registry model) 分离.
+    channel_model = channel.get("_channel_model")
+    if channel_model and channel_model != requested_model:
+        try:
+            import json as _json_mod
+            body_json = _json_mod.loads(body)
+            if body_json.get("model") != channel_model:
+                old_model = body_json.get("model")
+                body_json["model"] = channel_model
+                body = _json_mod.dumps(body_json, ensure_ascii=False).encode("utf-8")
+                logger.info(
+                    f"[V4.6.5 body 替换] {old_model} -> {channel_model} "
+                    f"(channel={channel.get('name')})"
+                )
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.warning(f"body 解析失败, 跳过 model 替换: {e}")
+
     # 构建上游请求头
     forward_headers = {
         "Content-Type": "application/json",
@@ -139,22 +246,32 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
         is_stream = False
 
     # Phase 2.5: 构造 X-AIMC-* 响应头 (在 group 路由时注入 _actual_model 等)
-    aimc_headers = _build_aimc_headers(channel, requested_model)
+    # V4.6.4: 传 actual_model 让 _build_aimc_headers 用 fallback 后的真实 model 名
+    aimc_headers = _build_aimc_headers(channel, actual_model)
 
-    target_url = f"{channel['base_url'].rstrip('/')}/chat/completions"
+    # P1-8 (2026-08-14): prompt cache headers 注入
+    # 只在 channel.supports_prompt_cache=1 时启用
+    # Anthropic 风格: messages[0] (system) 加 cache_control: {type: "ephemeral"}
+    # OpenAI 风格: 加 prompt_cache_key parameter (用 system content hash)
+    if channel.get("supports_prompt_cache"):
+        try:
+            body = _inject_prompt_cache(body, channel)
+        except Exception as e:
+            logger.warning(f"[P1-8] prompt cache 注入失败 (非致命): {e}")
+
+    base_url = _resolve_effective_base_url(channel)
+    target_url = f"{base_url.rstrip('/')}/chat/completions"
 
     start_time = time.time()
 
     try:
         if is_stream:
             return await _forward_stream(
-                target_url, forward_headers, body, channel, start_time,
-                aimc_headers, requested_model=requested_model,
+                target_url, forward_headers, body, channel, start_time, aimc_headers
             )
         else:
             return await _forward_normal(
-                target_url, forward_headers, body, channel, start_time,
-                aimc_headers, requested_model=requested_model,
+                target_url, forward_headers, body, channel, start_time, aimc_headers, requested_model
             )
     except httpx.TimeoutException:
         logger.error(f"上游超时: {channel['name']} ({target_url})")
@@ -182,7 +299,6 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
 async def _forward_stream(
     url: str, headers: dict, body: bytes, channel: dict, start_time: float,
     aimc_headers: dict | None = None,
-    requested_model: str = "",
 ) -> StreamingResponse:
     """流式透传：原样传递字节，不解析 SSE"""
 
@@ -200,9 +316,6 @@ async def _forward_stream(
     # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
     if response.status_code in (401, 403, 500, 502, 503, 504):
         _schedule_alert(channel, response)
-
-    # V4.6.1: 更新账号 cooldown (失败进入冷却, 成功清空)
-    _update_cooldown(channel, response.status_code)
 
     async def stream_generator():
         try:
@@ -240,7 +353,7 @@ async def _forward_normal(
 ) -> JSONResponse:
     """非流式转发：等待完整响应后返回
 
-    V4.6.1: 接收 requested_model 透传给 _schedule_usage_log (Phase 3.A group_id 提取)
+    V4.6.1: 接收 requested_model 透传给 _schedule_usage_log
     """
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(settings.request_timeout, connect=10.0)) as client:
@@ -249,12 +362,25 @@ async def _forward_normal(
     latency_ms = int((time.time() - start_time) * 1000)
     logger.info(f"[Normal] {channel['name']} -> {response.status_code} ({latency_ms}ms)")
 
+    # P1-15 (2026-08-15): 429 (quota/plan 耗尽) 标记 cooldown
+    # 场景: minimax TokenPlanMax 用量到上限 -> 上游 429 "已达到 Token Plan 用量上限"
+    # 处理: 标记该 account cooldown (避免反复撞), routes.py retry loop 会选其他 channel
+    if response.status_code == 429:
+        try:
+            from gateway.cooldown import cooldown_manager
+            cooldown_manager.mark_failure(
+                channel["account_id"], reason="upstream_429_quota_exhausted"
+            )
+            logger.warning(
+                f"P1-15: {channel['name']} 429 (quota/plan), 标记 cooldown "
+                f"account_id={channel['account_id']}"
+            )
+        except Exception as e:
+            logger.debug(f"P1-15: mark_failure 失败 (非致命): {e}")
+
     # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
     if response.status_code in (401, 403, 500, 502, 503, 504):
         _schedule_alert(channel, response)
-
-    # V4.6.1: 更新账号 cooldown (失败进入冷却, 成功清空)
-    _update_cooldown(channel, response.status_code)
 
     # 尝试记录用量（异步，不阻塞响应）
     _schedule_usage_log(channel, response, latency_ms, requested_model)
@@ -283,26 +409,80 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
     Phase 3.A: 接收 requested_model, 提取 group_id 写入 usage_logs
     - 精确模型路由: group_id = NULL
     - 组路由: group_id = "tier:xxx" / "scene:xxx"
+
+    Phase 3.A+ fix (2026-08-13): model 字段兜底
+    - 优先用 router 注入的 _actual_model (精确路由 = requested_model, 组路由 = 实际命中)
+    - fallback 到 requested_model (请求体里的 model)
+    - 再次 fallback 到上游响应 data.model (避免空字符串导致 dashboard 命中率统计失真)
     """
     try:
         data = response.json()
         usage = data.get("usage", {})
         group_id = _extract_group_id(requested_model)
-        # 创建异步任务写入数据库
-        asyncio.get_event_loop().create_task(
-            _write_usage_log(
-                channel_id=channel.get("id"),
-                account_id=channel.get("account_id"),
-                model=data.get("model", ""),
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
-                status_code=response.status_code,
-                latency_ms=latency_ms,
-                group_id=group_id,
-            )
+        actual_model = (
+            channel.get("_actual_model")
+            or requested_model
+            or data.get("model", "")
         )
+
+        # P0-3 follow-up: 解析 cached_tokens (OpenAI + Anthropic 风格)
+        cached_input_tokens = None
+        cache_read_input_tokens = None
+        cache_creation_input_tokens = None
+
+        # OpenAI: usage.prompt_tokens_details.cached_tokens
+        prompt_details = usage.get("prompt_tokens_details")
+        if isinstance(prompt_details, dict):
+            v = prompt_details.get("cached_tokens")
+            if isinstance(v, int):
+                cached_input_tokens = v
+
+        # Anthropic: usage.cache_read_input_tokens + cache_creation_input_tokens
+        v = usage.get("cache_read_input_tokens")
+        if isinstance(v, int):
+            cache_read_input_tokens = v
+        v = usage.get("cache_creation_input_tokens")
+        if isinstance(v, int):
+            cache_creation_input_tokens = v
+
+        # 创建异步任务写入数据库
+        # 修复 V4.6.4: 用 asyncio.create_task 替代 asyncio.get_event_loop().create_task
+        # 之前: get_event_loop() 在 Python 3.12 + uvicorn 多 worker 场景下可能返回错的 loop 或 RuntimeError
+        # 现在: 直接用 asyncio.create_task (Python 3.10+ 推荐)
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(
+                _write_usage_log(
+                    channel_id=channel.get("id"),
+                    account_id=channel.get("account_id"),
+                    model=actual_model,
+                    input_tokens=usage.get("prompt_tokens", 0),
+                    output_tokens=usage.get("completion_tokens", 0),
+                    status_code=response.status_code,
+                    latency_ms=latency_ms,
+                    group_id=group_id,
+                    cached_input_tokens=cached_input_tokens,
+                    cache_read_input_tokens=cache_read_input_tokens,
+                    cache_creation_input_tokens=cache_creation_input_tokens,
+                )
+            )
+            # V4.6.4: 添加回调, task 失败时 log 错误 (之前静默)
+            task.add_done_callback(_log_task_result)
+        except RuntimeError as e:
+            # 没有 running loop (不可能在 FastAPI handler 里, 但兜底)
+            logger.warning(f"V4.6.4: asyncio.create_task 失败: {e}, 跳过本次 usage_log")
     except Exception:
         pass  # 用量记录失败不影响主流程
+
+
+def _log_task_result(task: asyncio.Task) -> None:
+    """V4.6.4: create_task 失败回调 — 让 _write_usage_log 异常可见"""
+    try:
+        exc = task.exception()
+        if exc:
+            logger.warning(f"用量日志写入失败 (task 异常): {exc}")
+    except asyncio.CancelledError:
+        pass
 
 
 async def _write_usage_log(
@@ -314,6 +494,9 @@ async def _write_usage_log(
     status_code: int,
     latency_ms: int,
     group_id: str | None = None,
+    cached_input_tokens=None,
+    cache_read_input_tokens=None,
+    cache_creation_input_tokens=None,
 ):
     """写入用量日志到数据库
 
@@ -336,6 +519,10 @@ async def _write_usage_log(
                 output_tokens=output_tokens,
                 status_code=status_code,
                 latency_ms=latency_ms,
+                # P0-3 follow-up: 3 个 cache token 字段
+                cached_input_tokens=cached_input_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
             )
             session.add(log)
             await session.commit()
@@ -373,13 +560,16 @@ def _schedule_alert(channel: dict, response: httpx.Response):
     # throttle key: 同 channel + 同 status 共用, 不同 status (401 vs 500) 独立告警
     throttle_key = f"{channel_name}:{status}"
     try:
-        asyncio.get_event_loop().create_task(
+        loop = asyncio.get_running_loop()
+        loop.create_task(
             _send_alert_async(msg, key=throttle_key)
         )
     except RuntimeError:
         # 没 event loop (e.g. 关闭时), 同步发
-        import logging
-        logging.getLogger(__name__).warning(f"[alerter fallback] {msg}")
+        logger.warning(f"[alerter fallback] {msg}")
+    except Exception as e:
+        # V4.6.4: 静默错误 — 之前 _schedule_alert 失败完全没 log
+        logger.warning(f"V4.6.4: _schedule_alert task 调度失败: {e}")
 
 
 async def _send_alert_async(message: str, key: str | None = None):

@@ -43,6 +43,32 @@ class Channel(Base):
         Text, nullable=False, server_default="pay_per_token",
         comment="pay_per_token(按量) / subscription(订阅制) / free(免费)",
     )
+    # P1-12 (2026-08-14): 实际 base_url (覆盖 db.base_url, 改 dashboard 即可生效不需要 restart)
+    # 优先级: db.api_base ?? db.base_url ?? SENSENOVA_BASE_URL env (router/proxy 实现)
+    # 用例: dashboard 临时切到备份 base_url 不需要重启 service
+    api_base = Column(
+        Text, nullable=True,
+        comment="实际 base_url (覆盖 db.base_url, NULL=用 db.base_url)",
+    )
+    # P1-12: 协议风格 — 决定 router/proxy 走 OpenAI 格式还是 Anthropic 格式
+    # 后续 P1-8 用这个字段决定是否注入 cache_control headers
+    api_style = Column(
+        Text, nullable=True, server_default="openai",
+        comment="协议风格: openai / anthropic (决定 cache_control headers 格式)",
+    )
+    # P1-12: 是否支持 prompt cache — router/proxy 用这个字段决定是否注入 cache headers
+    # 硅基流动/DeepSeek 支持, qwen/智谱/sensenova/minimax 不支持
+    supports_prompt_cache = Column(
+        Integer, nullable=False, server_default="0",
+        comment="0=不支持 prompt cache, 1=支持 (router 据此注入 cache headers)",
+    )
+    # V4.6.4+: 剥离请求里的 thinking 相关字段 (默认启用, 个人项目偏好)
+    # 某些上游 (minimax deepthink) 即使不传 enable_thinking 也强制 thinking,
+    # 关掉后: agent loop 更快 + token 减少
+    disable_thinking_pass_through = Column(
+        Integer, nullable=False, server_default="1",
+        comment="0=不剥离, 1=剥离 body 里的 thinking/enable_thinking/reasoning_effort (proxy 层)",
+    )
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -68,6 +94,22 @@ class Account(Base):
     last_rotated_at = Column(DateTime, nullable=True, comment="最后轮换时间 (manual_import.py 写入)")
     expires_at = Column(DateTime, nullable=True, comment="用户自定过期时间 (NULL=无)")
     notes = Column(Text, nullable=True, comment="用户备注 (V4.5 fix: add_account.py --notes)")
+    # P0-5 (2026-08-14): encryption_version 标记 ciphertext 用哪个 master key 加密
+    # - 1 = 当前 AIMC_MASTER_KEY (Fernet, 64 hex chars) — 现状
+    # - 2 = 未来 AIMC_MASTER_KEY_V2 — 预留, reencrypt 后用
+    # 让 reencrypt_accounts.py 可以区分新旧密文, 启动时校验可定位"key 版本错"
+    encryption_version = Column(
+        Integer, nullable=False, server_default="1",
+        comment="密文用的 master key 版本 (1=current, 2=next, ...)",
+    )
+    # P0-6 (2026-08-14): quota_plan 标识账户所属的 plan 类型
+    # 跟 account_quotas 表联动 — 不同 plan 有不同的限额维度配置
+    # 值: 'token_plan_max' (minimax 年度) / 'free_trial' (sensenova 试用) /
+    #     'pay_as_you_go' (其他按量付费) — 后续可扩展
+    quota_plan = Column(
+        Text, nullable=True,
+        comment="账户 plan 类型 (跟 account_quotas 配置联动)",
+    )
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -83,21 +125,49 @@ class Account(Base):
 
 
 class PriceSnapshot(Base):
-    """价格快照表（支持峰谷时段）"""
+    """价格快照表（支持峰谷时段 + 缓存价格 + 优惠期）"""
     __tablename__ = "price_snapshots"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
-    model = Column(Text, nullable=False, comment="模型名: deepseek-chat/qwen-max")
+    model = Column(Text, nullable=False, comment="归一化 model_id (e.g. glm-5.2, 跟 model_registry.model_id 对齐)")
     price_type = Column(Text, default="normal", comment="normal/peak/offpeak/cache_hit/free")
     time_range = Column(Text, default="全天", comment='时段: "00:00-08:00" 或 "全天"')
-    input_price = Column(Float, nullable=True, comment="输入价格（元/百万tokens）")
-    output_price = Column(Float, nullable=True, comment="输出价格（元/百万tokens）")
+    input_price = Column(Float, nullable=True, comment="输入价格（默认货币元/百万tokens）")
+    output_price = Column(Float, nullable=True, comment="输出价格")
     unit = Column(Text, default="元/百万tokens")
-    effective_from = Column(Text, nullable=True, comment="生效日期")
+    effective_from = Column(Text, nullable=True, comment="生效日期 (ISO date 或 datetime)")
     effective_to = Column(Text, nullable=True, comment="失效日期，NULL=长期有效")
     source = Column(Text, nullable=True, comment="来源: manual/crawler/api")
     created_at = Column(DateTime, default=func.now())
+
+    # P0-2 (2026-08-14): 缓存价格 + 优惠期 + raw_model_id 双轨
+    raw_model_id = Column(
+        Text, nullable=True,
+        comment="上游原始 model_id (e.g. zai-org/GLM-5.2), proxy 用这个发请求",
+    )
+    cached_input_price = Column(
+        Float, nullable=True,
+        comment="缓存命中输入价 (元/百万tokens), NULL=不支持或未定价. "
+                "硅基流动/DeepSeek 等支持 prompt cache 的渠道用这个",
+    )
+    cache_write_price = Column(
+        Float, nullable=True,
+        comment="缓存写入价 (元/百万tokens), NULL=不收费. 部分渠道缓存命中免费但写入收费",
+    )
+    currency = Column(
+        Text, nullable=False, server_default="CNY",
+        comment="货币单位 (默认 CNY), 跨渠道价格比较时归一化用",
+    )
+    is_promotion = Column(
+        Integer, nullable=False, server_default="0",
+        comment="0=日常价格, 1=优惠期价格 (跟 effective_from/to 联动, 优惠期过自动失效)",
+    )
+
+    # P0-2: UNIQUE 索引 (channel_id, model) — 避免重复录入
+    __table_args__ = (
+        Index("uq_ps_channel_model", "channel_id", "model", unique=True),
+    )
 
     # 关系
     channel = relationship("Channel", back_populates="price_snapshots")
@@ -144,6 +214,59 @@ class ChannelQuota(Base):
     account = relationship("Account", back_populates="quotas")
 
 
+class AccountQuota(Base):
+    """P0-6 (2026-08-14): 多维限额定义 (一行 = 一个限额维度)
+
+    替代 ChannelQuota 的简单 RPM/TPM 表达, 支持厂商实际的多维限额:
+    - rpm / tpm: 每分钟请求数 / token 数
+    - daily_tokens / weekly_tokens / 5h_tokens: 日/周/5小时窗口 token 数
+    - concurrent: 并发请求数 (in-flight count)
+    - balance_cny: 余额 (元, 永久, 定期 sync)
+
+    每个 (account_id, dimension) 只允许 1 行 (UNIQUE INDEX)
+    """
+    __tablename__ = "account_quotas"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    dimension = Column(
+        Text, nullable=False,
+        comment="rpm / tpm / daily_tokens / weekly_tokens / 5h_tokens / concurrent / balance_cny",
+    )
+    limit_value = Column(Float, nullable=False, comment="限制值 (token 数 / 请求数 / 余额元)")
+    window_seconds = Column(
+        Integer, nullable=True,
+        comment="窗口长度 (秒), NULL=永久 (余额) 或 N/A (rpm 并发)",
+    )
+    reset_strategy = Column(
+        Text, nullable=False, server_default="rolling",
+        comment="rolling (滑动窗口) / fixed_daily / fixed_weekly / never (永久, 余额)",
+    )
+    enabled = Column(Integer, nullable=False, server_default="1", comment="0=禁用")
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    notes = Column(Text, nullable=True, comment="人工备注: 来源 URL / 厂商文档引用")
+
+
+class AccountQuotaUsage(Base):
+    """P0-6 (2026-08-14): 实时限额使用量
+
+    (account_id, dimension) 联合主键, 一行 = 一个账户一个维度的当前窗口
+
+    rolling window: window_start = 最早一次未超时的请求时间
+    fixed_daily/weekly: window_start = 周期起点
+    never (余额): used_value 不变 (单独维护, 不在 usage 表)
+
+    router pre-check 时读 + 累加; proxy 成功后再次累加 (input + output tokens)
+    """
+    __tablename__ = "account_quota_usage"
+
+    account_id = Column(Integer, ForeignKey("accounts.id"), primary_key=True, nullable=False)
+    dimension = Column(Text, primary_key=True, nullable=False)
+    window_start = Column(DateTime, nullable=True)
+    used_value = Column(Float, nullable=False, server_default="0")
+    last_updated = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
 class UsageLog(Base):
     """用量日志表（归档查账）"""
     __tablename__ = "usage_logs"
@@ -162,6 +285,26 @@ class UsageLog(Base):
     cost_estimate = Column(Float, nullable=True, comment="估算费用（元）")
     status_code = Column(Integer, nullable=True)
     latency_ms = Column(Integer, nullable=True, comment="响应延迟（毫秒）")
+    # P0-3 follow-up (2026-08-14): prompt cache token 统计
+    # - cached_input_tokens: OpenAI 风格的 cache hit tokens
+    #   (usage.prompt_tokens_details.cached_tokens)
+    # - cache_read_input_tokens: Anthropic 风格的 cache read tokens
+    #   (usage.cache_read_input_tokens)
+    # - cache_creation_input_tokens: Anthropic 风格的 cache write tokens
+    #   (usage.cache_creation_input_tokens)
+    # - NULL = 上游不支持 prompt cache 或 0 cache tokens
+    cached_input_tokens = Column(
+        Integer, nullable=True,
+        comment="OpenAI-style: 缓存命中 token 数 (usage.prompt_tokens_details.cached_tokens)",
+    )
+    cache_read_input_tokens = Column(
+        Integer, nullable=True,
+        comment="Anthropic-style: 缓存读取 token 数 (usage.cache_read_input_tokens)",
+    )
+    cache_creation_input_tokens = Column(
+        Integer, nullable=True,
+        comment="Anthropic-style: 缓存写入 token 数 (usage.cache_creation_input_tokens)",
+    )
     created_at = Column(DateTime, default=func.now())
 
 
@@ -264,6 +407,12 @@ class ModelRegistry(Base):
     - benchmark_scores 仅 Dashboard 展示用，不参与路由
     - capabilities 是 JSON 字符串，SQLAlchemy 不解析，应用层 json.loads
     - model_id 规范: {family}-{version}[-{variant}]，如 deepseek-v4-pro
+
+    P0-2 (2026-08-14): 加 raw_ids JSON + supports_prompt_cache
+    - raw_ids: 各渠道上游原始 model_id 映射, proxy 用这个反查发请求
+      (e.g. {"siliconflow": "zai-org/GLM-5.2", "deepseek": "glm-5.2"})
+    - supports_prompt_cache: 是否支持 prompt cache (0/1), router/proxy
+      看到这个字段才注入 cache_control headers
     """
     __tablename__ = "model_registry"
 
@@ -282,6 +431,17 @@ class ModelRegistry(Base):
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # P0-2 扩展
+    raw_ids = Column(
+        Text, nullable=True,
+        comment="JSON: 各渠道上游原始 model_id, {\"siliconflow\": \"zai-org/GLM-5.2\", ...}. "
+                "proxy 发请求前从 model_id 反查 raw_ids[channel.name]",
+    )
+    supports_prompt_cache = Column(
+        Integer, nullable=False, server_default="0",
+        comment="0=不支持 prompt cache, 1=支持 (e.g. siliconflow/deepseek 支持, qwen 不支持)",
+    )
 
 
 class ModelGroup(Base):
@@ -314,7 +474,13 @@ class ModelGroupMember(Base):
     """组成员关联 (Phase 2.1, 2026-07-29)
 
     多对多: group_id ↔ model_id。
-    不强制 FK (model_id 用 soft join, 允许"还没入库的新 model"占位)。
+
+    P0-1 (2026-08-14): 加 FK + UNIQUE 强约束
+    - group_id FK -> model_groups.group_id (db 层拒绝孤儿)
+    - (group_id, model_id) UNIQUE WHERE is_active=1 (db 层拒绝重复 member)
+    - 软删除 (is_active=0) 行保留, 但不参与 UNIQUE 约束
+    - 历史脏数据 (孤儿行 + 重复行) 已通过 db/migrations/2026_08_14_p01_mgm_fk_unique.py
+      软删除
 
     P1-2 (2026-08-06) 软删除设计:
     - is_active=1 (默认) 参与路由; is_active=0 仍保留行, 仅路由跳过
@@ -322,12 +488,20 @@ class ModelGroupMember(Base):
     - 业务查询 path (gateway/router._load_groups_cache, dashboard 等)
       需主动 .where(is_active=1) 过滤, 否然会跳走 deprecated model
     - 路由 cache 严格不应出现 is_active=0 行
+
+    router 层防御:
+    - 即便 db 已有 FK, router._load_groups_cache 仍做防御性 group_id 归一化
+      (0afd0a2, C1 of fix-branch) — 容忍启动前 db 短暂不一致
     """
     __tablename__ = "model_group_members"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    group_id = Column(Text, nullable=False, comment="引用 model_groups.group_id (soft FK)")
-    model_id = Column(Text, nullable=False, comment="引用 model_registry.model_id (soft FK)")
+    # P0-1: FK 强制 model_groups.group_id 对齐, db 层拒绝 int-string 污染
+    group_id = Column(
+        Text, nullable=False,
+        comment="FK -> model_groups.group_id (db 强约束)",
+    )
+    model_id = Column(Text, nullable=False, comment="soft FK -> model_registry.model_id (允许未入库 model)")
     priority = Column(Integer, default=100, comment="组内优先级 (越小越优先, 同价时生效)")
     weight = Column(Float, default=1.0, comment="weighted 策略时的权重 (Phase 3)")
     max_cost_ratio = Column(Float, nullable=True, comment="价格超过组内最低 N 倍时排除 (NULL=不限)")
@@ -339,10 +513,16 @@ class ModelGroupMember(Base):
     removed_reason = Column(Text, nullable=True, comment="出组原因: deprecated+tier_change+manual")
     removed_by = Column(Text, nullable=True, comment="出组执行人: intel_auto/manual_approve")
 
-    # 索引: 路由查询以 (group_id, is_active) 为主过滤, 顺序访问
+    # 索引 + 约束
+    # P0-1: UNIQUE 部分索引 (SQLite only) — (group_id, model_id) 在 is_active=1 行内唯一
+    #       软删除行不参与 UNIQUE, 保留审计历史
     __table_args__ = (
         Index("idx_mgm_group_active", "group_id", "is_active"),
         Index("idx_mgm_model_active", "model_id", "is_active"),
+        UniqueConstraint(
+            "group_id", "model_id",
+            name="uq_mgm_group_model",
+        ),  # 严格 UNIQUE (跟 migration 的 partial index 等效, 简化 ORM 层)
     )
 
 
@@ -408,6 +588,118 @@ class CrossSourceDiscrepancy(Base):
 
 
 Index("idx_cross_source_status", CrossSourceDiscrepancy.status, CrossSourceDiscrepancy.model_id)
+
+
+class ModelChangeSuggestion(Base):
+    """方案 A (2026-08-14): 单 model 调整建议
+
+    - tier_change: tier 升降 (基于 model_cards.score 跟当前 tier 平均比较)
+    - add_to_group: model 应该加进某个 group
+    - remove_from_group: model 应该从 group 移除 (长期不用)
+
+    流程:
+    1. intelligence/analytics/suggest_changes.py 写入 status='pending'
+    2. dashboard \"建议中心\" 人工 review, 点批准/拒绝
+    3. scripts/apply_suggestions.py 直接 UPDATE db + 写 applied_at
+
+    不直接改 model_group_members 或 model_registry.tier (那是 seed_model_groups.py 的事),
+    让 db 状态最新 + seed 脚本可重新生成 (如果需要 git-tracked).
+    """
+    __tablename__ = "model_change_suggestions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_id = Column(Text, nullable=False)
+    change_type = Column(
+        Text, nullable=False,
+        comment="tier_change / add_to_group / remove_from_group",
+    )
+    suggested_value = Column(Text, nullable=True, comment="新 tier / group_id")
+    current_value = Column(Text, nullable=True, comment="当前 tier / group_id (NULL=未加入)")
+    reason = Column(Text, nullable=True, comment="markdown 解释, 含置信度逻辑")
+    confidence = Column(
+        Float, nullable=True,
+        comment="0-1, 越高越可信 (基于 model_cards / usage / price / cache 4 数据源)",
+    )
+    based_on = Column(
+        Text, nullable=True,
+        comment="JSON: {\"score\": 85, \"old_tier\": \"T2\", \"avg_tier_T0_score\": 80}",
+    )
+    status = Column(
+        Text, nullable=False, server_default="pending",
+        comment="pending / approved / rejected / applied",
+    )
+    created_at = Column(DateTime, default=func.now())
+    reviewed_at = Column(DateTime, nullable=True)
+    reviewed_by = Column(Text, nullable=True)
+    applied_at = Column(DateTime, nullable=True)
+
+
+class GroupChangeSuggestion(Base):
+    """方案 A (2026-08-14): 组级别调整建议
+
+    - create: 新增 group (基于 usage_logs fallback 503 比例)
+    - merge: 合并 2 个 group (低使用率)
+    - delete: 删除 group (0 使用率)
+    - rename: 重命名 (跟实际 model 不匹配)
+
+    同 model_change_suggestions 流程
+    """
+    __tablename__ = "group_change_suggestions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Text, nullable=False)
+    change_type = Column(
+        Text, nullable=False,
+        comment="create / merge / delete / rename",
+    )
+    suggested_config = Column(
+        Text, nullable=True,
+        comment="JSON: fallback_group / strategy / require_vision 等",
+    )
+    target_groups = Column(
+        Text, nullable=True,
+        comment="merge 时: \"tier:strong,tier:balanced\"; delete 时: NULL",
+    )
+    reason = Column(Text, nullable=True)
+    confidence = Column(Float, nullable=True)
+    based_on = Column(Text, nullable=True, comment="JSON: {\"usage_pct\": {...}}")
+    status = Column(Text, nullable=False, server_default="pending")
+    created_at = Column(DateTime, default=func.now())
+    reviewed_at = Column(DateTime, nullable=True)
+    reviewed_by = Column(Text, nullable=True)
+    applied_at = Column(DateTime, nullable=True)
+
+
+Index("idx_mcs_status", ModelChangeSuggestion.status, ModelChangeSuggestion.created_at)
+Index("idx_mcs_model", ModelChangeSuggestion.model_id, ModelChangeSuggestion.change_type)
+Index("idx_gcs_status", GroupChangeSuggestion.status, GroupChangeSuggestion.created_at)
+Index("idx_gcs_group", GroupChangeSuggestion.group_id, GroupChangeSuggestion.change_type)
+
+
+class JobHealth(Base):
+    """阶段2 (2026-08-14): APScheduler job 健康状态
+
+    用途:
+    - dashboard 显示 \"数据新鲜度\" (last_success_at 距今多久)
+    - 失败告警 (last_error_at + last_error_msg)
+    - 累计统计 (total_runs / successes / failures)
+
+    跟 apscheduler_jobs 表独立 (后者由 apscheduler 自己管理, 只存 schedule)
+    """
+    __tablename__ = "job_health"
+
+    job_id = Column(Text, primary_key=True)
+    last_run_at = Column(DateTime, nullable=True)
+    last_success_at = Column(DateTime, nullable=True)
+    last_error_at = Column(DateTime, nullable=True)
+    last_error_msg = Column(Text, nullable=True)
+    last_duration_ms = Column(Integer, nullable=True)
+    total_runs = Column(Integer, nullable=False, server_default="0")
+    total_successes = Column(Integer, nullable=False, server_default="0")
+    total_failures = Column(Integer, nullable=False, server_default="0")
+
+
+Index("idx_job_health_last_success", JobHealth.last_success_at)
 
 
 class SettingsRuntime(Base):

@@ -40,6 +40,53 @@
             </div>
         </section>
 
+        <!-- 阶段1 (2026-08-14): prompt cache 节省成本 -->
+        <!-- 方案A (2026-08-14): 模型分组建议中心 -->
+        <section class="card" id="suggestions-section">
+            <h2>模型分组建议 <span class="subtitle">方案A · 待审/已批</span></h2>
+            <div class="summary-row">
+                <span class="summary-item">待审: <strong id="sg-pending">--</strong></span>
+                <span class="summary-item">已批: <strong id="sg-approved">--</strong></span>
+                <span class="summary-item">已应用: <strong id="sg-applied">--</strong></span>
+                <button class="btn btn-primary" onclick="applyAllSuggestions()" style="margin-left:auto;">一键应用已批准</button>
+                <button class="btn btn-secondary" onclick="loadSuggestions()">刷新</button>
+            </div>
+            <div id="suggestions-list">
+                <div style="color:#6a737d;">加载中...</div>
+            </div>
+        </section>
+
+        <!-- 阶段2 (2026-08-14): 数据新鲜度 (apscheduler job_health) -->
+        <section class="card" id="data-freshness-section">
+            <h2>数据新鲜度 <span class="subtitle">阶段2 · job_health</span></h2>
+            <div class="summary-row">
+                <span class="summary-item">总 job: <strong id="df-total">--</strong></span>
+                <span class="summary-item">健康: <strong id="df-healthy">--</strong></span>
+                <span class="summary-item">告警: <strong id="df-warning">--</strong></span>
+                <span class="summary-item">过期: <strong id="df-stale">--</strong></span>
+            </div>
+            <div id="data-freshness-list">
+                <div style="color:#6a737d;">加载中...</div>
+            </div>
+        </section>
+
+        <section class="card" id="cache-stats-section">
+            <h2>Prompt Cache 节省 <span class="subtitle">近 7 天 · P1-8</span></h2>
+            <div class="summary-row" id="cache-stats-summary">
+                <span class="summary-item">节省金额: <strong id="cache-saved">¥--</strong></span>
+                <span class="summary-item">Cache Token: <strong id="cache-tokens">--</strong></span>
+                <span class="summary-item">命中率: <strong id="cache-hit-pct">--</strong>%</span>
+            </div>
+            <div id="cache-by-channel" class="cache-detail">
+                <h3 style="font-size:14px;margin-top:12px;">按渠道</h3>
+                <div id="cache-channel-list">加载中...</div>
+            </div>
+            <div id="cache-by-model" class="cache-detail">
+                <h3 style="font-size:14px;margin-top:12px;">TOP 10 Model</h3>
+                <div id="cache-model-list">加载中...</div>
+            </div>
+        </section>
+
         <!-- 用量统计 -->
         <section class="card" id="usage-section">
             <h2>用量统计（近7天）</h2>

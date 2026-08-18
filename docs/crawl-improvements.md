@@ -4,6 +4,12 @@
 > 创建时间：2026-07-22
 > 状态：Phase 2A/2B/2C-1~3 全部完成 ✅
 
+
+## 📦 历史归档说明
+
+> **本文档已归档**（2026-08-15 文档重组时迁移到 docs/archive/）。
+> 新内容见 [docs/index.md](../index.md) 或相关 [docs/dev/](../dev/) / [docs/user/](../user/) 文档。
+
 ## 一、为什么需要改进
 
 AIMC 爬虫监控 3 家厂商的 6 个 source（DeepSeek×2 / Qwen×2 / GLM×2），间隔 15~30 分钟轮询。

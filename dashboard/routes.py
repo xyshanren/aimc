@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +26,7 @@ from db.models import (
     ModelCapabilitiesLog,
     CrossSourceDiscrepancy,
     SettingsRuntime,
+    ModelChangeSuggestion, GroupChangeSuggestion,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,9 +67,135 @@ async def dashboard_page():
     return HTMLResponse(content="<h1>AIMC Dashboard</h1><p>static/index.html not found</p>")
 
 
+# ============================================================
+# P1-7 (2026-08-14): Dashboard 鉴权 (跟 api_key 分开)
+# ============================================================
+# - AIMC_DASHBOARD_TOKEN 未设 = 无鉴权 (legacy, LAN 内裸开)
+# - AIMC_DASHBOARD_TOKEN 设了 = /dashboard/* 需要 token 校验
+# - 校验逻辑在 gateway/middleware.py (RequestLoggingMiddleware)
+# - 这里只提供 login/status/logout 三个端点 + login.html 静态页
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def dashboard_login_page(next: str = "/dashboard"):
+    """P1-7: dashboard 登录页 (浏览器访问 /dashboard 无 token 时重定向到这里)
+
+    显示一个简单的 token 输入框, 提交后 JS 把 token 存 localStorage,
+    并跳转到 ?next= 指定的路径
+    """
+    login_file = STATIC_DIR / "login.html"
+    if login_file.exists():
+        return HTMLResponse(content=login_file.read_text(encoding="utf-8"))
+    # Fallback inline HTML (跟 static/login.html 一致)
+    return HTMLResponse(content=_LOGIN_HTML_FALLBACK.format(next_path=next))
+
+
+# Fallback login HTML (避免引入独立 static 文件 — 简单优先)
+_LOGIN_HTML_FALLBACK = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>AIMC Dashboard Login</title>
+<style>
+body {{ font-family: system-ui; max-width: 400px; margin: 80px auto; padding: 20px; }}
+input {{ width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; font-size: 14px; }}
+button {{ width: 100%; padding: 10px; background: #1f6feb; color: white; border: none; cursor: pointer; font-size: 14px; }}
+button:hover {{ background: #1858bf; }}
+.err {{ color: #d73a49; margin-top: 10px; font-size: 13px; }}
+.hint {{ color: #6a737d; font-size: 12px; margin-top: 16px; }}
+</style></head>
+<body>
+<h2 style="margin-top:0;">AIMC Dashboard</h2>
+<p>Enter your dashboard token to continue.</p>
+<input id="t" type="password" placeholder="Dashboard token" autofocus>
+<button onclick="submit()">Login</button>
+<div id="err" class="err"></div>
+<div class="hint">Token 来源: AIMC_DASHBOARD_TOKEN 环境变量 / .env</div>
+<script>
+async function submit() {{
+  const token = document.getElementById('t').value.trim();
+  if (!token) {{ document.getElementById('err').innerText = 'Token required'; return; }}
+  // 验证 + 存 cookie (HttpOnly)
+  const resp = await fetch('/dashboard/api/auth/login', {{
+    method: 'POST',
+    headers: {{ 'Content-Type': 'application/json' }},
+    body: JSON.stringify({{ token }})
+  }});
+  if (resp.ok) {{
+    localStorage.setItem('aimc_dashboard_token', token);
+    location.href = '{next_path}';
+  }} else {{
+    document.getElementById('err').innerText = 'Invalid token';
+    localStorage.removeItem('aimc_dashboard_token');
+  }}
+}}
+document.getElementById('t').addEventListener('keypress', e => {{ if (e.key === 'Enter') submit(); }});
+</script>
+</body></html>
+"""
+
+
+@router.get("/api/auth/status")
+async def dashboard_auth_status():
+    """P1-7: dashboard 鉴权状态查询
+
+    返回:
+    - auth_enabled: bool — dashboard 是否启用鉴权 (跟 env AIMC_DASHBOARD_TOKEN 联动)
+    - auth_required: bool — 当前请求是否已鉴权 (有有效 token)
+
+    前端 JS 用这个判断:
+    - auth_enabled=False → 直接显示 dashboard (legacy)
+    - auth_enabled=True + auth_required=False → 跳 /dashboard/login
+    - auth_enabled=True + auth_required=True → 显示 dashboard
+    """
+    from config import settings
+    return {
+        "auth_enabled": settings.dashboard_auth_enabled,
+        "auth_required": False,  # middleware 已拦截未鉴权请求, 走到这里都是有 token 的
+    }
+
+
+@router.post("/api/auth/login")
+async def dashboard_auth_login(request: Request):
+    """P1-7: dashboard 登录端点 (备选 — 浏览器可用 fetch 提交而非 URL query)
+
+    Body: {"token": "<token>"}
+    Returns:
+    - 200 + Set-Cookie: aimc_dashboard_token=<token>; HttpOnly (浏览器场景)
+    - 401: 错误 token
+    """
+    from starlette.responses import JSONResponse
+    from config import settings
+    import hmac
+
+    body = await request.json()
+    provided = body.get("token", "").strip()
+    if not hmac.compare_digest(provided, settings.dashboard_token):
+        return JSONResponse(
+            status_code=401,
+            content={"error": {"message": "Invalid token", "type": "authentication_error"}},
+        )
+    # 设 cookie (浏览器场景)
+    response = JSONResponse(content={"ok": True})
+    response.set_cookie(
+        key="aimc_dashboard_token",
+        value=provided,
+        httponly=True,
+        samesite="lax",
+        max_age=86400 * 7,  # 7 天
+    )
+    return response
+
+
+@router.post("/api/auth/logout")
+async def dashboard_auth_logout():
+    """P1-7: dashboard 登出 (清 cookie)"""
+    from starlette.responses import JSONResponse
+    response = JSONResponse(content={"ok": True})
+    response.delete_cookie("aimc_dashboard_token")
+    return response
+
+
 @router.get("/api/channels")
 async def get_channels_status(session: AsyncSession = Depends(get_session)):
-    """渠道状态列表"""
+    """渠道状态列表 (P1-12: 加 api_base / api_style / supports_prompt_cache)"""
     stmt = select(Channel).order_by(Channel.provider)
     result = await session.execute(stmt)
     channels = result.scalars().all()
@@ -80,11 +207,77 @@ async def get_channels_status(session: AsyncSession = Depends(get_session)):
             "provider": ch.provider,
             "status": ch.status,
             "priority": ch.priority,
+            "base_url": ch.base_url,
+            "api_base": ch.api_base,  # P1-12: 实际 base_url (覆盖 db.base_url)
+            "api_style": ch.api_style or "openai",  # P1-12: openai / anthropic
+            "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: 0/1
             "accounts": len(ch.accounts),
             "active_accounts": len([a for a in ch.accounts if a.status == "active"]),
         }
         for ch in channels
     ]
+
+
+@router.put("/api/channels/{channel_id}")
+async def update_channel(channel_id: int, request: Request,
+                        session: AsyncSession = Depends(get_session)):
+    """P1-12 (2026-08-14): 编辑 channel 字段 (api_base / api_style / supports_prompt_cache / base_url / status / priority)
+
+    Body (JSON, 全部可选):
+    {
+        "base_url": "...",                  # 默认 base_url
+        "api_base": "...",                  # 实际 base_url (覆盖 base_url)
+        "api_style": "openai" | "anthropic",
+        "supports_prompt_cache": 0 | 1,
+        "status": "active" | "disabled",
+        "priority": 0
+    }
+
+    改完后调用 route_engine.invalidate_channel(channel_id) 让 router cache 立即刷新
+    """
+    from gateway.router import route_engine
+
+    body = await request.json()
+
+    ch = (await session.execute(
+        select(Channel).where(Channel.id == channel_id)
+    )).scalars().first()
+    if not ch:
+        raise HTTPException(status_code=404, detail=f"Channel {channel_id} not found")
+
+    # 记录原值（用于 dashboard 显示 diff）
+    before = {
+        "base_url": ch.base_url,
+        "api_base": ch.api_base,
+        "api_style": ch.api_style,
+        "supports_prompt_cache": ch.supports_prompt_cache,
+        "status": ch.status,
+        "priority": ch.priority,
+    }
+
+    # 更新字段
+    allowed_fields = {"base_url", "api_base", "api_style", "supports_prompt_cache", "status", "priority"}
+    for field, value in body.items():
+        if field in allowed_fields:
+            setattr(ch, field, value)
+    await session.commit()
+
+    # P1-12 + P0-4: 触发 router cache 立即刷新 (不等 TTL)
+    try:
+        await route_engine.invalidate_channel(channel_id)
+        logger.info(f"P1-12: channel {ch.name} ({channel_id}) 更新 + cache invalidated")
+    except Exception as e:
+        logger.warning(f"P1-12: invalidate_channel failed (non-fatal): {e}")
+
+    after = {
+        "base_url": ch.base_url,
+        "api_base": ch.api_base,
+        "api_style": ch.api_style,
+        "supports_prompt_cache": ch.supports_prompt_cache,
+        "status": ch.status,
+        "priority": ch.priority,
+    }
+    return {"ok": True, "before": before, "after": after}
 
 
 @router.get("/api/promotions")
@@ -142,6 +335,417 @@ async def get_usage_summary(days: int = 7, session: AsyncSession = Depends(get_s
         }
         for row in rows
     ]
+
+
+def _approx_channel_saved(channel_id: int, cached_t: int, cache_price_map: dict) -> float:
+    """阶段1 (2026-08-14): 按 channel 估算节省金额 (fallback 简化版)
+
+    当前简化: 因为价格表是按 model 维度, 不能精确按 channel 聚合,
+    这里用 cache_price_map 平均 cached_input_price * 9 估算节省.
+
+    TODO: 后续改进 — 用 LEFT JOIN price_snapshots WHERE channel_id=X
+    按 channel_id 过滤聚合, 给出精确节省
+    """
+    if cached_t <= 0:
+        return 0.0
+    if not cache_price_map:
+        return cached_t * 0.1 / 1_000_000
+    avg_cip = sum(cache_price_map.values()) / len(cache_price_map)
+    return cached_t * avg_cip * 9 / 1_000_000
+
+
+@router.get("/api/data-freshness")
+async def get_data_freshness(session: AsyncSession = Depends(get_session)):
+    """阶段2 (2026-08-14): APScheduler job 数据新鲜度
+
+    读 job_health 表, 按 last_success_at 倒序, 返回每个 job 的
+    last_success / last_error / 距今多久 / total_runs / total_failures.
+
+    用途: dashboard "数据新鲜度" 卡片
+    - 显示 "优惠情报 X 小时前更新" (last_success_at)
+    - 高亮失败 job (last_error_at 近 + total_failures > 0)
+    """
+    from datetime import datetime
+    from db.models import JobHealth
+
+    now = datetime.now()
+    rows = (await session.execute(
+        select(JobHealth).order_by(JobHealth.last_success_at.desc().nulls_last())
+    )).scalars().all()
+
+    def time_ago(dt: Optional[datetime]) -> Optional[str]:
+        if dt is None:
+            return None
+        delta = (now - dt).total_seconds()
+        if delta < 60:
+            return f"{int(delta)}秒前"
+        if delta < 3600:
+            return f"{int(delta // 60)}分钟前"
+        if delta < 86400:
+            return f"{int(delta // 3600)}小时前"
+        return f"{int(delta // 86400)}天前"
+
+    return {
+        "now": now.isoformat(),
+        "jobs": [
+            {
+                "job_id": r.job_id,
+                "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
+                "last_run_ago": time_ago(r.last_run_at),
+                "last_success_at": r.last_success_at.isoformat() if r.last_success_at else None,
+                "last_success_ago": time_ago(r.last_success_at),
+                "last_error_at": r.last_error_at.isoformat() if r.last_error_at else None,
+                "last_error_ago": time_ago(r.last_error_at),
+                "last_error_msg": (r.last_error_msg or "")[:200] if r.last_error_msg else None,
+                "last_duration_ms": r.last_duration_ms,
+                "total_runs": r.total_runs or 0,
+                "total_successes": r.total_successes or 0,
+                "total_failures": r.total_failures or 0,
+                # 健康度: "healthy" (last_success < 1d) / "warning" (1-3d) / "stale" (>3d) / "unknown" (没成功过)
+                "health": (
+                    "healthy" if r.last_success_at and (now - r.last_success_at).total_seconds() < 86400
+                    else "warning" if r.last_success_at and (now - r.last_success_at).total_seconds() < 3 * 86400
+                    else "stale" if r.last_success_at
+                    else "unknown"
+                ),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/api/cache/stats")
+async def get_cache_stats(days: int = 7, session: AsyncSession = Depends(get_session)):
+    """阶段1 (2026-08-14): prompt cache 节省成本统计
+
+    聚合最近 N 天 usage_logs 的 cached_input_tokens + price_snapshots.cached_input_price
+    计算:
+    - 总 input tokens / cache hit tokens / hit rate
+    - 按 cache 价 vs 普通价的差额算"节省金额"
+
+    Returns:
+        {
+            "period_days": 7,
+            "total_input_tokens": int,
+            "total_cached_tokens": int,
+            "hit_rate_pct": float,
+            "saved_cost_cny": float,           # 节省金额 (元)
+            "by_channel": [
+                {"channel_id": int, "channel_name": str,
+                 "input_tokens": int, "cached_tokens": int,
+                 "hit_rate_pct": float, "saved_cost_cny": float}
+            ],
+            "by_model": [
+                {"model": str, "input_tokens": int, "cached_tokens": int,
+                 "hit_rate_pct": float, "saved_cost_cny": float}
+            ],
+        }
+    """
+    from datetime import datetime, timedelta
+
+    # 计算时间窗口 (UTC 偏移不考虑, db 存的是本地 time)
+    cutoff = datetime.now() - timedelta(days=days)
+
+    # 1. 按 channel 聚合 (用 COALESCE 处理 NULL)
+    channel_stmt = (
+        select(
+            UsageLog.channel_id,
+            Channel.name.label("channel_name"),
+            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageLog.cached_input_tokens), 0).label("cached_tokens"),
+        )
+        .join(Channel, UsageLog.channel_id == Channel.id)
+        .where(UsageLog.created_at >= cutoff)
+        .group_by(UsageLog.channel_id, Channel.name)
+        .order_by(func.sum(UsageLog.cached_input_tokens).desc())
+    )
+    channel_rows = (await session.execute(channel_stmt)).all()
+
+    # 2. 按 model 聚合
+    model_stmt = (
+        select(
+            UsageLog.model,
+            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageLog.cached_input_tokens), 0).label("cached_tokens"),
+        )
+        .where(UsageLog.created_at >= cutoff)
+        .group_by(UsageLog.model)
+        .order_by(func.sum(UsageLog.cached_input_tokens).desc())
+        .limit(10)  # TOP 10 model
+    )
+    model_rows = (await session.execute(model_stmt)).all()
+
+    # 3. 算节省金额: cached_tokens * (input_price - cached_input_price) / 1e6
+    #    从 price_snapshots 读真实 cache 价; input_price 通常 SF 聚合平台未公开
+    #    估算: 假设 input_price = cached_input_price * 10 (cache 是 10% off, 节省 90%)
+    #    如果有 input_price, 用真实差额
+    price_map_stmt = select(
+        PriceSnapshot.model,
+        PriceSnapshot.input_price,
+        PriceSnapshot.cached_input_price,
+    )
+    price_rows = (await session.execute(price_map_stmt)).all()
+    # model -> cached_input_price (元/百万 tokens)
+    cache_price_map = {}
+    for p in price_rows:
+        if p.cached_input_price is None:
+            continue
+        cache_price_map[p.model] = p.cached_input_price
+        # 如果有真实 input_price, 也存 (按 model 维度算差额)
+    input_price_map = {}
+    for p in price_rows:
+        if p.input_price is not None:
+            input_price_map[p.model] = p.input_price
+
+    def saved_for(model: str, cached_t: int) -> float:
+        """算单个 model 的节省金额 (元)
+
+        算法:
+        - 如果有真实 input_price + cached_input_price: 用真实差额
+        - 否则用 cached_input_price * 9 (假设 cache 是 10% off, 节省 90%)
+        - 完全没价格: 用 0.1 元/百万的兜底
+        """
+        if cached_t <= 0:
+            return 0.0
+        cip = cache_price_map.get(model)
+        if cip is None:
+            return cached_t * 0.1 / 1_000_000  # 兜底
+        iip = input_price_map.get(model)
+        if iip is not None:
+            diff = max(iip - cip, 0)
+            return cached_t * diff / 1_000_000
+        # 用 cached_price * 9 估算 (cache 省 90%)
+        return cached_t * cip * 9 / 1_000_000
+
+    by_channel = []
+    for row in channel_rows:
+        input_t = int(row.input_tokens or 0)
+        cached_t = int(row.cached_tokens or 0)
+        hit_rate = (cached_t / input_t * 100) if input_t > 0 else 0.0
+        # by_channel 节省金额需要按 channel 算 (channel_id -> models -> 价格), 简化用 model 价
+        # 真实算需要 JOIN price_snapshots WHERE channel_id=..., 先用 model 价格近似
+        by_channel.append({
+            "channel_id": row.channel_id,
+            "channel_name": row.channel_name,
+            "input_tokens": input_t,
+            "cached_tokens": cached_t,
+            "hit_rate_pct": round(hit_rate, 1),
+            # TODO: 按 channel_id 过滤 price_snapshots 算精确节省
+            "saved_cost_cny": round(_approx_channel_saved(row.channel_id, cached_t, cache_price_map), 4),
+        })
+
+    by_model = []
+    for row in model_rows:
+        input_t = int(row.input_tokens or 0)
+        cached_t = int(row.cached_tokens or 0)
+        hit_rate = (cached_t / input_t * 100) if input_t > 0 else 0.0
+        saved = saved_for(row.model, cached_t)
+        by_model.append({
+            "model": row.model,
+            "input_tokens": input_t,
+            "cached_tokens": cached_t,
+            "hit_rate_pct": round(hit_rate, 1),
+            "saved_cost_cny": round(saved, 4),
+        })
+
+    # 4. 总计
+    total_input = sum(c["input_tokens"] for c in by_channel)
+    total_cached = sum(c["cached_tokens"] for c in by_channel)
+    total_hit_rate = (total_cached / total_input * 100) if total_input > 0 else 0.0
+    total_saved = sum(c["saved_cost_cny"] for c in by_channel)
+
+    return {
+        "period_days": days,
+        "total_input_tokens": total_input,
+        "total_cached_tokens": total_cached,
+        "hit_rate_pct": round(total_hit_rate, 1),
+        "saved_cost_cny": round(total_saved, 4),
+        "by_channel": by_channel,
+        "by_model": by_model,
+    }
+
+
+@router.get("/api/suggestions")
+async def get_suggestions(
+    status: str = "pending",
+    suggestion_type: str = "all",  # "model" / "group" / "all"
+    session: AsyncSession = Depends(get_session),
+):
+    """方案 A (2026-08-14): 模型/分组 建议列表
+
+    Query params:
+    - status: pending / approved / rejected / applied (default pending)
+    - suggestion_type: model / group / all (default all)
+    """
+    result = {"model": [], "group": []}
+
+    if suggestion_type in ("model", "all"):
+        m_stmt = (
+            select(ModelChangeSuggestion)
+            .where(ModelChangeSuggestion.status == status)
+            .order_by(ModelChangeSuggestion.confidence.desc())
+        )
+        model_rows = (await session.execute(m_stmt)).scalars().all()
+        result["model"] = [
+            {
+                "id": m.id,
+                "model_id": m.model_id,
+                "change_type": m.change_type,
+                "suggested_value": m.suggested_value,
+                "current_value": m.current_value,
+                "reason": m.reason,
+                "confidence": m.confidence,
+                "based_on": json.loads(m.based_on) if m.based_on else None,
+                "status": m.status,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+                "reviewed_at": m.reviewed_at.isoformat() if m.reviewed_at else None,
+                "reviewed_by": m.reviewed_by,
+                "applied_at": m.applied_at.isoformat() if m.applied_at else None,
+            }
+            for m in model_rows
+        ]
+
+    if suggestion_type in ("group", "all"):
+        g_stmt = (
+            select(GroupChangeSuggestion)
+            .where(GroupChangeSuggestion.status == status)
+            .order_by(GroupChangeSuggestion.confidence.desc())
+        )
+        group_rows = (await session.execute(g_stmt)).scalars().all()
+        result["group"] = [
+            {
+                "id": g.id,
+                "group_id": g.group_id,
+                "change_type": g.change_type,
+                "target_groups": g.target_groups,
+                "suggested_config": g.suggested_config,
+                "reason": g.reason,
+                "confidence": g.confidence,
+                "based_on": json.loads(g.based_on) if g.based_on else None,
+                "status": g.status,
+                "created_at": g.created_at.isoformat() if g.created_at else None,
+                "reviewed_at": g.reviewed_at.isoformat() if g.reviewed_at else None,
+                "reviewed_by": g.reviewed_by,
+                "applied_at": g.applied_at.isoformat() if g.applied_at else None,
+            }
+            for g in group_rows
+        ]
+
+    return result
+
+
+@router.post("/api/suggestions/{suggestion_type}/{suggestion_id}/approve")
+async def approve_suggestion(
+    suggestion_type: str,  # "model" / "group"
+    suggestion_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """方案 A (2026-08-14): 批准单条建议
+
+    Body: {"reviewed_by": "username"}
+    改 status='pending' -> 'approved' (后续 apply_suggestions.py 跑会真正改 db)
+    """
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    reviewed_by = body.get("reviewed_by", "dashboard")
+
+    model_cls = ModelChangeSuggestion if suggestion_type == "model" else GroupChangeSuggestion
+    s = (await session.execute(
+        select(model_cls).where(model_cls.id == suggestion_id)
+    )).scalars().first()
+    if not s:
+        raise HTTPException(status_code=404, detail=f"{suggestion_type} suggestion {suggestion_id} not found")
+    if s.status != "pending":
+        raise HTTPException(status_code=400, detail=f"建议当前 status='{s.status}', 只能批准 pending")
+
+    s.status = "approved"
+    s.reviewed_at = func.now()
+    s.reviewed_by = reviewed_by
+    await session.commit()
+    return {"ok": True, "id": suggestion_id, "status": "approved"}
+
+
+@router.post("/api/suggestions/{suggestion_type}/{suggestion_id}/reject")
+async def reject_suggestion(
+    suggestion_type: str,
+    suggestion_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """方案 A (2026-08-14): 拒绝单条建议"""
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    reviewed_by = body.get("reviewed_by", "dashboard")
+
+    model_cls = ModelChangeSuggestion if suggestion_type == "model" else GroupChangeSuggestion
+    s = (await session.execute(
+        select(model_cls).where(model_cls.id == suggestion_id)
+    )).scalars().first()
+    if not s:
+        raise HTTPException(status_code=404, detail=f"{suggestion_type} suggestion {suggestion_id} not found")
+
+    s.status = "rejected"
+    s.reviewed_at = func.now()
+    s.reviewed_by = reviewed_by
+    await session.commit()
+    return {"ok": True, "id": suggestion_id, "status": "rejected"}
+
+
+@router.post("/api/suggestions/apply-all")
+async def apply_all_approved_suggestions(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """方案 A (2026-08-14): 触发 apply_suggestions.py (server-side 跑)
+
+    Body: {"min_confidence": 0.5, "reviewed_by": "username"}
+    内部: 读 approved 建议, 直接 UPDATE db, 写 applied_at
+    """
+    from scripts.apply_suggestions import apply_model_suggestion, apply_group_suggestion
+
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    min_conf = body.get("min_confidence", 0.0)
+    reviewed_by = body.get("reviewed_by", "dashboard_apply")
+
+    n_model = n_group = 0
+    errors = []
+
+    m_stmt = (
+        select(ModelChangeSuggestion)
+        .where(ModelChangeSuggestion.status == "approved")
+        .where(ModelChangeSuggestion.confidence >= min_conf)
+    )
+    for s in (await session.execute(m_stmt)).scalars().all():
+        try:
+            await apply_model_suggestion(session, s, apply=True)
+            s.applied_at = func.now()
+            s.status = "applied"
+            s.reviewed_by = reviewed_by
+            n_model += 1
+        except Exception as e:
+            errors.append(f"model {s.id}: {e}")
+
+    g_stmt = (
+        select(GroupChangeSuggestion)
+        .where(GroupChangeSuggestion.status == "approved")
+        .where(GroupChangeSuggestion.confidence >= min_conf)
+    )
+    for s in (await session.execute(g_stmt)).scalars().all():
+        try:
+            await apply_group_suggestion(session, s, apply=True)
+            s.applied_at = func.now()
+            s.status = "applied"
+            s.reviewed_by = reviewed_by
+            n_group += 1
+        except Exception as e:
+            errors.append(f"group {s.id}: {e}")
+
+    await session.commit()
+    return {
+        "ok": True,
+        "applied_model": n_model,
+        "applied_group": n_group,
+        "errors": errors,
+    }
 
 
 @router.get("/api/prices")
@@ -447,6 +1051,7 @@ ALLOWED_RUNTIME_KEYS = {
     "serverchan_key",
     "feishu_webhook_url",
     "price_alert_threshold",  # Phase 4 E2: 价格波动告警阈值 (百分比字符串)
+    "router_score_weights",   # P0-7: router score 5 维权重 (JSON)
 }
 
 
@@ -488,6 +1093,99 @@ async def get_alert_settings(session: AsyncSession = Depends(get_session)):
             "is_override": override_val is not None,
         }
     return result
+
+
+@router.get("/api/settings/router-score-weights")
+async def get_router_score_weights(session: AsyncSession = Depends(get_session)):
+    """P0-7 (2026-08-14): 读 router score weights
+
+    返回当前生效的 5 维权重:
+    - weights: 当前值 (从 settings_runtime 读, 缺则用 router __init__ 默认值)
+    - defaults: router __init__ 写死的兜底值
+    - sum: 5 个权重之和 (应该接近 1.0)
+    """
+    import json as _json
+    from db.models import SettingsRuntime
+    from gateway.router import route_engine
+
+    defaults = {
+        "W_PRICE": 0.40, "W_QUOTA": 0.30, "W_SUCCESS": 0.20,
+        "W_RECENCY": 0.05, "W_PRIORITY": 0.05,
+    }
+    row = (await session.execute(
+        select(SettingsRuntime).where(SettingsRuntime.key == "router_score_weights")
+    )).scalars().first()
+    override = None
+    if row is not None and row.value is not None:
+        try:
+            override = _json.loads(row.value)
+        except Exception:
+            pass
+    weights = override if override is not None else route_engine._score_weights
+    return {
+        "weights": weights,
+        "defaults": defaults,
+        "override": override,
+        "sum": round(sum(weights.values()), 4),
+        "description": {
+            "W_PRICE": "价格分数权重 (越便宜分越高, 0-1)",
+            "W_QUOTA": "配额分数权重 (剩余越多分越高)",
+            "W_SUCCESS": "成功率分数权重 (cooldown 跳过, 1h 内 0.5, 1h 外 1.0)",
+            "W_RECENCY": "最近路由时间权重 (越久没用越优先)",
+            "W_PRIORITY": "渠道优先级权重 (priority/100)",
+        },
+    }
+
+
+@router.put("/api/settings/router-score-weights")
+async def set_router_score_weights(
+    payload: dict,
+    session: AsyncSession = Depends(get_session),
+):
+    """P0-7 (2026-08-14): 改 router score weights
+
+    Body:
+    {
+        "weights": {
+            "W_PRICE": 0.5,    # 价格优先 (省钱)
+            "W_QUOTA": 0.2,
+            "W_SUCCESS": 0.2,
+            "W_RECENCY": 0.05,
+            "W_PRIORITY": 0.05
+        }
+    }
+
+    校验:
+    - 必须含 5 个 W_* 字段
+    - 每个值在 [0, 1] 范围
+    - sum 应接近 1.0 (但不强求)
+
+    写 db 后, router cache 60s 内自动 refresh (P0-4 TTL).
+    想立即生效: POST /api/cache/refresh
+    """
+    import json as _json
+    if not isinstance(payload, dict) or "weights" not in payload:
+        raise HTTPException(status_code=400, detail="body must be {weights: {...}}")
+    weights = payload["weights"]
+    if not isinstance(weights, dict):
+        raise HTTPException(status_code=400, detail="weights must be dict")
+
+    required = {"W_PRICE", "W_QUOTA", "W_SUCCESS", "W_RECENCY", "W_PRIORITY"}
+    missing = required - set(weights.keys())
+    extra = set(weights.keys()) - required
+    if missing or extra:
+        raise HTTPException(
+            status_code=400,
+            detail=f"weights must have exactly {sorted(required)}, missing={sorted(missing)}, extra={sorted(extra)}",
+        )
+    for k, v in weights.items():
+        if not isinstance(v, (int, float)) or v < 0 or v > 1:
+            raise HTTPException(status_code=400, detail=f"{k}={v} must be number in [0, 1]")
+
+    value = _json.dumps(weights, ensure_ascii=False)
+    await crud.set_runtime_setting(session, "router_score_weights", value)
+    await session.commit()
+    return {"ok": True, "weights": weights, "note": "router cache 60s 内 refresh"}
 
 
 @router.put("/api/settings/alert")

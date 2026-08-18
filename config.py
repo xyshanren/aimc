@@ -3,8 +3,13 @@
 基于 pydantic-settings 从环境变量 / .env 文件加载配置。
 """
 
+import logging
+import re
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator, Field
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -27,11 +32,54 @@ class Settings(BaseSettings):
     # 丢了 = 全部 ciphertext 不可解 = 永久性数据丢失, 务必存到密码管理器
     aimc_master_key: str = ""
 
+    @field_validator("aimc_master_key")
+    @classmethod
+    def _validate_master_key(cls, v: str) -> str:
+        """P0-5 (2026-08-14): 启动时校验 master_key 格式, 不通过则抛错
+
+        背景: 历史上 master key 改过但 ciphertext 没重加密, 5/6 账号解密失败
+        (POST_V464_FIXES.md issue 1 的下游症状). 启动校验可以:
+        - 提早发现 key 配置错 (不是 router 跑到一半才发现)
+        - 校验格式 (防止把 placeholder 当真 key 用)
+
+        校验规则 (跟 scripts/migrate_encrypt_keys.py / scripts/gen_master_key.py 一致):
+        - 64 字符 hex (Fernet generate_key 返回后 hex 化, d1c7c12 升级)
+        - 空字符串允许 (= 不启用加密, 但 db 里 ciphertext 必须也空)
+        """
+        if not v:
+            return v  # 空允许 (没账号就没加密)
+        if not re.match(r"^[0-9a-fA-F]{64}$", v):
+            raise ValueError(
+                f"AIMC_MASTER_KEY 格式错: 期望 64 字符 hex, 实际 {len(v)} 字符 "
+                f"(开头 {v[:8]}...). 重新生成: python scripts/gen_master_key.py"
+            )
+        logger.info(
+            f"[P0-5] AIMC_MASTER_KEY 校验通过 (hex 64 字符, "
+            f"encryption_version=1 兼容)"
+        )
+        return v
+
     # === 数据库 ===
     db_path: str = "./data/aimc.db"
 
     # === 网关鉴权 ===
-    api_key: str = ""  # 留空则不鉴权
+    # BUGFIX (2026-08-17): 加 validation_alias 强制读取 AIMC_API_KEY env var
+    # 之前 Pydantic 默认按字段名匹配, 期望 env var "API_KEY" (而不是 "AIMC_API_KEY")
+    # 导致 .env 里设了 AIMC_API_KEY 也读不到 -> api_key="" -> auth_enabled=False
+    # -> 任意 client 都能无鉴权访问 /v1/* (鉴权旁路)
+    api_key: str = Field(default="", validation_alias="AIMC_API_KEY")  # 留空则不鉴权 (/v1/* OpenAI/Anthropic API)
+
+    # P1-7 (2026-08-14): dashboard 鉴权 (跟 api_key 分开, 独立管理)
+    # - 未设 = 维持 legacy 行为 (LAN 内裸开, 跟你 brief 里的"已知遗留"一致)
+    # - 设了 = /dashboard/* 路径需要 token 校验 (header 或 ?token=)
+    # - 跟 api_key 分开的原因: dashboard 数据敏感 (账号/限额/优惠), 应该独立管理
+    # - env var 用 AIMC_DASHBOARD_TOKEN (跟 api_key 的 AIMC_API_KEY 命名一致)
+    dashboard_token: str = Field(default="", validation_alias="AIMC_DASHBOARD_TOKEN")
+
+    @property
+    def dashboard_auth_enabled(self) -> bool:
+        """P1-7: dashboard 是否启用鉴权"""
+        return bool(self.dashboard_token)
 
     # === AI 解析引擎 ===
     openai_api_key: str = ""

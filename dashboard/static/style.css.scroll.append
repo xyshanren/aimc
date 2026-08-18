@@ -1,0 +1,60 @@
+/* === 短期 D1: 表格限高滚动 (避免长表格撑爆卡片) === */
+
+.scroll-y-260 {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+}
+
+.scroll-y-300 {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+}
+
+.scroll-y-320 {
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+}
+
+.scroll-y-400 {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+}
+
+/* 滚动条美化 (深色) */
+.scroll-y-300::-webkit-scrollbar,
+.scroll-y-320::-webkit-scrollbar,
+.scroll-y-260::-webkit-scrollbar,
+.scroll-y-400::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.scroll-y-300::-webkit-scrollbar-track,
+.scroll-y-320::-webkit-scrollbar-track,
+.scroll-y-260::-webkit-scrollbar-track,
+.scroll-y-400::-webkit-scrollbar-track {
+    background: var(--bg-elevated);
+}
+
+.scroll-y-300::-webkit-scrollbar-thumb,
+.scroll-y-320::-webkit-scrollbar-thumb,
+.scroll-y-260::-webkit-scrollbar-thumb,
+.scroll-y-400::-webkit-scrollbar-thumb {
+    background: var(--text-muted);
+    border-radius: 4px;
+}
+
+.scroll-y-300::-webkit-scrollbar-thumb:hover,
+.scroll-y-320::-webkit-scrollbar-thumb:hover,
+.scroll-y-260::-webkit-scrollbar-thumb:hover,
+.scroll-y-400::-webkit-scrollbar-thumb:hover {
+    background: var(--text-secondary);
+}

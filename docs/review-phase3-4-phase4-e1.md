@@ -9,6 +9,12 @@
 
 ---
 
+
+## 📦 历史归档说明
+
+> **本文档已归档**（2026-08-15 文档重组时迁移到 docs/archive/）。
+> 新内容见 [docs/index.md](../index.md) 或相关 [docs/dev/](../dev/) / [docs/user/](../user/) 文档。
+
 ## 一、评审概述
 
 本报告为首轮评审成果，覆盖 Phase 3.1-3.4 / Phase 3.A-E / Phase 4.E1-E3 全部新增代码。所有 P0/P1 问题均为**首次暴露**，不存在"上轮未修复"的情况——本分支是项目的首个完整 feature 分支，从未经过 review→fix→re-review 循环。

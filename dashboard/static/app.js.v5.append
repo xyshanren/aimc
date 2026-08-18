@@ -1,0 +1,88 @@
+// === P0-UI v5 (2026-08-16): renderRegistryGroups + renderRegistryModels 优化 ===
+
+// 替换 renderRegistryGroups: 用表格而不是 list, 每个 group 独立卡片
+function renderRegistryGroups(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+        if (!data || !data.groups || data.groups.length === 0) {
+            container.innerHTML = '<div class="empty">暂无 model group 数据</div>';
+            return;
+        }
+
+        // 顶部 summary
+        let html = '<div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: var(--space-md);">';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:18px;">' + esc(data.group_count) + '</div><div class="kpi-label">Groups</div></div>';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:18px;">' + esc(data.member_count) + '</div><div class="kpi-label">Members</div></div>';
+        const tiers = [...new Set(data.groups.map(g => g.tier).filter(Boolean))];
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:18px;">' + esc(tiers.length) + '</div><div class="kpi-label">Tiers</div></div>';
+        html += '</div>';
+
+        // 每个 group 一个折叠卡片
+        for (const g of data.groups) {
+            const caps = g.capabilities ? (Array.isArray(g.capabilities) ? g.capabilities : JSON.parse(g.capabilities)) : [];
+            const tier = g.tier || '*';
+            const fallback = g.fallback_group || '(无降级)';
+            const ctxMin = g.min_context || 0;
+            const strat = g.strategy || 'cheapest';
+
+            html += '<div class="group-card">';
+            // header: group_id + tier + summary
+            html += '<div class="flex gap-md" style="align-items:center;flex-wrap:wrap;">';
+            html += '<strong class="text-mono" style="font-size:14px;">' + esc(g.group_id) + '</strong>';
+            html += '<span class="tier">T' + esc(tier) + '</span>';
+            html += '<span class="text-muted" style="font-size:11px;">' + esc(strat) + '</span>';
+            if (fallback !== '(无降级)') html += '<span class="text-muted" style="font-size:11px;">fallback=' + esc(fallback) + '</span>';
+            if (ctxMin) html += '<span class="text-muted" style="font-size:11px;">ctx&gt;=' + esc(ctxMin) + '</span>';
+            if (caps.length) html += '<span class="text-muted" style="font-size:11px;">caps: ' + caps.map(esc).join(', ') + '</span>';
+            html += '</div>';
+
+            // members 表格
+            if (g.members && g.members.length > 0) {
+                html += '<table style="margin-top:var(--space-sm);"><thead><tr><th>Model</th><th class="mono">Priority</th></tr></thead><tbody>';
+                for (const m of g.members) {
+                    html += '<tr><td><code class="text-mono">' + esc(m.model_id) + '</code></td><td class="mono">' + esc(m.priority) + '</td></tr>';
+                }
+                html += '</tbody></table>';
+            } else {
+                html += '<div class="text-muted" style="font-size:11px;margin-top:var(--space-sm);">无 member</div>';
+            }
+            html += '</div>';
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderRegistryGroups failed:', e);
+        container.innerHTML = '<div class="empty">渲染失败: ' + esc(e.message) + '</div>';
+    }
+}
+
+// 替换 renderRegistryModels: 表格 + sticky header
+function renderRegistryModels(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+        if (!data || !data.models || data.models.length === 0) {
+            container.innerHTML = '<div class="empty">暂无 model registry 数据</div>';
+            return;
+        }
+        let html = '<div class="text-muted" style="margin-bottom:var(--space-sm);font-size:12px;">共 ' + esc(data.count) + ' 个 model</div>';
+        html += '<div style="max-height:480px;overflow-y:auto;border:1px solid var(--border-default);border-radius:var(--radius-md);">';
+        html += '<table style="font-size:12px;"><thead><tr><th>Model</th><th>Family</th><th class="mono">Tier</th><th class="mono">Ctx</th><th>Capabilities</th><th class="mono">Status</th></tr></thead><tbody>';
+        for (const m of data.models) {
+            const caps = m.capabilities ? (Array.isArray(m.capabilities) ? m.capabilities : JSON.parse(m.capabilities)) : [];
+            const tier = m.tier || '?';
+            html += '<tr>';
+            html += '<td><code class="text-mono" style="font-size:11px;">' + esc(m.model_id) + '</code></td>';
+            html += '<td style="font-size:11px;">' + esc(m.family || '') + '</td>';
+            html += '<td class="mono" style="font-weight:600;">T' + esc(tier) + '</td>';
+            html += '<td class="mono">' + (m.context_length ? Math.round(m.context_length / 1000) + 'k' : '?') + '</td>';
+            html += '<td style="font-size:10px;color:var(--text-muted);">' + caps.slice(0, 3).map(esc).join(', ') + (caps.length > 3 ? '...' : '') + '</td>';
+            html += '<td class="mono" style="font-size:11px;">' + esc(m.status || 'active') + '</td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        html += '</div>';
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderRegistryModels failed:', e);
+        container.innerHTML = '<div class="empty">渲染失败: ' + esc(e.message) + '</div>';
+    }
+}

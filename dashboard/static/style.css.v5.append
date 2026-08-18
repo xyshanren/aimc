@@ -1,0 +1,158 @@
+/* === P0-UI v5 (2026-08-16): group-card / gr-group-card / bar-track / registry table 样式 === */
+
+.group-card,
+.gr-group-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-md);
+    padding: var(--space-md);
+    margin-bottom: var(--space-md);
+}
+
+.gr-group-card.unmatched {
+    border-color: var(--text-muted);
+    opacity: 0.85;
+}
+
+.group-card h3,
+.gr-group-card h4 {
+    margin: 0 0 var(--space-sm) 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.group-card .tier,
+.gr-group-card .tier {
+    background: var(--bg-surface);
+    color: var(--color-accent);
+    padding: 2px var(--space-sm);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.group-card .desc,
+.gr-group-card .desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: var(--space-xs) 0;
+}
+
+.group-card .caps {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin: var(--space-xs) 0;
+}
+
+.group-card .meta,
+.gr-group-card .meta {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin: var(--space-xs) 0;
+}
+
+/* Group cards 的 members list (折叠 <details>) */
+.group-card details,
+.gr-group-card details {
+    margin-top: var(--space-sm);
+}
+
+.group-card details > summary,
+.gr-group-card details > summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 12px;
+    padding: var(--space-xs) 0;
+    user-select: none;
+}
+
+.group-card details > summary::marker,
+.gr-group-card details > summary::marker {
+    content: '+';
+}
+
+.group-card details[open] > summary::marker,
+.gr-group-card details[open] > summary::marker {
+    content: '\2212';
+}
+
+.group-card ul,
+.gr-group-card ul {
+    list-style: none;
+    padding: 0;
+    margin: var(--space-sm) 0 0 0;
+}
+
+.group-card li,
+.gr-group-card li {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border-muted);
+    font-size: 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+.group-card li:last-child,
+.gr-group-card li:last-child {
+    border-bottom: none;
+}
+
+/* Channels chip (group-routing) */
+.chip {
+    display: inline-block;
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    padding: 2px var(--space-sm);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    border: 1px solid var(--border-muted);
+}
+
+/* Bar 进度条 (group-routing 分布) */
+.bar-track {
+    width: 100%;
+    height: 6px;
+    background: var(--bg-surface);
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: 60px;
+}
+
+.bar-fill {
+    height: 100%;
+    background: var(--color-info);
+    transition: width 0.3s ease;
+}
+
+/* registry models 表格优化 (限宽 + 单色行) */
+#registry-models-list table,
+#registry-groups-list table {
+    font-size: 12px;
+}
+
+#registry-models-list td,
+#registry-groups-list td {
+    padding: 6px var(--space-md);
+}
+
+/* table 美化 (alternating rows) */
+table tbody tr:nth-child(even) {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+/* status-bar-route 显示调整 */
+.status-bar-route {
+    flex: 1;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

@@ -9,6 +9,12 @@
 
 ---
 
+
+## 📦 历史归档说明
+
+> **本文档已归档**（2026-08-15 文档重组时迁移到 docs/archive/）。
+> 新内容见 [docs/index.md](../index.md) 或相关 [docs/dev/](../dev/) / [docs/user/](../user/) 文档。
+
 ## 📋 PR Title（GitHub PR 标题）
 
 ```

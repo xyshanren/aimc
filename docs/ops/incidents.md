@@ -1,0 +1,323 @@
+# 安全应急响应手册
+
+> 受众：AIMC 运维 / 团队负责人
+> 触发：发现可疑活动 / 收到告警 / 用户投诉
+> 配套：[ops/security.md](security.md)（防护）/ 本文件（应急）
+
+---
+
+## 0. 应急响应优先级
+
+| 等级 | 触发条件 | 响应时间 |
+|------|----------|----------|
+| **P0 灾难** | master_key 泄露 / 数据被删 | **5 分钟** |
+| **P1 紧急** | dashboard_token 泄露 / 厂商 key 泄露 / 异常大额扣费 | **30 分钟** |
+| **P2 高** | AIMC_API_KEY 泄露 / 可疑活动 | **2 小时** |
+| **P3 中** | 性能异常 / 个别失败 | **24 小时** |
+
+---
+
+## 1. P0 灾难：AIMC_MASTER_KEY 泄露
+
+### 1.1 识别
+
+```bash
+# 任何以下情况视为泄露:
+# 1. .env 文件出现在 git history / 公开位置 / 备份
+# 2. master_key 在聊天 / 邮件 / 截图中
+# 3. 你的密码管理器被入侵
+```
+
+### 1.2 立即行动（5 分钟内）
+
+```bash
+# 1. 关闭所有渠道 (防厂商 key 被批量盗用)
+#    方式 A: dashboard 改 channels.status = 'disabled' (需 dashboard_token)
+#    方式 B: 直接 SQL (绕过 dashboard)
+ssh aliy-hy "sqlite3 /home/lxc/aimc/data/aimc.db \
+  \"UPDATE channels SET status='disabled' WHERE status='active';\""
+ssh aliy-hy "systemctl --user restart aimc"
+
+# 2. 通知所有 LLM 厂商 (重置 key)
+#    - 阿里云百炼: https://bailian.console.aliyun.com/
+#    - DeepSeek: https://platform.deepseek.com/api_keys
+#    - 硅基流动: https://cloud.siliconflow.cn/account/ak
+#    - 智谱: https://open.bigmodel.cn/usercenter/apikeys
+#    - ... 等所有渠道
+
+# 3. 生成新 master_key
+NEW_KEY=$(openssl rand -hex 32)
+echo "新 master_key: $NEW_KEY"
+# 存到密码管理器
+```
+
+### 1.3 恢复（30 分钟内）
+
+```bash
+# 1. 改 .env
+ssh aliy-hy "nano /home/lxc/aimc/.env"
+# 替换 AIMC_MASTER_KEY=$NEW_KEY
+
+# 2. 重新加密所有 accounts.api_key_ciphertext
+#    AIMC 自动检测 master_key 变化时, 会在第一次解密时失败
+#    需要手动 re-encrypt 脚本 (目前没写, 见 TODO)
+
+# 3. 在 dashboard 添加新渠道 (用新厂商 key)
+#    dashboard → 渠道管理 → 启用各 channel → 填新 key
+
+# 4. 启用 channels
+ssh aliy-hy "sqlite3 /home/lxc/aimc/data/aimc.db \
+  \"UPDATE channels SET status='active' WHERE status='disabled';\""
+ssh aliy-hy "systemctl --user restart aimc"
+
+# 5. 验证 e2e
+ssh aliy-hy "curl -X POST http://localhost:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{\"model\":\"tier:flagship\",\"messages\":[{\"role\":\"user\",\"content\":\"test\"}]}'"
+```
+
+### 1.4 审计
+
+```sql
+-- 查 master_key 泄露前后可疑的 usage_logs
+SELECT
+  strftime('%Y-%m-%d %H:%M', created_at, 'localtime') as local_time,
+  channel_id, model, group_id,
+  input_tokens, output_tokens, status_code
+FROM usage_logs
+WHERE created_at BETWEEN '泄露时间 - 1 day' AND '泄露时间 + 1 day'
+ORDER BY input_tokens DESC
+LIMIT 100;
+```
+
+### 1.5 预防
+
+- master_key **不存 .env 文件**（改存密码管理器）
+- .env 文件 `chmod 600`（仅 root 可读）
+- master_key 不出现在 git / 文档 / 截图
+- 定期轮换（**1 年**）
+
+---
+
+## 2. P1 紧急：Dashboard Token 泄露
+
+### 2.1 立即行动（30 分钟内）
+
+```bash
+# 1. 改 .env 新 token
+NEW_TOKEN=$(openssl rand -hex 32)
+ssh aliy-hy "sed -i 's/^AIMC_DASHBOARD_TOKEN=.*/AIMC_DASHBOARD_TOKEN=$NEW_TOKEN/' /home/lxc/aimc/.env"
+
+# 2. 重启
+ssh aliy-hy "systemctl --user restart aimc"
+
+# 3. 通知所有用户新 token
+#    通过其他渠道 (邮件 / 钉钉 / 微信) 通知 team
+echo "新 dashboard token: $NEW_TOKEN" | mail -s "AIMC Dashboard Token 更新" team@your-domain.com
+
+# 4. SSH IP 白名单 (防止进一步入侵)
+#    iptables 只放行你的 IP
+```
+
+### 2.2 检查被改内容
+
+```sql
+-- 查所有 channels 最近修改时间 (24h 内)
+SELECT id, name, status, priority, updated_at
+FROM channels
+WHERE updated_at > '泄露时间 - 1 day'
+ORDER BY updated_at DESC;
+
+-- 查 accounts (新账号 = 攻击者加的)
+SELECT * FROM accounts
+WHERE created_at > '泄露时间 - 1 day'
+ORDER BY created_at DESC;
+```
+
+### 2.3 预防
+
+- Dashboard Token **只给人类**，**不给 agent / DSH**
+- 启用 SSH 公钥 + 关 PasswordAuth（已有）
+- 强密码（≥32 字节）
+- 监控 channels / accounts 异常变更（TODO 自动化）
+
+---
+
+## 3. P2 高：AIMC_API_KEY 泄露
+
+### 3.1 立即行动（2 小时内）
+
+```bash
+# 1. 改 .env 新 key
+NEW_API_KEY=$(openssl rand -hex 32)
+ssh aliy-hy "sed -i 's/^AIMC_API_KEY=.*/AIMC_API_KEY=$NEW_API_KEY/' /home/lxc/aimc/.env"
+
+# 2. 重启
+ssh aliy-hy "systemctl --user restart aimc"
+
+# 3. 通知所有客户端 (DSH / agent / 用户)
+#    必须在 2h 内, 否则攻击者继续用旧 key 消耗 token
+```
+
+### 3.2 查可疑请求
+
+```sql
+-- 找异常大请求 (攻击者用你 key 跑批量)
+SELECT
+  strftime('%Y-%m-%d %H:%M', created_at, 'localtime') as local_time,
+  channel_id, model, group_id,
+  input_tokens, output_tokens, status_code, latency_ms
+FROM usage_logs
+WHERE created_at > '泄露时间 - 1 day'
+ORDER BY input_tokens DESC
+LIMIT 100;
+```
+
+### 3.3 预估损失
+
+- **DP API 计费**：正常 1k tokens ≈ ¥0.001
+- **异常大请求**：100k tokens ≈ ¥0.1/次
+- **攻击者跑 1000 次**：≈ ¥100（**很低**）
+- 但 Pydantic Settings bug（已修）前可能**完全未鉴权** → 实际损失需要看 usage_logs
+
+### 3.4 预防
+
+- DSH / agent 配置**用 .env**，**不写死在代码里**
+- 上传 git 前 `git status` 确认
+- 用 `pre-commit` hook 扫描敏感字符串
+- 定期轮换（**90 天**）
+
+---
+
+## 4. P2 高：单厂商 API Key 泄露（硅基流动 / DeepSeek 等）
+
+### 4.1 立即行动（1 小时内）
+
+```bash
+# 1. 登录厂商控制台, 重置 key
+# 2. 改 .env (仅这一家)
+#    或通过 dashboard 改 (V4.6.4 之前可能需 restart, 之后 TTL 自动)
+
+# 3. 不影响其他厂商 (继续工作)
+```
+
+### 4.2 防护
+
+- P0-6 多维限额**已启用**（防单 channel 滥用）
+- 启用厂商侧 key 限额（厂商控制台）
+
+---
+
+## 5. P2 高：SSH 入侵
+
+### 5.1 立即行动
+
+```bash
+# 1. 检查 fail2ban 状态
+ssh aliy-hy "fail2ban-client status sshd"
+
+# 2. 看最近登录 (成功 / 失败)
+ssh aliy-hy "last -20"
+ssh aliy-hy "journalctl -u sshd --since '24 hours ago' | grep -E 'Failed|Accepted'"
+
+# 3. 改 SSH 端口 (避免暴力破解)
+ssh aliy-hy "sed -i 's/#Port 22/Port 2222/' /etc/ssh/sshd_config"
+ssh aliy-hy "systemctl restart sshd"
+# 更新本地 ~/.ssh/config: Port 2222
+
+# 4. 限制 SSH 访问 (只允许你家的 IP)
+#    iptables -A INPUT -p tcp --dport 2222 -s 你家IP -j ACCEPT
+#    iptables -A INPUT -p tcp --dport 2222 -j DROP
+```
+
+### 5.2 审计服务器被入侵迹象
+
+```bash
+# 检查异常进程
+ssh aliy-hy "ps auxf | head -30"
+
+# 检查新用户 / 后门
+ssh aliy-hy "cat /etc/passwd | grep -v 'nologin\|false'"
+ssh aliy-hy "cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null | grep -v '^#'"
+
+# 检查 SSH 公钥
+ssh aliy-hy "ls -la /root/.ssh/authorized_keys"
+
+# 检查 cron 后门
+ssh aliy-hy "crontab -l; ls -la /etc/cron.*"
+
+# 检查最近登录
+ssh aliy-hy "lastlog | head -20"
+```
+
+---
+
+## 6. P3 中：异常大请求 / 异常流量
+
+### 6.1 识别
+
+```sql
+-- 异常大 token 请求
+SELECT * FROM usage_logs
+WHERE input_tokens > 100000
+   OR latency_ms > 60000
+ORDER BY created_at DESC LIMIT 20;
+
+-- 异常错误率
+SELECT
+  strftime('%H', created_at, 'localtime') as hour,
+  COUNT(*) as total,
+  SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END) as errors
+FROM usage_logs
+WHERE created_at > datetime('now', '-7 day')
+GROUP BY hour
+ORDER BY errors DESC;
+```
+
+### 6.2 处置
+
+- 如果是用户问题：通知用户
+- 如果是攻击：通过 fail2ban / cloudflare WAF 拉黑
+- 加速率限制（TODO）
+
+---
+
+## 7. 通用应急检查清单
+
+无论哪种泄露，先做这 5 步：
+
+- [ ] **不要慌**（30 秒冷静）
+- [ ] **隔离**：SSH 上 + `systemctl --user stop aimc`（如果 master_key 泄露）
+- [ ] **取证**：`usage_logs` / `journalctl` / 厂商后台
+- [ ] **轮换**相关 key / token
+- [ ] **通知**团队 + 用户（如有损失）
+
+---
+
+## 8. 联系表
+
+| 厂商 | 紧急联系 |
+|------|----------|
+| 阿里云百炼 | https://bailian.console.aliyun.com/  + 客服工单 |
+| DeepSeek | https://platform.deepseek.com/  + support@deepseek.com |
+| 硅基流动 | https://cloud.siliconflow.cn/  + 微信群 |
+| 智谱 BigModel | https://open.bigmodel.cn/ |
+| Cloudflare | https://dash.cloudflare.com/  + 1-650-319-7517 |
+| 阿里云 ECS | https://workorder.console.aliyun.com/  + 95187 |
+
+---
+
+## 9. TODO（待实现）
+
+- [ ] **审计日志**（谁在什么时候改了什么）
+- [ ] **登录失败锁定**（5 次错锁 5 分钟）
+- [ ] **速率限制**（登录 + API）
+- [ ] **Cookie Secure / SameSite 标记**
+- [ ] **自动监控 channels / accounts 异常变更**
+- [ ] **re-encrypt 脚本**（master_key 变化时批量重加密）
+
+---
+
+**作者**：用户 + agent 协作
+**创建日期**：2026-08-17
+**配套文档**：[ops/security.md](security.md)（防护）

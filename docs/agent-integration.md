@@ -4,6 +4,12 @@
 > 关联文档：[architecture.md §四 多维模型组设计](architecture.md) / [development-plan.md §Phase 3 情报联动](development-plan.md)
 > 配套实现：Phase 3 后续 / Phase 3.5 hermes-agent-cn 协同层
 
+
+## 📦 历史归档说明
+
+> **本文档已归档**（2026-08-15 文档重组时迁移到 docs/archive/）。
+> 新内容见 [docs/index.md](../index.md) 或相关 [docs/dev/](../dev/) / [docs/user/](../user/) 文档。
+
 ## 零、上下文与三层架构
 
 > 架构澄清（2026-07-29）：本项目实际为三层架构, 本文档以前含糊使用 'Agent' 指代执行者, 现统一明确:
