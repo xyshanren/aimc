@@ -596,6 +596,83 @@ details.accounts-form-details[open] > summary::before {
     transform: rotate(45deg);
 }
 
+/* P0-UI v8 (2026-08-18): 修复 加新账号 表单样式 (v7 误删)
+   之前 v6 加过 .accounts-form + .accounts-form .form-row + label/input 样式,
+   v7 commit 70aa61a 只保留了 .accounts-form-details (summary 三角),
+   漏删了 .accounts-form 主体. 这里恢复.
+*/
+.accounts-form {
+    padding: var(--space-md);
+    background: var(--bg-elevated);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-muted);
+}
+
+.accounts-form .form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-md);
+    margin-bottom: var(--space-md);
+    align-items: start;
+}
+
+.accounts-form .form-row:last-of-type {
+    margin-bottom: 0;
+}
+
+.accounts-form label {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    font-weight: 500;
+}
+
+.accounts-form input,
+.accounts-form select {
+    padding: 6px var(--space-md);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: var(--font-sans);
+    outline: none;
+    transition: border-color 0.15s ease;
+    min-width: 0;  /* grid item 防止溢出 */
+}
+
+.accounts-form input:focus,
+.accounts-form select:focus {
+    border-color: var(--color-info);
+    box-shadow: var(--shadow-glow);
+}
+
+.accounts-form input[type="password"] {
+    font-family: var(--font-mono);
+    letter-spacing: 1px;
+}
+
+.accounts-form .form-row > button {
+    align-self: end;
+}
+
+.accounts-form .feedback {
+    font-size: 12px;
+    margin-left: var(--space-md);
+}
+
+.accounts-form .feedback.success { color: var(--color-success); }
+.accounts-form .feedback.error { color: var(--color-danger); }
+
+/* 单行 label (api_key, notes) */
+.accounts-form .form-row.single {
+    grid-template-columns: 1fr;
+}
+
 details.card-folding > .card-body {
     padding: 0 var(--space-lg) var(--space-lg);
 }
