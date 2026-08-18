@@ -321,3 +321,36 @@ ORDER BY errors DESC;
 **作者**：用户 + agent 协作
 **创建日期**：2026-08-17
 **配套文档**：[ops/security.md](security.md)（防护）
+
+---
+
+## 10. 实测发现 + 修复 (2026-08-17)
+
+### Dashboard Token 实际未启用
+
+**用户问起 dashboard token 状态时审计发现**:
+- `.env` 里 `AIMC_DASHBOARD_TOKEN` 没设 (只有注释行)
+- `settings.dashboard_auth_enabled = False`
+- **任何人访问 `/dashboard/api/channels` 都能拿到完整数据 (200 + JSON)**
+
+**已修复**:
+1. 添加 `AIMC_DASHBOARD_TOKEN=0f7638e0120de9f18d9903158c68f6839c1a8e82aa6148790adf443825d3d727` 到 `.env`
+2. 重启服务
+3. 验证: 错 token 401, 无 token 401, 对 token 200
+
+**已部署**: VM 已运行, 但需要同步 Windows 本地 + 通知所有 dashboard 用户新 token
+
+### master_key 轮换 — TODO 写脚本
+
+**当前没 scripts/rotate_master_key.py**, 轮换需要手动:
+1. 写脚本 (1-2h): 读所有 ciphertext, 用旧 key 解密, 用新 key 重加密
+2. 测试 (1h): 准备测试环境, 跑 1 轮, 验证 e2e
+3. 走流程 (30min): 关所有渠道 -> 改 .env -> 跑脚本 -> 重启 -> 测试每个 channel
+
+**估时**: 首次 0.5-1 天 (含测试), 后续 1-2 小时
+
+**触发条件**:
+- master_key 出现在任何截图 / chat / 邮件 / git history
+- 你的密码管理器被入侵
+- 离职 / 设备转让
+- 年度主动轮换 (建议 1 年)
