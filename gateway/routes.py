@@ -27,25 +27,37 @@ async def health_check():
 
 
 @router.get("/v1/models")
-async def list_models():
-    """列出可用模型 (Phase 3.B 增强, 加 aimc_metadata)
+async def list_models(include_models: bool = False):
+    """V4.6.4+: 列出可用模型 (OpenAI SDK 兼容)
 
-    演进历史:
-    - Phase 2.8: 加上 data_groups 字段
-    - Phase 3.B: 每个 model 加 aimc_metadata (family/tier/capabilities/...)
-      每个 group 加 aimc_metadata (fallback_chain/member_tiers/...)
+    默认模式 (用户偏好):
+    - 只返回 group (每个 group 当成 OpenAI model)
+    - OpenAI SDK 严格模式接受 tier:xxx, 不再 "model not found"
+    - agent / DSH / 任何 OpenAI 客户端直接用 tier:flagship / scene:code 等
 
-    向后兼容: OpenAI 客户端只读 data[].id, AIMC 扩展字段全部在 aimc_metadata 嵌套对象里
+    Query 参数:
+    - include_models=true: 同时返回精确 model (admin / 调试用)
+      URL: /v1/models?include_models=true
 
-    用途:
-    - hermes-agent-cn 启动时拉一次, 验证 profile 合法
-    - 看 model 元信息, 不需额外查 model registry
-    - 看 model 在哪些 channel 可用
+    之前 (V4.6.3 之前): 只返回精确 model, agent 调 tier:xxx 报 "model not in list"
+
+    响应:
+    {
+      "object": "list",
+      "data": [
+        {"id": "tier:flagship", "object": "model", "owned_by": "aimc",
+         "aimc_metadata": {"type": "group", "tier": "T1", "members": [...], ...}},
+        {"id": "deepseek-v4-pro", "object": "model", "owned_by": "deepseek",
+         "aimc_metadata": {"type": "model", "tier": "T1", ...}},  # include_models=true 时
+      ],
+      "data_groups": [...],  # 兼容旧字段 (dashboard 用)
+    }
     """
     return {
         "object": "list",
-        "data": route_engine.get_models_with_metadata(),
-        "data_groups": route_engine.get_groups_with_metadata(),
+        "data": route_engine.get_models_for_openai_sdk(include_models=include_models),
+        "data_groups": route_engine.get_groups_with_metadata(),  # 兼容旧字段
+        "include_models": include_models,
     }
 
 

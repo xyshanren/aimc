@@ -63,7 +63,11 @@ class Settings(BaseSettings):
     db_path: str = "./data/aimc.db"
 
     # === 网关鉴权 ===
-    api_key: str = ""  # 留空则不鉴权 (/v1/* OpenAI/Anthropic API)
+    # BUGFIX (2026-08-17): 加 validation_alias 强制读取 AIMC_API_KEY env var
+    # 之前 Pydantic 默认按字段名匹配, 期望 env var "API_KEY" (而不是 "AIMC_API_KEY")
+    # 导致 .env 里设了 AIMC_API_KEY 也读不到 -> api_key="" -> auth_enabled=False
+    # -> 任意 client 都能无鉴权访问 /v1/* (鉴权旁路)
+    api_key: str = Field(default="", validation_alias="AIMC_API_KEY")  # 留空则不鉴权 (/v1/* OpenAI/Anthropic API)
 
     # P1-7 (2026-08-14): dashboard 鉴权 (跟 api_key 分开, 独立管理)
     # - 未设 = 维持 legacy 行为 (LAN 内裸开, 跟你 brief 里的"已知遗留"一致)

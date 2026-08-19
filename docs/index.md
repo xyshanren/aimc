@@ -43,6 +43,8 @@
 | 数据新鲜度 / shadow log / 限额监控 | [ops/monitor.md](ops/monitor.md) |
 | 跑 7 个 migration 升级数据库 | [ops/migration.md](ops/migration.md) |
 | 出错回滚（自动 tier 调整等）| [ops/rollback.md](ops/rollback.md) |
+| **公网部署安全（VPN / Cloudflare Tunnel / nginx）** | **[ops/security.md](ops/security.md)** |
+| **应急响应（master_key 泄露 / API key 泄露 / SSH 入侵）** | **[ops/incidents.md](ops/incidents.md)** |
 
 ---
 

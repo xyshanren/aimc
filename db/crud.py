@@ -412,16 +412,24 @@ async def upsert_intel_source(
     session: AsyncSession,
     provider: str,
     url: str,
+    poll_interval: int | None = None,
     **kwargs,
 ) -> IntelSource:
     """按 (provider, url) 创建或更新 IntelSource
 
     用于 scheduler 启动时把 dataclass 跟 DB 行关联起来
     """
+    # 修复 V4.6.4: poll_interval 显式从 kwargs 提取, 不在 IntelSource(...) 重复 hardcode
+    # 之前: poll_interval=900 + **kwargs (含 poll_interval) -> "got multiple values" 错
+    if poll_interval is None:
+        poll_interval = kwargs.pop("poll_interval", 900)
+
     existing = await get_intel_source_by_provider_url(session, provider, url)
     if existing:
         for key, value in kwargs.items():
             setattr(existing, key, value)
+        # 显式 update poll_interval
+        existing.poll_interval = poll_interval
         return existing
     else:
         # source_type 已经在 kwargs 里（调用方传）→ 不要再写默认值
@@ -430,7 +438,7 @@ async def upsert_intel_source(
             provider=provider,
             url=url,
             status="active",
-            poll_interval=900,
+            poll_interval=poll_interval,
             **kwargs,
         )
         session.add(new)
@@ -460,19 +468,13 @@ async def upsert_model_registry(
     AI 推断的 tier 只能写 capabilities_log，待 dashboard 确认后才生效。
     """
     from db.models import ModelRegistry
-    from db.normalizers import normalize_family, normalize_model_id
 
-    # Phase 4 v4.3 (2026-08-13): 防御性归一化
-    # 防 model_sync.py / AI 推断自动入组时用大写 family (历史问题)
-    model_id_norm = normalize_model_id(model_id)
-    family_norm = normalize_family(family)
-
-    existing = await session.get(ModelRegistry, model_id_norm)
+    existing = await session.get(ModelRegistry, model_id)
     if existing:
         for key, value in kwargs.items():
             setattr(existing, key, value)
         return existing
-    row = ModelRegistry(model_id=model_id_norm, family=family_norm, tier=tier, **kwargs)
+    row = ModelRegistry(model_id=model_id, family=family, tier=tier, **kwargs)
     session.add(row)
     await session.flush()
     return row

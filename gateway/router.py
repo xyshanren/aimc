@@ -381,6 +381,7 @@ class RouteEngine:
                 "api_base": ch.api_base,  # P1-12 (2026-08-14): dashboard 可改
                 "api_style": ch.api_style or "openai",  # P1-12: 协议风格
                 "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: cache 支持
+                "disable_thinking_pass_through": ch.disable_thinking_pass_through,  # V4.6.4: thinking 剥离
                 "priority": ch.priority,
                 "provider_type": ch.provider_type,
                 "billing_mode": ch.billing_mode,
@@ -979,6 +980,64 @@ class RouteEngine:
                 },
             })
         return results
+
+    def get_models_for_openai_sdk(self, include_models: bool = False) -> list[dict]:
+        """V4.6.4+: 返回 OpenAI SDK 兼容的 /v1/models 列表
+
+        模式 2 (用户偏好):
+        - 默认: 只返回 group (每个 group 当成 OpenAI model, agent SDK 直接用 tier:xxx)
+        - include_models=true: 同时返回精确 model (调试/手动调用)
+
+        OpenAI 标准字段: id / object / created / owned_by
+        AIMC 扩展: aimc_metadata.type ("group" | "model"), 详细字段
+
+        之前 (V4.6.3 之前): /v1/models 只返回精确 model, agent SDK 严格模式
+        调 tier:xxx 报 "model not in model list" 错.
+        现在: group 在 data 列表里, SDK 直接接受.
+        """
+        import time
+
+        data = []
+
+        # 1) 优先: 每个 group 当成 model (主用)
+        for g in self.get_groups_with_metadata():
+            data.append({
+                "id": g["id"],  # e.g. "tier:flagship"
+                "object": "model",
+                "created": int(time.time()),  # OpenAI SDK 需要 int timestamp
+                "owned_by": "aimc",
+                "aimc_metadata": {
+                    "type": "group",
+                    "display_name": g["display_name"],
+                    "tier": g["tier"],
+                    "capabilities": g["capabilities"],
+                    "strategy": g["strategy"],
+                    "fallback_group": g["fallback_group"],
+                    "fallback_chain": g["aimc_metadata"]["fallback_chain"],
+                    "members": g["members"],
+                    "member_count": g["member_count"],
+                    "member_tiers": g["aimc_metadata"]["member_tiers"],
+                    "min_context": g["aimc_metadata"]["min_context"],
+                    "require_vision": g["aimc_metadata"]["require_vision"],
+                    "enabled": g["enabled"],
+                },
+            })
+
+        # 2) 可选: 精确 model (给 admin / 调试)
+        if include_models:
+            for m in self.get_models_with_metadata():
+                # 加 type 标记 + 保留原 metadata
+                meta = dict(m.get("aimc_metadata", {}))
+                meta["type"] = "model"
+                data.append({
+                    "id": m["id"],
+                    "object": "model",
+                    "created": int(time.time()),
+                    "owned_by": m.get("owned_by", "aimc"),
+                    "aimc_metadata": meta,
+                })
+
+        return data
 
     def get_candidates(self, model: str) -> list[dict]:
         """获取指定模型的所有候选渠道（用于 fallback）"""

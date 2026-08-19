@@ -62,6 +62,13 @@ class Channel(Base):
         Integer, nullable=False, server_default="0",
         comment="0=不支持 prompt cache, 1=支持 (router 据此注入 cache headers)",
     )
+    # V4.6.4+: 剥离请求里的 thinking 相关字段 (默认启用, 个人项目偏好)
+    # 某些上游 (minimax deepthink) 即使不传 enable_thinking 也强制 thinking,
+    # 关掉后: agent loop 更快 + token 减少
+    disable_thinking_pass_through = Column(
+        Integer, nullable=False, server_default="1",
+        comment="0=不剥离, 1=剥离 body 里的 thinking/enable_thinking/reasoning_effort (proxy 层)",
+    )
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
