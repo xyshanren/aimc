@@ -15,13 +15,19 @@ E2E 设计:
     uvicorn main:app --port 8080 &     # 后台跑
     .venv/Scripts/python.exe tests/test_phase2_e2e.py
     kill %1
+
+注: 这是网络依赖的 e2e 测试 — 需要本地 uvicorn (端口 8080) + 真实上游连通.
+默认 skip, 用 `pytest -m integration` 或设环境变量 AIMC_E2E=1 显式开启.
 """
 
 import asyncio
 import json
 import logging
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 # 让 tests/ 能 import 项目根目录的模块
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -31,6 +37,15 @@ import httpx
 logging.basicConfig(level=logging.WARNING)
 
 BASE = "http://127.0.0.1:8080"
+
+# 整个文件是 network-dependent e2e: 默认 skip, 除非 AIMC_E2E=1 或 -m integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not os.getenv("AIMC_E2E"),
+        reason="E2E 测试需本地 uvicorn (端口 8080) + 真实上游连通; 设 AIMC_E2E=1 或用 -m integration 开启",
+    ),
+]
 
 
 # ============================================================

@@ -645,16 +645,29 @@ class RouteEngine:
         W_RECENCY = self._score_weights["W_RECENCY"]
         W_PRIORITY = self._score_weights["W_PRIORITY"]
 
-        prices = [p.get("input_price") or 0 for _, p in candidates]
-        max_price = max(prices) if prices else 1
-        min_price = min(prices) if prices else 0
+        # V4.6.1/Phase 2a+: NULL 价格 → 999.0 兜底 (跟组路由 _get_input_price 对齐)
+        # 聚合平台 (硅基流动) 入库 NULL 价只记 model 名, 不应因 NULL 被当 0 元误选
+        # 排序时排除 NULL (已兜底 999) 后再归一化, 避免极端值压扁真实价格区间
+        real_prices = [p.get("input_price") for _, p in candidates
+                       if p.get("input_price") is not None]
+        if real_prices:
+            max_price = max(real_prices)
+            min_price = min(real_prices)
+        else:
+            max_price = min_price = 0
         price_range = (max_price - min_price) if (max_price - min_price) > 0 else 1
 
         def score_account(ch_price_pair):
             ch, price = ch_price_pair
             # 1. 价格分数 (越便宜越高, 归一化 0-1)
-            p = price.get("input_price") or 0
-            price_score = 1.0 - (p - min_price) / price_range if price_range > 0 else 0.5
+            # V4.6.1/Phase 2a+: NULL 价格 → 999.0 兜底, 避免被当 0 元误选 (跟 _get_input_price 对齐)
+            raw_p = price.get("input_price")
+            if raw_p is None:
+                p = 999.0
+                price_score = 0.0  # NULL 直接最低分, 不参与归一化
+            else:
+                p = raw_p
+                price_score = 1.0 - (p - min_price) / price_range if price_range > 0 else 0.5
 
             # 2. 配额分数 (剩余越多越高)
             q_remaining = ch["quota_remaining"] if ch["quota_remaining"] is not None else None

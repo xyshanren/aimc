@@ -141,9 +141,9 @@ def test_positional_naming():
     # 通过 import_one_provider 的语义验证 (env 第 i 个 key 对应 _i 命名)
     # 已在 test 4 中验证. 这里只验证 99 上限 (脚本会拒绝超过)
     from scripts.multi_account_import import PROVIDERS
-    assert len(PROVIDERS) == 9, f"应有 9 个 provider, 实际 {len(PROVIDERS)}"
+    assert len(PROVIDERS) == 10, f"应有 10 个 provider, 实际 {len(PROVIDERS)}"
     expected = {"deepseek", "qwen", "glm", "kimi", "minimax",
-                "siliconflow", "volcengine", "hunyuan", "stepfun"}
+                "siliconflow", "volcengine", "hunyuan", "stepfun", "sensenova"}
     actual = {p[0] for p in PROVIDERS}
     assert actual == expected, f"provider 列表不一致: {actual}"
     print(f"  [OK] PROVIDERS = {sorted(actual)}")

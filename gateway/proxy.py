@@ -18,6 +18,21 @@ THINKING_FIELDS_TO_STRIP = (
     "extended_thinking",
 )
 
+import json
+import os
+import time
+import logging
+import asyncio
+from typing import Optional
+
+import httpx
+from fastapi.responses import StreamingResponse, JSONResponse
+from starlette.datastructures import Headers
+
+from config import settings
+
+logger = logging.getLogger(__name__)
+
 
 def _strip_thinking_fields(body_dict: dict) -> dict:
     """V4.6.4+: 剥离 body 字典里的 thinking 相关字段 (返回新 dict, 不修改原对象)
@@ -39,20 +54,47 @@ def _strip_thinking_fields(body_dict: dict) -> dict:
     return out
 
 
-import json
-import os
-import time
-import logging
-import asyncio
-from typing import Optional
+def _maybe_rewrite_body_model(
+    body: bytes,
+    channel: dict,
+    requested_model: str = "",
+    actual_model: Optional[str] = None,
+) -> bytes:
+    """V4.6.4 Issue 6: 改写 body.model 为 channel 实际模型名
 
-import httpx
-from fastapi.responses import StreamingResponse, JSONResponse
-from starlette.datastructures import Headers
+    fallback 路径 router 选了 channel 但 model 名跟用户请求的不同。
+    例: 用户请求 glm-5.2, channel 只有 zai-org/GLM-5.2。
+    替换 body.model = channel 支持的 model, 上游能识别。
 
-from config import settings
+    Args:
+        body: 原始请求体字节
+        channel: 渠道信息字典, 取 channel["_actual_model"] (router 注入)
+        requested_model: 用户请求的 model 字符串
+        actual_model: 显式传入的 model (优先于 channel["_actual_model"])
 
-logger = logging.getLogger(__name__)
+    Returns:
+        改写后的 body 字节 (未改时原样返回)
+    """
+    actual_model = actual_model or channel.get("_actual_model") or requested_model
+    if actual_model == requested_model:
+        return body  # 无需改写
+
+    try:
+        body_json = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        logger.warning(f"body 解析失败, 跳过 model 替换: {e}")
+        return body
+
+    if body_json.get("model") == actual_model:
+        return body  # 已是目标值, 不重复改
+
+    old_model = body_json.get("model")
+    body_json["model"] = actual_model
+    logger.info(
+        f"[V4.6.4 fallback model 替换] {old_model} -> {actual_model} "
+        f"(channel={channel.get('name')})"
+    )
+    return json.dumps(body_json, ensure_ascii=False).encode("utf-8")
 
 
 def _resolve_effective_base_url(channel):
@@ -208,19 +250,7 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
             pass  # 非 JSON body, 跳过
 
     if actual_model != requested_model:
-        try:
-            import json as _json_mod
-            body_json = _json_mod.loads(body)
-            if body_json.get("model") != actual_model:
-                old_model = body_json.get("model")
-                body_json["model"] = actual_model
-                body = _json_mod.dumps(body_json, ensure_ascii=False).encode("utf-8")
-                logger.info(
-                    f"[V4.6.4 fallback model 替换] {old_model} -> {actual_model} "
-                    f"(channel={channel.get('name')})"
-                )
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            logger.warning(f"body 解析失败, 跳过 model 替换: {e}")
+        body = _maybe_rewrite_body_model(body, channel, requested_model, actual_model)
 
     # 构建上游请求头
     forward_headers = {
@@ -317,6 +347,9 @@ async def _forward_stream(
 
     response = await client.send(req, stream=True)
 
+    # V4.6.1: 上游 status_code → cooldown_manager
+    _update_cooldown(channel, response.status_code)
+
     # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
     if response.status_code in (401, 403, 500, 502, 503, 504):
         _schedule_alert(channel, response)
@@ -385,6 +418,9 @@ async def _forward_normal(
     latency_ms = int((time.time() - start_time) * 1000)
     logger.info(f"[Normal] {channel['name']} -> {response.status_code} ({latency_ms}ms)")
 
+    # V4.6.1: 上游 status_code → cooldown_manager
+    _update_cooldown(channel, response.status_code)
+
     # P1-15 (2026-08-15): 429 (quota/plan 耗尽) 标记 cooldown
     # 场景: minimax TokenPlanMax 用量到上限 -> 上游 429 "已达到 Token Plan 用量上限"
     # 处理: 标记该 account cooldown (避免反复撞), routes.py retry loop 会选其他 channel
@@ -424,6 +460,29 @@ def _extract_group_id(requested_model: str) -> str | None:
     if requested_model and requested_model.startswith(("tier:", "scene:")):
         return requested_model
     return None
+
+
+def _update_cooldown(channel: dict, status_code: int) -> None:
+    """V4.6.1: 路由转发后按上游 status_code 更新 cooldown_manager.
+
+    规则:
+    - 200 → mark_success (清掉之前的失败计数)
+    - 401/403/5xx → mark_failure (累计达阈值进 cooldown, 后续路由跳过该 account)
+    - 其他 (400/404/429…) → 不动 (客户端错误或已有专门处理, 不让账号冷却)
+
+    channel 无 account_id 时静默跳过.
+    """
+    account_id = channel.get("account_id")
+    if not account_id:
+        return
+    try:
+        from gateway.cooldown import cooldown_manager
+        if status_code == 200:
+            cooldown_manager.mark_success(account_id)
+        elif status_code in (401, 403, 500, 502, 503, 504):
+            cooldown_manager.mark_failure(account_id, reason=f"upstream_{status_code}")
+    except Exception as e:
+        logger.debug(f"V4.6.1 _update_cooldown 非致命: {e}")
 
 
 def _resolve_actual_model(channel: dict, requested_model: str, fallback_model: str = "") -> str:

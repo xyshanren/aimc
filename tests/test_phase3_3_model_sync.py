@@ -91,6 +91,20 @@ def _install_mock_db():
         }
         return True
 
+    # Phase 4 v4.1: model_sync.auto_left 路径中同步调 remove_model_group_members_by_model
+    # 全局 mock 在 _install_mock_db 里, 避免每个 auto_left 测试重复 patch.
+    async def remove_model_group_members_by_model(session, model_id, *,
+                                                   reason="manual", removed_by="manual_approve"):
+        affected = 0
+        for m in list(_state["members"].values()):
+            if m["model_id"] == model_id and m.get("is_active", 1) == 1:
+                m["is_active"] = 0
+                m["removed_at"] = __import__("datetime").datetime.now()
+                m["removed_reason"] = reason
+                m["removed_by"] = removed_by
+                affected += 1
+        return affected
+
     async def log_capability_change(session, model_id, field_changed, old_value,
                                        new_value, source="ai_infer",
                                        confidence=None, approved=0):
@@ -104,6 +118,7 @@ def _install_mock_db():
     crud.get_model_registry = get_model_registry
     crud.upsert_model_registry = upsert_model_registry
     crud.add_model_group_member = add_model_group_member
+    crud.remove_model_group_members_by_model = remove_model_group_members_by_model
     crud.log_capability_change = log_capability_change
 
     # Patch model_sync._find_target_group (直接读内存 groups)
@@ -376,24 +391,17 @@ def test_process_auto_leave():
     }
 
     # Phase 4 v4.1: model_sync.auto_left 路径中同步调 remove_model_group_members_by_model
-    # (之前只在 P1-2 cleanup 脚本里才调). 测试需 mock 该 crud 函数.
+    # (之前只在 P1-2 cleanup 脚本里才调). _install_mock_db() 已装全局 mock, 这里只 trace 调用.
     removed_calls = []
 
-    async def remove_model_group_members_by_model(session, model_id, *,
-                                                   reason="manual", removed_by="manual_approve"):
-        removed_calls.append({"model_id": model_id, "reason": reason, "removed_by": removed_by})
-        affected = 0
-        for m in state["members"].values():
-            if m["model_id"] == model_id and m["is_active"] == 1:
-                m["is_active"] = 0
-                m["removed_at"] = __import__("datetime").datetime.now()
-                m["removed_reason"] = reason
-                m["removed_by"] = removed_by
-                affected += 1
-        return affected
-
     import db.crud as crud
-    crud.remove_model_group_members_by_model = remove_model_group_members_by_model
+    _orig_remove = crud.remove_model_group_members_by_model
+
+    async def _traced_remove(session, model_id, *, reason="manual", removed_by="manual_approve"):
+        removed_calls.append({"model_id": model_id, "reason": reason, "removed_by": removed_by})
+        return await _orig_remove(session, model_id, reason=reason, removed_by=removed_by)
+
+    crud.remove_model_group_members_by_model = _traced_remove
 
     item = ModelIntelItem(
         model_id="old-model", family="qwen", inferred_tier="T2",
