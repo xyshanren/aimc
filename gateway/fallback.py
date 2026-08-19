@@ -48,7 +48,11 @@ async def forward_with_fallback(request: Request, body: bytes, model: str):
 
     for attempt, channel in enumerate(candidates[: max_retries + 1]):
         try:
-            response = await forward_request(channel, body, request.headers)
+            # V4.8: 传 caller_id (从 request.state, middleware 设的) 到 usage_logs
+            caller_id = getattr(request.state, "caller_id", None)
+            response = await forward_request(
+                channel, body, request.headers, caller_id=caller_id,
+            )
 
             # 检查是否为错误响应（502/503/504 触发 fallback）
             if hasattr(response, "status_code") and response.status_code in (502, 503, 504):

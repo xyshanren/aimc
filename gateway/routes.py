@@ -162,11 +162,14 @@ async def chat_completions(request: Request):
 
         # 透传请求到上游 (Phase 2.5: 传 requested_model 用于响应头 X-AIMC-Actual-Model)
         # V4.6.4: 传 channel._actual_model 作为 actual_model
+        # V4.8: 传 caller_id (从 request.state, middleware 设的) 到 usage_logs
         actual_model = channel.get("_actual_model") or model
+        caller_id = getattr(request.state, "caller_id", None)
         response = await forward_request(
             channel, body, request.headers,
             requested_model=model,
             actual_model=actual_model,
+            caller_id=caller_id,
         )
 
         # P1-15: 非流式 + 429/5xx + 还有重试机会 -> 继续下一候选

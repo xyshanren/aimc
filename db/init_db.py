@@ -45,6 +45,8 @@ async def ensure_migrations():
     - model_group_members.is_active / removed_at / removed_reason / removed_by (P1-2, 2026-08-06) — 软删除
     - model_feedback_summary (V4.4.A) — 模型周反馈汇总表
         - accounts.notes (V4.5 fix, 2026-08-08) — add_account.py --notes 缺列补 migration
+    - usage_logs.caller_id (V4.8, 2026-08-19) — 多用户 caller 计量
+    - users / api_keys 表 (V4.8, 2026-08-19) — 多用户 + 多 key 鉴权 (create_all 自动建表)
     """
     async with engine.begin() as conn:
         # intel_sources.last_content
@@ -174,6 +176,16 @@ async def ensure_migrations():
             logger.info("迁移: accounts 添加 notes 列 (V4.5 fix)")
         else:
             logger.debug("迁移: accounts.notes 已存在，跳过")
+
+        # usage_logs.caller_id (V4.8, 2026-08-19): 多用户 caller 计量
+        # NULL = legacy 数据 / 未鉴权请求; 新请求带 caller_id = users.id
+        result = await conn.execute(text("PRAGMA table_info('usage_logs')"))
+        columns = {row[1] for row in result.fetchall()}
+        if "caller_id" not in columns:
+            await conn.execute(text("ALTER TABLE usage_logs ADD COLUMN caller_id INTEGER"))
+            logger.info("迁移: usage_logs 添加 caller_id 列 (V4.8 多用户)")
+        else:
+            logger.debug("迁移: usage_logs.caller_id 已存在，跳过")
 
 
 async def drop_all():
