@@ -1,7 +1,10 @@
 """核心代理转发逻辑
 
-关键原则：绝不解析 SSE 流，原样透传字节。
+关键原则：原样透传字节给客户端。
 - 流式请求：使用 aiter_raw() 返回原始字节流
+  P0-1 (2026-08-19): 透传的同时用滑动缓冲累积字节, 在流结束时
+  扫描末尾 chunk 提取 usage (OpenAI 末尾 usage chunk / Anthropic message_delta),
+  调用 _schedule_usage_log 记录, 不改变发给客户端的字节。
 - 非流式请求：直接返回上游 JSON 响应
 """
 
@@ -213,7 +216,8 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
     try:
         if is_stream:
             return await _forward_stream(
-                target_url, forward_headers, body, channel, start_time, aimc_headers
+                target_url, forward_headers, body, channel, start_time, aimc_headers,
+                requested_model,
             )
         else:
             return await _forward_normal(
@@ -245,8 +249,14 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
 async def _forward_stream(
     url: str, headers: dict, body: bytes, channel: dict, start_time: float,
     aimc_headers: dict | None = None,
+    requested_model: str = "",
 ) -> StreamingResponse:
-    """流式透传：原样传递字节，不解析 SSE"""
+    """流式透传：原样传递字节给客户端
+
+    P0-1 (2026-08-19): 透传的同时用滑动缓冲累积字节, 在流结束时
+    扫描末尾 SSE chunk 提取 usage, 调用 _schedule_stream_usage_log 记录。
+    不解析/改变发给客户端的字节, usage 提取只在 finally 里离线扫描缓冲。
+    """
 
     client = httpx.AsyncClient(timeout=httpx.Timeout(settings.request_timeout, connect=10.0))
 
@@ -264,9 +274,20 @@ async def _forward_stream(
         _schedule_alert(channel, response)
 
     async def stream_generator():
+        # P0-1: 滑动缓冲, 只保留末尾 N 字节用于扫描 usage chunk
+        # usage 出现在流的最后 (OpenAI: [DONE] 前一个 chunk; Anthropic: message_delta 事件)
+        # 保留 64KB 足以覆盖绝大多数 usage chunk, 避免大流量时内存膨胀
+        tail_buffer = bytearray()
+        TAIL_LIMIT = 65536
         try:
             async for chunk in response.aiter_raw():
+                # 透传给客户端 (原样, 不修改)
                 yield chunk
+                # 累积到尾部缓冲用于事后提取 usage
+                tail_buffer.extend(chunk)
+                if len(tail_buffer) > TAIL_LIMIT:
+                    # 只保留末尾 TAIL_LIMIT 字节 (滑动窗口)
+                    del tail_buffer[: len(tail_buffer) - TAIL_LIMIT]
         finally:
             await response.aclose()
             await client.aclose()
@@ -274,6 +295,14 @@ async def _forward_stream(
             logger.info(
                 f"[Stream] {channel['name']} -> {response.status_code} ({latency_ms}ms)"
             )
+            # P0-1: 从尾部缓冲提取 usage 并记录 (不阻塞, fire-and-forget)
+            try:
+                _schedule_stream_usage_log(
+                    channel, response.status_code, latency_ms,
+                    requested_model, bytes(tail_buffer),
+                )
+            except Exception as e:
+                logger.debug(f"[P0-1] stream usage 记录失败 (非致命): {e}")
 
     # 透传上游响应头（过滤掉 hop-by-hop 头）
     response_headers = {}
@@ -349,6 +378,53 @@ def _extract_group_id(requested_model: str) -> str | None:
     return None
 
 
+def _resolve_actual_model(channel: dict, requested_model: str, fallback_model: str = "") -> str:
+    """统一解析实际命中的 model 名 (P0-3 fix)
+
+    背景: router 注入的 _actual_model 写在共享 channel dict 上 (非 copy),
+    组路由命中后该字段会残留, 后续精确路由命中同一 channel 时 _actual_model
+    仍是上一次组路由的值, 导致 usage_logs.model 记错 (e.g. tier:strong 请求
+    之后, 精确路由记录到组路由的 model).
+
+    规则 (与 _build_aimc_headers 保持一致):
+    - 组路由 (requested_model 以 tier:/scene: 开头) 且 channel 有 _actual_model
+      -> 用 _actual_model
+    - 其他 -> 用 requested_model, 再 fallback 到 fallback_model (上游返回的 model)
+    """
+    is_group_request = bool(requested_model) and requested_model.startswith(("tier:", "scene:"))
+    if is_group_request and channel.get("_actual_model"):
+        return channel["_actual_model"]
+    return requested_model or fallback_model or ""
+
+
+def _parse_cache_tokens(usage: dict):
+    """从 usage dict 解析 cache token (OpenAI + Anthropic 风格)
+
+    Returns: (cached_input_tokens, cache_read_input_tokens, cache_creation_input_tokens)
+    每个 None = 上游未返回该字段
+    """
+    cached_input_tokens = None
+    cache_read_input_tokens = None
+    cache_creation_input_tokens = None
+
+    # OpenAI: usage.prompt_tokens_details.cached_tokens
+    prompt_details = usage.get("prompt_tokens_details")
+    if isinstance(prompt_details, dict):
+        v = prompt_details.get("cached_tokens")
+        if isinstance(v, int):
+            cached_input_tokens = v
+
+    # Anthropic: usage.cache_read_input_tokens + cache_creation_input_tokens
+    v = usage.get("cache_read_input_tokens")
+    if isinstance(v, int):
+        cache_read_input_tokens = v
+    v = usage.get("cache_creation_input_tokens")
+    if isinstance(v, int):
+        cache_creation_input_tokens = v
+
+    return cached_input_tokens, cache_read_input_tokens, cache_creation_input_tokens
+
+
 def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int, requested_model: str = ""):
     """异步记录用量日志（fire-and-forget）
 
@@ -356,40 +432,22 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
     - 精确模型路由: group_id = NULL
     - 组路由: group_id = "tier:xxx" / "scene:xxx"
 
-    Phase 3.A+ fix (2026-08-13): model 字段兜底
-    - 优先用 router 注入的 _actual_model (精确路由 = requested_model, 组路由 = 实际命中)
-    - fallback 到 requested_model (请求体里的 model)
-    - 再次 fallback 到上游响应 data.model (避免空字符串导致 dashboard 命中率统计失真)
+    P0-3 fix (2026-08-19): model 名解析改用 _resolve_actual_model
+    - 加 is_group_request 守卫, 避免共享 channel dict 的 _actual_model 残留污染
+    - fallback 到 requested_model, 再 fallback 到上游响应 data.model
     """
     try:
         data = response.json()
         usage = data.get("usage", {})
         group_id = _extract_group_id(requested_model)
-        actual_model = (
-            channel.get("_actual_model")
-            or requested_model
-            or data.get("model", "")
+        actual_model = _resolve_actual_model(
+            channel, requested_model, fallback_model=data.get("model", "")
         )
 
         # P0-3 follow-up: 解析 cached_tokens (OpenAI + Anthropic 风格)
-        cached_input_tokens = None
-        cache_read_input_tokens = None
-        cache_creation_input_tokens = None
-
-        # OpenAI: usage.prompt_tokens_details.cached_tokens
-        prompt_details = usage.get("prompt_tokens_details")
-        if isinstance(prompt_details, dict):
-            v = prompt_details.get("cached_tokens")
-            if isinstance(v, int):
-                cached_input_tokens = v
-
-        # Anthropic: usage.cache_read_input_tokens + cache_creation_input_tokens
-        v = usage.get("cache_read_input_tokens")
-        if isinstance(v, int):
-            cache_read_input_tokens = v
-        v = usage.get("cache_creation_input_tokens")
-        if isinstance(v, int):
-            cache_creation_input_tokens = v
+        cached_input_tokens, cache_read_input_tokens, cache_creation_input_tokens = (
+            _parse_cache_tokens(usage)
+        )
 
         # 创建异步任务写入数据库
         asyncio.get_event_loop().create_task(
@@ -445,11 +503,112 @@ async def _write_usage_log(
                 output_tokens=output_tokens,
                 status_code=status_code,
                 latency_ms=latency_ms,
+                cached_input_tokens=cached_input_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
             )
             session.add(log)
             await session.commit()
     except Exception as e:
         logger.warning(f"用量日志写入失败: {e}")
+
+
+def _extract_stream_usage(tail_bytes: bytes) -> dict | None:
+    """P0-1: 从 SSE 流的尾部字节提取 usage 对象
+
+    OpenAI 风格: 流末尾在 [DONE] 前发一个 data: {"usage": {...}, ...} chunk
+    Anthropic 风格: message_delta 事件的 usage 字段
+    兼容两种, 扫描所有 `data: ` 行, 取最后一个含 usage 的 JSON。
+
+    Returns: usage dict 或 None (没找到 / 解析失败)
+    """
+    try:
+        text = tail_bytes.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    last_usage = None
+    last_model = None
+    # 逐行扫描 `data: {...}` 行
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            obj = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        # 记下最后一个出现的 model (OpenAI 把 model 放在每个 chunk)
+        if obj.get("model"):
+            last_model = obj["model"]
+        # OpenAI: 顶层 usage; Anthropic: message_delta.usage
+        usage = obj.get("usage")
+        if isinstance(usage, dict):
+            last_usage = usage
+    if last_usage is None:
+        return None
+    # 附带 model (若 usage 里没有, 用扫描到的最后一个 model)
+    if last_model and "model" not in last_usage:
+        last_usage["_stream_model"] = last_model
+    return last_usage
+
+
+def _schedule_stream_usage_log(
+    channel: dict, status_code: int, latency_ms: int,
+    requested_model: str, tail_bytes: bytes,
+):
+    """P0-1: 从 streaming 尾部缓冲提取 usage 并记录 (fire-and-forget)
+
+    与 _schedule_usage_log 对应, 但输入是原始 SSE 尾部字节而非完整 response。
+    """
+    try:
+        usage = _extract_stream_usage(tail_bytes)
+        if usage is None:
+            # 上游未返回 usage (部分 provider stream 不带 usage), 跳过
+            logger.debug(
+                f"[P0-1] stream 未提取到 usage, channel={channel.get('name')}, "
+                f"requested={requested_model}"
+            )
+            return
+
+        group_id = _extract_group_id(requested_model)
+        # 流式没有完整 response.json(), fallback_model 用扫描到的 _stream_model
+        fallback_model = usage.pop("_stream_model", "") or ""
+        actual_model = _resolve_actual_model(
+            channel, requested_model, fallback_model=fallback_model
+        )
+
+        cached_input_tokens, cache_read_input_tokens, cache_creation_input_tokens = (
+            _parse_cache_tokens(usage)
+        )
+
+        # OpenAI: prompt_tokens / completion_tokens
+        # Anthropic (message_delta): input_tokens / output_tokens (注: 流式可能只有 output_tokens)
+        input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        output_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+
+        asyncio.get_event_loop().create_task(
+            _write_usage_log(
+                channel_id=channel.get("id"),
+                account_id=channel.get("account_id"),
+                model=actual_model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                status_code=status_code,
+                latency_ms=latency_ms,
+                group_id=group_id,
+                cached_input_tokens=cached_input_tokens,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
+            )
+        )
+    except Exception:
+        pass  # 用量记录失败不影响主流程
 
 
 def _schedule_alert(channel: dict, response: httpx.Response):
