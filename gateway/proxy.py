@@ -66,16 +66,20 @@ def _maybe_rewrite_body_model(
     例: 用户请求 glm-5.2, channel 只有 zai-org/GLM-5.2。
     替换 body.model = channel 支持的 model, 上游能识别。
 
+    V4.6.5: caller 传入 _channel_model (fuzzy 匹配的 price model),
+    优先用它替换 body. 若 caller 未传 (None), fallback 到 _actual_model /
+    requested_model.
+
     Args:
         body: 原始请求体字节
-        channel: 渠道信息字典, 取 channel["_actual_model"] (router 注入)
+        channel: 渠道信息字典
         requested_model: 用户请求的 model 字符串
-        actual_model: 显式传入的 model (优先于 channel["_actual_model"])
+        actual_model: 显式传入的目标 model (优先于 channel["_actual_model"])
 
     Returns:
         改写后的 body 字节 (未改时原样返回)
     """
-    actual_model = actual_model or channel.get("_actual_model") or requested_model
+    actual_model = actual_model or channel.get("_channel_model") or channel.get("_actual_model") or requested_model
     if actual_model == requested_model:
         return body  # 无需改写
 
@@ -91,7 +95,7 @@ def _maybe_rewrite_body_model(
     old_model = body_json.get("model")
     body_json["model"] = actual_model
     logger.info(
-        f"[V4.6.4 fallback model 替换] {old_model} -> {actual_model} "
+        f"[V4.6.5 body model 替换] {old_model} -> {actual_model} "
         f"(channel={channel.get('name')})"
     )
     return json.dumps(body_json, ensure_ascii=False).encode("utf-8")
@@ -180,9 +184,15 @@ def _build_aimc_headers(channel: dict, requested_model: str) -> dict:
       所以精确路由时 _actual_model = requested_model 也成立 (不污染)
     """
     headers = {}
+    # V4.6.5: 区分三个字段
+    # - _registry_model: registry model_id (响应头用, e.g. glm-4.5v)
+    # - _channel_model: fuzzy 匹配的 price model (body 替换用, e.g. zai-org/GLM-4.5V)
+    # - _actual_model: V4.6.4 兼容, 精确路由时用 requested_model
     is_group_request = requested_model.startswith(("tier:", "scene:"))
-    if is_group_request and channel.get("_actual_model"):
-        # 组路由: 用 _actual_model (Phase 2.4 注入)
+    if is_group_request and channel.get("_registry_model"):
+        actual_model = channel["_registry_model"]
+    elif is_group_request and channel.get("_actual_model"):
+        # 组路由 (V4.6.5 前): 用 _actual_model (Phase 2.4 注入)
         actual_model = channel["_actual_model"]
     else:
         # 精确路由: 用 requested_model (忽略 channel 里可能残留的 _actual_model 污染)
@@ -249,7 +259,13 @@ async def forward_request(channel: dict, body: bytes, headers: Headers, requeste
         except (json.JSONDecodeError, UnicodeDecodeError):
             pass  # 非 JSON body, 跳过
 
-    if actual_model != requested_model:
+    # V4.6.5: body 替换用 _channel_model (router fuzzy 匹配的 price model, 上游认识)
+    # _channel_model 由 router._select_by_group / router.select_best_channel 写入
+    # (e.g. zai-org/GLM-4.5V for glm-4.5v). 跟 _actual_model (响应头用 registry model) 分离.
+    channel_model = channel.get("_channel_model")
+    if channel_model and channel_model != requested_model:
+        body = _maybe_rewrite_body_model(body, channel, requested_model, channel_model)
+    elif actual_model != requested_model:
         body = _maybe_rewrite_body_model(body, channel, requested_model, actual_model)
 
     # 构建上游请求头
@@ -486,21 +502,30 @@ def _update_cooldown(channel: dict, status_code: int) -> None:
 
 
 def _resolve_actual_model(channel: dict, requested_model: str, fallback_model: str = "") -> str:
-    """统一解析实际命中的 model 名 (P0-3 fix)
+    """统一解析实际命中的 model 名 (P0-3 fix + V4.6.5)
 
-    背景: router 注入的 _actual_model 写在共享 channel dict 上 (非 copy),
-    组路由命中后该字段会残留, 后续精确路由命中同一 channel 时 _actual_model
-    仍是上一次组路由的值, 导致 usage_logs.model 记错 (e.g. tier:strong 请求
-    之后, 精确路由记录到组路由的 model).
+    背景: router 注入的 _actual_model / _registry_model 写在共享 channel dict 上
+    (非 copy), 组路由命中后该字段会残留, 后续精确路由命中同一 channel 时
+    _actual_model 仍是上一次组路由的值, 导致 usage_logs.model 记错.
 
     规则 (与 _build_aimc_headers 保持一致):
-    - 组路由 (requested_model 以 tier:/scene: 开头) 且 channel 有 _actual_model
+    - 组路由 (requested_model 以 tier:/scene: 开头) 且 channel 有 _registry_model
+      -> 用 _registry_model (V4.6.5: registry model_id, e.g. glm-4.5v)
+    - 组路由 且 channel 有 _actual_model (V4.6.5 前兼容)
       -> 用 _actual_model
     - 其他 -> 用 requested_model, 再 fallback 到 fallback_model (上游返回的 model)
+
+    注意: 用 _registry_model 而非 _channel_model — usage_logs 记的是
+    registry 侧 model_id (e.g. "glm-4.5v"), 不是上游 price model 名
+    (e.g. "zai-org/GLM-4.5V"), 跟 model_registry 表对齐, 方便统计.
     """
     is_group_request = bool(requested_model) and requested_model.startswith(("tier:", "scene:"))
-    if is_group_request and channel.get("_actual_model"):
-        return channel["_actual_model"]
+    if is_group_request:
+        # V4.6.5: 优先 _registry_model, fallback _actual_model (V4.6.5 前路径)
+        if channel.get("_registry_model"):
+            return channel["_registry_model"]
+        if channel.get("_actual_model"):
+            return channel["_actual_model"]
     return requested_model or fallback_model or ""
 
 

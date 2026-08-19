@@ -578,6 +578,11 @@ class RouteEngine:
         for ch in self._channels_cache:
             price_info = self._get_current_price(ch, model, current_hour)
             if price_info is not None:
+                # V4.6.5: 给 channel 加 _channel_model 给 proxy body 替换
+                # 当 price_model != model (e.g. "zai-org/GLM-4.5V" vs "glm-4.5v"), 上游用 price_model
+                if price_info.get("model") != model:
+                    ch["_channel_model"] = price_info["model"]
+                    logger.debug(f"[V4.6.5] _channel_model: {model} -> {price_info['model']} (channel={ch['name']})")
                 candidates.append((ch, price_info))
 
         if not candidates:
@@ -585,6 +590,10 @@ class RouteEngine:
             for ch in self._channels_cache:
                 price_info = self._get_fuzzy_price(ch, model, current_hour)
                 if price_info is not None:
+                    # V4.6.5: fuzzy match 同样存 _channel_model (可能 prefix-stripped)
+                    if price_info.get("model") != model:
+                        ch["_channel_model"] = price_info["model"]
+                        logger.debug(f"[V4.6.5 fuzzy] _channel_model: {model} -> {price_info['model']} (channel={ch['name']})")
                     candidates.append((ch, price_info))
 
         if not candidates:
@@ -592,10 +601,24 @@ class RouteEngine:
             # (默认是聚合平台, 例如硅基流动: 1 个 key 通吃 100+ model)
             fallback = self._get_fallback_channel()
             if fallback and self._is_channel_usable(fallback):
-                logger.info(
-                    f"无可用渠道支持模型: {model}, fallback 到 {fallback['name']} "
-                    f"(priority={fallback['priority']})"
-                )
+                # V4.6.4 增强 (2026-08-18): 模糊匹配, 把 upstream model name 传给 proxy
+                # - registry: glm-4.5v
+                # - siliconflow upstream: zai-org/GLM-4.5V
+                # - 直接发 glm-4.5v -> upstream 20012 (model not exist)
+                # - 我们用 fuzzy 找到的 price_model 替换, 上游能识别
+                fuzzy_price = self._get_fuzzy_price(fallback, model, current_hour)
+                if fuzzy_price:
+                    fallback["_channel_model"] = fuzzy_price["model"]  # proxy 用这个
+                    logger.info(
+                        f"无可用渠道支持模型: {model}, fallback 到 {fallback['name']} "
+                        f"-> upstream model={fuzzy_price['model']} (priority={fallback['priority']})"
+                    )
+                else:
+                    fallback["_channel_model"] = model  # 没匹配到, 透传
+                    logger.info(
+                        f"无可用渠道支持模型: {model}, fallback 到 {fallback['name']} "
+                        f"(透传 model name, priority={fallback['priority']})"
+                    )
                 return fallback
             logger.warning(f"无可用渠道支持模型: {model}")
             return None
@@ -719,6 +742,10 @@ class RouteEngine:
 
         # Phase 3.E: 精确路由响应头增强 — 注入 _registry_* 字段
         # 跟 _select_by_group 保持一致, 让 _build_aimc_headers 不用关心路由类型
+        # V4.6.5: _channel_model 在前面 candidates.append 阶段已设置 (fuzzy 匹配时),
+        # 不要在这里覆盖. 但精确匹配时 (_channel_model 未设), 透传 model name.
+        if "_channel_model" not in best_channel:
+            best_channel["_channel_model"] = model
         best_channel["_actual_model"] = model
         reg = self._registry_cache.get(model)
         if reg:
@@ -738,12 +765,46 @@ class RouteEngine:
         return None
 
     def _get_fuzzy_price(self, channel: dict, model: str, current_hour: int) -> Optional[dict]:
-        """模糊匹配模型名（支持前缀匹配）"""
+        """模糊匹配模型名（V4.6.4 增强, 2026-08-18）
+
+        匹配规则:
+        - 前缀匹配：deepseek-chat 匹配 deepseek
+        - 命名空间剥离：zai-org/GLM-4.5V 匹配 glm-4.5v
+        - 嵌套后缀：qwen-qwen3-vl-32b-thinking 匹配 Qwen/Qwen3-VL-32B-Thinking
+        - 末段匹配：glm-4.5v 末尾 '4.5v' 出现于 'GLM-4.5V' 即可
+        - 共同子串：剥前缀后 2 段 5+ 字符完全相同
+
+        例子 (硅基流动):
+        - registry "glm-4.5v"  -> price "zai-org/GLM-4.5V"  → match (剥前缀, 末段 "glm-4.5v" == "glm-4.5v")
+        - registry "qwen-qwen3-vl-32b-instruct" -> price "Qwen/Qwen3-VL-32B-Instruct"
+          → match (剥前缀, 末段 "qwen3-vl-32b-instruct" 重叠 "qwen-qwen3-vl-32b-instruct")
+        """
         model_lower = model.lower()
+        # 剥 model 的可能前缀 (e.g. "qwen-" / "deepseek-")
+        model_stripped = model_lower
+        for prefix in ("qwen-", "deepseek-", "minimax-", "baai-", "zai-"):
+            if model_stripped.startswith(prefix):
+                model_stripped = model_stripped[len(prefix):]
+
         for p in channel["prices"]:
             price_model = p["model"].lower()
-            # 前缀匹配：deepseek-chat 匹配 deepseek
-            if model_lower.startswith(price_model) or price_model.startswith(model_lower):
+            # 剥掉 provider 前缀 (e.g. "zai-org/", "qwen/", "deepseek-ai/")
+            price_stripped = price_model.split("/")[-1] if "/" in price_model else price_model
+
+            match = (
+                model_lower.startswith(price_model)  # "glm-4.5v" in "zai-org/..."
+                or price_model.startswith(model_lower)  # "zai-org/..." in "glm-4.5v"
+                or model_lower.startswith(price_stripped)  # "glm-4.5v" startswith "glm-4.5v"
+                or price_stripped.startswith(model_lower)
+                or model_lower in price_stripped
+                or price_stripped in model_lower
+                # V4.6.4 fix 2: 剥前缀后 末段重叠
+                or model_stripped and price_stripped and (
+                    model_stripped in price_stripped
+                    or price_stripped in model_stripped
+                )
+            )
+            if match:
                 if self._match_time_range(p["time_range"], current_hour):
                     return p
         return None
@@ -1093,8 +1154,13 @@ class RouteEngine:
         P0-4 (2026-08-14): stale check 由 caller (gateway/routes.py) 显式 await
         _auto_refresh_if_stale, 避免在 sync 入口处 fire-and-forget 引入 race condition。
         """
-        if model.startswith("tier:") or model.startswith("scene:"):
-            return self._select_by_group(model, prefs=prefs, messages=messages)
+        # V4.6.5 (2026-08-18): 支持 tier:xxx/model_name 格式
+        # 解析 group_id (剥离 /model_suffix)
+        group_model = model
+        if "/" in model:
+            group_model = model.split("/")[0]  # "tier:vision/glm-4.5v" -> "tier:vision"
+        if group_model.startswith("tier:") or group_model.startswith("scene:"):
+            return self._select_by_group(group_model, prefs=prefs, messages=messages)
         # 精确模型路由 Phase 2.6 不实现偏好 (跟 design §4.5 一致)
         return self.select_best_channel(model, messages=messages)
 
@@ -1258,7 +1324,7 @@ class RouteEngine:
                     if registry.family == prefs["prefer_family"]:
                         family_bonus = 0
 
-                candidates.append((best, model_id, input_price, family_bonus))
+                candidates.append((best, model_id, input_price, family_bonus, best.get("_channel_model")))
 
             if not candidates:
                 logger.warning(
@@ -1278,7 +1344,7 @@ class RouteEngine:
                 # cheapest (default): subscription/free 视为 0 元, 永远最便宜
                 # 排序 key: (price, family_bonus, -priority) — Phase 2.6 加 family_bonus tie-break
                 def sort_key(item):
-                    ch, _model_id, price, family_bonus = item
+                    ch, _model_id, price, family_bonus, _ch_model = item
                     billing = ch.get("billing_mode", "pay_per_token")
                     if billing in ("subscription", "free"):
                         return (0.0, family_bonus, -ch.get("priority", 0))
@@ -1289,9 +1355,17 @@ class RouteEngine:
                     )
                 candidates.sort(key=sort_key)
 
-            best_ch, best_model, _, _ = candidates[0]
+            best_ch, best_model, _, _, correct_channel_model = candidates[0]
 
             # 4) 注入调试字段 (Phase 2.5 响应头用)
+            # V4.6.5 (2026-08-18): 关键修复
+            # _channel_model 作为 tuple 第 5 元素存入 candidates, sort 后取回.
+            # sort 后 channel dict._channel_model 已被污染 (最后 checked member 覆盖),
+            # 必须用 tuple 里存的 correct_channel_model.
+            # _channel_model = proxy body 替换用的 price model (e.g. zai-org/GLM-4.5V)
+            # _registry_model = 响应头用的 registry model_id (e.g. glm-4.5v)
+            best_ch["_channel_model"] = correct_channel_model
+            best_ch["_registry_model"] = best_model
             best_ch["_actual_model"] = best_model
             best_ch["_group_id"] = current
             registry = self._registry_cache.get(best_model)
