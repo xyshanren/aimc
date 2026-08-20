@@ -190,7 +190,14 @@ async def chat_completions(request: Request):
         )
 
         # P1-15: 非流式 + 429/5xx + 还有重试机会 -> 继续下一候选
-        if (not is_stream) and response.status_code in (429, 500, 502, 503, 504) and attempt < max_retries:
+        # P2-A: 组路由 (tier:/scene:) 的上游 400 也参与 failover
+        # (场景: 选了不兼容的 member 导致 400, 换下一候选可能成功;
+        #  精确模型路由的 400 是客户端请求格式错误, 重试无意义, 不 failover)
+        is_group_route = model.startswith(("tier:", "scene:"))
+        retryable_status = response.status_code in (429, 500, 502, 503, 504)
+        if is_group_route and response.status_code == 400:
+            retryable_status = True
+        if (not is_stream) and retryable_status and attempt < max_retries:
             from gateway.cooldown import cooldown_manager
             cooldown_manager.mark_failure(
                 channel["account_id"], reason=f"upstream_{response.status_code}"

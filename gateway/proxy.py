@@ -537,7 +537,9 @@ def _resolve_actual_model(channel: dict, requested_model: str, fallback_model: s
             return channel["_registry_model"]
         if channel.get("_actual_model"):
             return channel["_actual_model"]
-    return requested_model or fallback_model or ""
+    # P2-A: 精确路由 fallback 链 — _channel_model (fuzzy match 后的上游名)
+    # 优先于 requested_model, 避免上游 400 错误响应无 model 字段时 usage_logs.model 为空
+    return channel.get("_channel_model") or requested_model or fallback_model or ""
 
 
 def _parse_cache_tokens(usage: dict):

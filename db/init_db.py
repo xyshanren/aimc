@@ -47,6 +47,7 @@ async def ensure_migrations():
         - accounts.notes (V4.5 fix, 2026-08-08) — add_account.py --notes 缺列补 migration
     - usage_logs.caller_id (V4.8, 2026-08-19) — 多用户 caller 计量
     - users / api_keys 表 (V4.8, 2026-08-19) — 多用户 + 多 key 鉴权 (create_all 自动建表)
+    - model_registry.raw_ids / supports_prompt_cache (P0-2, 2026-08-14) — 上游 raw_id 映射 + cache 支持
     """
     async with engine.begin() as conn:
         # intel_sources.last_content
@@ -200,6 +201,24 @@ async def ensure_migrations():
             logger.info("迁移: usage_logs 添加 (caller_id, created_at) 索引 (V4.8 限额查询)")
         else:
             logger.debug("迁移: idx_usage_caller_time 已存在，跳过")
+
+        # P0-2 (2026-08-14): model_registry.raw_ids / supports_prompt_cache
+        # raw_ids: JSON, 各渠道上游原始 model_id 映射
+        # supports_prompt_cache: 0/1, router/proxy 看这个字段才注入 cache_control
+        result = await conn.execute(text("PRAGMA table_info('model_registry')"))
+        columns = {row[1] for row in result.fetchall()}
+        if "raw_ids" not in columns:
+            await conn.execute(text("ALTER TABLE model_registry ADD COLUMN raw_ids TEXT"))
+            logger.info("迁移: model_registry 添加 raw_ids 列 (P0-2)")
+        else:
+            logger.debug("迁移: model_registry.raw_ids 已存在，跳过")
+        if "supports_prompt_cache" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE model_registry ADD COLUMN supports_prompt_cache INTEGER NOT NULL DEFAULT 0"
+            ))
+            logger.info("迁移: model_registry 添加 supports_prompt_cache 列 (P0-2)")
+        else:
+            logger.debug("迁移: model_registry.supports_prompt_cache 已存在，跳过")
 
 
 async def drop_all():

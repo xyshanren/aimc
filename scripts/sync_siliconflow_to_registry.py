@@ -84,13 +84,15 @@ FAMILY_HINTS = {
     "nex": "nex",
     "deepseek-ai": "deepseek",
     "moonshotai": "kimi",
+    "zai-org": "glm",  # P2-A: zai-org/GLM-4.5V -> glm-glm-4.5v
 }
 
 def infer_modality(model_id: str) -> str:
     m = model_id.lower()
     if "ocr" in m or "paddleocr" in m or "deepseek-ocr" in m:
         return "ocr"
-    if any(k in m for k in ["-vl-", "-vision-", "vl-"]):
+    # P2-A: 扩展 vision 关键词, 覆盖 glm-4.5v / glm-4v / qwen-v 等命名
+    if any(k in m for k in ["-vl-", "-vision-", "vl-", "4.5v", "glm-v", "glm-4v", "qwen-v"]):
         return "vision"
     if any(k in m for k in ["-image", "-t2i", "-i2v", "-t2v", "image-edit", "kolors", "z-image"]):
         return "image-generation"
@@ -126,6 +128,11 @@ def convert_sf_model_id(raw_id: str) -> tuple[str, str]:
         vendor = "deepseek"
     family = FAMILY_HINTS.get(vendor, vendor if vendor else model_part.split("-")[0])
     new_id = f"{family}-{model_part}" if model_part else family
+    # P2-A: 去重 family 前缀 (e.g. glm-glm-4.5v -> glm-4.5v)
+    # 当 FAMILY_HINTS 把 vendor 重映射后, new_id 可能变成 "{family}-{family}-{...}"
+    prefix = f"{family}-{family}-"
+    if new_id.startswith(prefix):
+        new_id = new_id[len(family) + 1:]  # 去掉重复的 "{family}-"
     return family, new_id
 
 async def main():

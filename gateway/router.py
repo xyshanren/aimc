@@ -1267,11 +1267,14 @@ class RouteEngine:
                     skipped += 1
                     continue
 
-                # 组过滤: require_vision
-                if group.require_vision and registry.modality != "vision":
+                # 组过滤: require_vision (P2-A: 接受 vision + multimodal)
+                # 背景: P0-3 把 multimodal 当作 vision-capable (纯文本时跳过),
+                # 但 require_vision 用 != "vision" 把 multimodal 也拒了, 两者矛盾.
+                # 修复: multimodal 同样是 vision-capable, 不应被 require_vision 拒绝.
+                if group.require_vision and registry.modality not in ("vision", "multimodal"):
                     logger.debug(
                         f"  [{current}] {model_id} modality={registry.modality} "
-                        f"!= vision, 跳过"
+                        f"not in (vision, multimodal), 跳过"
                     )
                     skipped += 1
                     continue

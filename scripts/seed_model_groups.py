@@ -114,12 +114,13 @@ GROUP_MEMBERS = [
     ("tier:light", "glm-4-flash",             140, 1.0, None, "manual"),
 
     # ========== tier:vision (T1 多模态视觉, require_vision=1) ==========
-    # minimax-m3 (T1, VLM) + qwen3-vl 系列 (硅基流动常驻) + glm-4.5v (GLM 视觉)
+    # minimax-m3 (T1, multimodal, VLM) + qwen-vl 系列 (硅基流动常驻) + glm-4.5v (GLM 视觉)
+    # P2-A: qwen3-vl-* 改为 qwen-vl-* (validate_model_id 要求 model_id 以 "{family}-" 开头)
     ("tier:vision", "minimax-m3",                100, 1.0, None, "manual"),
-    ("tier:vision", "qwen3-vl-32b-instruct",    110, 1.0, None, "manual"),
-    ("tier:vision", "qwen3-vl-32b-thinking",    120, 1.0, None, "manual"),
-    ("tier:vision", "qwen3-vl-30b-a3b-thinking", 130, 1.0, None, "manual"),
-    ("tier:vision", "qwen3-vl-8b-instruct",     140, 1.0, None, "manual"),
+    ("tier:vision", "qwen-vl-32b-instruct",     110, 1.0, None, "manual"),
+    ("tier:vision", "qwen-vl-32b-thinking",     120, 1.0, None, "manual"),
+    ("tier:vision", "qwen-vl-30b-a3b-thinking", 130, 1.0, None, "manual"),
+    ("tier:vision", "qwen-vl-8b-instruct",      140, 1.0, None, "manual"),
     ("tier:vision", "glm-4.5v",                 150, 1.0, None, "manual"),
 
     # ========== tier:code (T2 代码专用, 替代 scene:code) ==========

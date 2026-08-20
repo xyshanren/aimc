@@ -18,10 +18,11 @@
     python scripts/seed_model_registry.py
     重复运行会先清后插 (idempotent, 跟 seed_model_cards.py 风格一致)
 
-规模：25 个 model
+规模：30 个 model (P2-A 补充 5 个 vision: glm-4.5v + 4 qwen-vl-*)
 覆盖厂商：deepseek / qwen / glm / kimi / doubao / hunyuan / stepfun / MiniMax / llama
 覆盖 tier：T0 / T1 / T2 / T3
-覆盖 capabilities：reasoning / code / math / general / long_context / agent
+覆盖 capabilities：reasoning / code / math / general / long_context / agent / vision
+覆盖 modality：text / vision / multimodal
 """
 
 import asyncio
@@ -95,7 +96,32 @@ MODEL_REGISTRY = [
         "Qwen 2.5 7B 轻量"
     ),
 
-    # ========== GLM (4 个) ==========
+    # ========== Qwen VL 系列 (4 个, P2-A 补充) ==========
+    # 硅基流动常驻, tier:vision 组成员
+    # 注意: model_id 用 "qwen-vl-" 前缀 (而非 "qwen3-vl-"), family="qwen"
+    # 因为 validate_model_id 要求 model_id 以 "{family}-" 开头
+    (
+        "qwen-vl-32b-instruct", "qwen", "Qwen3 VL 32B Instruct", "T1",
+        ["vision", "general"], 32768, "vision", 1, "2026-08",
+        "Qwen3 VL 32B 指令版, 硅基流动常驻",
+    ),
+    (
+        "qwen-vl-32b-thinking", "qwen", "Qwen3 VL 32B Thinking", "T1",
+        ["reasoning", "vision"], 32768, "vision", 1, "2026-08",
+        "Qwen3 VL 32B 推理版",
+    ),
+    (
+        "qwen-vl-30b-a3b-thinking", "qwen", "Qwen3 VL 30B A3B Thinking", "T1",
+        ["reasoning", "vision"], 32768, "vision", 1, "2026-08",
+        "Qwen3 VL 30B MoE 推理版",
+    ),
+    (
+        "qwen-vl-8b-instruct", "qwen", "Qwen3 VL 8B Instruct", "T3",
+        ["vision", "general"], 32768, "vision", 1, "2026-08",
+        "Qwen3 VL 8B 轻量视觉",
+    ),
+
+    # ========== GLM (5 个) ==========
     (
         "glm-4-plus", "glm", "GLM-4 Plus", "T1",
         ["reasoning", "code", "general"], 128000, "text", 0, "2025-01",
@@ -115,6 +141,12 @@ MODEL_REGISTRY = [
         "glm-4-9b", "glm", "GLM-4 9B", "T3",
         ["general"], 32000, "text", 1, "2024-06",
         "智谱开源轻量, 硅基流动常驻"
+    ),
+    # P2-A: 补充 GLM 视觉模型 (硅基流动 zai-org/GLM-4.5V)
+    (
+        "glm-4.5v", "glm", "GLM-4.5V", "T1",
+        ["reasoning", "vision", "general"], 128000, "vision", 0, "2026-08",
+        "智谱视觉多模态, 硅基流动常驻",
     ),
 
     # ========== Kimi (2 个) ==========
