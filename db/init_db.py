@@ -118,6 +118,15 @@ async def ensure_migrations():
         else:
             logger.debug("迁移: channels.billing_mode 已存在，跳过")
 
+        # P2-B (2026-08-20): channels.drop_params — 按 channel 剥离不支持的上游参数
+        if "drop_params" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE channels ADD COLUMN drop_params TEXT"
+            ))
+            logger.info("迁移: channels 添加 drop_params 列 (P2-B)")
+        else:
+            logger.debug("迁移: channels.drop_params 已存在，跳过")
+
         # usage_logs.group_id (Phase 3.A, 2026-07-29)
         # 用于 Dashboard 命中率聚合查询, 老数据全部 NULL (精确模型路由)
         result = await conn.execute(text("PRAGMA table_info('usage_logs')"))

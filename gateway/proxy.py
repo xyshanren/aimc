@@ -18,6 +18,10 @@ THINKING_FIELDS_TO_STRIP = (
     "extended_thinking",
 )
 
+# P2-B (2026-08-20): drop_params 不会剥离这些字段 (无论 channel 怎么配置)
+# messages = 请求内容, model = 路由必需, stream = 传输模式
+ALWAYS_KEEP_PARAMS = frozenset({"messages", "model", "stream"})
+
 import json
 import os
 import time
@@ -52,6 +56,65 @@ def _strip_thinking_fields(body_dict: dict) -> dict:
 
     out = {k: v for k, v in body_dict.items() if k not in THINKING_FIELDS_TO_STRIP}
     return out
+
+
+def _parse_drop_params(raw) -> list:
+    """P2-B: 解析 channel.drop_params 为 list[str]
+
+    支持两种输入:
+    - JSON list string: '["reasoning_effort","max_tokens"]' → ["reasoning_effort", "max_tokens"]
+    - 逗号分隔 string: "reasoning_effort,max_tokens" → ["reasoning_effort", "max_tokens"]
+      (dashboard 输入框用逗号分隔更方便)
+    """
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(k).strip() for k in raw if str(k).strip()]
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if not raw:
+            return []
+        # 尝试 JSON 解析 (ORM 存的格式)
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(k).strip() for k in parsed if str(k).strip()]
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # 逗号分隔 (dashboard 表单输入)
+        return [k.strip() for k in raw.split(",") if k.strip()]
+    return []
+
+
+def _drop_params(body: bytes, channel: dict) -> tuple:
+    """P2-B: 按 channel.drop_params 配置剥离不支持的上游参数 (deny-list)
+
+    在 thinking strip 之后调用, 只过滤 body 顶层 key.
+    ALWAYS_KEEP_PARAMS (messages/model/stream) 永远保留.
+
+    Returns: (new_body, dropped_param_names)
+    """
+    raw = channel.get("drop_params")
+    if not raw:
+        return body, []
+    drop_list = _parse_drop_params(raw)
+    if not drop_list:
+        return body, []
+
+    try:
+        body_dict = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return body, []
+
+    dropped = [k for k in drop_list if k in body_dict and k not in ALWAYS_KEEP_PARAMS]
+    if not dropped:
+        return body, []
+
+    for k in dropped:
+        del body_dict[k]
+    new_body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
+    return new_body, dropped
 
 
 def _maybe_rewrite_body_model(
@@ -263,6 +326,13 @@ async def forward_request(
                 logger.info(f"[V4.6.4 thinking 剥离] channel={channel.get('name')} stripped={_stripped}")
         except (json.JSONDecodeError, UnicodeDecodeError):
             pass  # 非 JSON body, 跳过
+
+    # P2-B (2026-08-20): 按 channel.drop_params 剥离不支持的上游参数
+    # 在 thinking strip 之后, model rewrite 之前, 只过滤 body 顶层 key
+    new_body, dropped = _drop_params(body, channel)
+    if dropped:
+        body = new_body
+        logger.info(f"[P2-B drop_params] channel={channel.get('name')} dropped={dropped}")
 
     # V4.6.5: body 替换用 _channel_model (router fuzzy 匹配的 price model, 上游认识)
     # _channel_model 由 router._select_by_group / router.select_best_channel 写入

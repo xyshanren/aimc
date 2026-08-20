@@ -105,11 +105,12 @@ GROUP_MEMBERS = [
     ("tier:balanced", "minimax-m2.5", 110, 1.0, None, "manual"),
 
     # ========== tier:light (T3 轻量免费) ==========
-    # minimax-m2.7-highspeed (主力, 便宜) + qwen3-8b + qwen3.5-4b
+    # minimax-m2.7-highspeed (主力, 便宜) + qwen-qwen3-8b + qwen-qwen3.5-4b
     # + minimax-m2.5-highspeed + glm-4-flash (0.1 元/百万, 最便宜)
+    # P2-B: qwen3-8b → qwen-qwen3-8b (validate_model_id 要求 {family}- 前缀)
     ("tier:light", "minimax-m2.7-highspeed", 100, 1.0, None, "manual"),
-    ("tier:light", "qwen3-8b",                110, 1.0, None, "manual"),
-    ("tier:light", "qwen3.5-4b",              120, 1.0, None, "manual"),
+    ("tier:light", "qwen-qwen3-8b",           110, 1.0, None, "manual"),
+    ("tier:light", "qwen-qwen3.5-4b",         120, 1.0, None, "manual"),
     ("tier:light", "minimax-m2.5-highspeed",  130, 1.0, None, "manual"),
     ("tier:light", "glm-4-flash",             140, 1.0, None, "manual"),
 

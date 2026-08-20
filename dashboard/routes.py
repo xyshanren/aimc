@@ -212,6 +212,7 @@ async def get_channels_status(session: AsyncSession = Depends(get_session)):
             "api_base": ch.api_base,  # P1-12: 实际 base_url (覆盖 db.base_url)
             "api_style": ch.api_style or "openai",  # P1-12: openai / anthropic
             "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: 0/1
+            "drop_params": ch.drop_params,  # P2-B: 需剥离的顶层参数 (JSON list / 逗号分隔)
             "accounts": len(ch.accounts),
             "active_accounts": len([a for a in ch.accounts if a.status == "active"]),
         }
@@ -231,7 +232,8 @@ async def update_channel(channel_id: int, request: Request,
         "api_style": "openai" | "anthropic",
         "supports_prompt_cache": 0 | 1,
         "status": "active" | "disabled",
-        "priority": 0
+        "priority": 0,
+        "drop_params": "reasoning_effort,max_tokens"  # P2-B: 逗号分隔或 JSON list
     }
 
     改完后调用 route_engine.invalidate_channel(channel_id) 让 router cache 立即刷新
@@ -254,10 +256,12 @@ async def update_channel(channel_id: int, request: Request,
         "supports_prompt_cache": ch.supports_prompt_cache,
         "status": ch.status,
         "priority": ch.priority,
+        "drop_params": ch.drop_params,
     }
 
     # 更新字段
-    allowed_fields = {"base_url", "api_base", "api_style", "supports_prompt_cache", "status", "priority"}
+    allowed_fields = {"base_url", "api_base", "api_style", "supports_prompt_cache",
+                      "status", "priority", "drop_params"}
     for field, value in body.items():
         if field in allowed_fields:
             setattr(ch, field, value)
@@ -277,6 +281,7 @@ async def update_channel(channel_id: int, request: Request,
         "supports_prompt_cache": ch.supports_prompt_cache,
         "status": ch.status,
         "priority": ch.priority,
+        "drop_params": ch.drop_params,
     }
     return {"ok": True, "before": before, "after": after}
 

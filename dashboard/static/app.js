@@ -108,21 +108,52 @@ function renderChannels(container) {
             container.innerHTML = '<p class="loading">暂无渠道数据</p>';
             return;
         }
-        let html = '<table><thead><tr><th>渠道</th><th>厂商</th><th>状态</th><th>账号</th><th>优先级</th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>渠道</th><th>厂商</th><th>状态</th><th>账号</th><th>优先级</th><th>drop_params</th><th>操作</th></tr></thead><tbody>';
         data.forEach(ch => {
             const statusClass = `status-${esc(ch.status)}`;
-            html += `<tr>
+            const dp = ch.drop_params ? esc(ch.drop_params) : '<span class="text-muted">—</span>';
+            html += `<tr data-channel-id="${esc(ch.id)}">
                 <td>${esc(ch.name)}</td>
                 <td>${esc(ch.provider)}</td>
                 <td class="${statusClass}">${esc(ch.status)}</td>
                 <td>${esc(ch.active_accounts)}/${esc(ch.accounts)}</td>
                 <td>${esc(ch.priority)}</td>
+                <td class="mono" style="font-size:11px;">${dp}</td>
+                <td><button class="btn-tiny" onclick="editChannelDropParams(${esc(ch.id)}, ${JSON.stringify(ch.drop_params || '').replace(/"/g, '&quot;')})">编辑</button></td>
             </tr>`;
         });
         html += '</tbody></table>';
+        html += '<div class="text-muted" style="margin-top:var(--space-xs);font-size:11px;">drop_params: 逗号分隔的需剥离参数 (如 reasoning_effort,max_tokens); 留空=全透传; messages/model/stream 永远保留</div>';
         container.innerHTML = html;
     } catch (e) {
         // 非 JSON 响应，保持原样
+    }
+}
+
+async function editChannelDropParams(channelId, currentVal) {
+    const newVal = prompt('drop_params (逗号分隔, 留空=全透传)\n例如: reasoning_effort,max_tokens', currentVal || '');
+    if (newVal === null) return; // 用户取消
+    try {
+        const resp = await fetch(`/dashboard/api/channels/${channelId}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({drop_params: newVal.trim()}),
+        });
+        const result = await resp.json();
+        if (result.ok) {
+            // 刷新渠道列表
+            const list = document.getElementById('channels-list');
+            if (list) {
+                fetch('/dashboard/api/channels').then(r => r.text()).then(t => {
+                    list.textContent = t;
+                    renderChannels(list);
+                });
+            }
+        } else {
+            alert('保存失败: ' + (result.detail || JSON.stringify(result)));
+        }
+    } catch (e) {
+        alert('保存失败: ' + e.message);
     }
 }
 

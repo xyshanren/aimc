@@ -69,6 +69,14 @@ class Channel(Base):
         Integer, nullable=False, server_default="1",
         comment="0=不剥离, 1=剥离 body 里的 thinking/enable_thinking/reasoning_effort (proxy 层)",
     )
+    # P2-B (2026-08-20): 按 channel 剥离不支持的上游参数 (deny-list)
+    # JSON-as-text 存 list[str], e.g. '["reasoning_effort","max_tokens"]'
+    # proxy 层在 thinking strip 之后过滤 body 顶层字段, messages/model/stream 永远保留
+    # 用法: 发现某 channel 对某参数 400 时, dashboard 加该参数名即可自动剥离
+    drop_params = Column(
+        Text, nullable=True,
+        comment="需剥离的顶层参数 JSON list, e.g. [\"reasoning_effort\"]; NULL=全透传",
+    )
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

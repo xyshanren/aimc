@@ -133,6 +133,38 @@ def test_seed_groups_vision_members_in_registry():
 
 
 # ============================================================
+# P2-B: tier:light 命名对齐 (qwen3-8b → qwen-qwen3-8b)
+# ============================================================
+
+def test_tier_light_members_validate_namespace():
+    """tier:light 的每个 member 都通过 validate_model_id namespace 校验
+
+    P2-B 修复: qwen3-8b 无法通过 validate_model_id (family=qwen 要求 qwen- 前缀),
+    改为 qwen-qwen3-8b.
+    """
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    from db.normalizers import validate_model_id, normalize_model_id, normalize_family
+    # tier:light member 的 family 从 model_id 推断 (第一个 - 之前)
+    light_members = [m for m in GROUP_MEMBERS if m[0] == "tier:light"]
+    for _, model_id, _, _, _, _ in light_members:
+        family = model_id.split("-")[0]
+        mid_n = normalize_model_id(model_id)
+        fam_n = normalize_family(family)
+        assert validate_model_id(mid_n, fam_n), \
+            f"tier:light member {model_id!r} 未通过 namespace 校验 (family={family!r})"
+
+
+def test_tier_light_qwen_prefixed():
+    """tier:light 的 qwen 模型必须带 qwen- 前缀 (qwen-qwen3-8b, 不是 qwen3-8b)"""
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    light_ids = {m[1] for m in GROUP_MEMBERS if m[0] == "tier:light"}
+    assert "qwen-qwen3-8b" in light_ids, "tier:light 应有 qwen-qwen3-8b (带 family 前缀)"
+    assert "qwen-qwen3.5-4b" in light_ids, "tier:light 应有 qwen-qwen3.5-4b"
+    assert "qwen3-8b" not in light_ids, "tier:light 不应有无前缀 qwen3-8b (P2-B 已修)"
+    assert "qwen3.5-4b" not in light_ids, "tier:light 不应有无前缀 qwen3.5-4b"
+
+
+# ============================================================
 # Fix 1: require_vision 接受 multimodal (router.py 源码校验)
 # ============================================================
 
