@@ -1397,9 +1397,13 @@ class RouteEngine:
     def _get_input_price(self, channel: dict, model: str) -> float:
         """取 channel 当前时段对 model 的 input_price
 
-        复用 _get_current_price 逻辑, 返回 float (None → 999 兜底)
+        复用 _get_current_price + _get_fuzzy_price 逻辑, 返回 float (None → 999 兜底)
+        跟 select_best_channel 一致: 先精确, 再模糊 (e.g. glm-5.2 → zai-org/GLM-5.2)
         """
-        price_info = self._get_current_price(channel, model, datetime.now().hour)
+        hour = datetime.now().hour
+        price_info = self._get_current_price(channel, model, hour)
+        if price_info is None:
+            price_info = self._get_fuzzy_price(channel, model, hour)
         if price_info and price_info.get("input_price") is not None:
             return float(price_info["input_price"])
         return 999.0  # 未知价格排到最后
