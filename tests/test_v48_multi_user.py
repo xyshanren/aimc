@@ -379,3 +379,223 @@ def test_middleware_admin_key(v48_db):
     loop.run_until_complete(_run())
     loop.close()
     dbeng.async_session_factory = orig_factory
+
+
+# ============================================================
+# P1-4: per-user 日/月 token 限额 + 429
+# ============================================================
+
+def _seed_user_with_limits(factory, username="charlie", daily_limit=None, monthly_limit=None):
+    """建一个带限额的 user, 返回 user_id"""
+    async def _seed():
+        from db.models import User
+        async with factory() as s:
+            u = User(
+                username=username, display_name=username.title(),
+                role="user", status="active",
+                daily_token_limit=daily_limit,
+                monthly_token_limit=monthly_limit,
+            )
+            s.add(u)
+            await s.flush()
+            await s.commit()
+            return u.id
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(_seed())
+    loop.close()
+    return result
+
+
+def _seed_usage_logs(factory, caller_id, tokens_list):
+    """往 usage_logs 插若干条记录, tokens_list = [(input, output), ...]"""
+    async def _seed():
+        from db.models import UsageLog
+        async with factory() as s:
+            for inp, out in tokens_list:
+                s.add(UsageLog(
+                    channel_id=1, account_id=1, model="gpt-4",
+                    caller_id=caller_id,
+                    input_tokens=inp, output_tokens=out,
+                    status_code=200, latency_ms=100,
+                ))
+            await s.commit()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_seed())
+    loop.close()
+
+
+def test_user_quota_no_limit(v48_db):
+    """P1-4: daily/monthly 均 NULL -> 放行"""
+    db_file, factory, eng = v48_db
+    user_id = _seed_user_with_limits(factory, daily_limit=None, monthly_limit=None)
+    _seed_usage_logs(factory, user_id, [(100, 50), (200, 100)])
+
+    async def _run():
+        from gateway.quota import check_user_quota
+        async with factory() as s:
+            allowed, reason = await check_user_quota(s, user_id, estimated_tokens=500)
+        assert allowed is True
+        assert reason is None
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run())
+    loop.close()
+
+
+def test_user_quota_daily_exceeded(v48_db):
+    """P1-4: 日限额 100, 已用 80, estimated 30 -> 429"""
+    db_file, factory, eng = v48_db
+    user_id = _seed_user_with_limits(factory, daily_limit=100, monthly_limit=None)
+    # 已用: 40+40 = 80
+    _seed_usage_logs(factory, user_id, [(40, 40)])
+
+    async def _run():
+        from gateway.quota import check_user_quota
+        async with factory() as s:
+            allowed, reason = await check_user_quota(s, user_id, estimated_tokens=30)
+        assert allowed is False
+        assert "日限额" in reason
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run())
+    loop.close()
+
+
+def test_user_quota_daily_ok(v48_db):
+    """P1-4: 日限额 100, 已用 50, estimated 30 -> 放行"""
+    db_file, factory, eng = v48_db
+    user_id = _seed_user_with_limits(factory, daily_limit=100, monthly_limit=None)
+    _seed_usage_logs(factory, user_id, [(30, 20)])
+
+    async def _run():
+        from gateway.quota import check_user_quota
+        async with factory() as s:
+            allowed, reason = await check_user_quota(s, user_id, estimated_tokens=30)
+        assert allowed is True
+        assert reason is None
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run())
+    loop.close()
+
+
+def test_user_quota_monthly_exceeded(v48_db):
+    """P1-4: 月限额 1000, 已用 980, estimated 30 -> 429"""
+    db_file, factory, eng = v48_db
+    user_id = _seed_user_with_limits(factory, daily_limit=None, monthly_limit=1000)
+    _seed_usage_logs(factory, user_id, [(500, 480)])
+
+    async def _run():
+        from gateway.quota import check_user_quota
+        async with factory() as s:
+            allowed, reason = await check_user_quota(s, user_id, estimated_tokens=30)
+        assert allowed is False
+        assert "月限额" in reason
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run())
+    loop.close()
+
+
+def test_user_quota_zero_means_disabled(v48_db):
+    """P1-4: limit=0 -> 直接 429 (禁用)"""
+    db_file, factory, eng = v48_db
+    user_id = _seed_user_with_limits(factory, daily_limit=0, monthly_limit=None)
+
+    async def _run():
+        from gateway.quota import check_user_quota
+        async with factory() as s:
+            allowed, reason = await check_user_quota(s, user_id, estimated_tokens=10)
+        assert allowed is False
+        assert "禁用" in reason
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run())
+    loop.close()
+
+
+def test_user_quota_monthly_zero_means_disabled(v48_db):
+    """P1-4: monthly_limit=0 -> 直接 429 (禁用)"""
+    db_file, factory, eng = v48_db
+    user_id = _seed_user_with_limits(factory, daily_limit=None, monthly_limit=0)
+
+    async def _run():
+        from gateway.quota import check_user_quota
+        async with factory() as s:
+            allowed, reason = await check_user_quota(s, user_id, estimated_tokens=10)
+        assert allowed is False
+        assert "禁用" in reason
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run())
+    loop.close()
+
+
+def test_user_quota_both_limits_daily_blocks_first(v48_db):
+    """P1-4: daily=50 + monthly=10000, 已用 40 日 -> 日先超 (先检查 daily)"""
+    db_file, factory, eng = v48_db
+    user_id = _seed_user_with_limits(factory, daily_limit=50, monthly_limit=10000)
+    _seed_usage_logs(factory, user_id, [(20, 20)])
+
+    async def _run():
+        from gateway.quota import check_user_quota
+        async with factory() as s:
+            allowed, reason = await check_user_quota(s, user_id, estimated_tokens=20)
+        assert allowed is False
+        assert "日限额" in reason
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run())
+    loop.close()
+
+
+def test_user_quota_nonexistent_user_passes(v48_db):
+    """P1-4: caller_id 不存在 (已删除) -> 放行"""
+    db_file, factory, eng = v48_db
+
+    async def _run():
+        from gateway.quota import check_user_quota
+        async with factory() as s:
+            allowed, reason = await check_user_quota(s, 99999, estimated_tokens=100)
+        assert allowed is True
+        assert reason is None
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run())
+    loop.close()
+
+
+def test_user_quota_isolates_by_caller(v48_db):
+    """P1-4: user A 超限不影响 user B — 只查 caller_id 自己的 usage"""
+    db_file, factory, eng = v48_db
+    user_a = _seed_user_with_limits(factory, username="alice_q", daily_limit=100)
+    user_b = _seed_user_with_limits(factory, username="bob_q", daily_limit=100)
+    # alice 用了 90, bob 用了 10
+    _seed_usage_logs(factory, user_a, [(60, 30)])
+    _seed_usage_logs(factory, user_b, [(5, 5)])
+
+    async def _run():
+        from gateway.quota import check_user_quota
+        # alice: 90 + 20 > 100 -> 429
+        async with factory() as s:
+            allowed_a, reason_a = await check_user_quota(s, user_a, estimated_tokens=20)
+        assert allowed_a is False
+        # bob: 10 + 20 <= 100 -> 放行
+        async with factory() as s:
+            allowed_b, reason_b = await check_user_quota(s, user_b, estimated_tokens=20)
+        assert allowed_b is True
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run())
+    loop.close()

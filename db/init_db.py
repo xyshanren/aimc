@@ -187,6 +187,20 @@ async def ensure_migrations():
         else:
             logger.debug("迁移: usage_logs.caller_id 已存在，跳过")
 
+        # V4.8: usage_logs (caller_id, created_at) 索引 — per-user 限额查询用
+        # check_user_quota 查 SUM(input+output) WHERE caller_id=? AND created_at>=?
+        # 3~5 人场景该索引保证查询走索引而非全表扫描
+        result = await conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_usage_caller_time'"
+        ))
+        if not result.fetchone():
+            await conn.execute(text(
+                "CREATE INDEX idx_usage_caller_time ON usage_logs(caller_id, created_at)"
+            ))
+            logger.info("迁移: usage_logs 添加 (caller_id, created_at) 索引 (V4.8 限额查询)")
+        else:
+            logger.debug("迁移: idx_usage_caller_time 已存在，跳过")
+
 
 async def drop_all():
     """删除所有表（仅开发/测试用）"""

@@ -12,6 +12,10 @@ rolling window:
 
 限额检查返回 (allowed: bool, reason: str) 让 caller 决定怎么处理
 - allowed=False 时 caller 应该 try_next_account
+
+V4.8 (2026-08-19): per-user 日/月 token 限额
+- check_user_quota: 直接查 usage_logs 的 SUM(input+output), 不建累计表
+- caller_id 为 None (legacy/未鉴权) 时调用方跳过本检查
 """
 from __future__ import annotations
 
@@ -20,10 +24,10 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Account, AccountQuota, AccountQuotaUsage
+from db.models import Account, AccountQuota, AccountQuotaUsage, UsageLog, User
 
 logger = logging.getLogger(__name__)
 
@@ -208,3 +212,92 @@ async def decrement_concurrent(
 ) -> None:
     """P0-6: 释放并发计数 (请求结束时调用)"""
     await increment_usage(session, account_id, "concurrent", -amount)
+
+
+# ============================================================
+# V4.8 (2026-08-19): per-user 日/月 token 限额
+# ============================================================
+
+async def check_user_quota(
+    session: AsyncSession, caller_id: int, estimated_tokens: int = 0
+) -> tuple[bool, Optional[str]]:
+    """V4.8: 检查 user 日/月 token 限额
+
+    直接查 usage_logs 的 SUM(input_tokens + output_tokens), 不建累计表。
+    3~5 人小团队 QPS 低, 每请求一次 SUM 查询开销可忽略。
+
+    Args:
+        session: AsyncSession
+        caller_id: users.id (middleware 设的 request.state.caller_id)
+        estimated_tokens: 本请求预估 token 数 (max_tokens * 2)
+
+    Returns:
+        (allowed, reason) — allowed=False 时 reason 描述哪个维度超额
+
+    限额语义:
+        - daily_token_limit / monthly_token_limit 为 NULL → 不限 (跳过)
+        - 为 0 → 禁用 (直接拒绝)
+        - 正整数 → 已用 + estimated > limit 时拒绝
+    """
+    user = (await session.execute(
+        select(User).where(User.id == caller_id)
+    )).scalars().first()
+    if user is None:
+        # user 不存在 (可能已删除), 放行让后续流程处理
+        return True, None
+
+    daily_limit = user.daily_token_limit
+    monthly_limit = user.monthly_token_limit
+
+    # 两者都 NULL = 不限
+    if daily_limit is None and monthly_limit is None:
+        return True, None
+
+    now = datetime.now()
+
+    # --- 日限额 ---
+    if daily_limit is not None:
+        if daily_limit == 0:
+            return False, f"日限额已禁用 (daily_token_limit=0)"
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        used = await _sum_user_tokens(session, caller_id, today_start)
+        if used + estimated_tokens > daily_limit:
+            return False, (
+                f"日限额超额 ({used}+{estimated_tokens} > {daily_limit})"
+            )
+
+    # --- 月限额 ---
+    if monthly_limit is not None:
+        if monthly_limit == 0:
+            return False, f"月限额已禁用 (monthly_token_limit=0)"
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        used = await _sum_user_tokens(session, caller_id, month_start)
+        if used + estimated_tokens > monthly_limit:
+            return False, (
+                f"月限额超额 ({used}+{estimated_tokens} > {monthly_limit})"
+            )
+
+    return True, None
+
+
+async def _sum_user_tokens(
+    session: AsyncSession, caller_id: int, since: datetime
+) -> int:
+    """V4.8: 查 caller_id 自 since 以来的 input+output token 总量
+
+    coalesce 处理 NULL token (failed/no-usage 请求), 索引 idx_usage_caller_time
+    保证查询效率。
+    """
+    result = await session.execute(
+        select(
+            func.coalesce(func.sum(
+                func.coalesce(UsageLog.input_tokens, 0)
+                + func.coalesce(UsageLog.output_tokens, 0)
+            ), 0)
+        ).where(
+            UsageLog.caller_id == caller_id,
+            UsageLog.created_at >= since,
+        )
+    )
+    total = result.scalar()
+    return int(total) if total is not None else 0

@@ -141,9 +141,11 @@ async def chat_completions(request: Request):
             )
 
         # P0-6 (2026-08-14): 多维限额检查 (rpm/tpm/concurrent/daily/weekly/5h)
+        # V4.8: 同时做 per-user 日/月 token 限额检查
         if channel is not None:
-            from gateway.quota import check_account_quota
+            from gateway.quota import check_account_quota, check_user_quota
             from db.engine import async_session_factory
+            caller_id = getattr(request.state, "caller_id", None)
             async with async_session_factory() as qsession:
                 allowed, reason = await check_account_quota(
                     qsession,
@@ -160,11 +162,26 @@ async def chat_completions(request: Request):
                         headers={"retry-after": "60"},
                     )
 
+                # V4.8: per-user 日/月 token 限额 (caller_id=None 时跳过)
+                if caller_id is not None:
+                    u_allowed, u_reason = await check_user_quota(
+                        qsession, caller_id,
+                        estimated_tokens=(body_json.get("max_tokens") or 100) * 2,
+                    )
+                    if not u_allowed:
+                        return JSONResponse(
+                            status_code=429,
+                            content={"error": {
+                                "message": f"User quota exceeded: {u_reason}",
+                                "type": "rate_limit_error",
+                            }},
+                            headers={"retry-after": "60"},
+                        )
+
         # 透传请求到上游 (Phase 2.5: 传 requested_model 用于响应头 X-AIMC-Actual-Model)
         # V4.6.4: 传 channel._actual_model 作为 actual_model
         # V4.8: 传 caller_id (从 request.state, middleware 设的) 到 usage_logs
         actual_model = channel.get("_actual_model") or model
-        caller_id = getattr(request.state, "caller_id", None)
         response = await forward_request(
             channel, body, request.headers,
             requested_model=model,
