@@ -553,9 +553,11 @@ def _extract_group_id(requested_model: str) -> str | None:
 
     - tier:xxx / scene:xxx 前缀 → 返回 group_id (e.g. "tier:balanced")
     - 精确模型名 → 返回 None (不需要记录 group)
+    - V4.6.5 fix: 剥离 /model 后缀, 跟 router.py select_channel 对齐
+      (e.g. "tier:vision/glm-4.5v" → "tier:vision", 否则 dashboard 显示两行)
     """
     if requested_model and requested_model.startswith(("tier:", "scene:")):
-        return requested_model
+        return requested_model.split("/")[0]
     return None
 
 

@@ -93,6 +93,7 @@ SF_PRICES = {
     'tencent/Hunyuan-A13B-Instruct': (0.7, 2.8),
     'zai-org/GLM-4.5-Air': (1, 6),
     'zai-org/GLM-4.5V': (1.5, 4),
+    'zai-org/GLM-5.2': (8, 28),
 }
 
 # cache 价估算比例 (SF cache 命中约 10% off, 免费 model 保持 0)

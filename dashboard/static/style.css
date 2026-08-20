@@ -745,3 +745,286 @@ details.card-folding > .card-body {
     font-family: var(--font-mono);
     margin-left: 4px;
 }
+
+/* ============ 滚动容器 (V4.8 补) ============ */
+.scroll-y-260 { max-height: 260px; overflow-y: auto; }
+.scroll-y-300 { max-height: 300px; overflow-y: auto; }
+.scroll-y-320 { max-height: 320px; overflow-y: auto; }
+
+/* ============ 通用标签 chip ============ */
+.chip {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-muted);
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin: 2px;
+}
+.chip .conf-mini {
+    color: var(--text-muted);
+    font-size: 10px;
+}
+
+/* ============ 元信息文字 ============ */
+.meta {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+/* ============ 错误提示 ============ */
+.error {
+    color: var(--color-danger);
+    padding: var(--space-sm) 0;
+    font-size: 13px;
+}
+
+/* ============ 按钮变体 (V4.8 补) ============ */
+.btn-tiny {
+    padding: 2px 6px;
+    font-size: 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-default);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.btn-tiny:hover { border-color: var(--text-muted); }
+
+.btn-approve {
+    padding: 3px 10px;
+    font-size: 11px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-success);
+    background: transparent;
+    color: var(--color-success);
+    cursor: pointer;
+}
+.btn-approve:hover { background: rgba(63, 185, 80, 0.1); }
+
+.btn-reject {
+    padding: 3px 10px;
+    font-size: 11px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-danger);
+    background: transparent;
+    color: var(--color-danger);
+    cursor: pointer;
+}
+.btn-reject:hover { background: rgba(248, 81, 73, 0.1); }
+
+.btn-disable, .btn-enable, .btn-rotate {
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-default);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.btn-disable { color: var(--color-warning); border-color: var(--color-warning); }
+.btn-enable { color: var(--color-success); border-color: var(--color-success); }
+.btn-rotate { color: var(--color-info); border-color: var(--color-info); }
+
+/* ============ 状态文字 ============ */
+.status-active { color: var(--color-success); }
+.status-revoked, .status-disabled { color: var(--color-danger); }
+.status-pending, .status-approved, .status-applied { color: var(--color-warning); }
+
+/* ============ 进度条 (组路由分布) ============ */
+.bar-track {
+    width: 60px;
+    height: 6px;
+    background: var(--bg-elevated);
+    border-radius: 3px;
+    overflow: hidden;
+    display: inline-block;
+    vertical-align: middle;
+}
+.bar-fill {
+    height: 100%;
+    background: var(--color-success);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+/* ============ 小卡片 (组路由/待审/跨源共用) ============ */
+.gr-group-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    padding: var(--space-md);
+    margin-bottom: var(--space-sm);
+}
+.gr-group-card.unmatched { border-style: dashed; }
+.gr-group-card h4 {
+    font-size: 13px;
+    margin-bottom: var(--space-sm);
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+}
+
+/* ============ 待确认能力变更 ============ */
+.pr-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    padding: var(--space-md);
+    margin-bottom: var(--space-sm);
+}
+.pr-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
+    font-size: 12px;
+}
+.pr-model { font-family: var(--font-mono); color: var(--text-primary); }
+.pr-field { color: var(--text-secondary); }
+.pr-old { color: var(--color-danger); text-decoration: line-through; }
+.pr-arrow { color: var(--text-muted); }
+.pr-new { color: var(--color-success); }
+.pr-time { color: var(--text-muted); font-size: 11px; margin-left: auto; }
+.pr-conf {
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    font-family: var(--font-mono);
+}
+.pr-actions {
+    display: flex;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+}
+
+/* 置信度分级 (待审 + 跨源共用) */
+.conf-high { background: rgba(63, 185, 80, 0.15); color: var(--color-success); }
+.conf-medium { background: rgba(210, 153, 34, 0.15); color: var(--color-warning); }
+.conf-low { background: rgba(248, 81, 73, 0.15); color: var(--color-danger); }
+
+/* ============ 跨源分歧 ============ */
+.cs-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    padding: var(--space-md);
+    margin-bottom: var(--space-sm);
+}
+.cs-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
+    font-size: 12px;
+    margin-bottom: var(--space-sm);
+}
+.cs-model { font-family: var(--font-mono); color: var(--text-primary); }
+.cs-field { color: var(--text-secondary); }
+.cs-sources { margin-top: var(--space-xs); }
+.cs-value-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 2px 0;
+    font-size: 12px;
+}
+
+/* ============ 优惠情报 ============ */
+.promo-item {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    padding: var(--space-md);
+    margin-bottom: var(--space-sm);
+}
+.promo-item .provider {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    background: rgba(88, 166, 255, 0.15);
+    color: var(--color-info);
+    font-size: 11px;
+    margin-right: var(--space-sm);
+}
+.promo-item .discount {
+    color: var(--color-danger);
+    font-weight: 600;
+    font-size: 12px;
+}
+.promo-item .title {
+    margin-top: var(--space-xs);
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+/* ============ 价格表低价高亮 ============ */
+.price-low { color: var(--color-success); font-family: var(--font-mono); }
+
+/* ============ 缓存统计表 ============ */
+.cache-table { font-size: 12px; }
+
+/* ============ 用户/Key 管理 (V4.8) ============ */
+.accounts-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+}
+
+.user-key-block {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    padding: var(--space-md);
+    margin-bottom: var(--space-sm);
+}
+.user-key-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-sm);
+    font-size: 13px;
+}
+
+/* ============ Key 显示 ============ */
+.key-display {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    background: var(--bg-elevated);
+    padding: var(--space-sm) var(--space-md);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-muted);
+    word-break: break-all;
+}
+
+/* ============ 信息横幅 ============ */
+.info-banner {
+    padding: var(--space-sm) var(--space-md);
+    background: rgba(88, 166, 255, 0.08);
+    border: 1px solid rgba(88, 166, 255, 0.2);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: var(--space-md);
+}
+
+/* ============ 行操作按钮组 ============ */
+.row-actions {
+    display: flex;
+    gap: var(--space-xs);
+}
+
+/* ============ 通用 group-card (兼容) ============ */
+.group-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    padding: var(--space-md);
+    margin-bottom: var(--space-sm);
+}
+
+/* ============ 待审建议表 ============ */
+.suggestions-table { font-size: 12px; }
