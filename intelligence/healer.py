@@ -320,6 +320,16 @@ async def _save_promotion(result: ParseResult, source):
         from db.engine import async_session_factory
         from db import crud
 
+        # P2 fix (2026-08-20): title 为空的解析结果直接丢弃, 不再入库为"未知活动"
+        # 背景: AI 解析 pricing/news 页面时经常提取不到活动标题, 之前 fallback
+        # 写入 "未知活动", 累积 917 条垃圾数据淹没 dashboard 优惠情报栏
+        if not result.title or not result.title.strip():
+            logger.info(
+                f"优惠丢弃(无标题): [{result.provider or source.provider}] "
+                f"url={result.url} conf={result.confidence}"
+            )
+            return
+
         # sanity check（先于入库，但不影响入库）— Phase 3.1: 传 source_type
         flagged, flagged_reason = _sanity_check(result, source.source_type)
 
@@ -333,7 +343,7 @@ async def _save_promotion(result: ParseResult, source):
             promo = await crud.create_promotion(
                 session,
                 provider=result.provider or source.provider,
-                title=result.title or "未知活动",
+                title=result.title.strip(),
                 content=result.content,
                 url=result.url,
                 discount_desc=result.discount_desc,

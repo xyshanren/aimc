@@ -431,13 +431,37 @@ function renderPendingReview(container) {
             const confLabel = item.confidence_level || 'low';
             const confClass = `conf-${confLabel}`;
             const created = item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '?';
+            // new_value 可能是 JSON 串 (field_changed=create/metadata), 格式化展示
+            let newVal = item.new_value ?? '(空)';
+            let oldVal = item.old_value ?? '(空)';
+            // 如果是 JSON 字符串, 解析后按 key=value 展示
+            try {
+                if (typeof newVal === 'string' && newVal.startsWith('{')) {
+                    const obj = JSON.parse(newVal);
+                    const parts = [];
+                    for (const [k, v] of Object.entries(obj)) {
+                        const vs = Array.isArray(v) ? v.join(', ') : String(v);
+                        parts.push(`<span class="pr-kv"><span class="pr-k">${esc(k)}</span>: <span class="pr-v">${esc(vs)}</span></span>`);
+                    }
+                    newVal = parts.join(' ');
+                }
+                if (typeof oldVal === 'string' && oldVal.startsWith('{')) {
+                    const obj = JSON.parse(oldVal);
+                    const parts = [];
+                    for (const [k, v] of Object.entries(obj)) {
+                        const vs = Array.isArray(v) ? v.join(', ') : String(v);
+                        parts.push(`${esc(k)}: ${esc(vs)}`);
+                    }
+                    oldVal = parts.join(' ');
+                }
+            } catch (_) { /* not JSON, show raw */ }
             html += `<div class="pr-card">
                 <div class="pr-row">
                     <code class="pr-model">${esc(item.model_id)}</code>
                     <span class="pr-field">${esc(item.field_changed)}</span>
-                    <span class="pr-old">${esc(item.old_value ?? '(空)')}</span>
+                    <span class="pr-old">${oldVal}</span>
                     <span class="pr-arrow">→</span>
-                    <span class="pr-new">${esc(item.new_value ?? '(空)')}</span>
+                    <span class="pr-new">${newVal}</span>
                     <span class="pr-conf ${confClass}">${esc(conf.toFixed(2))} · ${esc(confLabel)}</span>
                     <span class="pr-time">${esc(created)}</span>
                 </div>

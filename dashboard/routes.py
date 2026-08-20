@@ -287,14 +287,20 @@ async def update_channel(channel_id: int, request: Request,
 
 
 @router.get("/api/promotions")
-async def get_promotions(status: str = "active", session: AsyncSession = Depends(get_session)):
-    """优惠活动列表"""
-    stmt = (
-        select(Promotion)
-        .where(Promotion.status == status)
-        .order_by(Promotion.created_at.desc())
-        .limit(50)
-    )
+async def get_promotions(
+    status: str = "active",
+    include_flagged: bool = False,
+    session: AsyncSession = Depends(get_session),
+):
+    """优惠活动列表
+
+    P2 fix (2026-08-20): 默认过滤 flagged=1 条目 (AI 解析不确定的垃圾数据),
+    只展示可信的优惠情报。?include_flagged=true 查看全部 (调试用)。
+    """
+    stmt = select(Promotion).where(Promotion.status == status)
+    if not include_flagged:
+        stmt = stmt.where(Promotion.flagged == 0)
+    stmt = stmt.order_by(Promotion.created_at.desc()).limit(50)
     result = await session.execute(stmt)
     promotions = result.scalars().all()
 

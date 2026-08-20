@@ -886,6 +886,18 @@ details.card-folding > .card-body {
 .pr-old { color: var(--color-danger); text-decoration: line-through; }
 .pr-arrow { color: var(--text-muted); }
 .pr-new { color: var(--color-success); }
+.pr-kv {
+    display: inline-block;
+    margin-right: var(--space-sm);
+}
+.pr-k {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+.pr-v {
+    color: var(--text-secondary);
+    font-size: 11px;
+}
 .pr-time { color: var(--text-muted); font-size: 11px; margin-left: auto; }
 .pr-conf {
     padding: 1px 6px;
