@@ -77,23 +77,39 @@ curl -s localhost:8080/health   # 冒烟
 
 ## 四、P2: 数据驱动修复 (V4.7 首启, ~1-2 天)
 
-### P2-A: tier:vision 400 专项 (4xx 大头, 先修)
+### P2-A: tier:vision 400 专项 (4xx 大头, 先修) ✅ 已完成
 
-67 个 400 几乎全是 vision 场景。排查方向:
-1. 组路由是否给纯文本请求选了 vision-only model (或反之, P0-3 逻辑对 vision 的边界)
-2. body 参数 (image_url 格式 / max_tokens 上限) 跨厂商不兼容
-3. `_get_fuzzy_price` 对 `glm-4.5v` 的误匹配
+67 个 400 几乎全是 vision 场景。3 个复合根因 + 5 项修复 (commit `f29ee1e`):
 
-### P2-B: drop_params (LiteLLM 借鉴)
+| Fix | 文件 | 改动 |
+|-----|------|------|
+| 1 | `router.py:1271` | `require_vision` 过滤器接受 `multimodal` (不再误杀 minimax-m3) |
+| 2 | `sync_siliconflow_to_registry.py:89` | `infer_modality` 扩展 vision 关键词 (`4.5v`/`glm-v`/`qwen-v`) + family 前缀去重 |
+| 3 | `seed_model_registry.py` + `seed_model_groups.py` | 补充 5 个 vision 模型 (glm-4.5v + 4 qwen-vl-*) + tier:vision 成员改名 |
+| 4 | `routes.py:193` | 组路由上游 400 自动 failover (精确路由 400 不重试) |
+| 5 | `proxy.py:533` | `_resolve_actual_model` 增加 `_channel_model` fallback (400 不再丢 model 名) |
+
+migration: `init_db.py` 补建 `model_registry.raw_ids` / `supports_prompt_cache` 列
+测试: `test_vision_routing.py` 17 tests (全量 442 passed / 4 skipped / 0 failed)
+部署: VM 已 git pull + 3 步 re-seed + 服务重启, tier:vision 路由冒烟通过
+
+**遗留**: tier:light 的 `qwen3-8b` / `qwen3.5-4b` 命名不匹配 (registry 实际为 `qwen-qwen3-8b` / `qwen-qwen3.5-4b`), 2 个 member 未入库 — 见 P2-B 修复。
+
+### P2-B: drop_params (LiteLLM 借鉴) + tier:light 命名对齐
 
 4xx 占比 12% (阈值 2%), 条件满足。跨模型转发时自动丢弃目标 channel 不支持的参数:
 - channel 维度配置 `supported_params` (或按 provider 预设)
 - 转发前过滤 body; 丢弃记 debug 日志 + 响应头 `X-AIMC-Dropped-Params`
 
+tier:light 命名对齐 (小修, 可独立先做):
+- `seed_model_groups.py` 里 `qwen3-8b` → `qwen-qwen3-8b`, `qwen3.5-4b` → `qwen-qwen3.5-4b`
+- 或反向: 让 `sync_siliconflow_to_registry.py` 不给 qwen family 加重复前缀 (与 Fix 2 的 glm 去重逻辑对齐)
+
 ### 验收
 
-- [ ] vision 场景 400 率从 ~12% 降到 < 3%
+- [x] vision 场景 400 率从 ~12% 降到 < 3% (P2-A 完成, 待生产数据验证)
 - [ ] drop_params 单测 + 真实 vision 请求冒烟
+- [ ] tier:light 6 个 member 全部入库 (当前 4/6)
 
 ---
 
@@ -108,10 +124,10 @@ curl -s localhost:8080/health   # 冒烟
 
 ## 六、执行顺序
 
-1. **P0 VM 同步** (0.5h, 今天)
-2. **P1 V4.8 多用户** (2-3 天) — 表 + 鉴权 + caller_id 先行, 限额/Dashboard 次之
-3. **P2-A vision 400** (1 天) — 可与 P1 并行排查
-4. **P2-B drop_params** (0.5-1 天)
+1. **P0 VM 同步** (0.5h, 今天) ✅
+2. **P1 V4.8 多用户** (2-3 天) ✅ — 表 + 鉴权 + caller_id + 限额/Dashboard
+3. **P2-A vision 400** (1 天) ✅ — 5 fixes + 17 tests + VM 部署验证
+4. **P2-B drop_params + tier:light 命名对齐** (0.5-1 天)
 5. **P3 CI + 周报** (1 天)
 
 V4.7+ 其余候选 (语义缓存/智能调度/价格趋势) 继续等 `analyze_usage.py` 稳定期信号。
