@@ -1292,12 +1292,16 @@ async function loadSuggestionsList() {
 document.addEventListener("DOMContentLoaded", loadUsageChart);
 document.addEventListener("DOMContentLoaded", loadCacheStatsList);
 document.addEventListener("DOMContentLoaded", loadSuggestionsList);
+document.addEventListener("DOMContentLoaded", loadPerUserUsage);
+document.addEventListener("DOMContentLoaded", loadUserKeys);
 
 // 60s 定时刷新 + 接管 htmx
 setInterval(() => {
     loadUsageChart();
     loadCacheStatsList();
     loadSuggestionsList();
+    loadPerUserUsage();
+    loadUserKeys();
 }, 60000);
 
 
@@ -1387,6 +1391,146 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
     }
 });// === P0-UI v6: 账号管理 - data-action click 委托 (避免 onclick 嵌套引号) ===
 
+
+// ============================================================
+// V4.8 (2026-08-19): 按人用量 + Key 管理
+// ============================================================
+
+function fmtNum(n) {
+    if (n === null || n === undefined) return '-';
+    return Number(n).toLocaleString();
+}
+
+function fmtCost(n) {
+    if (!n || n === 0) return '-';
+    return '¥' + Number(n).toFixed(4);
+}
+
+async function loadPerUserUsage() {
+    const container = document.getElementById('per-user-list');
+    const meta = document.getElementById('per-user-meta');
+    if (!container) return;
+    try {
+        const resp = await authFetch('/dashboard/api/stats/per-user?days=7');
+        if (!resp.ok) {
+            container.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
+            return;
+        }
+        const data = await resp.json();
+        const items = data.items || [];
+        if (meta) meta.textContent = items.length + ' 个调用方';
+        if (items.length === 0) {
+            container.innerHTML = '<p class="empty">近 ' + data.days + ' 天无用量数据</p>';
+            return;
+        }
+        let html = '<div class="scroll-y-300"><table><thead><tr>'
+            + '<th>用户</th><th>请求数</th><th>Input</th><th>Output</th><th>总Token</th><th>估算费用</th>'
+            + '</tr></thead><tbody>';
+        for (const item of items) {
+            const name = item.display_name
+                ? esc(item.username) + ' (' + esc(item.display_name) + ')'
+                : esc(item.username);
+            html += '<tr>'
+                + '<td>' + name + '</td>'
+                + '<td>' + fmtNum(item.request_count) + '</td>'
+                + '<td>' + fmtNum(item.input_tokens) + '</td>'
+                + '<td>' + fmtNum(item.output_tokens) + '</td>'
+                + '<td><strong>' + fmtNum(item.total_tokens) + '</strong></td>'
+                + '<td>' + fmtCost(item.total_cost) + '</td>'
+                + '</tr>';
+        }
+        html += '</tbody></table></div>';
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+async function loadUserKeys() {
+    const container = document.getElementById('user-keys-list');
+    const meta = document.getElementById('keys-meta');
+    if (!container) return;
+    try {
+        const resp = await authFetch('/dashboard/api/keys');
+        if (!resp.ok) {
+            container.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
+            return;
+        }
+        const data = await resp.json();
+        const users = data.users || [];
+        if (meta) meta.textContent = users.length + ' 个用户';
+        if (users.length === 0) {
+            container.innerHTML = '<p class="empty">无用户 — 用 <code>scripts/add_user_key.py</code> 创建</p>';
+            return;
+        }
+        let html = '';
+        for (const u of users) {
+            const daily = u.daily_token_limit !== null ? fmtNum(u.daily_token_limit) : '不限';
+            const monthly = u.monthly_token_limit !== null ? fmtNum(u.monthly_token_limit) : '不限';
+            html += '<div class="user-key-block mt-sm">'
+                + '<div class="user-key-header">'
+                + '<strong>' + esc(u.username) + '</strong>'
+                + (u.display_name ? ' (' + esc(u.display_name) + ')' : '')
+                + ' <span class="chip status-' + u.status + '">' + u.status + '</span>'
+                + ' <span class="chip">' + u.role + '</span>'
+                + ' <span class="meta">日限:' + daily + ' 月限:' + monthly + '</span>'
+                + '</div>';
+            if (u.keys.length === 0) {
+                html += '<p class="empty text-muted" style="font-size:12px;padding:4px 0;">无 Key</p>';
+            } else {
+                html += '<table><thead><tr>'
+                    + '<th>前缀</th><th>Admin</th><th>状态</th><th>标签</th><th>最后使用</th><th>创建</th><th>操作</th>'
+                    + '</tr></thead><tbody>';
+                for (const k of u.keys) {
+                    const lastUsed = k.last_used_at ? k.last_used_at.slice(0, 16).replace('T', ' ') : '-';
+                    const created = k.created_at ? k.created_at.slice(0, 10) : '-';
+                    const admin = k.is_admin ? '是' : '否';
+                    let actions;
+                    if (k.status === 'active') {
+                        actions = '<button class="btn-sm btn-danger" data-action="revoke" data-id="' + k.id + '">吊销</button>';
+                    } else {
+                        actions = '<span class="text-muted">已吊销</span>';
+                    }
+                    html += '<tr>'
+                        + '<td><code>' + esc(k.key_prefix) + '…</code></td>'
+                        + '<td>' + admin + '</td>'
+                        + '<td class="status-' + k.status + '">' + k.status + '</td>'
+                        + '<td>' + esc(k.label || '-') + '</td>'
+                        + '<td class="text-muted">' + lastUsed + '</td>'
+                        + '<td class="text-muted">' + created + '</td>'
+                        + '<td>' + actions + '</td>'
+                        + '</tr>';
+                }
+                html += '</tbody></table>';
+            }
+            html += '</div>';
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+async function revokeKey(keyId, btn) {
+    if (!confirm('确定吊销 Key #' + keyId + '?\n吊销后该 Key 立即失效, 不可恢复 (需重新生成)。')) return;
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await authFetch('/dashboard/api/keys/' + keyId + '/revoke', { method: 'POST' });
+        if (resp.ok) {
+            await loadUserKeys();
+        } else {
+            const data = await resp.json().catch(() => ({}));
+            alert('吊销失败: ' + (data.detail || resp.status));
+            if (btn) btn.disabled = false;
+        }
+    } catch (e) {
+        alert('吊销失败: ' + e.message);
+        if (btn) btn.disabled = false;
+    }
+}
+
+// === P0-UI v6: 账号管理 - data-action click 委托 (避免 onclick 嵌套引号) ===
+
 document.addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
@@ -1398,5 +1542,7 @@ document.addEventListener('click', (e) => {
         toggleAccount(id, 'disabled', btn);
     } else if (action === 'rotate') {
         rotateAccountKey(id, btn);
+    } else if (action === 'revoke') {
+        revokeKey(id, btn);
     }
 });
