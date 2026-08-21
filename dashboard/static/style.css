@@ -882,6 +882,7 @@ details.card-folding > .card-body {
     font-size: 12px;
 }
 .pr-model { font-family: var(--font-mono); color: var(--text-primary); }
+.pr-display-name { color: var(--text-muted); font-size: 11px; }
 .pr-field { color: var(--text-secondary); }
 .pr-old { color: var(--color-danger); text-decoration: line-through; }
 .pr-arrow { color: var(--text-muted); }
@@ -970,6 +971,14 @@ details.card-folding > .card-body {
     font-size: 13px;
     color: var(--text-primary);
 }
+.promo-link {
+    display: inline-block;
+    font-size: 11px;
+    color: var(--color-info);
+    text-decoration: none;
+    margin-top: 2px;
+}
+.promo-link:hover { text-decoration: underline; }
 
 /* ============ 价格表低价高亮 ============ */
 .price-low { color: var(--color-success); font-family: var(--font-mono); }

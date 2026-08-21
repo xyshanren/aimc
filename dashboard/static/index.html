@@ -151,6 +151,7 @@
                     待审建议
                     <span class="card-title-sub" id="sg-count">0</span>
                 </span>
+                <span class="card-title-sub">路由策略 · 周建议</span>
                 <button class="btn btn-primary btn-sm" onclick="applyAllSuggestions()">一键应用已批准</button>
             </h2>
             <div class="card-body" id="suggestions-list">
@@ -203,7 +204,7 @@
         </details>
 
         <details class="card-folding">
-            <summary><span class="card-title-main">待确认能力变更</span><span class="card-title-sub">AI 推断 · 人工确认</span></summary>
+            <summary><span class="card-title-main">待确认能力变更</span><span class="card-title-sub">AI 推断 · 实时数据确认</span></summary>
             <div class="card-body">
                 <div id="pending-review-list" hx-get="/dashboard/api/pending-review" hx-trigger="load, every 30s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
             </div>

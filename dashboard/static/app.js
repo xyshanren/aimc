@@ -171,6 +171,7 @@ function renderPromotions(container) {
                 <span class="discount">${esc(p.discount_desc)}</span>
                 <div class="title">${esc(p.title)}</div>
                 <div class="meta">截止: ${esc(p.end_date) || '未知'} | 置信度: ${esc((p.confidence || 0).toFixed(2))}</div>
+                ${p.url ? `<a class="promo-link" href="${esc(p.url)}" target="_blank" rel="noopener">查看原文 ↗</a>` : ''}
             </div>`;
         });
         container.innerHTML = html;
@@ -425,6 +426,15 @@ function renderPendingReview(container) {
             container.innerHTML = '<p class="loading">✓ 当前无待确认能力变更</p>';
             return;
         }
+        const FIELD_LABELS = {
+            'create': '新模型入库',
+            'metadata': '元信息变更',
+            'tier': '档位调整',
+            'status': '状态变更',
+            'display_name': '显示名变更',
+            'context_length': '上下文长度',
+            'modality': '多模态变更',
+        };
         let html = `<p class="meta">共 <strong id="pr-summary">${esc(data.count)} 条待确认</strong>，按时间倒序</p>`;
         for (const item of items) {
             const conf = item.confidence || 0;
@@ -458,7 +468,8 @@ function renderPendingReview(container) {
             html += `<div class="pr-card">
                 <div class="pr-row">
                     <code class="pr-model">${esc(item.model_id)}</code>
-                    <span class="pr-field">${esc(item.field_changed)}</span>
+                    ${item.display_name ? `<span class="pr-display-name">${esc(item.display_name)}</span>` : ''}
+                    <span class="pr-field" title="${esc(item.field_changed)}">${esc(FIELD_LABELS[item.field_changed] || item.field_changed)}</span>
                     <span class="pr-old">${oldVal}</span>
                     <span class="pr-arrow">→</span>
                     <span class="pr-new">${newVal}</span>

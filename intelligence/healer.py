@@ -18,7 +18,10 @@ Phase 2B-2 改造后的流程：
 import json
 import logging
 import re
+from datetime import datetime, timedelta
 from typing import Optional
+
+from sqlalchemy import select
 
 from config import settings
 from schemas.intel import ParseResult
@@ -340,6 +343,22 @@ async def _save_promotion(result: ParseResult, source):
         raw_data_json = json.dumps(raw_data_dict, ensure_ascii=False)
 
         async with async_session_factory() as session:
+            # 去重: 7 天内同 (provider, title) 已有记录则跳过, 避免重扫重复入库
+            from db.models import Promotion
+            existing = await session.execute(
+                select(Promotion.id).where(
+                    Promotion.provider == (result.provider or source.provider),
+                    Promotion.title == result.title.strip(),
+                    Promotion.created_at >= datetime.now() - timedelta(days=7),
+                ).limit(1)
+            )
+            if existing.scalar_one_or_none() is not None:
+                logger.debug(
+                    f"优惠去重(7d内同名): [{result.provider or source.provider}] "
+                    f"{result.title}"
+                )
+                return
+
             promo = await crud.create_promotion(
                 session,
                 provider=result.provider or source.provider,
