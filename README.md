@@ -51,7 +51,7 @@ client = OpenAI(
 )
 response = client.chat.completions.create(
     model="deepseek-v4-pro",  # 或 "tier:flagship" / "scene:code"
-    messages=[{"role": "user", "content":": "Hello!"}],
+    messages=[{"role": "user", "content": "Hello!"}],
 )
 ```
 

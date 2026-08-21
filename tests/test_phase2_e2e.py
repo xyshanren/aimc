@@ -127,6 +127,7 @@ async def _seed_db():
     from db.models import (
         Channel, Account, PriceSnapshot,
         ModelRegistry, ModelGroup, ModelGroupMember,
+        AccountQuota, AccountQuotaUsage,
     )
     from security.crypto import encrypt
     from sqlalchemy import delete
@@ -134,8 +135,10 @@ async def _seed_db():
     await init_db()
     async with async_session_factory() as session:
         # 清表 (init_db 可能已建表, 清掉残留)
+        # 顺序: 先删 FK 引用 accounts 的表, 再删 accounts
         for tbl in (ModelGroupMember, ModelGroup, ModelRegistry,
-                    PriceSnapshot, Account, Channel):
+                    PriceSnapshot, AccountQuotaUsage, AccountQuota,
+                    Account, Channel):
             await session.execute(delete(tbl))
         await session.commit()
 
@@ -239,7 +242,7 @@ def test_1_exact_model():
         from db.init_db import init_db
         from db.engine import async_session_factory
         from db import crud
-        from db.models import Channel, Account, PriceSnapshot
+        from db.models import Channel, Account, PriceSnapshot, AccountQuota, AccountQuotaUsage
         from security.crypto import encrypt
         from sqlalchemy import delete
         from starlette.datastructures import Headers
@@ -249,7 +252,7 @@ def test_1_exact_model():
         # 精确模型不在 group 里, 单独 seed 一个 price snapshot
         await init_db()
         async with async_session_factory() as session:
-            for tbl in (PriceSnapshot, Account, Channel):
+            for tbl in (PriceSnapshot, AccountQuotaUsage, AccountQuota, Account, Channel):
                 await session.execute(delete(tbl))
             await session.commit()
 
@@ -397,16 +400,16 @@ def test_4_preferences():
         # 4a) 无 prefs -> 应选 tier:balanced 的某个 member
         ch = route_engine.select_channel("tier:balanced")
         assert ch is not None, "无 prefs 应返 channel"
-        assert ch["_actual_model"] in BALANCED_MEMBERS, \
-            f"无 prefs 应选 tier:balanced member, 实际 {ch['_actual_model']!r}"
+        assert ch["_registry_model"] in BALANCED_MEMBERS, \
+            f"无 prefs 应选 tier:balanced member, 实际 {ch['_registry_model']!r}"
 
         # 4b) prefer_family='deepseek' -> 应选 deepseek-v3
         ch = route_engine.select_channel(
             "tier:balanced", prefs={"prefer_family": "deepseek"},
         )
         assert ch is not None, "prefer_family=deepseek 应有可用 channel"
-        assert ch["_actual_model"] == "deepseek-v3", \
-            f"prefer_family=deepseek 应选 deepseek-v3, 实际 {ch['_actual_model']!r}"
+        assert ch["_registry_model"] == "deepseek-v3", \
+            f"prefer_family=deepseek 应选 deepseek-v3, 实际 {ch['_registry_model']!r}"
 
         # 4c) max_input_price=0.5 -> tier:balanced member input_price=1.0 全超价
         #     fallback 到 tier:light (input_price 也 1.0) -> 全超价 -> None
@@ -414,7 +417,7 @@ def test_4_preferences():
             "tier:balanced", prefs={"max_input_price": 0.5},
         )
         assert ch is None, \
-            f"max_input_price=0.5 全超价应 None, 实际 {ch['_actual_model'] if ch else None}"
+            f"max_input_price=0.5 全超价应 None, 实际 {ch['_registry_model'] if ch else None}"
 
         # 4d) exclude_providers=['siliconflow'] -> 唯一 channel 被排除 -> None
         ch = route_engine.select_channel(
