@@ -178,11 +178,50 @@ def _resolve_effective_base_url(channel):
     return db_base_url
 
 
+def _stable_prefix_cache_key(messages: list, seg_limit: int = 4096) -> str:
+    """P3 (2026-08-21): 从 messages 提取稳定前缀的分段 hash cache key
+
+    策略: sha256(全量 system 拼接 + "\\x1f" + 第一条非 system 消息)[:16]
+    - 多轮 agent loop: system + 首条 user 跨轮不变 → 同 key → 上游同 cache shard → 前缀命中
+    - 无 system 时 fallback 用首条 user 消息 (消灭全局空串 key)
+    - 每段截断 seg_limit 字符, 避免超大 payload hash 开销
+    """
+    import hashlib
+
+    def _msg_text(msg) -> str:
+        """取 message 的文本内容 (str 或 content parts list)"""
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                p.get("text", "") for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            )
+        return ""
+
+    system_parts = []
+    first_non_system = None
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "system":
+            system_parts.append(_msg_text(msg))
+        elif first_non_system is None:
+            first_non_system = _msg_text(msg)
+
+    seg1 = "\n".join(system_parts)[:seg_limit]
+    seg2 = (first_non_system or "")[:seg_limit]
+    return hashlib.sha256(f"{seg1}\x1f{seg2}".encode("utf-8")).hexdigest()[:16]
+
+
 def _inject_prompt_cache(body, channel):
     # P1-8: 给 request body 注入 prompt cache 标记
+    # P3 (2026-08-21) 路径 A 优化: 分段 hash 稳定前缀 (system 全量 + 首条非 system),
+    # 保留调用方已传的 prompt_cache_key, Anthropic 分支加 role 校验
     # 支持 2 种 cache 协议 (按 channel.api_style):
-    # 1. Anthropic 风格: messages[0] (system) + messages[1] (first user) 加 cache_control
-    # 2. OpenAI 风格: 加 prompt_cache_key parameter (用 system content hash)
+    # 1. Anthropic 风格: system 消息 + 第一条 user 消息加 cache_control
+    # 2. OpenAI 风格: 加 prompt_cache_key parameter (稳定前缀分段 hash)
     # 触发条件 (caller 保证): channel.supports_prompt_cache=1
     try:
         body_json = json.loads(body)
@@ -196,29 +235,24 @@ def _inject_prompt_cache(body, channel):
     api_style = (channel.get("api_style") or "openai").lower()
 
     if api_style == "anthropic":
-        # Anthropic 风格: 给 system + 第一条 user 加 cache_control: ephemeral
-        for msg in messages[:2]:
-            if not isinstance(msg, dict):
+        # Anthropic 风格: 给 system 消息 + 第一条 user 消息加 cache_control: ephemeral
+        # (P3: 校验 role — 之前盲目标 messages[:2], assistant/tool 也可能被标)
+        marked_user = False
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("cache_control"):
                 continue
-            if msg.get("cache_control"):
-                continue
-            msg["cache_control"] = {"type": "ephemeral"}
+            role = msg.get("role")
+            if role == "system":
+                msg["cache_control"] = {"type": "ephemeral"}
+            elif role == "user" and not marked_user:
+                msg["cache_control"] = {"type": "ephemeral"}
+                marked_user = True
     else:
         # OpenAI 风格: prompt_cache_key parameter
-        import hashlib
-        system_content = ""
-        for msg in messages:
-            if isinstance(msg, dict) and msg.get("role") == "system":
-                content = msg.get("content")
-                if isinstance(content, str):
-                    system_content = content
-                elif isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            system_content += part.get("text", "")
-                break
-        cache_key = hashlib.sha256(system_content.encode("utf-8")).hexdigest()[:16]
-        body_json["prompt_cache_key"] = cache_key
+        # P3: 调用方已传 key 时不覆盖 (跟 Anthropic 分支保留 cache_control 对称)
+        if body_json.get("prompt_cache_key"):
+            return body
+        body_json["prompt_cache_key"] = _stable_prefix_cache_key(messages)
 
     return json.dumps(body_json, ensure_ascii=False).encode("utf-8")
 

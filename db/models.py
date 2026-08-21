@@ -319,7 +319,12 @@ class UsageLog(Base):
         Integer, nullable=True,
         comment="Anthropic-style: 缓存写入 token 数 (usage.cache_creation_input_tokens)",
     )
-    created_at = Column(DateTime, default=func.now())
+    # P3 fix (2026-08-21): default 从 func.now() (SQLite CURRENT_TIMESTAMP=UTC) 改为
+    # Python 侧本地时间 — 跟所有读取方一致 (quota.py / dashboard/routes.py / 周报
+    # 脚本全用本地 datetime.now() 做窗口过滤)。之前 UTC 存储 + 本地读取导致
+    # daily quota 在本地 00:00-08:00 期间漏算当天用量 (3 个 flaky 测试同根因)。
+    # 存量 UTC 行需一次性迁移 (UTC→本地 +时差)。
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class ModelFeedbackSummary(Base):

@@ -130,7 +130,37 @@ tier:light 命名对齐 (小修, 可独立先做):
 4. **P2-B drop_params + tier:light 命名对齐** (0.5-1 天)
 5. **P3 CI + 周报** (1 天)
 
-V4.7+ 其余候选 (语义缓存/智能调度/价格趋势) 继续等 `analyze_usage.py` 稳定期信号。
+V4.7+ 其余候选 (智能调度/价格趋势) 继续等 `analyze_usage.py` 稳定期信号。
+
+---
+
+## 七、Token cache 三路径评估 (2026-08-21)
+
+### 路径 A: 优化上游 prompt cache 注入 ✅ 已完成 (本轮)
+
+`_inject_prompt_cache` 从"只 hash 第一条 system"升级为**分段 hash 稳定前缀**:
+`sha256(全量 system 拼接 + "\x1f" + 首条非 system 消息)[:16]`, 每段截断 4096 字符。
+多轮 agent loop 中 system + 首条 user 跨轮不变 → 同 key → 上游同 cache shard → 前缀命中率提升。
+同时修复: 无 system 时 fallback 首条 user (消灭全局空串 key)、保留调用方已传的
+`prompt_cache_key`、Anthropic 分支 role 校验。零存储成本、零架构改动。
+
+### 路径 B: 响应级 prefix 缓存 (远期 — 有明确触发条件再做)
+
+相同 messages prefix 直接回放缓存响应, 跳过上游请求。
+- **代价**: 中 (2-3 天) — 新增 `response_cache` 表 (usage_logs 不存原文) + proxy 前置
+  缓存判断 + 流式响应回放 (最难: 现架构核心是"原样透传字节", 回放需 buffer 重组 SSE
+  或只缓存非流式)
+- **收益**: 低-中 — 仅"完全相同的固定 prompt"场景 (FAQ/模板化请求) 有效; 多轮对话
+  messages 每轮都变, 命中率极低
+- **触发条件**: 出现大量重复固定 prompt 的真实负载 (analyze_usage 数据证实) 再做
+
+### 路径 C: 语义缓存 (不做 — 与项目定位冲突)
+
+embedding + 相似度命中。
+- **代价**: 高 (1-2 周+) — 引入 embedding 能力 (sentence-transformers 或上游 API) +
+  向量存储 (sqlite-vec/Chroma, SQLite 无原生向量支持) + 原文持久化 + 相似度阈值/风控
+- **冲突点**: 2-3 个重依赖与"轻量级、无外部中间件"的项目哲学直接冲突
+- **结论**: 除非项目定位从"个人轻量工具"升级, 否则不做
 
 ---
 
