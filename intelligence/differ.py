@@ -122,6 +122,12 @@ async def _update_source_hash(source, new_hash: str, new_content: Optional[str] 
             if db_source:
                 for key, value in update_kwargs.items():
                     setattr(db_source, key, value)
+                # 成功采集时恢复被 handle_fetch_error 禁用的 source (status error→active)
+                if db_source.status == "error":
+                    db_source.status = "active"
+                    logger.info(
+                        f"采集源恢复: {db_source.provider} (status error→active)"
+                    )
                 await session.commit()
             else:
                 # DB 没对应行（dataclass 跟 DB 没关联）→ 自动 upsert 一条

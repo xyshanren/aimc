@@ -36,6 +36,7 @@ KEEP_PATTERNS = (
     "cross_source_detection",
     "monthly_official_audit",
     "weekly_suggest_changes",
+    "v44_alerts_check",
 )
 
 

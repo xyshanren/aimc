@@ -40,7 +40,7 @@
 │  │  建议生成 (analytics/suggest_changes.py)            │ │
 │  │  报警 (alerter.py - Bark/飞书/Server酱)            │ │
 │  └─────────────────────────────────────────────────────┘ │
-│           ~20 个 APScheduler job (按 provider 数浮动)   │
+│           ~21 个 APScheduler job (按 provider 数浮动)   │
 │           + listener 写 job_health (P0-8)               │
 └────────────────┬───────────────────────────────────────────┘
                  │
@@ -150,13 +150,14 @@ check_account_quota(account_id, estimated_tokens) [P0-6]
 ### `intelligence/scheduler.py` — 定时任务（阶段 2）
 
 ```
-20 个 APScheduler job:
+21 个 APScheduler job:
 ├── batch_crawl_<provider> (15 个): 合并 announcement + model_list + price_aggregator
 ├── refresh_route_cache (1): 60s TTL 刷新路由缓存
 ├── check_key_rotation (1): 每天检查 key 轮换
 ├── cross_source_detection (1): 每天跨源交叉验证
 ├── monthly_official_audit (1): 每月 1 号官方源审查
-└── weekly_suggest_changes (1): 周一 09:00 跑 suggest_changes [方案A]
+├── weekly_suggest_changes (1): 周一 09:00 跑 suggest_changes [方案A]
+└── v44_alerts_check (1): 每 6 小时跑 V4.4 告警 (配额/账号/成本)
 
 每个 job 完成后:
 ├── EVENT_JOB_EXECUTED / EVENT_JOB_ERROR 事件

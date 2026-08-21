@@ -57,6 +57,16 @@ AIMC 告警走 **Bark / 飞书 / Server酱**（`.env` 配置）。
 - 4 类告警（v44_alerts）：80% / 100% 配额、cost rising 等
 - 上游错误 5xx / 401/403（持续）
 
+V4.4 告警（配额 / 无活跃账号 / 成本上涨）由 `v44_alerts_check` 定时任务每 6 小时
+自动执行（2026-08-21 起注册到 scheduler，此前为死代码未运行）。
+
+**采集源异常恢复**：
+- 采集源连续失败 3 次后 `status` 置为 `"error"`，但 scheduler 不会跳过该源——
+  下次调度仍会尝试，成功后自动把 `status` 恢复为 `"active"` 并清零 `error_count`
+  （2026-08-21 起修复，此前 `status` 被置 error 后永不恢复）。
+- 如果某源持续失败，检查 `intelligence/sources/<source>.py` 的 fetch 逻辑或
+  厂商页面是否改版。
+
 **收到告警后**：
 ```bash
 # 1. 看 journal
@@ -94,7 +104,7 @@ sqlite3 data/aimc.db "
 
 ## 数据新鲜度
 
-[Dashboard §数据新鲜度](dashboard.md#3-数据新鲜度) 卡片显示约 20 个 apscheduler job 的健康状态。
+[Dashboard §数据新鲜度](dashboard.md#3-数据新鲜度) 卡片显示约 21 个 apscheduler job 的健康状态。
 
 **怎么看**：
 - 🟢 = job 正常

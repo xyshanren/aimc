@@ -675,23 +675,26 @@ async def find_candidate_group_for_tier(tier: str) -> Optional[str]:
 async def list_pending_review(
     session: AsyncSession,
     limit: int = 100,
-) -> list["ModelCapabilitiesLog"]:
+) -> list[tuple["ModelCapabilitiesLog", Optional["ModelRegistry"]]]:
     """列出 approved=0 的能力变更 (Phase 4 待确认队列)。
 
     仅显示 ai_infer 来源的变更 (manual 直接 approved=1 不需确认)。
     按创建时间倒序 (最新在最上)。
+
+    LEFT JOIN model_registry 以获取 display_name, 让用户更容易判断该不该批准。
     """
-    from db.models import ModelCapabilitiesLog
+    from db.models import ModelCapabilitiesLog, ModelRegistry
 
     stmt = (
-        select(ModelCapabilitiesLog)
+        select(ModelCapabilitiesLog, ModelRegistry)
+        .outerjoin(ModelRegistry, ModelCapabilitiesLog.model_id == ModelRegistry.model_id)
         .where(ModelCapabilitiesLog.approved == 0)
         .where(ModelCapabilitiesLog.source == "ai_infer")
         .order_by(ModelCapabilitiesLog.created_at.desc())
         .limit(limit)
     )
     result = await session.execute(stmt)
-    return list(result.scalars().all())
+    return list(result.all())
 
 
 async def approve_capability_change(

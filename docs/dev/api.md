@@ -111,7 +111,7 @@ curl http://localhost:8080/dashboard/api/data-freshness \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
-返回 ~20 个 APScheduler job 的健康状态（`last_success_at` / `health`: healthy/warning/stale/unknown）。
+返回 ~21 个 APScheduler job 的健康状态（`last_success_at` / `health`: healthy/warning/stale/unknown）。
 
 ### GET /dashboard/api/suggestions?status=pending
 
@@ -245,6 +245,20 @@ curl http://localhost:8080/dashboard/api/promotions \
 curl 'http://localhost:8080/dashboard/api/promotions?include_flagged=true' \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
+
+返回字段含 `url`（采集源页面链接），前端渲染为"查看原文"链接。
+按 `(provider, title)` GROUP BY 去重，每个活动只显示最新一条（2026-08-21 起）。
+
+### GET /dashboard/api/pending-review
+
+待确认能力变更列表（`model_capabilities_log` WHERE `approved=0 AND source='ai_infer'`）：
+
+```bash
+curl http://localhost:8080/dashboard/api/pending-review \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+返回字段含 `display_name`（来自 `model_registry`，方便用户判断）和 `field_changed`（前端映射为中文标签：create→新模型入库、tier→档位调整、metadata→元信息变更等）。
 
 ## 错误响应格式
 

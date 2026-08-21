@@ -158,6 +158,17 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # V4.4 告警检查 (2026-08-21): 每 6 小时跑 1 次配额/账号/成本告警
+    # 之前 check_all_alerts 从未被注册 (死代码), 现补上调度
+    from intelligence.v44_alerts import check_all_alerts
+    scheduler.add_job(
+        check_all_alerts,
+        trigger=IntervalTrigger(hours=6),
+        id="v44_alerts_check",
+        name="V4.4 告警检查 (配额/账号/成本)",
+        replace_existing=True,
+    )
+
     # 方案A (2026-08-14): 每周一 09:00 跑 suggest_changes
     # 跟周报生成对齐: 周一 09:00 跑完 suggest_changes, 周报 09:00 拉取 pending 建议
     scheduler.add_job(

@@ -296,8 +296,21 @@ async def get_promotions(
 
     P2 fix (2026-08-20): 默认过滤 flagged=1 条目 (AI 解析不确定的垃圾数据),
     只展示可信的优惠情报。?include_flagged=true 查看全部 (调试用)。
+
+    去重: 按 (provider, title) GROUP BY 取最新一条, 避免历史重复入库淹没列表。
     """
-    stmt = select(Promotion).where(Promotion.status == status)
+    # 子查询: 每个 (provider, title) 取最大 id (即最新插入的那条)
+    subq = (
+        select(
+            Promotion.provider,
+            Promotion.title,
+            func.max(Promotion.id).label("max_id"),
+        )
+        .where(Promotion.status == status)
+        .group_by(Promotion.provider, Promotion.title)
+        .subquery()
+    )
+    stmt = select(Promotion).join(subq, Promotion.id == subq.c.max_id)
     if not include_flagged:
         stmt = stmt.where(Promotion.flagged == 0)
     stmt = stmt.order_by(Promotion.created_at.desc()).limit(50)
@@ -1281,28 +1294,30 @@ async def get_pending_review(
     返回每条记录包含:
     - id, model_id, field_changed, old_value, new_value
     - confidence, created_at
+    - display_name (来自 model_registry, 方便用户判断)
     - 待确认原因 (按 confidence 分级)
     """
     rows = await crud.list_pending_review(session, limit=limit)
+    items = []
+    for log, registry in rows:
+        items.append({
+            "id": log.id,
+            "model_id": log.model_id,
+            "display_name": registry.display_name if registry else None,
+            "field_changed": log.field_changed,
+            "old_value": log.old_value,
+            "new_value": log.new_value,
+            "confidence": log.confidence,
+            "created_at": log.created_at.isoformat() if log.created_at else None,
+            "confidence_level": (
+                "high" if (log.confidence or 0) >= 0.8
+                else "medium" if (log.confidence or 0) >= 0.6
+                else "low"
+            ),
+        })
     return {
-        "count": len(rows),
-        "items": [
-            {
-                "id": r.id,
-                "model_id": r.model_id,
-                "field_changed": r.field_changed,
-                "old_value": r.old_value,
-                "new_value": r.new_value,
-                "confidence": r.confidence,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "confidence_level": (
-                    "high" if (r.confidence or 0) >= 0.8
-                    else "medium" if (r.confidence or 0) >= 0.6
-                    else "low"
-                ),
-            }
-            for r in rows
-        ],
+        "count": len(items),
+        "items": items,
     }
 
 
