@@ -221,6 +221,77 @@ embedding + 相似度命中。
 - ✅ 待确认能力变更增强: display_name + 中文 field 标签
 - ✅ 采集源自愈: 成功采集恢复 error→active
 
+### 2026-08-21 V4.8.1 完成 (commit 2d0b804)
+
+**采集失败告警刷屏优化**:
+- alerter: `_try_acquire_throttle` 支持 per-key 自定义静默时长 (`silence_seconds`)
+- healer: `handle_fetch_error` 的 `send_alert` 加 throttle key
+  (`fetch_error:{provider}:{url}`), 首次失败静默 30min, 连续 3 次静默 2h
+  — 之前两个 `send_alert` 调用都没传 key, 导致 60s throttle 完全被绕过,
+  是告警刷屏的根因
+- differ: source 从 error 恢复时发恢复告警 (独立 key `fetch_recover:`, 静默 1h)
+
+**按人用量下钻到 key label**:
+- middleware: 鉴权命中时设 `request.state.caller_key_id`
+- models + init_db: `UsageLog` 加 `key_id` 列 + 启动自动 ALTER TABLE 迁移
+- routes + proxy: `caller_key_id` 经 `forward_request` → `_forward_stream/normal`
+  → `_schedule_usage_log` → `_write_usage_log` → `UsageLog(key_id=...)` 全链路透传
+- dashboard routes: `/api/stats/per-user` 新增 per-key 聚合, 返回 `keys` 子数组
+- app.js + style.css: 按人用量表格改为可展开行, 点击展开显示 per-label 明细
+
+---
+
+## 十一、采集失败恢复策略 (待定, 观察后决策)
+
+### 背景
+
+本次 V4.8.1 只解决了"告警太多"的问题 (分级静默), 没有改变采集失败的恢复逻辑。
+当前恢复逻辑: source 连续失败 3 次 → `status="error"` (自动禁用), 但 scheduler
+不检查 status 仍会尝试采集, 成功后 `_update_source_hash` 自动恢复
+`status="active"` + `error_count=0`。这是"盲重试自愈"——不分析失败原因。
+
+### 观察计划
+
+V4.8.1 上线后观察 **1-2 周**, 评估是否需要进一步优化:
+
+| 观察项 | 预期 | 判定 |
+|--------|------|------|
+| 告警频率 | 从一天 30+ 条降到一天 ≤12 条 | ≤12 条: 静默足够, 不需要恢复策略 |
+| 不可自愈 source 的无效请求 | 鉴权失效/URL 消失类 source 持续重试 | 如果观察到持续无效请求: 需要 Phase 1 |
+| 间歇性故障的恢复→再失败循环 | 2h 静默窗口内不再刷屏 | 如果 2h 够用: 不需要恢复策略 |
+
+**决策点**: 如果观察期内告警频率可接受 (≤12 条/天), 则恢复策略不做;
+如果不可自愈的 source 持续浪费资源, 则启动以下方案。
+
+### 方案设计 (观察期后按需实施)
+
+**Phase 1: 失败原因分类 + 不可自愈类型停止调度** (~0.5 天)
+
+在 `handle_fetch_error` 中按 error reason 推断失败类型:
+
+| 失败类型 | 特征 | 可自愈? | 策略 |
+|---------|------|---------|------|
+| 网络瞬时 | timeout / 5xx | 是 | 当前盲重试自愈 |
+| 限流 | 429 | 是 | 当前自愈 (可加降频) |
+| 鉴权失效 | 401 / 403 | 否 | 标记 needs_manual_fix, 停止调度 |
+| 资源消失 | 404 / DNS 失败 | 否 | 标记 needs_manual_fix, 停止调度 |
+| 结构变更 | 200 但解析空 | 可能 | 保持自愈, 告警标注"可能改版" |
+
+- `intel_sources` 表加 `needs_manual_fix` 列 (布尔)
+- scheduler `_run_source_task` 开头检查: `needs_manual_fix=True` 的 source 跳过调度
+- 告警消息标注失败类型, 方便用户判断
+
+**Phase 2: Dashboard 手动恢复入口** (~0.5 天)
+
+采集源管理面板对 `status="error"` 的 source 显示:
+- 失败类型 + 错误信息
+- "编辑"按钮 (修改 URL / API key)
+- "重新启用"按钮 (清除 `needs_manual_fix`, 重置 status + error_count)
+
+**Phase 3: 限流场景降频** (~0.5 天, 锦上添花)
+
+429 限流 source 恢复后临时将 `poll_interval` 翻倍, 连续 3 次成功后恢复原始间隔。
+
 ---
 
 ## 附: 上一轮 (2026-08-19) 完成记录
