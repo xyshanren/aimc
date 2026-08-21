@@ -86,6 +86,10 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 # 自动选最便宜的 flagship
 client.chat.completions.create(model="tier:flagship", messages=...)
 
+# 组内指定 model（V4.6.5）：斜杠后缀锁定组内某个成员，
+# 其余成员作为 fallback（该 model 不可用时仍走组内其他成员）
+client.chat.completions.create(model="tier:vision/glm-4.5v", messages=...)
+
 # 纯文本请求会跳过 multimodal 候选 (P0-3)
 # minimax 上游 429 时自动 failover 到其他 channel (P1-15)
 ```
@@ -142,18 +146,24 @@ curl -i -X POST http://localhost:8080/v1/chat/completions \
 
 ## 7. Prompt Cache（自动）
 
-AIMC **自动**注入 cache headers：
-- **Anthropic 风格 channel**（`api_style=anthropic`）：前 2 条 message 加 `cache_control: {type: ephemeral}`
-- **OpenAI 风格 channel**（默认）：body 加 `prompt_cache_key`（system content hash）
+AIMC **自动**注入 cache 标记（channel 开启 `supports_prompt_cache` 时，如硅基流动/DeepSeek）：
+- **OpenAI 风格 channel**（默认）：body 加 `prompt_cache_key` = 稳定前缀分段 hash
+  （全量 system + 首条 user 消息，各截断 4096 字符）。多轮 agent 对话跨轮同 key →
+  上游同 cache shard → 前缀命中率高。调用方已传 `prompt_cache_key` 时保留不覆盖。
+- **Anthropic 风格 channel**（`api_style=anthropic`）：system 消息 + 第一条 user 消息加
+  `cache_control: {type: ephemeral}`（校验 role，不盲目标前两条）
 
-效果：cache 命中后节省约 90% input 价格。看 cache 节省金额：访问 [dashboard.md §Cache 节省](dashboard.md#cache-节省)。
+效果：cache 命中后 input 价格大幅下降（硅基流动约 1 折）。看命中率和节省金额：
+Dashboard「缓存节省」栏（OpenAI `cached_tokens` 与 Anthropic `cache_read` 都已纳入统计）。
 
 ## 故障排查（调用阶段）
 
 | 症状 | 检查 | 修复 |
 |------|------|------|
-| 401 Unauthorized | API key 错 | 确认 `AIMC_API_KEY` 跟 SDK 一致 |
+| 401 Unauthorized | API key 错 | 确认 `AIMC_API_KEY` 或多用户 key（`aimc-` 前缀）正确 |
+| 401（user key） | key 被吊销 | 管理员在 Dashboard「Key 管理」重新发 key |
+| 429 daily/monthly exceeded | 个人 token 限额超额 | 等次日/次月，或找管理员调额（见 [configure.md §4](configure.md)） |
 | 503 No available channel | 所有 channel 不可用 | [troubleshooting.md](troubleshooting.md) |
-| 429 Quota exceeded | 限额耗尽 | 等 cooldown (60s) 或加账号 |
+| 429 Quota exceeded | 上游账号限额耗尽 | 等 cooldown (60s) 或加账号 |
 | 上游 429 透传 | TokenPlan 耗尽 (如 minimax) | P1-15 自动 failover，但单 channel model（如 m3）会透传 |
 | 流式断流 | 网关 timeout | 调 `REQUEST_TIMEOUT` env |

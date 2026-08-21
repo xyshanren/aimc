@@ -1,8 +1,25 @@
-# 配置 AIMC (账号 + Dashboard token + 限额)
+# 配置 AIMC (账号 + Dashboard token + 多用户 Key + 限额)
 
-> 受众：装好 AIMC 后想接入多账号、配置 Dashboard 鉴权、调限额的运维
+> 受众：装好 AIMC 后想接入多账号、配置 Dashboard 鉴权、发多用户 Key、调限额的运维
 > 前提：已完成 [install.md](install.md)
 > 耗时：10-20 分钟
+
+## ⚠️ .env 行内注释陷阱（systemd 用户必读）
+
+AIMC 的 systemd unit 用 `EnvironmentFile=` 加载 `.env`。**systemd 不剥离行内注释** —
+`KEY=value  # 注释` 会把 `# 注释`（含前面空格）整段带进值里，而 pydantic 直接读
+`.env` 文件时会剥离，两条路径行为不一致（曾导致 `ALERT_CHANNEL` 值污染、周报推送失败）。
+
+```ini
+# ❌ 错误 (systemd 下值会变成 "feishu          # 飞书机器人")
+ALERT_CHANNEL=feishu          # 飞书机器人
+
+# ✅ 正确 (注释单独一行)
+# 飞书机器人
+ALERT_CHANNEL=feishu
+```
+
+规则：**`.env` 里任何生效行的值后不要跟 `#` 注释**，注释一律独立成行。
 
 ## 1. 完整 .env 配置
 
@@ -21,8 +38,10 @@ AIMC_API_KEY=your-strong-random-key-here
 AIMC_DASHBOARD_TOKEN=
 
 # === 厂商 API Keys (至少 1 个) ===
-SILICONFLOW_API_KEY=sk-xxx         # 硅基流动 (推荐, 1 key 通吃 91 model)
-DEEPSEEK_API_KEY=sk-xxx           # DeepSeek 官方
+# 硅基流动 (推荐, 1 key 通吃 91 model)
+SILICONFLOW_API_KEY=sk-xxx
+# DeepSeek 官方
+DEEPSEEK_API_KEY=sk-xxx
 MINIMAX_API_KEY=sk-xxx
 GLM_API_KEY=xxx
 QWEN_API_KEY=sk-xxx
@@ -34,14 +53,19 @@ STEPFUN_API_KEY=xxx
 # DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 
 # === 路由 / 缓存 / 限额 ===
-ROUTE_REFRESH_INTERVAL=300          # 路由缓存刷新 (秒)
-AIMC_ROUTER_CACHE_TTL=60            # 路由缓存 TTL (秒, P0-4)
-AIMC_CRAWL_ENABLED=true              # 总采集开关 (试用阶段可关)
-PRICE_ALERT_THRESHOLD=30.0          # 价格波动告警阈值 (%)
+# 路由缓存刷新 (秒)
+ROUTE_REFRESH_INTERVAL=300
+# 路由缓存 TTL (秒, P0-4)
+AIMC_ROUTER_CACHE_TTL=60
+# 总采集开关 (试用阶段可关)
+AIMC_CRAWL_ENABLED=true
+# 价格波动告警阈值 (%)
+PRICE_ALERT_THRESHOLD=30.0
 
 # === AI 解析 (优惠情报用) ===
-OPENAI_API_KEY=sk-xxx               # 优惠情报解析用
-OPENAI_BASE_URL=https://api.siliconflow.cn/v1   # 可指向 SF 兼容 endpoint 省 token
+OPENAI_API_KEY=sk-xxx
+# 可指向 SF 兼容 endpoint 省 token
+OPENAI_BASE_URL=https://api.siliconflow.cn/v1
 PARSE_MODEL=MiniMax-M2.7
 
 # === 告警 ===
@@ -93,7 +117,62 @@ systemctl --user restart aimc
 
 **留空 = legacy 行为**（LAN 内裸开），适合开发环境。
 
-## 4. 配置多维限额
+## 4. 多用户 Key 管理（V4.8）
+
+V4.8 起支持**多用户体系**：每个用户有独立的 `aimc-` 前缀 API Key，请求按人记账
+（`usage_logs.caller_id`），可配个人日/月 token 限额。
+
+### 发 Key
+
+```bash
+# 新建用户并发一把 key（明文只显示一次，立即保存）
+python scripts/add_user_key.py --username zhangsan --display-name 张三
+
+# 给已有用户加一把 key（如工作机/笔记本各一把）
+python scripts/add_user_key.py --username zhangsan --label 笔记本
+
+# admin key（可看 dashboard 全局数据）
+python scripts/add_user_key.py --username admin --admin
+
+# 设个人限额（日 10 万 / 月 100 万 token；NULL=不限，0=禁用）
+python scripts/add_user_key.py --username zhangsan \
+    --daily-limit 100000 --monthly-limit 1000000
+```
+
+### 用法（跟普通 OpenAI 客户端一样）
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer aimc-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "tier:balanced", "messages": [...]}'
+```
+
+### 鉴权优先级
+
+middleware 按顺序匹配：**api_keys 表**（`aimc-` 前缀，SHA256 查表）→ **legacy
+AIMC_API_KEY**（全局 key，无 caller 记账）。两种 key 可并存，渐进迁移。
+
+### 限额语义
+
+个人限额在请求前检查，超额返回 **429**（`daily_token_limit_exceeded` /
+`monthly_token_limit_exceeded`）。限额按本地日历日/月计算，超限时已用 + 本次预估
+> 限额即拦截。
+
+### 管理
+
+```bash
+# 列出所有用户/key（脱敏，只显示前缀）
+python scripts/list_user_keys.py
+
+# 吊销 key（dashboard "Key 管理" 栏点吊销，或 API）
+curl -X POST http://localhost:8080/dashboard/api/keys/<id>/revoke \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+用量按人统计见 Dashboard「按人用量」栏（近 7 天）。
+
+## 5. 配置多维限额
 
 AIMC 默认不限（除非你手动加）。限额配置在 db 里：
 
@@ -112,7 +191,7 @@ python scripts/seed_account_quotas.py
 
 详见 [ops/monitor.md](../ops/monitor.md)。
 
-## 5. 配置 Score 权重（路由策略调优）
+## 6. 配置 Score 权重（路由策略调优）
 
 ```bash
 # Dashboard → "路由策略" → PUT /api/settings/router-score-weights
@@ -123,7 +202,7 @@ python scripts/seed_account_quotas.py
 
 详见 [dev/api.md §路由策略](../dev/api.md)。
 
-## 6. 验证配置
+## 7. 验证配置
 
 ```bash
 # 1. 网关鉴权工作

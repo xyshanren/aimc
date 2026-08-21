@@ -38,7 +38,7 @@ python main.py
 ## 4. 跑测试
 
 ```bash
-# 全跑 (74 个 test)
+# 全跑 (473 个 test)
 python -m pytest tests/ -v
 
 # 单文件
@@ -95,14 +95,14 @@ aimc/
 │   ├── models.py           # ORM (含 P0-1~P0-6 列)
 │   ├── crud.py             # CRUD helpers
 │   ├── init_db.py          # create_all + ensure_migrations
-│   └── migrations/         # 9 个迁移脚本 (4 老 + 7 新)
+│   └── migrations/         # 12 个迁移脚本
 ├── dashboard/              # Dashboard (后端 routes + 前端 htmx)
 │   ├── routes.py           # 30+ endpoints
 │   └── static/             # index.html / app.js / login.html
 ├── schemas/                # Pydantic 模型 (API 序列化)
 ├── security/               # API-Sec-1 XOR 加密 (历史, P0-5 改 Fernet)
 ├── scripts/                # 运维 + seed + sync 脚本
-├── tests/                  # 74 tests (pytest)
+├── tests/                  # 473 tests (pytest)
 ├── docs/                   # 文档
 ├── main.py                 # 入口
 ├── config.py               # Pydantic settings
