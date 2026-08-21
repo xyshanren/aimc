@@ -1,0 +1,307 @@
+"""P2-A (2026-08-19): tier:vision 400 专项修复测试
+
+覆盖 5 个修复点:
+- Fix 1: require_vision 过滤器接受 multimodal (不再只接受 vision)
+- Fix 2: infer_modality 识别 glm-4.5v / qwen-vl-* 为 vision
+- Fix 3: seed_model_registry / seed_model_groups vision 模型定义完整
+- Fix 4: 组路由 (tier:/scene:) 上游 400 自动 failover
+- Fix 5: _resolve_actual_model 精确路由用 _channel_model 兜底 (400 无 model 时)
+
+跑法:
+    .venv/Scripts/python.exe tests/test_vision_routing.py
+    pytest tests/test_vision_routing.py -v
+"""
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ============================================================
+# Fix 2: infer_modality 识别 glm-4.5v / qwen-vl-* 为 vision
+# ============================================================
+
+def test_infer_modality_glm_45v():
+    """glm-4.5v 应识别为 vision (修复前误判为 text)"""
+    from scripts.sync_siliconflow_to_registry import infer_modality
+    assert infer_modality("glm-4.5v") == "vision"
+    assert infer_modality("glm-4.5v-flash") == "vision"
+
+
+def test_infer_modality_qwen_vl():
+    """qwen-vl-* / qwen3-vl-* 应识别为 vision"""
+    from scripts.sync_siliconflow_to_registry import infer_modality
+    assert infer_modality("qwen-vl-32b-instruct") == "vision"
+    assert infer_modality("qwen-vl-8b-instruct") == "vision"
+    assert infer_modality("qwen-qwen3-vl-32b-instruct") == "vision"
+
+
+def test_infer_modality_text_unchanged():
+    """text 模型不受 vision 关键词扩展影响"""
+    from scripts.sync_siliconflow_to_registry import infer_modality
+    assert infer_modality("deepseek-v3") == "text"
+    assert infer_modality("qwen-max") == "text"
+    assert infer_modality("glm-4-plus") == "text"
+    assert infer_modality("minimax-m2.5") == "text"
+
+
+def test_convert_sf_model_id_glm_45v():
+    """zai-org/GLM-4.5V → family=glm, model_id=glm-4.5v (去重 family 前缀)"""
+    from scripts.sync_siliconflow_to_registry import convert_sf_model_id
+    fam, mid = convert_sf_model_id("zai-org/GLM-4.5V")
+    assert fam == "glm", f"family 应为 glm, 实际 {fam!r}"
+    assert mid == "glm-4.5v", f"model_id 应为 glm-4.5v, 实际 {mid!r}"
+
+
+def test_convert_sf_model_id_qwen_vl():
+    """Qwen/Qwen3-VL-32B-Instruct → family=qwen, model_id 含 vl"""
+    from scripts.sync_siliconflow_to_registry import convert_sf_model_id
+    fam, mid = convert_sf_model_id("Qwen/Qwen3-VL-32B-Instruct")
+    assert fam == "qwen"
+    assert "vl" in mid and "32b" in mid
+
+
+# ============================================================
+# Fix 3: seed 脚本包含 vision 模型定义
+# ============================================================
+
+def test_seed_registry_has_vision_models():
+    """seed_model_registry.py 的 MODEL_REGISTRY 包含 glm-4.5v + 4 个 qwen-vl-*"""
+    from scripts.seed_model_registry import MODEL_REGISTRY
+    model_ids = {row[0] for row in MODEL_REGISTRY}
+    # glm-4.5v
+    assert "glm-4.5v" in model_ids, "seed 缺少 glm-4.5v"
+    # 4 个 qwen-vl-*
+    expected_qwen_vl = {
+        "qwen-vl-32b-instruct",
+        "qwen-vl-32b-thinking",
+        "qwen-vl-30b-a3b-thinking",
+        "qwen-vl-8b-instruct",
+    }
+    missing = expected_qwen_vl - model_ids
+    assert not missing, f"seed 缺少 qwen-vl 模型: {missing}"
+
+
+def test_seed_registry_vision_modality():
+    """vision 模型的 modality 字段应为 'vision'"""
+    from scripts.seed_model_registry import MODEL_REGISTRY
+    by_id = {row[0]: row for row in MODEL_REGISTRY}
+    assert by_id["glm-4.5v"][6] == "vision", "glm-4.5v modality 应为 vision"
+    assert by_id["qwen-vl-32b-instruct"][6] == "vision"
+    assert by_id["qwen-vl-8b-instruct"][6] == "vision"
+
+
+def test_seed_registry_vision_validate_namespace():
+    """所有新增 vision 模型通过 validate_model_id 校验"""
+    from db.normalizers import validate_model_id, normalize_model_id, normalize_family
+    from scripts.seed_model_registry import MODEL_REGISTRY
+    for row in MODEL_REGISTRY:
+        model_id, family = row[0], row[1]
+        mid_n = normalize_model_id(model_id)
+        fam_n = normalize_family(family)
+        assert validate_model_id(mid_n, fam_n), \
+            f"model_id={model_id!r} family={family!r} 未通过 namespace 校验"
+
+
+def test_seed_groups_vision_members():
+    """seed_model_groups.py 的 tier:vision 组包含 6 个 member, model_id 命名正确"""
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    vision_members = [m for m in GROUP_MEMBERS if m[0] == "tier:vision"]
+    assert len(vision_members) == 6, f"tier:vision 应有 6 个 member, 实际 {len(vision_members)}"
+    model_ids = {m[1] for m in vision_members}
+    expected = {
+        "minimax-m3",
+        "qwen-vl-32b-instruct",
+        "qwen-vl-32b-thinking",
+        "qwen-vl-30b-a3b-thinking",
+        "qwen-vl-8b-instruct",
+        "glm-4.5v",
+    }
+    assert model_ids == expected, f"tier:vision 成员不匹配: {model_ids ^ expected}"
+
+
+def test_seed_groups_vision_members_in_registry():
+    """tier:vision 的每个 member 都在 MODEL_REGISTRY 里 (跨脚本一致性)"""
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    from scripts.seed_model_registry import MODEL_REGISTRY
+    reg_ids = {row[0] for row in MODEL_REGISTRY}
+    vision_members = [m for m in GROUP_MEMBERS if m[0] == "tier:vision"]
+    for _, model_id, _, _, _, _ in vision_members:
+        assert model_id in reg_ids, \
+            f"tier:vision member {model_id!r} 不在 seed_model_registry"
+
+
+# ============================================================
+# P2-B: tier:light 命名对齐 (qwen3-8b → qwen-qwen3-8b)
+# ============================================================
+
+def test_tier_light_members_validate_namespace():
+    """tier:light 的每个 member 都通过 validate_model_id namespace 校验
+
+    P2-B 修复: qwen3-8b 无法通过 validate_model_id (family=qwen 要求 qwen- 前缀),
+    改为 qwen-qwen3-8b.
+    """
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    from db.normalizers import validate_model_id, normalize_model_id, normalize_family
+    # tier:light member 的 family 从 model_id 推断 (第一个 - 之前)
+    light_members = [m for m in GROUP_MEMBERS if m[0] == "tier:light"]
+    for _, model_id, _, _, _, _ in light_members:
+        family = model_id.split("-")[0]
+        mid_n = normalize_model_id(model_id)
+        fam_n = normalize_family(family)
+        assert validate_model_id(mid_n, fam_n), \
+            f"tier:light member {model_id!r} 未通过 namespace 校验 (family={family!r})"
+
+
+def test_tier_light_qwen_prefixed():
+    """tier:light 的 qwen 模型必须带 qwen- 前缀 (qwen-qwen3-8b, 不是 qwen3-8b)"""
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    light_ids = {m[1] for m in GROUP_MEMBERS if m[0] == "tier:light"}
+    assert "qwen-qwen3-8b" in light_ids, "tier:light 应有 qwen-qwen3-8b (带 family 前缀)"
+    assert "qwen-qwen3.5-4b" in light_ids, "tier:light 应有 qwen-qwen3.5-4b"
+    assert "qwen3-8b" not in light_ids, "tier:light 不应有无前缀 qwen3-8b (P2-B 已修)"
+    assert "qwen3.5-4b" not in light_ids, "tier:light 不应有无前缀 qwen3.5-4b"
+
+
+# ============================================================
+# Fix 1: require_vision 接受 multimodal (router.py 源码校验)
+# ============================================================
+
+def test_require_vision_accepts_multimodal():
+    """router.py 源码: require_vision 过滤用 not in (vision, multimodal) 而非 != vision"""
+    from gateway.router import RouteEngine
+    import inspect
+    src = inspect.getsource(RouteEngine._select_by_group)
+    # 关键: 不再用 != "vision" 拒绝 multimodal
+    assert 'not in ("vision", "multimodal")' in src, \
+        "require_vision 过滤器应接受 (vision, multimodal), 检查 router.py"
+
+
+# ============================================================
+# Fix 5: _resolve_actual_model 精确路由用 _channel_model 兜底
+# ============================================================
+
+def test_resolve_model_exact_route_uses_channel_model():
+    """精确路由: channel 有 _channel_model 时优先用它 (而非 requested_model)
+
+    场景: 用户请求 glm-4.5v (不在 registry), router fuzzy match 到
+    zai-org/GLM-4.5V, 注入 _channel_model. 上游 400 时 response 无 model 字段,
+    usage_logs.model 应记 zai-org/GLM-4.5V (而非空).
+    """
+    from gateway.proxy import _resolve_actual_model
+    channel = {"_channel_model": "zai-org/GLM-4.5V"}
+    result = _resolve_actual_model(channel, "glm-4.5v", fallback_model="")
+    assert result == "zai-org/GLM-4.5V", \
+        f"精确路由应优先 _channel_model, 实际 {result!r}"
+
+
+def test_resolve_model_exact_route_no_channel_model():
+    """精确路由: 无 _channel_model 时用 requested_model"""
+    from gateway.proxy import _resolve_actual_model
+    channel = {}
+    assert _resolve_actual_model(channel, "deepseek-v3") == "deepseek-v3"
+
+
+def test_resolve_model_exact_route_empty_all():
+    """精确路由: _channel_model / requested_model / fallback 全空 -> 空字符串"""
+    from gateway.proxy import _resolve_actual_model
+    channel = {}
+    assert _resolve_actual_model(channel, "", fallback_model="") == ""
+
+
+def test_resolve_model_group_route_still_uses_registry_model():
+    """组路由: 仍优先 _registry_model (P2-A 不改变组路由行为)"""
+    from gateway.proxy import _resolve_actual_model
+    channel = {
+        "_registry_model": "glm-4.5v",
+        "_channel_model": "zai-org/GLM-4.5V",
+    }
+    assert _resolve_actual_model(channel, "tier:vision") == "glm-4.5v"
+
+
+def test_resolve_model_exact_route_channel_model_over_response():
+    """精确路由: _channel_model 优先于上游返回的 fallback_model"""
+    from gateway.proxy import _resolve_actual_model
+    channel = {"_channel_model": "zai-org/GLM-4.5V"}
+    assert _resolve_actual_model(channel, "glm-4.5v", fallback_model="some-upstream-model") \
+        == "zai-org/GLM-4.5V"
+
+
+# ============================================================
+# Fix 4: 组路由 400 自动 failover (routes.py 源码校验)
+# ============================================================
+
+def test_routes_400_failover_for_group():
+    """routes.py 源码: 组路由 400 参与 failover
+
+    校验 routes.py 的重试逻辑包含对 tier:/scene: 前缀 400 的 failover.
+    """
+    import gateway.routes as routes_mod
+    import inspect
+    src = inspect.getsource(routes_mod)
+    # 关键: 400 对组路由也要 failover
+    assert "is_group_route" in src, "routes.py 应有 is_group_route 判断"
+    assert 'response.status_code == 400' in src, \
+        "routes.py 应对 400 做组路由 failover 判断"
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def main():
+    print("=" * 60)
+    print("P2-A: tier:vision 400 专项修复测试")
+    print("=" * 60)
+
+    tests = [
+        ("infer_modality glm-4.5v", test_infer_modality_glm_45v),
+        ("infer_modality qwen-vl", test_infer_modality_qwen_vl),
+        ("infer_modality text 不变", test_infer_modality_text_unchanged),
+        ("convert_sf_model_id glm-4.5v", test_convert_sf_model_id_glm_45v),
+        ("convert_sf_model_id qwen-vl", test_convert_sf_model_id_qwen_vl),
+        ("seed registry 有 vision 模型", test_seed_registry_has_vision_models),
+        ("seed registry vision modality", test_seed_registry_vision_modality),
+        ("seed registry vision namespace", test_seed_registry_vision_validate_namespace),
+        ("seed groups vision members", test_seed_groups_vision_members),
+        ("seed groups vision 在 registry", test_seed_groups_vision_members_in_registry),
+        ("require_vision 接受 multimodal", test_require_vision_accepts_multimodal),
+        ("resolve model 精确路由用 _channel_model", test_resolve_model_exact_route_uses_channel_model),
+        ("resolve model 精确路由无 _channel_model", test_resolve_model_exact_route_no_channel_model),
+        ("resolve model 精确路由全空", test_resolve_model_exact_route_empty_all),
+        ("resolve model 组路由不变", test_resolve_model_group_route_still_uses_registry_model),
+        ("resolve model _channel_model 优先", test_resolve_model_exact_route_channel_model_over_response),
+        ("routes 400 组路由 failover", test_routes_400_failover_for_group),
+    ]
+    passed = 0
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f"  [OK] {name}")
+            passed += 1
+        except AssertionError as e:
+            print(f"  [FAIL] {name}: {e}")
+            failed += 1
+        except Exception as e:
+            print(f"  [ERROR] {name}: {type(e).__name__}: {e}")
+            failed += 1
+
+    print(f"\n{'=' * 60}")
+    print(f"Result: {passed} passed, {failed} failed, {len(tests)} total")
+    print(f"{'=' * 60}")
+    if failed:
+        print("\n结论: 有失败项, 需修复")
+        sys.exit(1)
+    else:
+        print("\n结论:")
+        print("- Fix 1: require_vision 过滤器接受 (vision, multimodal)")
+        print("- Fix 2: infer_modality 识别 glm-4.5v / qwen-vl-* 为 vision")
+        print("- Fix 3: seed 脚本包含 5 个 vision 模型 + tier:vision 6 个成员")
+        print("- Fix 4: 组路由 400 自动 failover")
+        print("- Fix 5: 精确路由 _resolve_actual_model 用 _channel_model 兜底")
+
+
+if __name__ == "__main__":
+    main()

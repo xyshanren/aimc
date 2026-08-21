@@ -382,6 +382,7 @@ class RouteEngine:
                 "api_style": ch.api_style or "openai",  # P1-12: 协议风格
                 "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: cache 支持
                 "disable_thinking_pass_through": ch.disable_thinking_pass_through,  # V4.6.4: thinking 剥离
+                "drop_params": ch.drop_params,  # P2-B: 按通道剥离不支持的上游参数
                 "priority": ch.priority,
                 "provider_type": ch.provider_type,
                 "billing_mode": ch.billing_mode,
@@ -668,16 +669,29 @@ class RouteEngine:
         W_RECENCY = self._score_weights["W_RECENCY"]
         W_PRIORITY = self._score_weights["W_PRIORITY"]
 
-        prices = [p.get("input_price") or 0 for _, p in candidates]
-        max_price = max(prices) if prices else 1
-        min_price = min(prices) if prices else 0
+        # V4.6.1/Phase 2a+: NULL 价格 → 999.0 兜底 (跟组路由 _get_input_price 对齐)
+        # 聚合平台 (硅基流动) 入库 NULL 价只记 model 名, 不应因 NULL 被当 0 元误选
+        # 排序时排除 NULL (已兜底 999) 后再归一化, 避免极端值压扁真实价格区间
+        real_prices = [p.get("input_price") for _, p in candidates
+                       if p.get("input_price") is not None]
+        if real_prices:
+            max_price = max(real_prices)
+            min_price = min(real_prices)
+        else:
+            max_price = min_price = 0
         price_range = (max_price - min_price) if (max_price - min_price) > 0 else 1
 
         def score_account(ch_price_pair):
             ch, price = ch_price_pair
             # 1. 价格分数 (越便宜越高, 归一化 0-1)
-            p = price.get("input_price") or 0
-            price_score = 1.0 - (p - min_price) / price_range if price_range > 0 else 0.5
+            # V4.6.1/Phase 2a+: NULL 价格 → 999.0 兜底, 避免被当 0 元误选 (跟 _get_input_price 对齐)
+            raw_p = price.get("input_price")
+            if raw_p is None:
+                p = 999.0
+                price_score = 0.0  # NULL 直接最低分, 不参与归一化
+            else:
+                p = raw_p
+                price_score = 1.0 - (p - min_price) / price_range if price_range > 0 else 0.5
 
             # 2. 配额分数 (剩余越多越高)
             q_remaining = ch["quota_remaining"] if ch["quota_remaining"] is not None else None
@@ -1253,11 +1267,26 @@ class RouteEngine:
                     skipped += 1
                     continue
 
-                # 组过滤: require_vision
-                if group.require_vision and registry.modality != "vision":
+                # 组过滤: require_vision (P2-A: 接受 vision + multimodal)
+                # 背景: P0-3 把 multimodal 当作 vision-capable (纯文本时跳过),
+                # 但 require_vision 用 != "vision" 把 multimodal 也拒了, 两者矛盾.
+                # 修复: multimodal 同样是 vision-capable, 不应被 require_vision 拒绝.
+                if group.require_vision and registry.modality not in ("vision", "multimodal"):
                     logger.debug(
                         f"  [{current}] {model_id} modality={registry.modality} "
-                        f"!= vision, 跳过"
+                        f"not in (vision, multimodal), 跳过"
+                    )
+                    skipped += 1
+                    continue
+
+                # P0-3 (2026-08-14): 纯文本请求跳过 multimodal candidate
+                # 背景: multimodal model (modality=multimodal) 拒纯文本 → 上游 400
+                # 修复: messages 不含 image/audio/file 时, 跳过 multimodal member
+                # 例外: tier:vision 组用户显式选 multimodal (但仍可走 text model fallback)
+                has_mm = _has_multimodal_content(messages)
+                if not has_mm and registry.modality == "multimodal":
+                    logger.debug(
+                        f"  [{current}] {model_id} modality=multimodal 但请求纯文本, 跳过"
                     )
                     skipped += 1
                     continue
@@ -1344,6 +1373,7 @@ class RouteEngine:
 
             best_ch, best_model, _, _, correct_channel_model = candidates[0]
 
+            # 4) 注入调试字段 (Phase 2.5 响应头用)
             # V4.6.5 (2026-08-18): 关键修复
             # _channel_model 作为 tuple 第 5 元素存入 candidates, sort 后取回.
             # sort 后 channel dict._channel_model 已被污染 (最后 checked member 覆盖),
@@ -1378,9 +1408,13 @@ class RouteEngine:
     def _get_input_price(self, channel: dict, model: str) -> float:
         """取 channel 当前时段对 model 的 input_price
 
-        复用 _get_current_price 逻辑, 返回 float (None → 999 兜底)
+        复用 _get_current_price + _get_fuzzy_price 逻辑, 返回 float (None → 999 兜底)
+        跟 select_best_channel 一致: 先精确, 再模糊 (e.g. glm-5.2 → zai-org/GLM-5.2)
         """
-        price_info = self._get_current_price(channel, model, datetime.now().hour)
+        hour = datetime.now().hour
+        price_info = self._get_current_price(channel, model, hour)
+        if price_info is None:
+            price_info = self._get_fuzzy_price(channel, model, hour)
         if price_info and price_info.get("input_price") is not None:
             return float(price_info["input_price"])
         return 999.0  # 未知价格排到最后

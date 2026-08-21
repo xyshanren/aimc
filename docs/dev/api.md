@@ -9,6 +9,10 @@
 
 **鉴权**：如果配置了 `AIMC_API_KEY`，所有 `/v1/*` 请求需带 `Authorization: Bearer <key>`。
 
+V4.8 起支持多用户 key：`aimc-` 前缀的 key 先查 `api_keys` 表（SHA256 匹配，命中记
+`caller_id` 并检查个人日/月限额），否则回退 legacy `AIMC_API_KEY`（无 caller 记账）。
+见 [user/configure.md §4](../user/configure.md)。
+
 ### POST /v1/chat/completions
 
 OpenAI Chat Completions 协议，AIMC 网关透传。
@@ -107,7 +111,7 @@ curl http://localhost:8080/dashboard/api/data-freshness \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
-返回 38 个 APScheduler job 的健康状态（`last_success_at` / `health`: healthy/warning/stale/unknown）。
+返回 ~20 个 APScheduler job 的健康状态（`last_success_at` / `health`: healthy/warning/stale/unknown）。
 
 ### GET /dashboard/api/suggestions?status=pending
 
@@ -186,6 +190,62 @@ curl -X POST http://localhost:8080/dashboard/api/cache/refresh \
 
 修改告警 override（白名单字段，`null` 删 override）。
 
+### GET /dashboard/api/stats/per-user?days=7（V4.8）
+
+按 caller 聚合用量（近 N 天）：
+
+```bash
+curl 'http://localhost:8080/dashboard/api/stats/per-user?days=7' \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+返回 `{count, days, items: [{caller_id, username, request_count, input_tokens, output_tokens, total_tokens, total_cost}]}`。
+`caller_id=NULL` 的行显示为 `(未鉴权/legacy)`（走全局 key 的请求）。
+
+### GET /dashboard/api/keys（V4.8）
+
+用户 + key 列表（脱敏，只含 `key_prefix`，永不返回 hash）：
+
+```bash
+curl http://localhost:8080/dashboard/api/keys \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+### POST /dashboard/api/keys/{key_id}/revoke（V4.8）
+
+吊销 key（立即失效，不可恢复）：
+
+```bash
+curl -X POST http://localhost:8080/dashboard/api/keys/3/revoke \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+### GET /dashboard/api/stats/group_routing
+
+组路由命中分布（近 7 天，按 `usage_logs.group_id` 聚合）：
+
+```bash
+curl http://localhost:8080/dashboard/api/stats/group_routing \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+返回 `{summary, groups: [{group_id, request_count, model_distribution, channels_used, total_cost}], unmatched}`。
+注：`tier:vision/glm-4.5v` 写法的 group_id 已归一化为 `tier:vision`（2026-08-21 起）。
+
+### GET /dashboard/api/promotions
+
+优惠情报列表（默认过滤 `flagged=1` 低置信度条目）：
+
+```bash
+# 只看可信条目
+curl http://localhost:8080/dashboard/api/promotions \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+
+# 调试：查全部（含 flagged）
+curl 'http://localhost:8080/dashboard/api/promotions?include_flagged=true' \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
 ## 错误响应格式
 
 AIMC 网关错误（4xx/5xx）用 OpenAI 兼容格式：
@@ -212,18 +272,21 @@ AIMC 网关错误（4xx/5xx）用 OpenAI 兼容格式：
 
 ```sql
 SELECT model, input_tokens, output_tokens, status_code,
-       cached_input_tokens, group_id, created_at
+       cached_input_tokens, group_id, caller_id, created_at
 FROM usage_logs ORDER BY id DESC LIMIT 5
 ```
 
 | 字段 | 用途 |
 |------|------|
 | `channel_id` / `account_id` | 走哪个渠道/账号 |
+| `caller_id` | 调用方 user id（V4.8；走全局 key 时 NULL）|
 | `model` | 实际命中的 model（精确路由 = requested_model；组路由 = 实际命中）|
-| `group_id` | tier:/scene: 路由时的组 ID（精确路由 NULL）|
+| `group_id` | tier:/scene: 路由时的组 ID（精确路由 NULL；`tier:xxx/model` 写法已归一化存 `tier:xxx`）|
 | `input_tokens` / `output_tokens` | 真实 token 用量 |
-| `cached_input_tokens` | cache 命中 token（P1-8 起填）|
+| `cached_input_tokens` | cache 命中 token（OpenAI 风格，P1-8 起填）|
+| `cache_read_input_tokens` / `cache_creation_input_tokens` | Anthropic 风格 cache 读/写 token |
 | `latency_ms` | 网关总延迟 |
+| `created_at` | 本地时间（2026-08-21 起写入本地时钟；之前 UTC，存量已迁移）|
 
 ### `price_snapshots` 行示例
 

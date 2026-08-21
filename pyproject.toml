@@ -35,3 +35,6 @@ build-backend = "setuptools.backends._legacy:_Backend"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: 网络依赖的 e2e 集成测试 (需本地 uvicorn + 真实上游, 默认 skip)",
+]

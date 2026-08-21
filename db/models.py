@@ -69,6 +69,14 @@ class Channel(Base):
         Integer, nullable=False, server_default="1",
         comment="0=不剥离, 1=剥离 body 里的 thinking/enable_thinking/reasoning_effort (proxy 层)",
     )
+    # P2-B (2026-08-20): 按 channel 剥离不支持的上游参数 (deny-list)
+    # JSON-as-text 存 list[str], e.g. '["reasoning_effort","max_tokens"]'
+    # proxy 层在 thinking strip 之后过滤 body 顶层字段, messages/model/stream 永远保留
+    # 用法: 发现某 channel 对某参数 400 时, dashboard 加该参数名即可自动剥离
+    drop_params = Column(
+        Text, nullable=True,
+        comment="需剥离的顶层参数 JSON list, e.g. [\"reasoning_effort\"]; NULL=全透传",
+    )
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -275,6 +283,12 @@ class UsageLog(Base):
     channel_id = Column(Integer, nullable=True)
     account_id = Column(Integer, nullable=True)
     model = Column(Text, nullable=True)
+    # V4.8 (2026-08-19): caller_id = users.id (多用户计量)
+    # NULL = 单用户模式 (V4.8 前的 legacy 数据) 或未鉴权请求
+    caller_id = Column(
+        Integer, nullable=True,
+        comment="调用者 user_id (V4.8 多用户), NULL=legacy/未鉴权",
+    )
     # Phase 3.A (2026-07-29): 记录请求时的 group_id
     # - tier:xxx / scene:xxx 前缀时填 group_id (e.g. "tier:balanced")
     # - 精确模型路由时为 NULL
@@ -305,7 +319,12 @@ class UsageLog(Base):
         Integer, nullable=True,
         comment="Anthropic-style: 缓存写入 token 数 (usage.cache_creation_input_tokens)",
     )
-    created_at = Column(DateTime, default=func.now())
+    # P3 fix (2026-08-21): default 从 func.now() (SQLite CURRENT_TIMESTAMP=UTC) 改为
+    # Python 侧本地时间 — 跟所有读取方一致 (quota.py / dashboard/routes.py / 周报
+    # 脚本全用本地 datetime.now() 做窗口过滤)。之前 UTC 存储 + 本地读取导致
+    # daily quota 在本地 00:00-08:00 期间漏算当天用量 (3 个 flaky 测试同根因)。
+    # 存量 UTC 行需一次性迁移 (UTC→本地 +时差)。
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class ModelFeedbackSummary(Base):
@@ -724,3 +743,93 @@ class SettingsRuntime(Base):
     key = Column(Text, primary_key=True, comment="设置名: alert_channel / bark_key / feishu_webhook_url / serverchan_key")
     value = Column(Text, nullable=True, comment="override 值, NULL = 删除 override 回退 .env")
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+
+# ============================================================
+# V4.8 多用户 (2026-08-19): users + api_keys 表
+# 3~5 人小团队场景 — 一个 user 多个 api_key, 按 caller 计量 + 限额
+# ============================================================
+
+class User(Base):
+    """V4.8: 用户表 (多用户支持)
+
+    3~5 人小团队场景:
+    - 一个 user 代表一个真人 (e.g. 张三/李四)
+    - 每个 user 可有多个 api_key (工作机/笔记本/不同客户端)
+    - usage_logs.caller_id = user.id, 按人聚合统计
+    - per-user 日/月 token 限额 (user_daily_limit / user_monthly_limit)
+
+    设计:
+    - role: admin (管 key + 看全局) / user (只能用自己的 key)
+    - status: active / disabled
+    - daily_token_limit / monthly_token_limit: NULL = 不限, 0 = 禁用
+    - 不存密码, 只通过 api_key 鉴权 (个人项目, 不需要 SSO)
+    """
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(Text, nullable=False, unique=True, comment="用户名 (e.g. zhangsan)")
+    display_name = Column(Text, nullable=True, comment="展示名 (e.g. 张三)")
+    role = Column(Text, nullable=False, default="user", comment="admin / user")
+    status = Column(Text, nullable=False, default="active", comment="active / disabled")
+    # per-user 限额 (NULL = 不限)
+    daily_token_limit = Column(
+        Integer, nullable=True,
+        comment="每日 token 限额 (input+output), NULL=不限",
+    )
+    monthly_token_limit = Column(
+        Integer, nullable=True,
+        comment="每月 token 限额 (input+output), NULL=不限",
+    )
+    notes = Column(Text, nullable=True, comment="备注 (e.g. '产品组')")
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # 关系
+    api_keys = relationship("ApiKey", back_populates="user", lazy="selectin")
+
+
+class ApiKey(Base):
+    """V4.8: API Key 表 (多 key 鉴权)
+
+    替代 config.py 的单一 api_key, 支持每个 user 多个 key.
+    middleware 校验 Authorization: Bearer <key> 时, 查这张表.
+
+    设计:
+    - key_hash: SHA256(key), 不存明文 (跟 accounts.api_key_ciphertext 不同,
+      这里的 key 是用户自己生成的 AIMC 网关 key, 不是上游厂商 key)
+    - key_prefix: 明文前 8 字符, 展示用 (e.g. "aimc-abc...")
+    - is_admin: admin key (跟 user.role=admin 的 key 区分 — admin key
+      可以看 /dashboard/api/* 全局数据, 普通 key 只能看自己的)
+    - status: active / revoked
+    - last_used_at: 最后使用时间 (dashboard 展示)
+    """
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    key_hash = Column(
+        Text, nullable=False, unique=True,
+        comment="SHA256(明文 key), 用于校验 (不存明文)",
+    )
+    key_prefix = Column(
+        Text, nullable=False,
+        comment="明文前 8 字符, 展示用 (e.g. 'aimc-abc...')",
+    )
+    is_admin = Column(
+        Integer, nullable=False, default=0,
+        comment="0=普通 key, 1=admin key (可访问 dashboard 全局数据)",
+    )
+    status = Column(Text, nullable=False, default="active", comment="active / revoked")
+    label = Column(Text, nullable=True, comment="key 标签 (e.g. '工作机' / '笔记本')")
+    last_used_at = Column(DateTime, nullable=True, comment="最后使用时间")
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    # 关系
+    user = relationship("User", back_populates="api_keys")
+
+    __table_args__ = (
+        Index("idx_apikey_hash", "key_hash"),
+        Index("idx_apikey_user_status", "user_id", "status"),
+    )

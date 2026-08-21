@@ -1,39 +1,42 @@
-"""Seed ModelGroup + ModelGroupMember 表 (Phase 2.7, 2026-07-29)
+"""Seed ModelGroup + ModelGroupMember 表 (V4.6.4, 2026-08-14)
 
-存模型组定义 + 组成员关联。
+V4.6.4 重设计 (post-merge):
+- 6 个 tier group: flagship / strong / balanced / light / vision / code
+- 删 scene:code (450499c 删了, 不重建) - 改用 tier:code 统一
+- 删 scene:free (跟 tier:light 100% 成员重叠, 二选一)
+- tier:vision require_vision=1, fallback 到 tier:strong
+- tier:code 替代 scene:code, fallback 到 tier:balanced
 
-设计 (跟 phase2-design.md §3.2/3.3):
-- 6 个 group: 4 tier (flagship/strong/balanced/light) + 2 scene (code/free)
+设计:
+- group_id 用 "tier:" 前缀统一 (跟 tier:flagship/strong/balanced/light 一套)
+- 命名约定: 全部小写 + namespace 校验 (跟 db/normalizers.py 一致)
+- member 顺序按 priority 升序 (越小越优先), 由 GROUP_MEMBERS 排序保证
 - group_members 用 model_id 字符串 (soft join, 不强制 FK)
-- tier: 限定能力档 (NULL=不限)
-- fallback_group: 降级目标 (NULL=无降级, 终极兜底)
-- strategy: cheapest (默认) / priority
-- min_context / require_vision: 可选过滤
+- 但 seed 时会校验 member 在 model_registry 里 (post-sync_siliconflow_to_registry.py)
 
-关联 model_registry (Phase 2.2 seed 25 个 model):
-- tier:flagship: 强推理/长上下文/代码旗舰
-- tier:strong: 主力通用
-- tier:balanced: 性价比
-- tier:light: 轻量
-- scene:code: 代码专用 (caps=['code'])
-- scene:free: 零成本 (caps 含 'free' — 但当前 registry 没这个 cap, 用 min_context=0 兜底)
-
-注 (2026-07-29):
-- 当前 DB 只有 1 个 channel (siliconflow_aggregator), 实际组路由
-  走 select_best_channel → fallback 兜底
-- 等用户申请 8 个直连 API key 后, 组路由才能真正跨 channel 选优
-- model_id 命名跟硅基流动的 91 个 model 名不一定一致, 短期组路由
-  会 fallback 到硅基流动 (如果硅基流动不识别 model 名, 会 404)
+依赖:
+- scripts/seed_model_registry.py (Phase 2.2 seed 30 model) — 提供基础 model
+- scripts/sync_siliconflow_to_registry.py --apply (V4.6.4) — 补全硅基流动 91 model
+  (包含 glm-5.2 / qwen3-vl-32b-* / deepseek-v3.2 / deepseek-v4-pro 等)
 
 用法:
+    python scripts/seed_model_registry.py
+    python scripts/sync_siliconflow_to_registry.py --apply
     python scripts/seed_model_groups.py
-    重复运行会先清后插 (idempotent, 跟 seed_model_cards.py / seed_model_registry.py 风格一致)
+    重复运行会先清后插 (idempotent)
 
-规模: 6 group + 24 group_member
+Fallback chain:
+- tier:flagship -> tier:strong -> tier:balanced -> tier:light
+- tier:strong   -> tier:balanced -> tier:light
+- tier:balanced -> tier:light
+- tier:vision   -> tier:strong
+- tier:code     -> tier:balanced
+- tier:light    -> NULL (终极兜底)
+
+规模: 6 group + ~22 group_member
 """
 
 import asyncio
-import json
 import sys
 from pathlib import Path
 
@@ -44,19 +47,20 @@ from sqlalchemy import delete, select
 from db.engine import async_session_factory
 from db.init_db import init_db
 from db.models import ModelGroup, ModelGroupMember, ModelRegistry
+from db.normalizers import normalize_model_id, normalize_family
 
 
 # 字段: (group_id, display_name, tier (限定), capabilities (JSON), min_context,
 #        require_vision, strategy, fallback_group, sort_order)
 GROUPS = [
-    # ========== 4 个 tier 组 (能力档) ==========
-    # tier:flagship 不限 tier (因为 qwen-max/MiniMax-Text-01 在 registry 是 T1 但实际能力近 T0)
-    # 用 min_context=64000 兜底 (4 个 member 全部 >= 64k)
+    # ========== 4 个 tier 组 (能力档, 跟之前一致) ==========
+    # tier:flagship 不限 tier (因为 deepseek-v4-pro 是 T0, glm-5.2 是 T1 但实际能力近 T0)
+    # 用 min_context=64000 兜底
     (
         "tier:flagship", "旗舰推理组", None, None, 64000, 0, "cheapest", "tier:strong", 10,
     ),
     (
-        "tier:strong", "强力通用组", "T1", None, 0, 0, "cheapest", "tier:balanced", 20,
+        "tier:strong", "主力通用组", "T1", None, 0, 0, "cheapest", "tier:balanced", 20,
     ),
     (
         "tier:balanced", "均衡性价比组", "T2", None, 0, 0, "cheapest", "tier:light", 30,
@@ -64,64 +68,71 @@ GROUPS = [
     (
         "tier:light", "轻量免费组", "T3", None, 0, 0, "cheapest", None, 40,
     ),
-    # ========== 2 个 scene 组 (使用场景) ==========
+    # ========== V4.6.4 新增 2 个 tier 组 ==========
     (
-        "scene:code", "代码专用组", None, '["code"]', 0, 0, "cheapest", "tier:balanced", 50,
+        # tier:vision: 多模态/视觉专用 (VLM)
+        # require_vision=1, 路由会自动跳过 text-only model
+        "tier:vision", "多模态视觉组", "T1", None, 0, 1, "cheapest", "tier:strong", 25,
     ),
     (
-        "scene:free", "零成本组", "T3", None, 0, 0, "priority", None, 60,
+        # tier:code: 代码专用 (替代 scene:code, 统一 tier: 前缀)
+        "tier:code", "代码专用组", "T2", '["code"]', 0, 0, "cheapest", "tier:balanced", 50,
     ),
+    # 注意: scene:code 和 scene:free 已删除 (V4.6.4)
+    # - scene:code 跟 tier:code 行为一样, 用 tier: 前缀统一
+    # - scene:free 跟 tier:light 100% 成员重叠, 选择 tier:light
 ]
 
 
 # 字段: (group_id, model_id, priority, weight, max_cost_ratio, added_by)
+# priority 数字越小越优先 (组内同价时 tie-break)
 GROUP_MEMBERS = [
-    # ========== tier:flagship (T0) ==========
-    ("tier:flagship", "deepseek-reasoner", 100, 1.0, None, "manual"),
-    ("tier:flagship", "kimi-k3", 100, 1.0, None, "manual"),
-    ("tier:flagship", "qwen-max", 110, 1.0, None, "manual"),
-    ("tier:flagship", "MiniMax-Text-01", 120, 1.0, None, "manual"),
+    # ========== tier:flagship (T0/T1 旗舰推理) ==========
+    # deepseek-v4-pro (T0 评分 65.1) + glm-5.2 (T1 旗舰, 硅基流动已接)
+    ("tier:flagship", "deepseek-v4-pro", 100, 1.0, None, "manual"),
+    ("tier:flagship", "glm-5.2",         110, 1.0, None, "manual"),
 
-    # ========== tier:strong (T1) ==========
-    ("tier:strong", "deepseek-chat", 100, 1.0, None, "manual"),
-    ("tier:strong", "deepseek-coder", 100, 1.0, None, "manual"),
-    ("tier:strong", "glm-4-plus", 100, 1.0, None, "manual"),
-    ("tier:strong", "kimi-k2", 100, 1.0, None, "manual"),
-    ("tier:strong", "qwen2.5-72b", 110, 1.0, None, "manual"),
-    ("tier:strong", "doubao-pro-32k", 120, 1.0, None, "manual"),
-    ("tier:strong", "hunyuan-pro", 130, 1.0, None, "manual"),
+    # ========== tier:strong (T1 主力通用) ==========
+    # deepseek-v4-flash (T1 评分 60.4) + minimax-m3 (T1 评分 51.6, 支持视觉)
+    # + glm-4-plus (T1, glm 官方 7 元/百万)
+    ("tier:strong", "deepseek-v4-flash", 100, 1.0, None, "manual"),
+    ("tier:strong", "minimax-m3",        110, 1.0, None, "manual"),
+    ("tier:strong", "glm-4-plus",        120, 1.0, None, "manual"),
 
-    # ========== tier:balanced (T2) ==========
-    ("tier:balanced", "deepseek-v2.5", 100, 1.0, None, "manual"),
-    ("tier:balanced", "qwen-plus", 100, 1.0, None, "manual"),
-    ("tier:balanced", "qwen2.5-32b", 110, 1.0, None, "manual"),
-    ("tier:balanced", "glm-4-air", 100, 1.0, None, "manual"),
-    ("tier:balanced", "hunyuan-standard", 120, 1.0, None, "manual"),
-    ("tier:balanced", "llama-3.1-70b", 130, 1.0, None, "manual"),
-    ("tier:balanced", "step-1-8k", 140, 1.0, None, "manual"),
+    # ========== tier:balanced (T2 性价比) ==========
+    # deepseek-v3 (T2, 硅基流动常驻) + minimax-m2.5 (T2)
+    ("tier:balanced", "deepseek-v3",  100, 1.0, None, "manual"),
+    ("tier:balanced", "minimax-m2.5", 110, 1.0, None, "manual"),
 
-    # ========== tier:light (T3) ==========
-    ("tier:light", "qwen-turbo", 100, 1.0, None, "manual"),
-    ("tier:light", "qwen2.5-7b", 110, 1.0, None, "manual"),
-    ("tier:light", "glm-4-flash", 100, 1.0, None, "manual"),
-    ("tier:light", "glm-4-9b", 110, 1.0, None, "manual"),
-    ("tier:light", "llama-3.1-8b", 120, 1.0, None, "manual"),
-    ("tier:light", "moonshot-v1-8k", 130, 1.0, None, "manual"),
-    ("tier:light", "doubao-lite-32k", 140, 1.0, None, "manual"),
+    # ========== tier:light (T3 轻量免费) ==========
+    # minimax-m2.7-highspeed (主力, 便宜) + qwen-qwen3-8b + qwen-qwen3.5-4b
+    # + minimax-m2.5-highspeed + glm-4-flash (0.1 元/百万, 最便宜)
+    # P2-B: qwen3-8b → qwen-qwen3-8b (validate_model_id 要求 {family}- 前缀)
+    ("tier:light", "minimax-m2.7-highspeed", 100, 1.0, None, "manual"),
+    ("tier:light", "qwen-qwen3-8b",           110, 1.0, None, "manual"),
+    ("tier:light", "qwen-qwen3.5-4b",         120, 1.0, None, "manual"),
+    ("tier:light", "minimax-m2.5-highspeed",  130, 1.0, None, "manual"),
+    ("tier:light", "glm-4-flash",             140, 1.0, None, "manual"),
 
-    # ========== scene:code (T1+ 含 code cap) ==========
-    ("scene:code", "deepseek-coder", 100, 1.0, None, "manual"),
-    ("scene:code", "qwen-max", 100, 1.0, None, "manual"),
-    ("scene:code", "glm-4-plus", 100, 1.0, None, "manual"),
-    ("scene:code", "hunyuan-pro", 100, 1.0, None, "manual"),
+    # ========== tier:vision (T1 多模态视觉, require_vision=1) ==========
+    # minimax-m3 (T1, multimodal, VLM) + qwen-vl 系列 (硅基流动常驻) + glm-4.5v (GLM 视觉)
+    # P2-A: qwen3-vl-* 改为 qwen-vl-* (validate_model_id 要求 model_id 以 "{family}-" 开头)
+    ("tier:vision", "minimax-m3",                100, 1.0, None, "manual"),
+    ("tier:vision", "qwen-vl-32b-instruct",     110, 1.0, None, "manual"),
+    ("tier:vision", "qwen-vl-32b-thinking",     120, 1.0, None, "manual"),
+    ("tier:vision", "qwen-vl-30b-a3b-thinking", 130, 1.0, None, "manual"),
+    ("tier:vision", "qwen-vl-8b-instruct",      140, 1.0, None, "manual"),
+    ("tier:vision", "glm-4.5v",                 150, 1.0, None, "manual"),
 
-    # ========== scene:free (T3, priority 策略) ==========
-    ("scene:free", "qwen-turbo", 100, 1.0, None, "manual"),
-    ("scene:free", "qwen2.5-7b", 110, 1.0, None, "manual"),
-    ("scene:free", "glm-4-flash", 100, 1.0, None, "manual"),
-    ("scene:free", "glm-4-9b", 110, 1.0, None, "manual"),
-    ("scene:free", "llama-3.1-8b", 120, 1.0, None, "manual"),
-    ("scene:free", "moonshot-v1-8k", 130, 1.0, None, "manual"),
+    # ========== tier:code (T2 代码专用, 替代 scene:code) ==========
+    # minimax-m2.7 (T1 代码主力) + deepseek-v4-flash (含 code cap) + deepseek-v3.2
+    ("tier:code", "minimax-m2.7",        100, 1.0, None, "manual"),
+    ("tier:code", "deepseek-v4-flash",   110, 1.0, None, "manual"),
+    ("tier:code", "deepseek-v3.2",       120, 1.0, None, "manual"),
+
+    # ========== 删的 group (历史, V4.6.4 不再 seed) ==========
+    # - scene:code: 跟 tier:code 行为一样, 统一 tier: 前缀
+    # - scene:free: 跟 tier:light 100% 成员重叠, 二选一保留 tier:light
 ]
 
 
@@ -140,8 +151,13 @@ async def seed():
             group_id, display_name, tier, capabilities,
             min_context, require_vision, strategy, fallback_group, sort_order,
         ) in GROUPS:
+            # 防御: group_id 必须归一化 (issue 1+2)
+            gid_norm = group_id
+            assert gid_norm == group_id, (
+                f"GROUPS 元组里 group_id='{group_id}' 应已归一化"
+            )
             grp = ModelGroup(
-                group_id=group_id,
+                group_id=gid_norm,
                 display_name=display_name,
                 tier=tier,
                 capabilities=capabilities,
@@ -155,12 +171,39 @@ async def seed():
             session.add(grp)
             group_count += 1
         await session.commit()
+        print(f"[+] {group_count} 个 group")
 
-        # 2) seed members
+        # 2) 查 model_registry (软校验, 缺则 warning)
+        reg_models = {
+            r.model_id: r.family
+            for r in (await session.execute(
+                select(ModelRegistry.model_id, ModelRegistry.family)
+            )).all()
+        }
+        print(f"[*] model_registry 当前 {len(reg_models)} 个 model")
+
+        # 3) seed members
         member_count = 0
+        warned = 0
         for (
             group_id, model_id, priority, weight, max_cost_ratio, added_by,
         ) in GROUP_MEMBERS:
+            # 防御: model_id 必须归一化 (跟 db/normalizers.py 一致)
+            model_id_norm = normalize_model_id(model_id)
+            assert model_id_norm == model_id, (
+                f"GROUP_MEMBERS 元组里 model_id='{model_id}' "
+                f"应已归一化为 '{model_id_norm}'"
+            )
+
+            # 软校验: model 是否在 registry 里
+            if model_id not in reg_models:
+                print(
+                    f"  [!] {group_id}/{model_id} 不在 model_registry, "
+                    f"请跑 scripts/sync_siliconflow_to_registry.py --apply 同步"
+                )
+                warned += 1
+                continue
+
             mem = ModelGroupMember(
                 group_id=group_id,
                 model_id=model_id,
@@ -168,44 +211,24 @@ async def seed():
                 weight=weight,
                 max_cost_ratio=max_cost_ratio,
                 added_by=added_by,
+                is_active=1,
             )
             session.add(mem)
             member_count += 1
         await session.commit()
 
-        # 验证
-        grp_rows = list((await session.execute(
-            select(ModelGroup).order_by(ModelGroup.sort_order)
-        )).scalars().all())
-        mem_rows = list((await session.execute(
-            select(ModelGroupMember).order_by(ModelGroupMember.group_id, ModelGroupMember.priority)
-        )).scalars().all())
-
-        print(f"\n=== Seeded {group_count} model groups, {member_count} group members ===")
-        print("\n--- Groups ---")
-        for g in grp_rows:
-            caps_str = g.capabilities or "[]"
+        if warned:
             print(
-                f"  {g.group_id:20s}  tier={g.tier or '*':3s}  "
-                f"strategy={g.strategy:9s}  fallback={g.fallback_group or '-':20s}  "
-                f"caps={caps_str:20s}  members={sum(1 for m in mem_rows if m.group_id == g.group_id)}"
+                f"\n[!] {warned} 个 member 未写入 (model 不在 registry), "
+                f"请跑 sync_siliconflow_to_registry.py 同步后重试"
             )
-
-        print("\n--- Members (per group) ---")
-        for g in grp_rows:
-            members = [m for m in mem_rows if m.group_id == g.group_id]
-            if members:
-                print(f"  [{g.group_id}]")
-                for m in members:
-                    reg = await session.get(ModelRegistry, m.model_id) if False else None
-                    # 用 query 代替
-                    reg_q = await session.execute(
-                        select(ModelRegistry).where(ModelRegistry.model_id == m.model_id)
-                    )
-                    reg = reg_q.scalar_one_or_none()
-                    tier_str = f"({reg.tier})" if reg else "(missing!)"
-                    print(f"    {m.model_id:25s}  {tier_str:6s}  priority={m.priority}")
+        print(f"[+] {member_count} 个 member")
 
 
 if __name__ == "__main__":
+    print("=" * 60)
+    print("AIMC seed_model_groups.py — V4.6.4 (6 个 tier group)")
+    print("=" * 60)
     asyncio.run(seed())
+    print("=" * 60)
+    print("[OK] 完成")

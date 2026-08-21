@@ -27,6 +27,18 @@ logger = logging.getLogger(__name__)
 JOIN_THRESHOLD = 0.8
 LEAVE_THRESHOLD = 0.9
 
+# Phase 4 v4.3.1 (2026-08-13): T1/T2/T3 也可自动入组 (默认关闭, 跟现有 T0-only 默认行为兼容)
+AUTO_JOIN_NON_T0 = False  # 跟现有 P0-3 docstring 设计一致: 只有 T0 免人工确认
+
+
+# Phase 4 v4.3.1 (2026-08-13): tier -> target_group 映射
+_TIER_TO_GROUP: dict[str, str] = {
+    "T0": "tier:flagship",
+    "T1": "tier:strong",
+    "T2": "tier:balanced",
+    "T3": "tier:light",
+}
+
 
 @dataclass
 class SyncResult:
@@ -66,11 +78,17 @@ async def _find_target_group(session, inferred_tier: str) -> Optional[str]:
     - 其他档 (T1/T2/T3/T4) 不再自动入 tier:组, 改为走人工确认:
       tier 变更仍写 model_capabilities_log (approved=0), dashboard 批后由 E1 approve path
       (commit 5) 负责 DELETE + INSERT 到正确 group.
+
+    Phase 4 v4.3.1 (2026-08-13): 当 AUTO_JOIN_NON_T0=True 时,
+    T1/T2/T3 也会自动入组 (跟 _TIER_TO_GROUP 映射).
+    T4 仍不入组 (需人工).
     """
     if inferred_tier == "T0":
         # flagship 组的 group_id 是定义里的硬编码 (scripts/seed_model_groups.py),
         # 不查库以免表名/列名变动导致路由脱纸.
         return "tier:flagship"
+    if AUTO_JOIN_NON_T0 and inferred_tier in _TIER_TO_GROUP:
+        return _TIER_TO_GROUP[inferred_tier]
     # T1/T2/T3/T4: 等 dashboard 确认 tier log 后再路由.
     return None
 

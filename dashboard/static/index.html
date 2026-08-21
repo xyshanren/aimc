@@ -3,221 +3,229 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark light">
     <title>AIMC - AI Model Compass</title>
     <link rel="stylesheet" href="/static/style.css">
-    <!-- 第三方库本地化 (vendor/)：避免外网 CDN 不可达 + 移除不可信 SRI 哈希 -->
     <script src="/static/vendor/htmx.min.js"></script>
     <script src="/static/vendor/chart.umd.min.js"></script>
 </head>
 <body>
-    <header>
-        <h1>AIMC <span class="subtitle">AI Model Compass</span></h1>
-        <p class="desc">轻量级 LLM 网关与优惠情报聚合</p>
-    </header>
 
-    <main>
-        <!-- 渠道状态 -->
-        <section class="card" id="channels-section">
-            <h2>渠道状态</h2>
-            <div id="channels-list" hx-get="/dashboard/api/channels" hx-trigger="load, every 30s" hx-swap="innerHTML">
-                <p class="loading">加载中...</p>
-            </div>
-        </section>
+<header class="status-bar">
+    <div class="status-bar-left">
+        <span class="status-bar-brand">AIMC</span>
+        <span class="status-bar-route" id="status-route">加载中…</span>
+    </div>
+    <div class="status-bar-right">
+        <span class="status-bar-status" id="status-bar-status">
+            <span class="status-dot"></span>
+            <span id="status-text">运行中</span>
+        </span>
+    </div>
+</header>
 
-        <!-- 优惠排行榜 -->
-        <section class="card" id="promotions-section">
-            <h2>优惠情报</h2>
-            <div id="promotions-list" hx-get="/dashboard/api/promotions" hx-trigger="load, every 60s" hx-swap="innerHTML">
-                <p class="loading">加载中...</p>
-            </div>
-        </section>
+<div class="dashboard-grid">
 
-        <!-- 价格对比 -->
-        <section class="card" id="prices-section">
-            <h2>价格对比</h2>
-            <div id="prices-list" hx-get="/dashboard/api/prices" hx-trigger="load, every 60s" hx-swap="innerHTML">
-                <p class="loading">加载中...</p>
-            </div>
-        </section>
+    <div class="col-left">
 
-        <!-- 阶段1 (2026-08-14): prompt cache 节省成本 -->
-        <!-- 方案A (2026-08-14): 模型分组建议中心 -->
-        <section class="card" id="suggestions-section">
-            <h2>模型分组建议 <span class="subtitle">方案A · 待审/已批</span></h2>
-            <div class="summary-row">
-                <span class="summary-item">待审: <strong id="sg-pending">--</strong></span>
-                <span class="summary-item">已批: <strong id="sg-approved">--</strong></span>
-                <span class="summary-item">已应用: <strong id="sg-applied">--</strong></span>
-                <button class="btn btn-primary" onclick="applyAllSuggestions()" style="margin-left:auto;">一键应用已批准</button>
-                <button class="btn btn-secondary" onclick="loadSuggestions()">刷新</button>
-            </div>
-            <div id="suggestions-list">
-                <div style="color:#6a737d;">加载中...</div>
-            </div>
-        </section>
-
-        <!-- 阶段2 (2026-08-14): 数据新鲜度 (apscheduler job_health) -->
-        <section class="card" id="data-freshness-section">
-            <h2>数据新鲜度 <span class="subtitle">阶段2 · job_health</span></h2>
-            <div class="summary-row">
-                <span class="summary-item">总 job: <strong id="df-total">--</strong></span>
-                <span class="summary-item">健康: <strong id="df-healthy">--</strong></span>
-                <span class="summary-item">告警: <strong id="df-warning">--</strong></span>
-                <span class="summary-item">过期: <strong id="df-stale">--</strong></span>
-            </div>
-            <div id="data-freshness-list">
-                <div style="color:#6a737d;">加载中...</div>
-            </div>
-        </section>
-
-        <section class="card" id="cache-stats-section">
-            <h2>Prompt Cache 节省 <span class="subtitle">近 7 天 · P1-8</span></h2>
-            <div class="summary-row" id="cache-stats-summary">
-                <span class="summary-item">节省金额: <strong id="cache-saved">¥--</strong></span>
-                <span class="summary-item">Cache Token: <strong id="cache-tokens">--</strong></span>
-                <span class="summary-item">命中率: <strong id="cache-hit-pct">--</strong>%</span>
-            </div>
-            <div id="cache-by-channel" class="cache-detail">
-                <h3 style="font-size:14px;margin-top:12px;">按渠道</h3>
-                <div id="cache-channel-list">加载中...</div>
-            </div>
-            <div id="cache-by-model" class="cache-detail">
-                <h3 style="font-size:14px;margin-top:12px;">TOP 10 Model</h3>
-                <div id="cache-model-list">加载中...</div>
-            </div>
-        </section>
-
-        <!-- 用量统计 -->
-        <section class="card" id="usage-section">
-            <h2>用量统计（近7天）</h2>
-            <canvas id="usage-chart" width="600" height="200"></canvas>
-        </section>
-
-        <!-- Phase 3.A: Group 路由命中率聚合 -->
-        <section class="card" id="group-routing-section">
-            <h2>组路由命中率 <span class="subtitle">近 7 天 · Agent 视角</span></h2>
-            <div class="summary-row" id="group-routing-summary">
-                <span class="summary-item">总请求: <strong id="gr-total">--</strong></span>
-                <span class="summary-item">组路由占比: <strong id="gr-grouped-pct">--</strong>%</span>
-                <span class="summary-item">精确路由: <strong id="gr-exact">--</strong></span>
-            </div>
-            <div id="group-routing-list" hx-get="/dashboard/api/stats/group_routing" hx-trigger="load, every 60s" hx-swap="innerHTML">
-                <p class="loading">加载中...</p>
-            </div>
-        </section>
-
-        <!-- Phase 2.9: Model Registry (只读) -->
-        <section class="card" id="registry-models-section">
-            <h2>Model Registry <span class="subtitle">路由元信息 (tier / capabilities / ctx)</span></h2>
-            <div id="registry-models-list" hx-get="/dashboard/api/registry/models" hx-trigger="load, every 60s" hx-swap="innerHTML">
-                <p class="loading">加载中...</p>
-            </div>
-        </section>
-
-        <!-- Phase 2.9: Model Groups (只读) -->
-        <section class="card" id="registry-groups-section">
-            <h2>Model Groups <span class="subtitle">能力档 / 场景 (tier:xxx / scene:xxx)</span></h2>
-            <div id="registry-groups-list" hx-get="/dashboard/api/registry/groups" hx-trigger="load, every 60s" hx-swap="innerHTML">
-                <p class="loading">加载中...</p>
-            </div>
-        </section>
-
-        <!-- Phase 4 E1: 待确认能力变更队列 -->
-        <section class="card" id="pending-review-section">
-            <h2>待确认能力变更 <span class="subtitle">AI 推断 · tier 永久人工确认</span></h2>
-            <div id="pending-review-list" hx-get="/dashboard/api/pending-review" hx-trigger="load, every 30s" hx-swap="innerHTML">
-                <p class="loading">加载中...</p>
-            </div>
-        </section>
-
-        <!-- V4.5: 周报查看页 -->
-        <section class="card" id="weekly-report-section">
-            <h2>周报 <span class="subtitle">V4.4.B 自动生成 · 每周一 09:00 推送</span></h2>
-            <div class="report-toolbar">
-                <select id="report-select" onchange="loadWeeklyReport(this.value)">
-                    <option value="latest">最新</option>
-                </select>
-                <span id="report-meta" class="meta"></span>
-            </div>
-            <div id="weekly-report-content"
-                 hx-get="/dashboard/api/reports/latest"
-                 hx-trigger="load, every 5m"
-                 hx-swap="innerHTML">
-                <p class="loading">加载中...</p>
-            </div>
-        </section>
-
-        <!-- V4.6: Dashboard 账号管理 (替代 SSH + 编辑 .env) -->
-        <section class="card" id="accounts-section">
-            <h2>账号管理 <span class="subtitle">加账号无需重启 · 等价 add_account.py / rotate_account.py</span></h2>
-            <div class="accounts-toolbar">
-                <button class="btn-secondary" onclick="loadAccounts()">刷新列表</button>
-                <button class="btn-secondary" onclick="triggerExpireCheck()">扫描过期</button>
-                <span id="accounts-meta" class="meta">加载中...</span>
-            </div>
-
-            <!-- 加账号表单 (折叠) -->
-            <details class="accounts-form-details">
-                <summary>+ 加新账号</summary>
-                <div class="accounts-form">
-                    <div class="form-row">
-                        <label>Provider
-                            <select id="acct-provider"><option value="">加载中...</option></select>
-                        </label>
-                        <label>账号名
-                            <input type="text" id="acct-name" placeholder="e.g. deepseek_02">
-                        </label>
-                    </div>
-                    <div class="form-row">
-                        <label>API Key
-                            <input type="password" id="acct-api-key" placeholder="sk-xxx — 仅本次会话使用, 加密入库">
-                        </label>
-                    </div>
-                    <div class="form-row">
-                        <label>总配额 (tokens, 可选)
-                            <input type="number" id="acct-quota-total" placeholder="e.g. 100000">
-                        </label>
-                        <label>过期时间 (可选)
-                            <input type="date" id="acct-expires-at">
-                        </label>
-                    </div>
-                    <div class="form-row">
-                        <label>备注 (可选)
-                            <input type="text" id="acct-notes" placeholder="e.g. 新用户优惠 7000 万 tokens">
-                        </label>
-                    </div>
-                    <div class="form-actions">
-                        <button class="btn-primary" onclick="submitNewAccount()">提交</button>
-                        <span id="acct-add-feedback" class="feedback"></span>
+        <div class="card">
+            <h2 class="card-title" onclick="toggleCard(this)">
+                <span class="card-title-main">数据新鲜度</span>
+                <span class="card-toggle">v</span>
+            </h2>
+            <div class="card-body">
+                <div class="donut">
+                    <div class="donut-bg" id="freshness-donut"></div>
+                    <div class="donut-text">
+                        <div class="donut-value" id="freshness-pct">--%</div>
+                        <div class="donut-label" id="freshness-total">0 / 0 健康</div>
                     </div>
                 </div>
-            </details>
-
-            <div id="accounts-list"
-                 hx-get="/dashboard/api/accounts"
-                 hx-trigger="load"
-                 hx-swap="innerHTML">
-                <p class="loading">加载中...</p>
+                <div id="freshness-failed" class="mt-md"></div>
             </div>
-        </section>
+        </div>
 
-        <!-- Phase 4 E3: 跨源分歧 -->
-        <section class="card" id="cross-source-section">
-            <h2>跨源分歧 <span class="subtitle">同一 model 多源 tier/capabilities 不一致</span></h2>
-            <div class="cross-source-toolbar">
-                <button id="run-detection-btn" onclick="runCrossSourceDetection(this)">立即检测</button>
-                <span id="detection-result" class="meta"></span>
+        <div class="card">
+            <h2 class="card-title" onclick="toggleCard(this)">
+                <span class="card-title-main">限额预警</span>
+                <span class="card-toggle">v</span>
+            </h2>
+            <div class="card-body" id="quota-warning-list">
+                <div class="loading">加载中…</div>
             </div>
-            <div id="cross-source-list" hx-get="/dashboard/api/cross-source/discrepancies" hx-trigger="load, every 60s" hx-swap="innerHTML">
-                <p class="loading">加载中...</p>
+        </div>
+    </div>
+
+    <div class="col-mid">
+
+        <div class="card">
+            <h2 class="card-title" onclick="toggleCard(this)">
+                <span class="card-title-main">实时状态 <span class="card-title-sub">7 天</span></span>
+                <span class="card-toggle">v</span>
+            </h2>
+            <div class="card-body">
+                <div class="kpi-grid" id="overview-kpis">
+                    <div class="kpi"><div class="kpi-value" id="kpi-tokens">--</div><div class="kpi-label">总 Token</div></div>
+                    <div class="kpi"><div class="kpi-value" id="kpi-requests">--</div><div class="kpi-label">请求数</div></div>
+                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cache-rate">--%</div><div class="kpi-label">Cache 命中率</div></div>
+                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-saved">¥--</div><div class="kpi-label">节省金额</div></div>
+                </div>
+                <canvas id="overview-trend" width="600" height="100"></canvas>
             </div>
-        </section>
-    </main>
+        </div>
 
-    <footer>
-        <p>AIMC v0.1.0 | 自用工具 | <a href="/docs">API 文档</a></p>
-    </footer>
+        <div class="card">
+            <h2 class="card-title" onclick="toggleCard(this)">
+                <span class="card-title-main">用量统计</span>
+                <span class="card-toggle">v</span>
+            </h2>
+            <div class="card-body">
+                <div id="usage-list">
+                    <div class="loading">加载中…</div>
+                </div>
+            </div>
+        </div>
 
-    <script src="/static/app.js"></script>
+        <div class="card">
+            <h2 class="card-title" onclick="toggleCard(this)">
+                <span class="card-title-main">Cache 节省明细 <span class="card-title-sub">P1-8 · 近 7 天</span></span>
+                <span class="card-toggle">v</span>
+            </h2>
+            <div class="card-body">
+                <div id="cache-by-channel">
+                    <div class="loading">加载中…</div>
+                </div>
+            </div>
+        </div>
+
+        <details class="card-folding">
+            <summary><span class="card-title-main">组路由命中率</span><span class="card-title-sub">Agent 视角 · 近 7 天</span></summary>
+            <div class="card-body">
+                <div id="group-routing-list" hx-get="/dashboard/api/stats/group_routing" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+            </div>
+        </details>
+
+        <details class="card-folding">
+            <summary><span class="card-title-main">渠道 + 价格</span><span class="card-title-sub">配置 / 价格对比</span></summary>
+            <div class="card-body">
+                <div class="toolbar mt-sm">
+                    <input type="text" id="search-channels" class="toolbar-search" placeholder="按 channel / model 搜索…" oninput="filterChannels()">
+                </div>
+                <div id="channels-list" hx-get="/dashboard/api/channels" hx-trigger="load, every 30s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+                <div id="prices-list" hx-get="/dashboard/api/prices" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+                <div id="registry-models-list" hx-get="/dashboard/api/registry/models" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+                <div id="registry-groups-list" hx-get="/dashboard/api/registry/groups" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+            </div>
+        </details>
+
+        <details class="card-folding">
+            <summary><span class="card-title-main">Model Registry + Groups</span><span class="card-title-sub">tier / capabilities / ctx</span></summary>
+            <div class="card-body">
+                <div class="toolbar mt-sm">
+                    <input type="text" id="search-registry" class="toolbar-search" placeholder="按 model_id 搜索…" oninput="filterRegistry()">
+                </div>
+                <div id="registry-models-list" hx-get="/dashboard/api/registry/models" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+                <div id="registry-groups-list" hx-get="/dashboard/api/registry/groups" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+            </div>
+        </details>
+
+        <details class="card-folding">
+            <summary><span class="card-title-main">周报</span><span class="card-title-sub">每周一 09:00 推送</span></summary>
+            <div class="card-body">
+                <div class="report-toolbar">
+                    <select id="report-select" onchange="loadWeeklyReport(this.value)"><option value="latest">最新</option></select>
+                    <span id="report-meta" class="meta"></span>
+                </div>
+                <div id="weekly-report-content" hx-get="/dashboard/api/reports/latest" hx-trigger="load, every 5m" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+            </div>
+        </details>
+
+    </div>
+
+    <div class="col-right">
+
+        <div class="card">
+            <h2 class="card-title">
+                <span class="card-title-main">
+                    <span class="status-dot-small status-healthy"></span>
+                    待审建议
+                    <span class="card-title-sub" id="sg-count">0</span>
+                </span>
+                <button class="btn btn-primary btn-sm" onclick="applyAllSuggestions()">一键应用已批准</button>
+            </h2>
+            <div class="card-body" id="suggestions-list">
+                <div class="loading">加载中…</div>
+            </div>
+        </div>
+
+        <details class="card-folding">
+            <summary><span class="card-title-main">按人用量</span><span class="card-title-sub">多用户 · 近 7 天</span></summary>
+            <div class="card-body">
+                <div class="accounts-toolbar">
+                    <button class="btn btn-sm" onclick="loadPerUserUsage()">刷新</button>
+                    <span id="per-user-meta" class="meta"></span>
+                </div>
+                <div id="per-user-list"><div class="loading">加载中…</div></div>
+            </div>
+        </details>
+
+        <details class="card-folding">
+            <summary><span class="card-title-main">Key 管理</span><span class="card-title-sub">多用户 · V4.8</span></summary>
+            <div class="card-body">
+                <div class="accounts-toolbar">
+                    <button class="btn btn-sm" onclick="loadUserKeys()">刷新</button>
+                    <span id="keys-meta" class="meta"></span>
+                </div>
+                <div id="user-keys-list"><div class="loading">加载中…</div></div>
+            </div>
+        </details>
+
+        <details class="card-folding">
+            <summary><span class="card-title-main">账号管理</span><span class="card-title-sub">加账号无需重启</span></summary>
+            <div class="card-body">
+                <div class="accounts-toolbar">
+                    <button class="btn btn-sm" onclick="loadAccounts()">刷新列表</button>
+                    <button class="btn btn-sm" onclick="triggerExpireCheck()">扫描过期</button>
+                    <span id="accounts-meta" class="meta"></span>
+                </div>
+                <details>
+                    <summary style="font-size:12px;color:var(--text-muted);">+ 加新账号</summary>
+                    <div class="accounts-form mt-sm">
+                        <div class="form-row"><label>Provider<select id="acct-provider"><option value="">加载中…</option></select></label><label>账号名<input type="text" id="acct-name" placeholder="e.g. deepseek_02"></label></div>
+                        <div class="form-row"><label>API Key<input type="password" id="acct-api-key" placeholder="sk-xxx"></label></div>
+                        <div class="form-row"><label>总配额 (可选)<input type="number" id="acct-quota-total" placeholder="e.g. 100000"></label><label>过期时间 (可选)<input type="date" id="acct-expires-at"></label></div>
+                        <div class="form-row"><label>备注 (可选)<input type="text" id="acct-notes" placeholder="e.g. 新用户优惠"></label></div>
+                        <div class="form-row"><button class="btn btn-primary" onclick="submitNewAccount()">提交</button><span id="acct-add-feedback" class="feedback"></span></div>
+                    </div>
+                </details>
+                <div id="accounts-list" hx-get="/dashboard/api/accounts" hx-trigger="load" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+            </div>
+        </details>
+
+        <details class="card-folding">
+            <summary><span class="card-title-main">待确认能力变更</span><span class="card-title-sub">AI 推断 · 人工确认</span></summary>
+            <div class="card-body">
+                <div id="pending-review-list" hx-get="/dashboard/api/pending-review" hx-trigger="load, every 30s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+            </div>
+        </details>
+
+        <details class="card-folding">
+            <summary><span class="card-title-main">优惠情报</span><span class="card-title-sub">多厂商活动</span></summary>
+            <div class="card-body">
+                <div id="promotions-list" hx-get="/dashboard/api/promotions" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+            </div>
+        </details>
+
+    </div>
+
+</div>
+
+<div id="shortcut-hint" class="text-muted" style="text-align:center;font-size:11px;margin-top:24px;">
+    快捷键: <kbd>r</kbd> 刷新 · <kbd>a</kbd> 应用建议 · <kbd>/</kbd> 搜索 · <kbd>?</kbd> 帮助
+</div>
+
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/app.js"></script>
+
 </body>
 </html>

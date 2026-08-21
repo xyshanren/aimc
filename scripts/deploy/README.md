@@ -135,13 +135,13 @@ systemctl --user restart aimc
 
 ```bash
 # 基础
-curl http://127.0.0.1:8080/healthz
+curl http://127.0.0.1:8080/health
 
 # 模型清单
 curl http://127.0.0.1:8080/v1/models | python -m json.tool | head -20
 
 # 跨网 (从 windows / wsl / 其他机器)
-curl http://<vm-ip>:8080/healthz
+curl http://<vm-ip>:8080/health
 ```
 
 ---
@@ -278,12 +278,77 @@ sudo netstat -tlnp | grep :8080
 journalctl --user -u aimc | grep -i scheduler
 
 # 看是否启了
-curl http://127.0.0.1:8080/healthz | python -m json.tool
+curl http://127.0.0.1:8080/health | python -m json.tool
 ```
 
 ---
 
-## 11. 卸载
+## 11. 周报自动化 (systemd timer)
+
+周报每周一 09:00 自动生成 + 推送，由两个 systemd user 单元驱动：
+
+| 单元 | 作用 |
+|---|---|
+| `aimc-weekly-report.timer` | 每周一 09:00 触发，`Persistent=true` 错过补跑 |
+| `aimc-weekly-report.service` | oneshot：跑 `generate_weekly_report.py` 生成 Markdown → `publish_report.py` 推送摘要 |
+
+### 安装
+
+```bash
+# 复制 unit 文件到 user systemd 目录
+mkdir -p ~/.config/systemd/user/
+cp ~/aimc/scripts/deploy/aimc-weekly-report.service ~/.config/systemd/user/
+cp ~/aimc/scripts/deploy/aimc-weekly-report.timer ~/.config/systemd/user/
+
+# 重载 + 启用 timer
+systemctl --user daemon-reload
+systemctl --user enable --now aimc-weekly-report.timer
+
+# 确保 linger 已开（aimc.service 安装时已开，双保险）
+loginctl enable-linger $USER
+
+# 验证 timer 已注册
+systemctl --user list-timers | grep weekly
+```
+
+### 手动触发一次（不等下周一）
+
+```bash
+systemctl --user start aimc-weekly-report.service
+
+# 看日志
+journalctl --user -u aimc-weekly-report.service --no-pager
+
+# 验证报告已生成
+ls -la ~/aimc/reports/weekly-latest.md
+```
+
+预期输出：`reports/weekly_YYYY-MM-DD.md` + `reports/weekly-latest.md`，`publish_report.py` 走 `.env` 里的 `ALERT_CHANNEL` 推送摘要。
+
+### 配置推送通道
+
+默认 `ALERT_CHANNEL=log`（只记日志，不真发）。切换推送通道改 `.env`：
+
+```bash
+nano ~/aimc/.env
+# 设 ALERT_CHANNEL=bark 并填 BARK_KEY (iOS Bark app)
+# 或 ALERT_CHANNEL=feishu 并填 FEISHU_WEBHOOK_URL
+# 或 ALERT_CHANNEL=serverchan 并填 SERVERCHAN_KEY
+```
+
+改完不需要重启主服务（周报是独立 oneshot，下次触发时读新 `.env`）。
+
+### 卸载周报 timer
+
+```bash
+systemctl --user disable --now aimc-weekly-report.timer
+rm ~/.config/systemd/user/aimc-weekly-report.{timer,service}
+systemctl --user daemon-reload
+```
+
+---
+
+## 12. 卸载
 
 ```bash
 # 停 + 禁服务
@@ -311,4 +376,6 @@ rm -rf ~/aimc/data ~/aimc/.venv
 | `smoke_v43.py` | 真实 9 源 smoke |
 | `verify_clients.py` | 多客户端连通 |
 | `backup.sh` | SQLite 热备份 |
+| `aimc-weekly-report.timer` | 周报定时器（每周一 09:00） |
+| `aimc-weekly-report.service` | 周报生成 + 推送（oneshot） |
 | `README.md` | 本手册 |

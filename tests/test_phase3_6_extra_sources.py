@@ -65,7 +65,7 @@ def test_new_sources_configured():
         (QwenModelListSource, "qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen"),
         (GLMModelListSource, "glm", "https://open.bigmodel.cn/api/paas/v4", "glm"),
         (StepFunModelListSource, "stepfun", "https://api.stepfun.com/v1", "stepfun"),
-        (SenseNovaModelListSource, "sensenova", "https://api.sensenova.cn/v1", "sensenova"),
+        (SenseNovaModelListSource, "sensenova", "https://token.sensenova.cn/v1", "sensenova"),
         (HunyuanModelListSource, "hunyuan", "https://api.hunyuan.cloud.tencent.com/v1", "hunyuan"),
         (MoonshotModelListSource, "moonshot", "https://api.moonshot.cn/v1", "moonshot"),
     ]
@@ -89,20 +89,20 @@ def test_new_sources_configured():
 
 
 # ============================================================
-# Test 2: get_all_sources 返回 20 个 (Phase 4 v4.2 +1 qianwenai)
+# Test 2: get_all_sources 返回 34 个 (v4.3.1 后全量快照)
 # ============================================================
 def test_get_all_sources_count():
-    print("\n=== Test 2: get_all_sources() 返回 20 个 source ===")
+    print("\n=== Test 2: get_all_sources() 返回 34 个 source ===")
     from intelligence.sources import get_all_sources
 
     srcs = get_all_sources()
-    assert len(srcs) == 20, f"v4.2 后应 20 个 source (19 旧 + qianwenai), 实际 {len(srcs)}"
+    assert len(srcs) == 34, f"v4.3.1 后应 34 个 source, 实际 {len(srcs)}"
 
     by_type = {}
     for s in srcs:
         by_type.setdefault(s.source_type, []).append(s.provider)
 
-    print(f"  [OK] 总数 20: {dict((k, len(v)) for k, v in by_type.items())}")
+    print(f"  [OK] 总数 34: {dict((k, len(v)) for k, v in by_type.items())}")
     for st, providers in sorted(by_type.items()):
         print(f"        {st}: {providers}")
 

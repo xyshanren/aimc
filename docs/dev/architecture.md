@@ -11,21 +11,23 @@
         ▼
 ┌────────────────────────────────────────────────────────────┐
 │                  AIMC 网关层 (FastAPI)                    │
-│  �─────────────────────────────────────────────────────┐ │
+│  ┌─────────────────────────────────────────────────────┐ │
 │  │  /v1/chat/completions                               │ │
-│  │  - Auth (AIMC_API_KEY)                              │ │
+│  │  - Auth (V4.8: api_keys 表 aimc-* → caller_id,       │ │
+│  │          fallback AIMC_API_KEY legacy)               │ │
+│  │  - 用户限额 (quota.py: check_user_quota, V4.8)       │ │
 │  │  - 路由决策 (router.py: select_channel)            │ │
-│  │  - 限额检查 (quota.py: check_account_quota)         │ │
+│  │  - 账号限额检查 (quota.py: check_account_quota)     │ │
 │  │  - 上游转发 (proxy.py: forward_request)            │ │
 │  │    - body.model 改写 (V4.6.4)                       │ │
-│  │    - prompt cache 注入 (P1-8)                       │ │
+│  │    - prompt cache 注入 (P1-8 + P3 路径 A 优化)       │ │
 │  │  - 失败重试 (P1-15: 429/5xx failover)              │ │
-│  │  - 用量日志 (usage_logs + cached_tokens 解析)       │ │
+│  │  - 用量日志 (usage_logs + caller_id + cache tokens) │ │
 │  └─────────────────────────────────────────────────────┘ │
 │  ┌─────────────────────────────────────────────────────┐ │
 │  │  /dashboard/*                                       │ │
 │  │  - Auth (AIMC_DASHBOARD_TOKEN, P1-7)               │ │
-│  │  - 30+ 端点 (channels/accounts/quotas/suggestions)  │ │
+│  │  - 30+ 端点 (channels/accounts/per-user/keys/...)    │ │
 │  └─────────────────────────────────────────────────────┘ │
 └────────────────┬───────────────────────────────────────────┘
                  │
@@ -38,45 +40,53 @@
 │  │  建议生成 (analytics/suggest_changes.py)            │ │
 │  │  报警 (alerter.py - Bark/飞书/Server酱)            │ │
 │  └─────────────────────────────────────────────────────┘ │
-│           20 个 APScheduler job (阶段 2)                │
+│           ~20 个 APScheduler job (按 provider 数浮动)   │
 │           + listener 写 job_health (P0-8)               │
 └────────────────┬───────────────────────────────────────────┘
                  │
                  ▼
-�────────────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────┐
 │                SQLite (WAL 模式, 单文件)                │
 │  channels / accounts / model_registry / model_groups    │
 │  model_group_members (FK + UNIQUE, P0-1)              │
 │  price_snapshots (raw_model_id + cached_price, P0-2)  │
 │  account_quotas / account_quota_usage (P0-6)          │
+│  users / api_keys (V4.8 多用户, SHA256 key hash)       │
 │  model_change_suggestions / group_change_suggestions   │
 │  job_health / settings_runtime                         │
-│  usage_logs (含 cached_input_tokens 等, P0-3-followup) │
-└────────────────────────────────────────────────────────────�
+│  usage_logs (caller_id + cache tokens + 本地时间戳)    │
+└────────────────────────────────────────────────────────────┘
 ```
+
+注：周报生成/推送已由独立 systemd timer（`aimc-weekly-report.timer`，周一 09:00）
+承担，不在主进程 job 列表内。
 
 ## 2. 关键数据流：一次 chat completion 请求
 
 ```
 1. POST /v1/chat/completions
    ↓
-2. middleware: Auth (Authorization: Bearer <AIMC_API_KEY>)
+2. middleware Auth (V4.8):
+   a. aimc- 前缀 key → api_keys 表 SHA256 查表 → caller_id（30s 缓存）
+   b. 其他 → legacy AIMC_API_KEY 全局匹配（caller_id = NULL）
    ↓
 3. routes.chat_completions:
    a. parse body_json
    b. await route_engine._auto_refresh_if_stale()    [P0-4: TTL + mtime]
-   c. P0-6: check_account_quota (rpm/tpm/5h/concurrent/balance)
-   d. channel = route_engine.select_channel(model, messages=...)  [P0-3: skip multimodal]
-      → _select_by_group 或 select_best_channel (score-based)
-   e. P1-15: retry loop on 429/5xx
-   f. forward_request(channel, body, headers, requested_model, actual_model)
-      → proxy._inject_prompt_cache (P1-8: cache_control / prompt_cache_key)
+   c. V4.8: check_user_quota (caller 的日/月 token 限额, 超额 429)
+   d. P0-6: check_account_quota (rpm/tpm/5h/concurrent/balance)
+   e. channel = route_engine.select_channel(model, messages=...)  [P0-3: skip multimodal]
+      → tier:xxx 或 tier:xxx/model 前缀 -> _select_by_group (斜杠后缀 V4.6.5)
+      → 精确路由 -> select_best_channel (score-based)
+   f. P1-15: retry loop on 429/5xx
+   g. forward_request(channel, body, headers, requested_model, actual_model)
+      → proxy._inject_prompt_cache (P1-8 + P3: 稳定前缀分段 hash)
       → proxy._maybe_rewrite_body_model (V4.6.4: body.model = channel._actual_model)
       → httpx post to upstream
       → return JSONResponse / StreamingResponse
-   g. _schedule_usage_log (async fire-and-forget)
-      → parse cached_tokens (P0-3-followup)
-      → write UsageLog row (含 cached_input_tokens)
+   h. _schedule_usage_log (async fire-and-forget)
+      → parse cache tokens (OpenAI cached_tokens / Anthropic cache_read+creation)
+      → write UsageLog row (含 caller_id, group_id 归一化, 本地时间戳)
 4. response with X-AIMC-* headers
 ```
 
@@ -108,8 +118,12 @@ RouteEngine
 ```
 forward_request(channel, body, headers, requested_model, actual_model)
 ├── _maybe_rewrite_body_model()  body.model = actual_model [V4.6.4]
-├── _inject_prompt_cache()        cache_control / prompt_cache_key [P1-8]
-├── _forward_stream()             流式
+├── _inject_prompt_cache()        [P1-8 + P3 路径 A (2026-08-21)]
+│   ├── OpenAI 风格: prompt_cache_key = 稳定前缀分段 hash
+│   │   (全量 system + 首条非 system, 各截断 4096 字符;
+│   │    caller 已传 key 时不覆盖; 无 system fallback 首条 user)
+│   └── Anthropic 风格: system + 第一条 user 加 cache_control (role 校验)
+├── _forward_stream()             流式 (aiter_raw 原样透传)
 └── _forward_normal()             非流式
     ├── httpx post
     ├── response.status_code == 429 -> cooldown_manager.mark_failure [P1-15]
@@ -118,10 +132,14 @@ forward_request(channel, body, headers, requested_model, actual_model)
     └── _schedule_usage_log()      async fire-and-forget
 ```
 
-### `gateway/quota.py` — 多维限额检查（P0-6）
+### `gateway/quota.py` — 多维限额检查
 
 ```
-check_account_quota(account_id, estimated_tokens)
+check_user_quota(caller_id, estimated_tokens) [V4.8]
+└── _sum_user_tokens() 按 usage_logs.caller_id 聚合本地日/月窗口
+    └── 超限 → 429 daily/monthly_token_limit_exceeded
+
+check_account_quota(account_id, estimated_tokens) [P0-6]
 └── _check_dimension()
     ├── balance_cny: window_start IS NULL = 未 sync -> 跳过 [P1-15]
     ├── rpm / tpm: 当前分钟内已用请求/token
@@ -169,8 +187,14 @@ model_registry
 └─ supports_prompt_cache (P0-2)
 
 usage_logs
+├─ caller_id (V4.8, FK -> users.id, 走全局 key 时 NULL)
 ├─ input_tokens / output_tokens
-└─ cached_input_tokens / cache_read_input_tokens / cache_creation_input_tokens [P0-3-followup]
+├─ cached_input_tokens / cache_read_input_tokens / cache_creation_input_tokens [P0-3-followup]
+└─ created_at (本地时间, 2026-08-21 起; 存量 UTC 已迁移)
+
+users / api_keys (V4.8 多用户)
+├─ users: username / role / status / daily_token_limit / monthly_token_limit
+└─ api_keys: key_hash (SHA256) / key_prefix / is_admin / status / user_id FK
 
 model_change_suggestions / group_change_suggestions [方案A]
 ├─ status (pending / approved / rejected / applied)

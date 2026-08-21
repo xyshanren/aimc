@@ -115,11 +115,9 @@ def test_qianwenai_registered_in_get_all_sources():
     assert isinstance(qianwenai_src, QianwenAISource)
     assert qianwenai_src.source_type == "price_aggregator"
 
-    # 总 source 数 (Phase 4 v4.2 应 = 19)
-    # Phase 3.6 base = 18 (6 web/ann + 9 model + 2 price + 2 bench)
-    # v4.2 +1 qianwenai → 19
-    assert len(sources) == 20, (
-        f"v4.2 后应 20 个 source, 实际 {len(sources)}"
+    # 总 source 数 (v4.3.1 后全量快照 = 34)
+    assert len(sources) == 34, (
+        f"v4.3.1 后应 34 个 source, 实际 {len(sources)}"
     )
 
     print(f"  [OK] get_all_sources 共 {len(sources)} 个, qianwenai 已注册")
@@ -133,15 +131,17 @@ def test_qianwenai_classified_as_price_aggregator():
     print("\n=== Test 4: get_sources_by_type 分类正确 ===")
     from intelligence.sources import get_sources_by_type
 
+    # price_aggregator 至少含 qianwenai + siliconflow + openrouter (v4.2 基线)
+    # v4.3 后扩展到 10 家, 这里只验证 qianwenai 存在 + 基线 3 家仍在
     pa_sources = get_sources_by_type("price_aggregator")
     providers = sorted(s.provider for s in pa_sources)
 
-    # 3 个 price_aggregator (siliconflow, openrouter, qianwenai)
-    assert providers == ["openrouter", "qianwenai", "siliconflow"], (
-        f"应 [openrouter, qianwenai, siliconflow], 实际 {providers}"
-    )
+    assert "qianwenai" in providers, f"应含 qianwenai, 实际 {providers}"
+    assert "openrouter" in providers, f"应含 openrouter, 实际 {providers}"
+    assert "siliconflow" in providers, f"应含 siliconflow, 实际 {providers}"
+    assert len(providers) >= 3, f"price_aggregator 至少 3 家, 实际 {providers}"
 
-    print(f"  [OK] price_aggregator 分类: {providers}")
+    print(f"  [OK] price_aggregator 分类 (含 qianwenai): {providers}")
 
 
 # ============================================================

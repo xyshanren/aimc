@@ -260,10 +260,10 @@ else
 fi
 
 # === 9. 健康检查 ===
-if curl -sf http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
-    info "OK healthz OK"
+if curl -sf http://127.0.0.1:8080/health >/dev/null 2>&1; then
+    info "OK /health OK"
 else
-    warn "healthz 未响应 — 可能服务未启 / .env 没填完"
+    warn "/health 未响应 — 可能服务未启 / .env 没填完"
 fi
 
 echo

@@ -5,7 +5,7 @@
 
 ## 1. 当前 migration 总览
 
-AIMC 当前有 **9 个 migration 脚本**（`db/migrations/`）：
+AIMC 当前有 **12 个 migration 脚本**（`db/migrations/`）：
 
 ```
 2026_07_xx  P0-P0.1  (历史)
@@ -18,6 +18,9 @@ AIMC 当前有 **9 个 migration 脚本**（`db/migrations/`）：
 2026_08_14_p03followup_cache_tokens.py       # P0-3 follow-up usage_logs
 2026_08_14_p2_scheduler_cleanup.py          # 阶段2 删旧 crawl_* jobs
 2026_08_14_p2_job_health_table.py            # 阶段2 job_health 表
+2026_08_17_p_disable_thinking.py            # V4.6.4 channels.disable_thinking_pass_through
+2026_08_19_v48_multi_user.py                # V4.8 users + api_keys + usage_logs.caller_id
+2026_08_20_p2b_drop_params.py               # P2-B channels.drop_params
 ```
 
 ## 2. 完整迁移顺序（reset_db 后）
@@ -65,6 +68,16 @@ python db/migrations/2026_08_14_p2_scheduler_cleanup.py --apply
 # i. job_health 表 + listener 准备
 python db/migrations/2026_08_14_p2_job_health_table.py --apply
 
+# === 阶段 4: V4.6.4 ~ V4.8 新增 migration ===
+# j. channels 加 disable_thinking_pass_through (V4.6.4)
+python db/migrations/2026_08_17_p_disable_thinking.py --apply
+
+# k. users + api_keys 表 + usage_logs.caller_id (V4.8 多用户)
+python db/migrations/2026_08_19_v48_multi_user.py --apply
+
+# l. channels 加 drop_params (P2-B)
+python db/migrations/2026_08_20_p2b_drop_params.py --apply
+
 # === 阶段 5: 价格同步 (脚本, 不是 migration) ===
 python scripts/sync_siliconflow_cache_prices.py --apply   # 9 行 cache 价 (兼容)
 python scripts/sync_siliconflow_prices.py --apply          # 53 行 input/output/cache (阶段B)
@@ -73,7 +86,7 @@ python scripts/sync_siliconflow_prices.py --apply          # 53 行 input/output
 systemctl --user restart aimc
 
 # === 阶段 7: 验证 + 测试 ===
-python -m pytest tests/ -v   # 期望 74 passed
+python -m pytest tests/ -v   # 期望 473 passed
 ```
 
 ## 3. 验证清单
@@ -111,7 +124,7 @@ sqlite3 data/aimc.db "SELECT dimension, COUNT(*) FROM account_quotas GROUP BY di
 
 # 5. 测试套件
 python -m pytest tests/ -v | tail -3
-# 期望: 74 passed
+# 期望: 473 passed
 
 # 6. e2e
 KEY=$(grep ^AIMC_API_KEY= .env | cut -d= -f2)
@@ -229,4 +242,4 @@ if __name__ == "__main__":
 | 迁移报错 "duplicate column" | 列已存在, 检查 `pragma_table_info` |
 | 迁移后 test 挂 | `pytest tests/ -v` 看具体哪个; migration 没写完 |
 | 迁移后服务启动报错 | `journalctl --user -u aimc -n 30` 看 traceback (可能是 ORM 列对不上) |
-| 旧 db 升级 | 跑 7 个 migration; 备份必须先做 |
+| 旧 db 升级 | 跑 12 个 migration; 备份必须先做 |

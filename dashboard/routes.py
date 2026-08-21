@@ -9,7 +9,7 @@
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -27,6 +27,7 @@ from db.models import (
     CrossSourceDiscrepancy,
     SettingsRuntime,
     ModelChangeSuggestion, GroupChangeSuggestion,
+    User, ApiKey,
 )
 
 logger = logging.getLogger(__name__)
@@ -211,6 +212,7 @@ async def get_channels_status(session: AsyncSession = Depends(get_session)):
             "api_base": ch.api_base,  # P1-12: 实际 base_url (覆盖 db.base_url)
             "api_style": ch.api_style or "openai",  # P1-12: openai / anthropic
             "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: 0/1
+            "drop_params": ch.drop_params,  # P2-B: 需剥离的顶层参数 (JSON list / 逗号分隔)
             "accounts": len(ch.accounts),
             "active_accounts": len([a for a in ch.accounts if a.status == "active"]),
         }
@@ -230,7 +232,8 @@ async def update_channel(channel_id: int, request: Request,
         "api_style": "openai" | "anthropic",
         "supports_prompt_cache": 0 | 1,
         "status": "active" | "disabled",
-        "priority": 0
+        "priority": 0,
+        "drop_params": "reasoning_effort,max_tokens"  # P2-B: 逗号分隔或 JSON list
     }
 
     改完后调用 route_engine.invalidate_channel(channel_id) 让 router cache 立即刷新
@@ -253,10 +256,12 @@ async def update_channel(channel_id: int, request: Request,
         "supports_prompt_cache": ch.supports_prompt_cache,
         "status": ch.status,
         "priority": ch.priority,
+        "drop_params": ch.drop_params,
     }
 
     # 更新字段
-    allowed_fields = {"base_url", "api_base", "api_style", "supports_prompt_cache", "status", "priority"}
+    allowed_fields = {"base_url", "api_base", "api_style", "supports_prompt_cache",
+                      "status", "priority", "drop_params"}
     for field, value in body.items():
         if field in allowed_fields:
             setattr(ch, field, value)
@@ -276,19 +281,26 @@ async def update_channel(channel_id: int, request: Request,
         "supports_prompt_cache": ch.supports_prompt_cache,
         "status": ch.status,
         "priority": ch.priority,
+        "drop_params": ch.drop_params,
     }
     return {"ok": True, "before": before, "after": after}
 
 
 @router.get("/api/promotions")
-async def get_promotions(status: str = "active", session: AsyncSession = Depends(get_session)):
-    """优惠活动列表"""
-    stmt = (
-        select(Promotion)
-        .where(Promotion.status == status)
-        .order_by(Promotion.created_at.desc())
-        .limit(50)
-    )
+async def get_promotions(
+    status: str = "active",
+    include_flagged: bool = False,
+    session: AsyncSession = Depends(get_session),
+):
+    """优惠活动列表
+
+    P2 fix (2026-08-20): 默认过滤 flagged=1 条目 (AI 解析不确定的垃圾数据),
+    只展示可信的优惠情报。?include_flagged=true 查看全部 (调试用)。
+    """
+    stmt = select(Promotion).where(Promotion.status == status)
+    if not include_flagged:
+        stmt = stmt.where(Promotion.flagged == 0)
+    stmt = stmt.order_by(Promotion.created_at.desc()).limit(50)
     result = await session.execute(stmt)
     promotions = result.scalars().all()
 
@@ -446,18 +458,27 @@ async def get_cache_stats(days: int = 7, session: AsyncSession = Depends(get_ses
     # 计算时间窗口 (UTC 偏移不考虑, db 存的是本地 time)
     cutoff = datetime.now() - timedelta(days=days)
 
+    # P3 fix (2026-08-21): cached tokens 纳入 Anthropic 风格 cache_read
+    # (一行日志要么 OpenAI 风格 cached_input_tokens 要么 Anthropic 风格
+    #  cache_read_input_tokens, 相加不会双算; cache_creation 是写缓存成本,
+    #  不算"节省"故不纳入)
+    cache_tokens_expr = func.coalesce(
+        func.coalesce(UsageLog.cached_input_tokens, 0)
+        + func.coalesce(UsageLog.cache_read_input_tokens, 0),
+        0,
+    )
     # 1. 按 channel 聚合 (用 COALESCE 处理 NULL)
     channel_stmt = (
         select(
             UsageLog.channel_id,
             Channel.name.label("channel_name"),
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageLog.cached_input_tokens), 0).label("cached_tokens"),
+            func.coalesce(func.sum(cache_tokens_expr), 0).label("cached_tokens"),
         )
         .join(Channel, UsageLog.channel_id == Channel.id)
         .where(UsageLog.created_at >= cutoff)
         .group_by(UsageLog.channel_id, Channel.name)
-        .order_by(func.sum(UsageLog.cached_input_tokens).desc())
+        .order_by(func.sum(cache_tokens_expr).desc())
     )
     channel_rows = (await session.execute(channel_stmt)).all()
 
@@ -466,11 +487,11 @@ async def get_cache_stats(days: int = 7, session: AsyncSession = Depends(get_ses
         select(
             UsageLog.model,
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageLog.cached_input_tokens), 0).label("cached_tokens"),
+            func.coalesce(func.sum(cache_tokens_expr), 0).label("cached_tokens"),
         )
         .where(UsageLog.created_at >= cutoff)
         .group_by(UsageLog.model)
-        .order_by(func.sum(UsageLog.cached_input_tokens).desc())
+        .order_by(func.sum(cache_tokens_expr).desc())
         .limit(10)  # TOP 10 model
     )
     model_rows = (await session.execute(model_stmt)).all()
@@ -1875,3 +1896,117 @@ async def expire_check_dashboard():
             logger.warning("expire-check 后刷新路由缓存失败: %s", e)
     logger.info("V4.6 dashboard expire-check: %d 个账号标记 expired", count)
     return {"status": "ok", "expired_count": count}
+
+
+# ============================================================
+# V4.8: Dashboard 多用户 — 按人聚合用量 + Key 管理
+# ============================================================
+
+
+@router.get("/api/stats/per-user")
+async def get_per_user_usage(
+    days: int = Query(7, ge=1, le=90),
+    session: AsyncSession = Depends(get_session),
+):
+    """V4.8: 按人聚合用量 (caller_id GROUP BY)
+
+    LEFT JOIN users, NULL caller_id 归为 "(未鉴权/legacy)"。
+    """
+    cutoff = datetime.now() - timedelta(days=days)
+    stmt = (
+        select(
+            UsageLog.caller_id,
+            User.username,
+            User.display_name,
+            func.coalesce(func.count(UsageLog.id), 0).label("request_count"),
+            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("total_cost"),
+        )
+        .outerjoin(User, UsageLog.caller_id == User.id)
+        .where(UsageLog.created_at >= cutoff)
+        .group_by(UsageLog.caller_id, User.username, User.display_name)
+        .order_by(
+            (func.sum(UsageLog.input_tokens) + func.sum(UsageLog.output_tokens)).desc()
+        )
+    )
+    rows = (await session.execute(stmt)).all()
+    items = []
+    for row in rows:
+        items.append({
+            "caller_id": row.caller_id,
+            "username": row.username or "(未鉴权/legacy)",
+            "display_name": row.display_name,
+            "request_count": row.request_count,
+            "input_tokens": int(row.input_tokens or 0),
+            "output_tokens": int(row.output_tokens or 0),
+            "total_tokens": int((row.input_tokens or 0) + (row.output_tokens or 0)),
+            "total_cost": round(float(row.total_cost or 0), 4),
+        })
+    return {"count": len(items), "days": days, "items": items}
+
+
+def _api_key_to_dict(k: ApiKey) -> dict:
+    """ApiKey 转脱敏 dict (永不返回 key_hash)"""
+    return {
+        "id": k.id,
+        "key_prefix": k.key_prefix,
+        "is_admin": bool(k.is_admin),
+        "status": k.status,
+        "label": k.label,
+        "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
+        "created_at": k.created_at.isoformat() if k.created_at else None,
+    }
+
+
+@router.get("/api/keys")
+async def list_user_keys(session: AsyncSession = Depends(get_session)):
+    """V4.8: 列出所有 user + 其 api_key (脱敏, 不含 key_hash)"""
+    users = (await session.execute(
+        select(User).order_by(User.id)
+    )).scalars().all()
+
+    result = []
+    for u in users:
+        keys = (await session.execute(
+            select(ApiKey).where(ApiKey.user_id == u.id).order_by(ApiKey.id)
+        )).scalars().all()
+        result.append({
+            "id": u.id,
+            "username": u.username,
+            "display_name": u.display_name,
+            "role": u.role,
+            "status": u.status,
+            "daily_token_limit": u.daily_token_limit,
+            "monthly_token_limit": u.monthly_token_limit,
+            "notes": u.notes,
+            "keys": [_api_key_to_dict(k) for k in keys],
+        })
+    return {"count": len(result), "users": result}
+
+
+@router.post("/api/keys/{key_id}/revoke")
+async def revoke_api_key(key_id: int, session: AsyncSession = Depends(get_session)):
+    """V4.8: 吊销 api_key (status active → revoked, 软删)
+
+    幂等: 已 revoked 的 key 再调也返回 ok。
+    清 middleware 的 _apikey_cache 使吊销立即生效 (否则最迟 30s)。
+    """
+    api_key = await session.get(ApiKey, key_id)
+    if not api_key:
+        raise HTTPException(status_code=404, detail=f"Key 不存在: {key_id}")
+
+    if api_key.status != "revoked":
+        api_key.status = "revoked"
+        await session.commit()
+        logger.info("V4.8 dashboard revoke: key_id=%s user_id=%s prefix=%s",
+                     key_id, api_key.user_id, api_key.key_prefix)
+
+        # 清 middleware 鉴权缓存, 使吊销立即生效
+        try:
+            import gateway.middleware as mw
+            mw._apikey_cache.clear()
+        except Exception as e:
+            logger.warning("清 middleware _apikey_cache 失败 (非致命, 30s 后自动过期): %s", e)
+
+    return {"status": "revoked", "key": _api_key_to_dict(api_key)}

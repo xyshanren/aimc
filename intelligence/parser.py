@@ -18,7 +18,7 @@ from openai import AsyncOpenAI
 
 from config import settings
 from intelligence.cleaner import clean_html
-from schemas.intel import ModelIntelItem, ParseResult
+from schemas.intel import ModelIntelItem, ModelPricingItem, ParseResult
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +63,29 @@ SYSTEM_PROMPT = """你是一个 AI 大模型情报分析助手。
       "is_open_source": true,
       "status": "active|preview|deprecated",
       "confidence": 0.0,
-      "tier_reason": "推断依据"
+      "tier_reason": "推断依据",
+      "pricing": [
+        {
+          "type": "normal|cache_hit|free",
+          "input_price": 6.0,
+          "output_price": 12.0,
+          "time_range": "全天"
+        }
+      ]
     }
   ]
 }
 
 规则：
 - source_type=model_list 时重点提取 models，即使没有优惠也必须返回模型列表。
-- tier 表示综合能力（参考 architecture.md §4.2）：T0 旗舰前沿（如 DeepSeek-V4-Pro、Qwen3-235B），T1 强力（如 DeepSeek-V3），T2 均衡（如 Qwen-Plus），T3 轻量（如 Qwen2.5-7B），T4 微型/嵌入（如 Qwen2.5-1.5B）。
+- source_type=price_aggregator 时重点提取 pricing + promotions:
+  1. 含 model × 价格表 → intelligence_kind="pricing", 每个 model 必须返回 pricing 列表
+  2. 仅含订阅优惠/新品发布 → intelligence_kind="promotion"
+  3. 同时含两者 → 优先 pricing (价格确定性更高)
+- 价格类型识别:
+  - 表格列 "缓存命中" 或 "cache hit" → type="cache_hit", input_price/output_price 通常为 0
+  - "免费" / "限时免费" / "Free" → type="free", input_price=0, output_price=0
+  - 常规按时段计费 → type="normal", time_range="全天" 或具体时段如 "00:00-08:00"
 - 不确定的 tier 设 null，禁止无依据猜测；每个模型 confidence 独立评分。
 - capabilities 只能使用给定标签；无法确定的字段设为 null 或空数组。
 - confidence 必须在 0.0-1.0；日期统一 YYYY-MM-DD。
@@ -80,6 +95,135 @@ _ALLOWED_TIERS = {"T0", "T1", "T2", "T3", "T4"}
 _ALLOWED_CAPABILITIES = {
     "general", "reasoning", "code", "math", "vision", "tool_use", "long_context",
 }
+# Phase 4 v4.3 (2026-08-13): 价格类型白名单
+_ALLOWED_PRICE_TYPES = {"normal", "cache_hit", "free", "peak", "offpeak"}
+
+
+# === Thinking model 响应预处理 (V4.6.4, 2026-08-13) ===
+# 背景: thinking model (MiniMax M2.7 / M2.7-highspeed / M3 / DeepSeek-R1 /
+#       Qwen3-Thinking 等) 默认开启 reasoning, response.choices[0].message.content
+#       会输出<think>块 + markdown fence 包裹的 JSON.
+# 老代码 json.loads(result_text) 报 JSONDecodeError, 导致整条采集降级到 CSS 抽取.
+# 修复: 剥掉 thinking 块 + 剥掉 markdown fence, 只留纯 JSON.
+
+import re as _re_parser_helper
+_THINK_BLOCK_RE = _re_parser_helper.compile(
+    r"<think>.*?</think>",
+    _re_parser_helper.DOTALL,
+)
+# fence: ```json { ... } ```  或  ``` { ... } ```  (语言名可选)
+# 重要: 用 lazy match 先抓到 fence, 然后用 _balanced_braces 函数抓实际的 JSON
+# (上面的 brace_pair 正则只支持 1 层嵌套, 真实 AIMC models 数组是 2 层嵌套)
+_FENCE_RE = _re_parser_helper.compile(
+    r"```(?:json)?\s*(\{)",
+    _re_parser_helper.DOTALL,
+)
+
+
+def _balanced_braces(text: str, start: int = 0) -> tuple[int, int] | None:
+    """从 start 开始找下一个 balanced { ... } 范围
+
+    Args:
+        text: 输入字符串
+        start: 从该索引开始扫描
+
+    Returns:
+        (start_idx, end_idx_exclusive) 或 None (没找到)
+
+    支持任意深度嵌套 (手写 stack, 避免 regex recursion 的 re 库依赖)
+    """
+    n = len(text)
+    i = start
+    while i < n:
+        if text[i] == "{":
+            depth = 1
+            j = i + 1
+            in_str = False
+            escape_next = False
+            while j < n and depth > 0:
+                ch = text[j]
+                if escape_next:
+                    escape_next = False
+                    j += 1
+                    continue
+                if in_str:
+                    if ch == "\\":
+                        escape_next = True
+                    elif ch == '"':
+                        in_str = False
+                else:
+                    if ch == '"':
+                        in_str = True
+                    elif ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                j += 1
+            if depth == 0:
+                return (i, j)
+            return None
+        i += 1
+    return None
+
+
+def _extract_json_from_response(text):
+    """从 LLM response.content 抽出纯 JSON 字符串 (V4.6.4+)
+
+    背景: thinking model 默认在 content 里输出<think>块 + markdown fence,
+    老代码 json.loads(result_text) 会报 JSONDecodeError.
+
+    设计: 按优先级试多种方式剥出 JSON, 都失败则原样返回(由调用者处理).
+    1. thinking 块全剥掉 (re.sub)
+    2. markdown fence ```...``` 包裹 (用 _balanced_braces 抓任意深度嵌套)
+    3. 字符串中查找 balanced { ... } (任意深度, 用 stack-based parser)
+    4. 前三步都不行: 原样返回 (老代码逻辑, 让 json.loads 自然抛错)
+
+    Args:
+        text: LLM 返回的 content
+
+    Returns:
+        剥出后的 JSON 字符串 (不保证一定合法, 由调用者 json.loads 验证)
+
+    Raises:
+        TypeError: text is None
+    """
+    if text is None:
+        raise TypeError("response content is None")
+
+    raw = text.strip()
+
+    # Step 1: 剥掉 thinking 块
+    cleaned = _THINK_BLOCK_RE.sub("", raw).strip()
+
+    # Step 2: 剥掉 markdown fence 包裹 — fence 内的 { ... } 用 balanced_braces 提取
+    fence_match = _FENCE_RE.search(cleaned)
+    if fence_match:
+        start = fence_match.start(1)
+        brace_range = _balanced_braces(cleaned, start)
+        if brace_range:
+            candidate = cleaned[brace_range[0]:brace_range[1]]
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                pass  # 不是合法 JSON, 试下一步
+
+    # Step 3: 任意深度 balanced { ... } 扫描
+    pos = 0
+    while True:
+        brace_range = _balanced_braces(cleaned, pos)
+        if not brace_range:
+            break
+        candidate = cleaned[brace_range[0]:brace_range[1]]
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            pass  # 试下一个 brace match
+        pos = brace_range[1]
+
+    # Step 4: 起始未能剥出: 原样返回 (老代码逻辑)
+    return cleaned
 
 
 def confidence_level(confidence: float) -> str:
@@ -146,6 +290,30 @@ def normalize_model_item(data: dict) -> ModelIntelItem:
     if status not in {"active", "preview", "deprecated"}:
         status = "active"
 
+    # Phase 4 v4.3 (2026-08-13): 清洗 pricing 字段
+    raw_pricing = data.get("pricing") or []
+    pricing_list: list[ModelPricingItem] = []
+    for item in raw_pricing:
+        if not isinstance(item, dict):
+            continue
+        price_type = str(item.get("type") or "normal").strip().lower()
+        if price_type not in _ALLOWED_PRICE_TYPES:
+            price_type = "normal"
+        # 价格转 float, 失败 None
+        def _to_float(v):
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+        pricing_list.append(ModelPricingItem(
+            type=price_type,
+            input_price=_to_float(item.get("input_price")),
+            output_price=_to_float(item.get("output_price")),
+            time_range=str(item.get("time_range") or "全天").strip() or "全天",
+        ))
+
     return ModelIntelItem(
         model_id=model_id,
         family=data.get("family"),
@@ -159,6 +327,7 @@ def normalize_model_item(data: dict) -> ModelIntelItem:
         confidence=confidence,
         confidence_level=confidence_level(confidence),
         tier_reason=data.get("tier_reason") or fallback_reason,
+        pricing=pricing_list,
     )
 
 
@@ -214,7 +383,20 @@ async def parse_content(
     )
 
     result_text = response.choices[0].message.content
-    data = json.loads(result_text)  # JSONDecodeError 向上抛
+    # V4.6.4: thinking model 预处理 (MiniMax / DeepSeek-R1 / Qwen3-Thinking 等)
+    # 兼容<think>块 + markdown fence 的输出格式
+    try:
+        json_text = _extract_json_from_response(result_text)
+        data = json.loads(json_text)
+    except json.JSONDecodeError as exc:
+        # 输出脱敏的 response_text 前 200 字符 + provider/model 用于排查
+        # V4.6.4: 之前抛 Exception 让 healer 收到, 看不到 response content
+        sanitized = (result_text or "")[:200].replace("\n", "\\n")
+        logger.warning(
+            f"[parser] JSON 解析失败: provider={provider} model={settings.parse_model} "
+            f"err={exc.msg[:50]} response[:200]={sanitized!r}"
+        )
+        raise
 
     models = []
     for item in data.get("models") or []:

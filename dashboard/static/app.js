@@ -108,21 +108,52 @@ function renderChannels(container) {
             container.innerHTML = '<p class="loading">暂无渠道数据</p>';
             return;
         }
-        let html = '<table><thead><tr><th>渠道</th><th>厂商</th><th>状态</th><th>账号</th><th>优先级</th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>渠道</th><th>厂商</th><th>状态</th><th>账号</th><th>优先级</th><th>drop_params</th><th>操作</th></tr></thead><tbody>';
         data.forEach(ch => {
             const statusClass = `status-${esc(ch.status)}`;
-            html += `<tr>
+            const dp = ch.drop_params ? esc(ch.drop_params) : '<span class="text-muted">—</span>';
+            html += `<tr data-channel-id="${esc(ch.id)}">
                 <td>${esc(ch.name)}</td>
                 <td>${esc(ch.provider)}</td>
                 <td class="${statusClass}">${esc(ch.status)}</td>
                 <td>${esc(ch.active_accounts)}/${esc(ch.accounts)}</td>
                 <td>${esc(ch.priority)}</td>
+                <td class="mono" style="font-size:11px;">${dp}</td>
+                <td><button class="btn-tiny" onclick="editChannelDropParams(${esc(ch.id)}, ${JSON.stringify(ch.drop_params || '').replace(/"/g, '&quot;')})">编辑</button></td>
             </tr>`;
         });
         html += '</tbody></table>';
+        html += '<div class="text-muted" style="margin-top:var(--space-xs);font-size:11px;">drop_params: 逗号分隔的需剥离参数 (如 reasoning_effort,max_tokens); 留空=全透传; messages/model/stream 永远保留</div>';
         container.innerHTML = html;
     } catch (e) {
         // 非 JSON 响应，保持原样
+    }
+}
+
+async function editChannelDropParams(channelId, currentVal) {
+    const newVal = prompt('drop_params (逗号分隔, 留空=全透传)\n例如: reasoning_effort,max_tokens', currentVal || '');
+    if (newVal === null) return; // 用户取消
+    try {
+        const resp = await fetch(`/dashboard/api/channels/${channelId}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({drop_params: newVal.trim()}),
+        });
+        const result = await resp.json();
+        if (result.ok) {
+            // 刷新渠道列表
+            const list = document.getElementById('channels-list');
+            if (list) {
+                fetch('/dashboard/api/channels').then(r => r.text()).then(t => {
+                    list.textContent = t;
+                    renderChannels(list);
+                });
+            }
+        } else {
+            alert('保存失败: ' + (result.detail || JSON.stringify(result)));
+        }
+    } catch (e) {
+        alert('保存失败: ' + e.message);
     }
 }
 
@@ -173,72 +204,98 @@ function renderPrices(container) {
     }
 }
 
-// Phase 2.9: model_registry + model_group 渲染
+// === P0-UI v5: model_registry + model_group 渲染 ===
 function renderRegistryModels(container) {
     try {
         const data = JSON.parse(container.textContent);
         if (!data || !data.models || data.models.length === 0) {
-            container.innerHTML = '<p class="loading">暂无 model registry 数据</p>';
+            container.innerHTML = '<div class="empty">暂无 model registry 数据</div>';
             return;
         }
-        let html = `<p class="meta">共 ${esc(data.count)} 个 model (按 family + tier 排序)</p>`;
-        html += '<table><thead><tr><th>model_id</th><th>family</th><th>tier</th><th>capabilities</th><th>ctx</th><th>open</th><th>状态</th></tr></thead><tbody>';
-        let prevFamily = null;
+        let html = '<div class="text-muted" style="margin-bottom:var(--space-sm);font-size:12px;">共 ' + esc(data.count) + ' 个 model</div>';
+        html += '<div class="scroll-y-320">';
+        html += '<table style="font-size:12px;"><thead><tr><th>Model</th><th>Family</th><th class="mono">Tier</th><th class="mono">Ctx</th><th>Capabilities</th><th class="mono">Status</th></tr></thead><tbody>';
         for (const m of data.models) {
-            if (m.family !== prevFamily) {
-                // family 分组 (可选高亮, 这里仅逻辑分组, 视觉一致)
-                prevFamily = m.family;
-            }
-            const caps = m.capabilities ? JSON.parse(m.capabilities) : [];
-            const ctx = m.context_length ? (m.context_length >= 1024 ? Math.round(m.context_length / 1024) + 'k' : m.context_length) : '?';
-            html += `<tr>
-                <td><code>${esc(m.model_id)}</code></td>
-                <td>${esc(m.family)}</td>
-                <td>${esc(m.tier)}</td>
-                <td class="caps">${esc(caps.join(', '))}</td>
-                <td>${esc(ctx)}</td>
-                <td>${m.is_open_source ? '✓' : '·'}</td>
-                <td>${esc(m.status)}</td>
-            </tr>`;
+            const caps = m.capabilities ? (Array.isArray(m.capabilities) ? m.capabilities : JSON.parse(m.capabilities)) : [];
+            const tier = m.tier || '?';
+            html += '<tr>';
+            html += '<td><code class="text-mono" style="font-size:11px;">' + esc(m.model_id) + '</code></td>';
+            html += '<td style="font-size:11px;">' + esc(m.family || '') + '</td>';
+            html += '<td class="mono" style="font-weight:600;">' + esc(tier) + '</td>';
+            html += '<td class="mono">' + (m.context_length ? Math.round(m.context_length / 1000) + 'k' : '?') + '</td>';
+            html += '<td style="font-size:10px;color:var(--text-muted);">' + caps.slice(0, 3).map(esc).join(', ') + (caps.length > 3 ? '...' : '') + '</td>';
+            html += '<td class="mono" style="font-size:11px;">' + esc(m.status || 'active') + '</td>';
+            html += '</tr>';
         }
         html += '</tbody></table>';
+        html += '</div>';
         container.innerHTML = html;
     } catch (e) {
         console.error('renderRegistryModels failed:', e);
-        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+        container.innerHTML = '<div class="empty">渲染失败: ' + esc(e.message) + '</div>';
     }
 }
 
+
+// === P0-UI v5 (2026-08-16): renderRegistryGroups + renderRegistryModels 优化 ===
+
+// 替换 renderRegistryGroups: 用表格而不是 list, 每个 group 独立卡片
 function renderRegistryGroups(container) {
     try {
         const data = JSON.parse(container.textContent);
         if (!data || !data.groups || data.groups.length === 0) {
-            container.innerHTML = '<p class="loading">暂无 model group 数据</p>';
+            container.innerHTML = '<div class="empty">暂无 model group 数据</div>';
             return;
         }
-        let html = `<p class="meta">共 ${esc(data.group_count)} 个 group, ${esc(data.member_count)} 个 member</p>`;
+
+        // 顶部 summary
+        let html = '<div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: var(--space-md);">';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:18px;">' + esc(data.group_count) + '</div><div class="kpi-label">Groups</div></div>';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:18px;">' + esc(data.member_count) + '</div><div class="kpi-label">Members</div></div>';
+        const tiers = [...new Set(data.groups.map(g => g.tier).filter(Boolean))];
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:18px;">' + esc(tiers.length) + '</div><div class="kpi-label">Tiers</div></div>';
+        html += '</div>';
+
+        // 每个 group 一个折叠卡片
         for (const g of data.groups) {
-            const caps = g.capabilities ? JSON.parse(g.capabilities) : [];
+            const caps = g.capabilities ? (Array.isArray(g.capabilities) ? g.capabilities : JSON.parse(g.capabilities)) : [];
             const tier = g.tier || '*';
             const fallback = g.fallback_group || '(无降级)';
             const ctxMin = g.min_context || 0;
-            html += `<div class="group-card">
-                <h3><code>${esc(g.group_id)}</code> <span class="tier">${esc(tier)}</span></h3>
-                <p class="desc">${esc(g.display_name || '')} | strategy=${esc(g.strategy)} | fallback=${esc(fallback)}</p>
-                ${caps.length ? `<p class="caps">要求 capabilities: ${esc(caps.join(', '))}</p>` : ''}
-                ${ctxMin ? `<p class="meta">min_context=${esc(ctxMin)}</p>` : ''}
-                <details><summary>members (${g.members.length})</summary><ul>`;
-            for (const m of g.members) {
-                html += `<li><code>${esc(m.model_id)}</code> <span class="meta">priority=${esc(m.priority)}</span></li>`;
+            const strat = g.strategy || 'cheapest';
+
+            html += '<div class="group-card">';
+            // header: group_id + tier + summary
+            html += '<div class="flex gap-md" style="align-items:center;flex-wrap:wrap;">';
+            html += '<strong class="text-mono" style="font-size:14px;">' + esc(g.group_id) + '</strong>';
+            html += '<span class="tier">' + esc(tier) + '</span>';
+            html += '<span class="text-muted" style="font-size:11px;">' + esc(strat) + '</span>';
+            if (fallback !== '(无降级)') html += '<span class="text-muted" style="font-size:11px;">fallback=' + esc(fallback) + '</span>';
+            if (ctxMin) html += '<span class="text-muted" style="font-size:11px;">ctx&gt;=' + esc(ctxMin) + '</span>';
+            if (caps.length) html += '<span class="text-muted" style="font-size:11px;">caps: ' + caps.map(esc).join(', ') + '</span>';
+            html += '</div>';
+
+            // members 表格
+            if (g.members && g.members.length > 0) {
+                html += '<table style="margin-top:var(--space-sm);"><thead><tr><th>Model</th><th class="mono">Priority</th></tr></thead><tbody>';
+                for (const m of g.members) {
+                    html += '<tr><td><code class="text-mono">' + esc(m.model_id) + '</code></td><td class="mono">' + esc(m.priority) + '</td></tr>';
+                }
+                html += '</tbody></table>';
+            } else {
+                html += '<div class="text-muted" style="font-size:11px;margin-top:var(--space-sm);">无 member</div>';
             }
-            html += '</ul></details></div>';
+            html += '</div>';
         }
         container.innerHTML = html;
     } catch (e) {
         console.error('renderRegistryGroups failed:', e);
-        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+        container.innerHTML = '<div class="empty">渲染失败: ' + esc(e.message) + '</div>';
     }
 }
+
+
+
 
 // Phase 3.A: Group 路由命中率渲染 (Dashboard 唯一路径)
 function renderGroupRouting(container) {
@@ -278,8 +335,9 @@ function renderGroupRouting(container) {
                 html += '<table><thead><tr><th>实际 model</th><th>次数</th><th>占比</th><th>分布</th></tr></thead><tbody>';
                 for (const m of dist) {
                     const pct = m.percentage || 0;
-                    html += `<tr>
-                        <td><code>${esc(m.model)}</code></td>
+                    const modelName = m.model || "(未知)";
+                html += `<tr>
+                        <td><code class="${m.model ? 'text-mono' : 'text-muted'}" style="font-size:11px;">${esc(modelName)}</code></td>
                         <td>${esc(m.count)}</td>
                         <td>${esc(pct.toFixed(1))}%</td>
                         <td><div class="bar-track"><div class="bar-fill" style="width:${esc(pct)}%"></div></div></td>
@@ -301,7 +359,8 @@ function renderGroupRouting(container) {
             if (top.length > 0) {
                 html += '<table><thead><tr><th>model</th><th>次数</th></tr></thead><tbody>';
                 for (const m of top) {
-                    html += `<tr><td><code>${esc(m.model)}</code></td><td>${esc(m.count)}</td></tr>`;
+                    const mName = m.model || "(未知)";
+                    html += `<tr><td><code class="${m.model ? 'text-mono' : 'text-muted'}" style="font-size:11px;">${esc(mName)}</code></td><td>${esc(m.count)}</td></tr>`;
                 }
                 html += '</tbody></table>';
             }
@@ -372,13 +431,37 @@ function renderPendingReview(container) {
             const confLabel = item.confidence_level || 'low';
             const confClass = `conf-${confLabel}`;
             const created = item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '?';
+            // new_value 可能是 JSON 串 (field_changed=create/metadata), 格式化展示
+            let newVal = item.new_value ?? '(空)';
+            let oldVal = item.old_value ?? '(空)';
+            // 如果是 JSON 字符串, 解析后按 key=value 展示
+            try {
+                if (typeof newVal === 'string' && newVal.startsWith('{')) {
+                    const obj = JSON.parse(newVal);
+                    const parts = [];
+                    for (const [k, v] of Object.entries(obj)) {
+                        const vs = Array.isArray(v) ? v.join(', ') : String(v);
+                        parts.push(`<span class="pr-kv"><span class="pr-k">${esc(k)}</span>: <span class="pr-v">${esc(vs)}</span></span>`);
+                    }
+                    newVal = parts.join(' ');
+                }
+                if (typeof oldVal === 'string' && oldVal.startsWith('{')) {
+                    const obj = JSON.parse(oldVal);
+                    const parts = [];
+                    for (const [k, v] of Object.entries(obj)) {
+                        const vs = Array.isArray(v) ? v.join(', ') : String(v);
+                        parts.push(`${esc(k)}: ${esc(vs)}`);
+                    }
+                    oldVal = parts.join(' ');
+                }
+            } catch (_) { /* not JSON, show raw */ }
             html += `<div class="pr-card">
                 <div class="pr-row">
                     <code class="pr-model">${esc(item.model_id)}</code>
                     <span class="pr-field">${esc(item.field_changed)}</span>
-                    <span class="pr-old">${esc(item.old_value ?? '(空)')}</span>
+                    <span class="pr-old">${oldVal}</span>
                     <span class="pr-arrow">→</span>
-                    <span class="pr-new">${esc(item.new_value ?? '(空)')}</span>
+                    <span class="pr-new">${newVal}</span>
                     <span class="pr-conf ${confClass}">${esc(conf.toFixed(2))} · ${esc(confLabel)}</span>
                     <span class="pr-time">${esc(created)}</span>
                 </div>
@@ -737,6 +820,111 @@ async function applyAllSuggestions() {
     }
 }
 
+// 方案A (2026-08-14): 模型分组建议
+async function loadSuggestions() {
+    try {
+        // 拉 pending 建议 + 统计
+        const [pendingResp, approvedResp, appliedResp] = await Promise.all([
+            authFetch('/dashboard/api/suggestions?status=pending'),
+            authFetch('/dashboard/api/suggestions?status=approved'),
+            authFetch('/dashboard/api/suggestions?status=applied'),
+        ]);
+        const pending = pendingResp.ok ? await pendingResp.json() : {model: [], group: []};
+        const approved = approvedResp.ok ? await approvedResp.json() : {model: [], group: []};
+        const applied = appliedResp.ok ? await appliedResp.json() : {model: [], group: []};
+
+        document.getElementById('sg-pending').textContent = pending.model.length + pending.group.length;
+        document.getElementById('sg-approved').textContent = approved.model.length + approved.group.length;
+        document.getElementById('sg-applied').textContent = applied.model.length + applied.group.length;
+
+        const list = document.getElementById('suggestions-list');
+        if (!list) return;
+
+        if (pending.model.length === 0 && pending.group.length === 0) {
+            list.innerHTML = '<div style="color:#6a737d;padding:12px;">暂无待审建议</div>';
+            return;
+        }
+
+        let html = '<table class="suggestions-table"><thead><tr><th>类型</th><th>对象</th><th>变更</th><th>置信度</th><th>理由</th><th>操作</th></tr></thead><tbody>';
+        for (const m of pending.model) {
+            html += '<tr>';
+            html += '<td>🟢 model</td>';
+            html += `<td>${esc(m.model_id)}</td>`;
+            html += `<td>${esc(m.current_value || '(空)')} → <strong>${esc(m.suggested_value)}</strong></td>`;
+            html += `<td><span class="confidence-badge conf-${Math.floor((m.confidence || 0) * 10)}">${((m.confidence || 0) * 100).toFixed(0)}%</span></td>`;
+            html += `<td><small>${esc(m.reason || '')}</small></td>`;
+            html += `<td>`;
+            html += `<button class="btn btn-sm btn-success" onclick="approveSuggestion('model', ${m.id})">批准</button> `;
+            html += `<button class="btn btn-sm btn-danger" onclick="rejectSuggestion('model', ${m.id})">拒绝</button>`;
+            html += `</td>`;
+            html += '</tr>';
+        }
+        for (const g of pending.group) {
+            html += '<tr>';
+            html += '<td>🟡 group</td>';
+            html += `<td>${esc(g.group_id)}</td>`;
+            html += `<td>${esc(g.change_type)} ${esc(g.target_groups || '')}</td>`;
+            html += `<td><span class="confidence-badge conf-${Math.floor((g.confidence || 0) * 10)}">${((g.confidence || 0) * 100).toFixed(0)}%</span></td>`;
+            html += `<td><small>${esc(g.reason || '')}</small></td>`;
+            html += `<td>`;
+            html += `<button class="btn btn-sm btn-success" onclick="approveSuggestion('group', ${g.id})">批准</button> `;
+            html += `<button class="btn btn-sm btn-danger" onclick="rejectSuggestion('group', ${g.id})">拒绝</button>`;
+            html += `</td>`;
+            html += '</tr>';
+        }
+        html += '</tbody></table>';
+        list.innerHTML = html;
+    } catch (e) {
+        console.warn('Suggestions load failed:', e);
+    }
+}
+
+async function approveSuggestion(type, id) {
+    if (!confirm(`批准此建议? (类型=${type}, id=${id})\n批准后下次 "一键应用" 会真正改 db`)) return;
+    const resp = await authFetch(`/dashboard/api/suggestions/${type}/${id}/approve`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({reviewed_by: 'dashboard_user'}),
+    });
+    if (resp.ok) {
+        alert('已批准');
+        loadSuggestions();
+    } else {
+        alert('失败: ' + resp.statusText);
+    }
+}
+
+async function rejectSuggestion(type, id) {
+    if (!confirm(`拒绝此建议? (类型=${type}, id=${id})`)) return;
+    const resp = await authFetch(`/dashboard/api/suggestions/${type}/${id}/reject`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({reviewed_by: 'dashboard_user'}),
+    });
+    if (resp.ok) {
+        alert('已拒绝');
+        loadSuggestions();
+    } else {
+        alert('失败: ' + resp.statusText);
+    }
+}
+
+async function applyAllSuggestions() {
+    if (!confirm('一键应用所有已批准建议?\n\n此操作会直接改 db (tier / group_member), 不可逆\n\n建议先 review 列表再 apply')) return;
+    const resp = await authFetch('/dashboard/api/suggestions/apply-all', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({min_confidence: 0.0, reviewed_by: 'dashboard_user'}),
+    });
+    if (resp.ok) {
+        const data = await resp.json();
+        alert(`应用完成:\nmodel: ${data.applied_model}\ngroup: ${data.applied_group}\nerrors: ${data.errors.length}`);
+        loadSuggestions();
+    } else {
+        alert('失败: ' + resp.statusText);
+    }
+}
+
 // ============================================================
 // V4.5: 周报查看页 (与 dashboard/static/index.html #weekly-report-section 配套)
 // ============================================================
@@ -818,7 +1006,6 @@ async function loadActiveChannels() {
 }
 
 async function loadAccounts() {
-    // 重新拉列表 — 同 hx-get 同样的 URL, 但用 fetch 强制刷新
     const container = document.getElementById('accounts-list');
     const meta = document.getElementById('accounts-meta');
     if (meta) meta.textContent = '加载中...';
@@ -827,12 +1014,21 @@ async function loadAccounts() {
         const data = await resp.json();
         renderAccounts(data);
         if (meta) {
-            const active = (data.accounts || []).filter(a => a.status === 'active').length;
-            meta.textContent = `共 ${data.count} 个账号 · ${active} 个 active`;
+            const items = data.accounts || [];
+            const active = items.filter(a => a.status === 'active').length;
+            const byProvider = {};
+            for (const a of items) {
+                byProvider[a.provider] = (byProvider[a.provider] || 0) + 1;
+            }
+            const providerSummary = Object.entries(byProvider)
+                .sort((a, b) => b[1] - a[1])
+                .map(([p, n]) => p + '=' + n)
+                .join(', ');
+            meta.textContent = '共 ' + data.count + ' 个账号 · ' + active + ' 个 active · ' + providerSummary;
         }
     } catch (e) {
-        if (meta) meta.textContent = `加载失败: ${esc(e.message)}`;
-        if (container) container.innerHTML = `<p class="error">加载失败: ${esc(e.message)}</p>`;
+        if (meta) meta.textContent = '加载失败: ' + e.message;
+        if (container) container.innerHTML = '<p class="error">加载失败: ' + e.message + '</p>';
     }
 }
 
@@ -841,40 +1037,52 @@ function renderAccounts(data) {
     if (!container) return;
     const items = data.accounts || [];
     if (items.length === 0) {
-        container.innerHTML = '<p class="loading">✓ 当前无账号 — 点上方 "+ 加新账号" 添加</p>';
+        container.innerHTML = '<p class="loading">当前无账号 — 点上方 "+ 加新账号" 添加</p>';
         return;
     }
-
-    let html = '<table><thead><tr><th>ID</th><th>Provider</th><th>账号名</th><th>状态</th><th>已用/总额</th><th>过期</th><th>Key</th><th>备注</th><th>操作</th></tr></thead><tbody>';
+    const byProvider = {};
+    for (const a of items) {
+        byProvider[a.provider] = (byProvider[a.provider] || 0) + 1;
+    }
+    const multiProvider = Object.entries(byProvider).filter((kv) => kv[1] > 1);
+    let explanation = '';
+    if (multiProvider.length > 0) {
+        explanation = '<div class="info-banner"><strong>💡 多账号说明:</strong> ';
+        explanation += multiProvider.map(function(kv){return kv[0] + ' 有 <strong>' + kv[1] + '</strong> 个账号'}).join('，');
+        explanation += ' 用于分散频限 + 故障转移。<br>';
+        explanation += '重复的 <code>test_01</code> 是手动测试用的多账号，可在操作列禁用不需要的。</div>';
+    }
+    let html = explanation + '<div class="scroll-y-300"><table><thead><tr><th>ID</th><th>账号名</th><th>状态</th><th>已用/总额</th><th>过期</th><th>Key</th><th>备注</th><th>操作</th></tr></thead><tbody>';
     for (const a of items) {
         const quota = a.quota_total
-            ? `${a.quota_used.toLocaleString()} / ${a.quota_total.toLocaleString()} (${a.quota_pct ?? 0}%)`
-            : '∅';
-        const expires = a.expires_at ? a.expires_at.slice(0, 10) : '∅';
+            ? a.quota_used.toLocaleString() + ' / ' + a.quota_total.toLocaleString() + ' (' + (a.quota_pct || 0) + '%)'
+            : '-';
+        const expires = a.expires_at ? a.expires_at.slice(0, 10) : '-';
         const notes = a.notes || '';
         const status = a.status;
         const actions = [];
-        if (status !== 'active') {
-            actions.push(`<button class="btn-sm btn-enable" onclick="toggleAccount(${a.id}, 'active', this)">启用</button>`);
+        if (status !== "active") {
+            actions.push('<button class="btn-sm btn-enable" data-action="enable" data-id="' + a.id + '">启用</button>');
         } else {
-            actions.push(`<button class="btn-sm btn-disable" onclick="toggleAccount(${a.id}, 'disabled', this)">禁用</button>`);
+            actions.push('<button class="btn-sm btn-disable" data-action="disable" data-id="' + a.id + '">禁用</button>');
         }
-        actions.push(`<button class="btn-sm btn-rotate" onclick="rotateAccountKey(${a.id}, this)">轮换</button>`);
-        html += `<tr>
-            <td>${a.id}</td>
-            <td>${esc(a.provider)}</td>
-            <td><code>${esc(a.account_name)}</code></td>
-            <td class="status-${esc(status)}">${esc(status)}</td>
-            <td>${quota}</td>
-            <td>${esc(expires)}</td>
-            <td><code class="key-display">${esc(a.key_display)}</code></td>
-            <td class="notes">${esc(notes)}</td>
-            <td class="row-actions">${actions.join(' ')}</td>
-        </tr>`;
+        actions.push('<button class="btn-sm btn-rotate" data-action="rotate" data-id="' + a.id + '">轮换</button>');
+        html += '<tr>'
+            + '<td>' + a.id + '</td>'
+            + '<td><code>' + a.provider + '/' + esc(a.account_name) + '</code></td>'
+            + '<td class="status-' + status + '">' + status + '</td>'
+            + '<td>' + quota + '</td>'
+            + '<td>' + expires + '</td>'
+            + '<td><code class="key-display">' + esc(a.key_display) + '</code></td>'
+            + '<td class="notes">' + esc(notes) + '</td>'
+            + '<td class="row-actions">' + actions.join(' ') + '</td>'
+            + '</tr>';
     }
     html += '</tbody></table>';
     container.innerHTML = html;
 }
+
+
 
 async function toggleAccount(accountId, newStatus, btn) {
     if (!confirm(`确定将账号 #${accountId} 切换为 ${newStatus}?`)) return;
@@ -1000,4 +1208,504 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
 });
 
 // 页面加载时拉 active channels 填表单
-document.addEventListener('DOMContentLoaded', loadActiveChannels);
+
+
+// 阶段P0-UI (2026-08-16): dashboard redesign JS
+// - loadOverviewKPIs: 顶部 4 KPI 卡片 + status bar
+// - toggleCard: 折叠卡片
+// - filterChannels/filterRegistry: 搜索过滤
+// - loadDataFreshnessDonut: 替换旧表格为 donut + 失败列表
+// - keydown listener: r / a / / / ? 快捷键
+
+async function loadOverviewKPIs() {
+    try {
+        const [cacheResp, usageResp] = await Promise.all([
+            authFetch("/dashboard/api/cache/stats?days=7"),
+            authFetch("/dashboard/api/usage/summary?days=7"),
+        ]);
+        const cache = cacheResp.ok ? await cacheResp.json() : {by_channel: [], hit_rate_pct: 0, saved_cost_cny: 0};
+        const usage = usageResp.ok ? await usageResp.json() : [];
+        const totalInput = (usage || []).reduce((s, r) => s + (r.total_input_tokens || 0), 0);
+        const totalReq = (usage || []).reduce((s, r) => s + (r.request_count || 0), 0);
+        const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        set("kpi-tokens", (totalInput || 0).toLocaleString());
+        set("kpi-requests", (totalReq || 0).toLocaleString());
+        set("kpi-cache-rate", (cache.hit_rate_pct || 0).toFixed(1));
+        set("kpi-saved", "¥" + (cache.saved_cost_cny || 0).toFixed(4));
+        const sr = document.getElementById("status-route");
+        if (sr) {
+            const ch = (cache.by_channel && cache.by_channel[0]) ? cache.by_channel[0].channel_name : "—";
+            sr.textContent = "cache: " + ch + " · ¥" + (cache.saved_cost_cny || 0).toFixed(4) + " saved · " + (cache.hit_rate_pct || 0) + "% hit";
+        }
+    } catch (e) { console.warn("Overview KPIs failed:", e); }
+}
+
+function toggleCard(t) {
+    const c = t.closest(".card");
+    if (c) c.classList.toggle("card-collapsed");
+}
+
+function filterChannels() {
+    const input = document.getElementById("search-channels");
+    const q = input ? input.value : "";
+    document.querySelectorAll("#channels-list tr").forEach(tr => {
+        tr.style.display = (!q || tr.textContent.toLowerCase().includes(q.toLowerCase())) ? "" : "none";
+    });
+}
+
+function filterRegistry() {
+    const input = document.getElementById("search-registry");
+    const q = input ? input.value : "";
+    document.querySelectorAll("#registry-models-list tr").forEach(tr => {
+        tr.style.display = (!q || tr.textContent.toLowerCase().includes(q.toLowerCase())) ? "" : "none";
+    });
+}
+
+async function loadDataFreshnessDonut() {
+    try {
+        const resp = await authFetch("/dashboard/api/data-freshness");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const jobs = data.jobs || [];
+        const total = jobs.length;
+        const healthy = jobs.filter(j => j.health === "healthy").length;
+        const warning = jobs.filter(j => j.health === "warning").length;
+        const stale = jobs.filter(j => j.health === "stale").length;
+
+        const donut = document.getElementById("freshness-donut");
+        if (donut && total > 0) {
+            const hDeg = (healthy / total) * 360;
+            const wDeg = (warning / total) * 360;
+            donut.style.setProperty("--healthy-deg", hDeg + "deg");
+            donut.style.setProperty("--warning-deg", wDeg + "deg");
+        }
+        const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        set("freshness-pct", total ? Math.round(healthy / total * 100) + "%" : "--%");
+        set("freshness-total", total ? (healthy + " / " + total + " 健康") : "0 / 0 健康");
+
+        const failedList = document.getElementById("freshness-failed");
+        if (failedList) {
+            const failed = jobs.filter(j => j.health !== "healthy");
+            if (failed.length === 0) {
+                failedList.innerHTML = '<div class="text-success" style="padding:8px 0;font-size:12px;">✓ 所有 job 健康</div>';
+            } else {
+                let html = '<div class="flex-col gap-sm">';
+                for (let i = 0; i < Math.min(failed.length, 5); i++) {
+                    const j = failed[i];
+                    const color = {warning: "var(--color-warning)", stale: "var(--color-danger)", unknown: "var(--text-muted)"}[j.health];
+                    html += '<div class="flex gap-sm" style="font-size:12px;">';
+                    html += '<span class="status-dot-small" style="background:' + color + ';"></span>';
+                    html += '<code class="text-mono">' + esc(j.job_id.slice(0, 40)) + '</code>';
+                    html += '<span class="text-muted">' + esc(j.last_success_ago || "从未") + '</span>';
+                    if (j.last_error_msg) {
+                        html += '<span class="text-danger" title="' + esc(j.last_error_msg) + '">!</span>';
+                    }
+                    html += '</div>';
+                }
+                html += '</div>';
+                failedList.innerHTML = html;
+            }
+        }
+
+        // 向后兼容 (旧的 df-* ID 也保持填充)
+        set("df-total", total);
+        set("df-healthy", healthy);
+        set("df-warning", warning);
+        set("df-stale", stale);
+    } catch (e) { console.warn("freshness donut failed:", e); }
+}
+
+document.addEventListener("keydown", (e) => {
+    const tag = e.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (e.ctrlKey || e.metaKey) return;
+    if (e.key === "r") { e.preventDefault(); location.reload(); }
+    else if (e.key === "a") { e.preventDefault(); if (typeof applyAllSuggestions === "function") applyAllSuggestions(); }
+    else if (e.key === "/") { e.preventDefault(); const s = document.getElementById("search-channels"); if (s) s.focus(); }
+    else if (e.key === "?") { e.preventDefault(); const el = document.getElementById("shortcut-hint"); if (el) el.style.opacity = (el.style.opacity === "1" ? "0.3" : "1"); }
+});
+
+document.addEventListener("DOMContentLoaded", loadOverviewKPIs);
+document.addEventListener("DOMContentLoaded", loadDataFreshnessDonut);
+
+// === 阶段P0-UI v2 (2026-08-16): 修复旧函数死引用 + 接管 htmx 自动渲染 ===
+
+// (a) 删除旧的 DOMContentLoaded hooks - 它们指向不存在 IDs 的元素
+//   - loadDataFreshness (line 507) -> df-total/df-healthy 不存在
+//   - loadSuggestions (line 636) -> sg-pending/sg-approved/sg-applied 不存在
+//   - loadCacheStats (line 542) -> cache-saved/cache-tokens/cache-hit-pct 不存在; cache-by-channel / cache-by-model 也不存在
+//   - loadUsageChart (line 587) -> usage-chart canvas 不存在
+// 替代: 我们直接 fetch + 渲染到新 IDs (kpi-* / cache-by-channel / usage-list / suggestions-list / group-routing-list / channels-list)
+
+// (b) 新 loadUsageChart 替代 (渲染 usage-list 表格)
+async function loadUsageChart() {
+    try {
+        const resp = await authFetch("/dashboard/api/usage/summary?days=7");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const list = document.getElementById("usage-list");
+        if (!list) return;
+        if (!data || data.length === 0) {
+            list.innerHTML = '<div class="empty">暂无用量数据</div>';
+            return;
+        }
+        let html = '<table><thead><tr><th>日期</th><th>请求数</th><th class="mono">Input</th><th class="mono">Output</th><th class="mono">平均延迟</th></tr></thead><tbody>';
+        for (const r of data) {
+            html += `<tr><td>${esc(r.date || '—')}</td><td>${r.request_count || 0}</td><td class="mono">${(r.total_input_tokens || 0).toLocaleString()}</td><td class="mono">${(r.total_output_tokens || 0).toLocaleString()}</td><td class="mono">${r.avg_latency_ms ? r.avg_latency_ms.toFixed(0) + ' ms' : '—'}</td></tr>`;
+        }
+        html += '</tbody></table>';
+        list.innerHTML = html;
+    } catch (e) { console.warn("usage chart failed:", e); }
+}
+
+// (c) 新 loadCacheStatsList 渲染 cache-by-channel 表格 (替代 htmx 自动渲染)
+async function loadCacheStatsList() {
+    try {
+        const resp = await authFetch("/dashboard/api/cache/stats?days=7");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const container = document.getElementById("cache-by-channel");
+        if (!container) return;
+        let html = '';
+        // 按渠道
+        if (data.by_channel && data.by_channel.length > 0) {
+            html += '<h3 style="font-size:11px;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px;">按渠道</h3>';
+            html += '<table><thead><tr><th>渠道</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono">命中率</th><th class="mono">节省</th></tr></thead><tbody>';
+            for (const c of data.by_channel) {
+                html += '<tr>';
+                html += `<td>${esc(c.channel_name || '—')}</td>`;
+                html += `<td class="mono">${(c.input_tokens || 0).toLocaleString()}</td>`;
+                html += `<td class="mono">${(c.cached_tokens || 0).toLocaleString()}</td>`;
+                html += `<td class="mono">${(c.hit_rate_pct || 0).toFixed(1)}%</td>`;
+                html += `<td class="mono">¥${(c.saved_cost_cny || 0).toFixed(4)}</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+        }
+        // TOP 10 model
+        if (data.by_model && data.by_model.length > 0) {
+            html += '<h3 style="font-size:11px;color:var(--text-muted);text-transform:uppercase;margin:16px 0 8px;">TOP 10 Model</h3>';
+            html += '<div class="scroll-y-260"><table><thead><tr><th>Model</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono">命中率</th><th class="mono">节省</th></tr></thead><tbody>';
+            for (const m of data.by_model.slice(0, 10)) {
+                html += '<tr>';
+                html += `<td><code class="text-mono">${esc(m.model || '—')}</code></td>`;
+                html += `<td class="mono">${(m.input_tokens || 0).toLocaleString()}</td>`;
+                html += `<td class="mono">${(m.cached_tokens || 0).toLocaleString()}</td>`;
+                html += `<td class="mono">${(m.hit_rate_pct || 0).toFixed(1)}%</td>`;
+                html += `<td class="mono">¥${(m.saved_cost_cny || 0).toFixed(4)}</td>`;
+                html += '</tr>';
+            }
+            html += '</tbody></table>';
+        }
+        if (!html) html = '<div class="empty">暂无 Cache 数据</div>';
+        container.innerHTML = html;
+    } catch (e) { console.warn("cache stats list failed:", e); }
+}
+
+// (d) 新 loadSuggestionsList 渲染 suggestions-list (替代 htmx + 死 ID)
+async function loadSuggestionsList() {
+    try {
+        const resp = await authFetch("/dashboard/api/suggestions?status=pending");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const list = document.getElementById("suggestions-list");
+        const countEl = document.getElementById("sg-count");
+        const model = data.model || [];
+        const group = data.group || [];
+        const total = model.length + group.length;
+        if (countEl) countEl.textContent = total;
+        if (!list) return;
+        if (total === 0) {
+            list.innerHTML = '<div class="text-success" style="padding:8px 0;font-size:12px;">✓ 没有待审建议</div>';
+            return;
+        }
+        let html = '';
+        for (const s of model) {
+            html += '<div style="padding:8px 0;border-bottom:1px solid var(--border-muted);">';
+            html += '<div class="flex gap-sm"><span class="text-mono" style="font-size:12px;">' + esc(s.model_id || '—') + '</span>';
+            html += '<span class="text-muted" style="font-size:11px;">' + esc(s.change_type || '—') + '</span></div>';
+            if (s.suggested_value) html += '<div class="text-mono" style="font-size:11px;color:var(--color-warning);">' + esc(s.suggested_value) + '</div>';
+            html += '<div class="confidence-bar mt-sm"><div class="confidence-fill ' + (s.confidence >= 0.7 ? 'confidence-fill-high' : (s.confidence >= 0.4 ? 'confidence-fill-mid' : 'confidence-fill-low')) + '" style="width:' + (s.confidence * 100) + '%;"></div></div>';
+            html += '<div class="flex gap-sm mt-sm">';
+            html += '<button class="btn btn-success btn-sm" onclick="approveSuggestion(\'model\', ' + s.id + ')">批准</button>';
+            html += '<button class="btn btn-danger btn-sm" onclick="rejectSuggestion(\'model\', ' + s.id + ')">拒绝</button>';
+            html += '</div>';
+            html += '</div>';
+        }
+        for (const s of group) {
+            html += '<div style="padding:8px 0;border-bottom:1px solid var(--border-muted);">';
+            html += '<div class="flex gap-sm"><span class="text-mono" style="font-size:12px;">' + esc(s.group_id || '—') + '</span>';
+            html += '<span class="text-muted" style="font-size:11px;">' + esc(s.change_type || '—') + '</span></div>';
+            html += '<div class="confidence-bar mt-sm"><div class="confidence-fill ' + (s.confidence >= 0.7 ? 'confidence-fill-high' : (s.confidence >= 0.4 ? 'confidence-fill-mid' : 'confidence-fill-low')) + '" style="width:' + (s.confidence * 100) + '%;"></div></div>';
+            html += '<div class="flex gap-sm mt-sm">';
+            html += '<button class="btn btn-success btn-sm" onclick="approveSuggestion(\'group\', ' + s.id + ')">批准</button>';
+            html += '<button class="btn btn-danger btn-sm" onclick="rejectSuggestion(\'group\', ' + s.id + ')">拒绝</button>';
+            html += '</div>';
+            html += '</div>';
+        }
+        list.innerHTML = html;
+    } catch (e) { console.warn("suggestions list failed:", e); }
+}
+
+// (e) htmx 接管: 当 htmx 拿回 JSON 时, 让它直接渲染 (避免我们重复实现 renderer)
+// 简单方案: 给 htmx 默认 resp.target 注入 JSON→HTML 转换
+// 由于 htmx 不会自动转 JSON, 我们的 loadCacheStatsList / loadUsageChart 主动接管这些 IDs
+
+// 启动钩子
+document.addEventListener("DOMContentLoaded", loadUsageChart);
+document.addEventListener("DOMContentLoaded", loadCacheStatsList);
+document.addEventListener("DOMContentLoaded", loadSuggestionsList);
+document.addEventListener("DOMContentLoaded", loadPerUserUsage);
+document.addEventListener("DOMContentLoaded", loadUserKeys);
+
+// 60s 定时刷新 + 接管 htmx
+setInterval(() => {
+    loadUsageChart();
+    loadCacheStatsList();
+    loadSuggestionsList();
+    loadPerUserUsage();
+    loadUserKeys();
+}, 60000);
+
+
+// === 阶段P0-UI v3 (2026-08-16): 限额预警 + 修复之前漏的 ===
+// === 阶段P0-UI v4 (2026-08-16): 限额预警 紧凑渲染 ===
+
+async function loadQuotaWarning() {
+    try {
+        const list = document.getElementById("quota-warning-list");
+        if (!list) return;
+        const resp = await authFetch("/dashboard/api/accounts");
+        if (!resp.ok) {
+            list.innerHTML = '<div class="empty">⚠️ 后端 API 暂未提供</div>';
+            return;
+        }
+        const data = await resp.json();
+        const accounts = data.accounts || [];
+        if (accounts.length === 0) {
+            list.innerHTML = '<div class="empty">无账号</div>';
+            return;
+        }
+        // 4 个 KPI: 总数 / active / expired / cooldown (从 quota_usage 推断)
+        let active = 0, expired = 0, total = accounts.length;
+        for (const a of accounts) {
+            const s = a.status || 'active';
+            if (s === 'active') active++;
+            else if (s === 'expired') expired++;
+        }
+        const inactive = total - active - expired;
+
+        let html = '<div class="kpi-grid" style="grid-template-columns: repeat(2, 1fr); margin-bottom: var(--space-sm);">';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;">' + total + '</div><div class="kpi-label">总账号</div></div>';
+        html += '<div class="kpi"><div class="kpi-value kpi-value-success" style="font-size:16px;">' + active + '</div><div class="kpi-label">Active</div></div>';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;color:var(--color-danger);">' + expired + '</div><div class="kpi-label">Expired</div></div>';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;color:var(--text-muted);">' + inactive + '</div><div class="kpi-label">Inactive</div></div>';
+        html += '</div>';
+
+        // 列表: 只显示 expired/inactive 的 (active 不需要预警)
+        const warned = accounts.filter(a => {
+            const s = a.status || 'active';
+            return s !== 'active';
+        });
+        if (warned.length > 0) {
+            html += '<div class="text-muted" style="font-size:11px;margin-top:var(--space-sm);">⚠️ ' + warned.length + ' 个账号需要关注:</div>';
+            html += '<div class="flex-col gap-sm" style="margin-top:var(--space-sm);">';
+            for (const a of warned.slice(0, 5)) {
+                const status = a.status || 'active';
+                const color = status === 'expired' ? 'var(--color-danger)' : 'var(--text-muted)';
+                html += '<div class="flex gap-sm" style="font-size:12px;">';
+                html += '<span class="status-dot-small" style="background:' + color + ';"></span>';
+                html += '<code class="text-mono" style="font-size:11px;">' + esc(a.account_name || '—') + '</code>';
+                html += '<span class="text-muted" style="font-size:11px;">' + esc(status) + '</span>';
+                html += '</div>';
+            }
+            html += '</div>';
+        } else {
+            html += '<div class="text-success" style="font-size:12px;margin-top:var(--space-sm);">✓ 所有账号 active</div>';
+        }
+        list.innerHTML = html;
+    } catch (e) {
+        console.warn("quota warning failed:", e);
+        const list = document.getElementById("quota-warning-list");
+        if (list) list.innerHTML = '<div class="empty">⚠️ 加载失败</div>';
+    }
+}
+
+document.addEventListener("DOMContentLoaded", loadQuotaWarning);
+setInterval(loadQuotaWarning, 60000);
+// === P0-UI v5: 周报 markdown 渲染 ===
+// 周报 raw markdown → 用 marked.js 渲染成 HTML
+// htmx 自动加载 + 我们需要拦截 raw markdown 转成 HTML
+
+document.body.addEventListener('htmx:afterSwap', function(event) {
+    if (event.detail.target.id === 'weekly-report-content') {
+        try {
+            const md = event.detail.target.textContent;
+            // 检查是否含 markdown 标记
+            if (md && (md.includes('# ') || md.includes('## ') || md.includes('### ') || md.includes('**'))) {
+                // marked.js 全局函数
+                if (typeof marked !== 'undefined') {
+                    event.detail.target.innerHTML = marked.parse(md);
+                }
+            }
+        } catch (e) {
+            console.warn('weekly report render:', e);
+        }
+    }
+});// === P0-UI v6: 账号管理 - data-action click 委托 (避免 onclick 嵌套引号) ===
+
+
+// ============================================================
+// V4.8 (2026-08-19): 按人用量 + Key 管理
+// ============================================================
+
+function fmtNum(n) {
+    if (n === null || n === undefined) return '-';
+    return Number(n).toLocaleString();
+}
+
+function fmtCost(n) {
+    if (!n || n === 0) return '-';
+    return '¥' + Number(n).toFixed(4);
+}
+
+async function loadPerUserUsage() {
+    const container = document.getElementById('per-user-list');
+    const meta = document.getElementById('per-user-meta');
+    if (!container) return;
+    try {
+        const resp = await authFetch('/dashboard/api/stats/per-user?days=7');
+        if (!resp.ok) {
+            container.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
+            return;
+        }
+        const data = await resp.json();
+        const items = data.items || [];
+        if (meta) meta.textContent = items.length + ' 个调用方';
+        if (items.length === 0) {
+            container.innerHTML = '<p class="empty">近 ' + data.days + ' 天无用量数据</p>';
+            return;
+        }
+        let html = '<div class="scroll-y-300"><table><thead><tr>'
+            + '<th>用户</th><th>请求数</th><th>Input</th><th>Output</th><th>总Token</th><th>估算费用</th>'
+            + '</tr></thead><tbody>';
+        for (const item of items) {
+            const name = item.display_name
+                ? esc(item.username) + ' (' + esc(item.display_name) + ')'
+                : esc(item.username);
+            html += '<tr>'
+                + '<td>' + name + '</td>'
+                + '<td>' + fmtNum(item.request_count) + '</td>'
+                + '<td>' + fmtNum(item.input_tokens) + '</td>'
+                + '<td>' + fmtNum(item.output_tokens) + '</td>'
+                + '<td><strong>' + fmtNum(item.total_tokens) + '</strong></td>'
+                + '<td>' + fmtCost(item.total_cost) + '</td>'
+                + '</tr>';
+        }
+        html += '</tbody></table></div>';
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+async function loadUserKeys() {
+    const container = document.getElementById('user-keys-list');
+    const meta = document.getElementById('keys-meta');
+    if (!container) return;
+    try {
+        const resp = await authFetch('/dashboard/api/keys');
+        if (!resp.ok) {
+            container.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
+            return;
+        }
+        const data = await resp.json();
+        const users = data.users || [];
+        if (meta) meta.textContent = users.length + ' 个用户';
+        if (users.length === 0) {
+            container.innerHTML = '<p class="empty">无用户 — 用 <code>scripts/add_user_key.py</code> 创建</p>';
+            return;
+        }
+        let html = '';
+        for (const u of users) {
+            const daily = u.daily_token_limit !== null ? fmtNum(u.daily_token_limit) : '不限';
+            const monthly = u.monthly_token_limit !== null ? fmtNum(u.monthly_token_limit) : '不限';
+            html += '<div class="user-key-block mt-sm">'
+                + '<div class="user-key-header">'
+                + '<strong>' + esc(u.username) + '</strong>'
+                + (u.display_name ? ' (' + esc(u.display_name) + ')' : '')
+                + ' <span class="chip status-' + u.status + '">' + u.status + '</span>'
+                + ' <span class="chip">' + u.role + '</span>'
+                + ' <span class="meta">日限:' + daily + ' 月限:' + monthly + '</span>'
+                + '</div>';
+            if (u.keys.length === 0) {
+                html += '<p class="empty text-muted" style="font-size:12px;padding:4px 0;">无 Key</p>';
+            } else {
+                html += '<table><thead><tr>'
+                    + '<th>前缀</th><th>Admin</th><th>状态</th><th>标签</th><th>最后使用</th><th>创建</th><th>操作</th>'
+                    + '</tr></thead><tbody>';
+                for (const k of u.keys) {
+                    const lastUsed = k.last_used_at ? k.last_used_at.slice(0, 16).replace('T', ' ') : '-';
+                    const created = k.created_at ? k.created_at.slice(0, 10) : '-';
+                    const admin = k.is_admin ? '是' : '否';
+                    let actions;
+                    if (k.status === 'active') {
+                        actions = '<button class="btn-sm btn-danger" data-action="revoke" data-id="' + k.id + '">吊销</button>';
+                    } else {
+                        actions = '<span class="text-muted">已吊销</span>';
+                    }
+                    html += '<tr>'
+                        + '<td><code>' + esc(k.key_prefix) + '…</code></td>'
+                        + '<td>' + admin + '</td>'
+                        + '<td class="status-' + k.status + '">' + k.status + '</td>'
+                        + '<td>' + esc(k.label || '-') + '</td>'
+                        + '<td class="text-muted">' + lastUsed + '</td>'
+                        + '<td class="text-muted">' + created + '</td>'
+                        + '<td>' + actions + '</td>'
+                        + '</tr>';
+                }
+                html += '</tbody></table>';
+            }
+            html += '</div>';
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+async function revokeKey(keyId, btn) {
+    if (!confirm('确定吊销 Key #' + keyId + '?\n吊销后该 Key 立即失效, 不可恢复 (需重新生成)。')) return;
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await authFetch('/dashboard/api/keys/' + keyId + '/revoke', { method: 'POST' });
+        if (resp.ok) {
+            await loadUserKeys();
+        } else {
+            const data = await resp.json().catch(() => ({}));
+            alert('吊销失败: ' + (data.detail || resp.status));
+            if (btn) btn.disabled = false;
+        }
+    } catch (e) {
+        alert('吊销失败: ' + e.message);
+        if (btn) btn.disabled = false;
+    }
+}
+
+// === P0-UI v6: 账号管理 - data-action click 委托 (避免 onclick 嵌套引号) ===
+
+document.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = parseInt(btn.dataset.id, 10);
+    if (action === 'enable') {
+        toggleAccount(id, 'active', btn);
+    } else if (action === 'disable') {
+        toggleAccount(id, 'disabled', btn);
+    } else if (action === 'rotate') {
+        rotateAccountKey(id, btn);
+    } else if (action === 'revoke') {
+        revokeKey(id, btn);
+    }
+});

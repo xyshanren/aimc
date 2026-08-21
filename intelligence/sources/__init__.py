@@ -9,6 +9,8 @@ from intelligence.sources.deepseek import (
 )
 from intelligence.sources.qwen import (
     QwenSource, QwenActivitySource, QwenModelListSource,
+    # Phase 4 v4.3.1 (2026-08-13): Qwen 公告页
+    QwenAnnouncementSource,
 )
 from intelligence.sources.glm import (
     GLMSource, GLMActivitySource, GLMModelListSource,
@@ -28,6 +30,15 @@ from intelligence.sources.model_lists_extra import (
 from intelligence.sources.price_aggregator import (
     SiliconFlowPricingSource,
     OpenRouterPricingSource,
+    # Phase 4 v4.3 (2026-08-13): 5 家厂商定价页
+    DeepSeekPricingSource,
+    KimiPricingSource,
+    MiniMaxPricingSource,
+    GLMPricingSource,
+    SiliconFlowPricingCenterSource,
+    # Phase 4 v4.3 (2026-08-13) 后续补充: 2 个 token-plan / step-plan 源
+    SenseNovaPricingSource,
+    StepFunPricingSource,
 )
 # Phase 4 v4.2 (2026-08-06): 阿里千问AI 观察性情报源
 from intelligence.sources.qianwenai import QianwenAISource
@@ -35,6 +46,13 @@ from intelligence.sources.benchmark import (
     LMSYSArenaBenchmarkSource,
     SuperCLUEBenchmarkSource,
 )
+# Phase 4 v4.3.1 (2026-08-13): 7 家 announcement source (优惠情报采集)
+from intelligence.sources.kimi import KimiAnnouncementSource
+from intelligence.sources.minimax import MiniMaxAnnouncementSource
+from intelligence.sources.hunyuan import HunyuanAnnouncementSource
+from intelligence.sources.moonshot import MoonshotAnnouncementSource
+from intelligence.sources.sensenova_announcement import SenseNovaAnnouncementSource
+from intelligence.sources.stepfun_announcement import StepFunAnnouncementSource
 
 
 def get_all_sources() -> list[IntelSourceBase]:
@@ -71,11 +89,28 @@ def get_all_sources() -> list[IntelSourceBase]:
         # Phase 3.1 price_aggregator
         SiliconFlowPricingSource(),
         OpenRouterPricingSource(),
+        # Phase 4 v4.3 price_aggregator (5 家厂商官方定价页)
+        DeepSeekPricingSource(),
+        KimiPricingSource(),
+        MiniMaxPricingSource(),
+        GLMPricingSource(),
+        SiliconFlowPricingCenterSource(),
+        # Phase 4 v4.3 后续补充 (2 个 token-plan / step-plan 源)
+        SenseNovaPricingSource(),
+        StepFunPricingSource(),
         # Phase 4 v4.2 price_aggregator (观察)
         QianwenAISource(),
         # Phase 3.1 benchmark
         LMSYSArenaBenchmarkSource(),
         SuperCLUEBenchmarkSource(),
+        # Phase 4 v4.3.1 announcement source (7 家,补齐 9 厂商优惠情报采集)
+        KimiAnnouncementSource(),
+        MiniMaxAnnouncementSource(),
+        QwenAnnouncementSource(),
+        HunyuanAnnouncementSource(),
+        MoonshotAnnouncementSource(),
+        SenseNovaAnnouncementSource(),
+        StepFunAnnouncementSource(),
     ]
 
 

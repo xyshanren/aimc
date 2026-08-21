@@ -691,8 +691,14 @@ def test_invalidate_price_tracing_after_price_change():
 def test_e2e_price_change_updates_cache_via_invalidate():
     print("\n=== Test 16: e2e 集成 - 价格变动后 cache 拿到新价 (I8+I6 联动) ===")
     # _install_mock_db: 装 crud mock + 替换 gateway.router 为 _MockRouteEngine
-    # 然后单独 test 内部构造一个 RouteEngine 实例, 在 in-process 验证全链路
+    # 但这里需要真实的 RouteEngine 类做 e2e, 所以先 pop 掉 mock 让 import 重新加载真路由.
+    import sys
+    sys.modules.pop("gateway.router", None)
+    sys.modules.pop("gateway", None)
     _install_mock_db()
+    # _install_mock_db 会重新装 _MockRouteEngine, 这里再次 pop 让真路由加载
+    sys.modules.pop("gateway.router", None)
+    sys.modules.pop("gateway", None)
     from intelligence.pricing_sync import sync_price_change, apply_price_change_to_route_cache
     from gateway.router import RouteEngine
 
@@ -713,13 +719,6 @@ def test_e2e_price_change_updates_cache_via_invalidate():
     }
     engine._channels_cache = [old_price_entry]
 
-    # 走 mock 路由 (因为 _install_mock_db() 把 route_engine 替换为 _MockRouteEngine)
-    # 那个 mock 不改 cache, 需要把它超集为一个能改 cache 的版本.
-    # 做法: 直接调 _MockRouteEngine.refresh_cache 重载 route_engine (它本身无 invalidate_price)
-    # 然后…不易重构. 换一种: 直接 mock route_engine.invalidate_price 改为更新 cache
-    import sys
-    sys.modules.pop("gateway.router", None)
-    sys.modules.pop("gateway", None)
     from gateway.router import route_engine as real_route_engine
 
     # 接管 real_route_engine.invalidate_price 为手动更新 cache

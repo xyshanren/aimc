@@ -45,31 +45,34 @@ def test_sourcetype_constants():
 
 
 # ============================================================
-# Test 2: 源注册总数 (6 旧 + 6 新 = 12)
+# Test 2: 源注册总数 (34 个: 历次 phase 累加)
 # ============================================================
 def test_source_registration():
-    """get_all_sources 应返回 12 个源 (Phase 2A 6 + Phase 3.1 6)"""
+    """get_all_sources 应返回 34 个源 (历次 phase 累加)
+    演进: P2 6 + P3.1 6 + P3.6 7 + v4.2 1 + v4.3 9 + v4.3.1 7 = 36
+    实际去重后 34 (siliconflow pricing 重复合并; 部分源共享 provider)
+    """
     print("\n=== Test 2: 源注册总数 ===")
     from intelligence.sources import get_all_sources
 
     all_sources = get_all_sources()
-    assert len(all_sources) == 12, f"应 12 个源, 实际 {len(all_sources)}"
+    assert len(all_sources) == 34, f"应 34 个源, 实际 {len(all_sources)}"
 
-    # 按 type 分组
+    # 按 type 分组 (2026-08 v4.3.1 后快照)
     type_counts = {}
     for s in all_sources:
         type_counts[s.source_type] = type_counts.get(s.source_type, 0) + 1
     expected_counts = {
-        "web_page": 4,        # deepseek/qwen/glm + qwen activity
-        "announcement": 2,     # deepseek/glm
-        "model_list": 2,       # siliconflow/volcengine
-        "price_aggregator": 2, # siliconflow/openrouter
-        "benchmark": 2,        # lmsys/superclue
+        "web_page": 4,                  # deepseek/qwen/qwen/glm (价格页)
+        "announcement": 9,              # deepseek/glm + v4.3.1 新增 7 家
+        "model_list": 9,                # P3.1 2 + P3.6 7
+        "price_aggregator": 10,        # siliconflow×2 + openrouter + v4.3 7 + qianwenai
+        "benchmark": 2,                 # lmsys/superclue
     }
     assert type_counts == expected_counts, \
         f"type 分布应 = {expected_counts}, 实际 = {type_counts}"
 
-    print(f"  [OK] 总 12 个源: {dict(sorted(type_counts.items()))}")
+    print(f"  [OK] 总 34 个源: {dict(sorted(type_counts.items()))}")
 
 
 # ============================================================
@@ -80,11 +83,12 @@ def test_get_sources_by_type():
     print("\n=== Test 3: get_sources_by_type ===")
     from intelligence.sources import get_sources_by_type
 
-    # model_list 应有 2 个 (siliconflow + volcengine)
+    # model_list 应含至少 siliconflow + volcengine (P3.1 基线), 实际 9 家
     sources = get_sources_by_type("model_list")
     providers = {s.provider for s in sources}
-    assert providers == {"siliconflow", "volcengine"}, \
-        f"model_list 应含 siliconflow+volcengine, 实际 {providers}"
+    assert {"siliconflow", "volcengine"}.issubset(providers), \
+        f"model_list 至少含 siliconflow+volcengine, 实际 {providers}"
+    assert len(providers) == 9, f"model_list 应 9 家, 实际 {len(providers)}: {providers}"
 
     # benchmark 应有 2 个
     sources = get_sources_by_type("benchmark")
@@ -96,7 +100,7 @@ def test_get_sources_by_type():
     sources = get_sources_by_type("nonexistent")
     assert sources == [], f"不存在的 type 应返 [], 实际 {sources}"
 
-    print(f"  [OK] model_list: siliconflow + volcengine")
+    print(f"  [OK] model_list: 9 家 (含 siliconflow + volcengine)")
     print(f"  [OK] benchmark: lmsys + superclue")
     print(f"  [OK] nonexistent: [] (空)")
 
@@ -105,13 +109,26 @@ def test_get_sources_by_type():
 # Test 4: 各源 poll_interval 符合推荐
 # ============================================================
 def test_poll_intervals():
-    """所有 source.poll_interval 应等于或长于 DEFAULT_POLL_INTERVALS[type]"""
+    """所有 source.poll_interval 应等于或长于 DEFAULT_POLL_INTERVALS[type]
+    例外: v4.3 新增 5 家官方定价页 (kimi/minimax/glm/sensenova/stepfun)
+    track 快变的优惠价格, 有意用 1h 频率 (低于 6h 推荐), 允许
+    """
     print("\n=== Test 4: poll_interval 校验 ===")
     from intelligence.sources import get_all_sources
     from intelligence.sources.base import DEFAULT_POLL_INTERVALS
 
+    # v4.3 官方定价页白名单: 这些 provider 的 price_aggregator 源有理由用更高频
+    promo_pricing_whitelist = {"kimi", "minimax", "glm", "sensenova", "stepfun"}
+
     for s in get_all_sources():
         recommended = DEFAULT_POLL_INTERVALS.get(s.source_type, 900)
+        if (s.source_type == "price_aggregator"
+                and s.provider in promo_pricing_whitelist):
+            # 允许降到 1h (优惠更新频繁), 但不能更短
+            assert s.poll_interval >= 3600, (
+                f"{s.provider}/{s.source_type}: 白名单最低 1h, 实际 {s.poll_interval}"
+            )
+            continue
         assert s.poll_interval >= recommended, \
             f"{s.provider}/{s.source_type}: poll_interval={s.poll_interval} < 推荐 {recommended}"
         # 特定类型必检
@@ -122,7 +139,7 @@ def test_poll_intervals():
             assert s.poll_interval >= 604800, \
                 f"benchmark 至少 1 周, 实际 {s.poll_interval}"
 
-    print(f"  [OK] 所有 source.poll_interval 符合推荐频率")
+    print(f"  [OK] 所有 source.poll_interval 符合推荐频率 (含 5 家白名单 1h 优惠源)")
 
 
 # ============================================================

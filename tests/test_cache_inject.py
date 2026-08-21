@@ -1,16 +1,16 @@
 """P2-16: 测试 _inject_prompt_cache (P1-8)
 
-覆盖:
+P3 (2026-08-21) 路径 A 优化后覆盖:
 - 坏 JSON 原样返回
 - 无 messages 原样返回
-- Anthropic 风格 (api_style="anthropic"): 加 cache_control 到 system + 第一个 user
-- OpenAI 风格 (默认): 加 prompt_cache_key (system content hash[:16])
-- 不覆盖已存在的 cache_control (idempotent)
-- OpenAI 风格下, 提取 system content (string 或 list-of-parts)
+- Anthropic 风格 (api_style="anthropic"): system 消息 + 第一条 user 加 cache_control (校验 role)
+- OpenAI 风格 (默认): prompt_cache_key = 分段 hash(system 全量 + 首条非 system)
+- 不覆盖已存在的 cache_control / prompt_cache_key (idempotent)
+- 多轮对话前缀稳定 → 同 key; 长内容截断等价
 """
 import json
 
-from gateway.proxy import _inject_prompt_cache
+from gateway.proxy import _inject_prompt_cache, _stable_prefix_cache_key
 
 
 def _make_body(messages, model="gpt-4", **extra):
@@ -47,8 +47,8 @@ def test_anthropic_style_adds_cache_control_to_system():
     assert result["messages"][1]["cache_control"] == {"type": "ephemeral"}
 
 
-def test_anthropic_style_skips_after_two_messages():
-    """Anthropic 风格: 只前 2 个 msg 加 cache_control, 后续不加"""
+def test_anthropic_style_only_system_and_first_user():
+    """Anthropic 风格: 只标 system + 第一条 user, 后续 assistant/user 不标"""
     body = _make_body([
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "hi"},
@@ -57,12 +57,29 @@ def test_anthropic_style_skips_after_two_messages():
     ])
     channel = {"api_style": "anthropic"}
     result = _parse(_inject_prompt_cache(body, channel))
-    # 前 2 个有 cache_control
     assert "cache_control" in result["messages"][0]
     assert "cache_control" in result["messages"][1]
-    # 后 2 个没有
     assert "cache_control" not in result["messages"][2]
     assert "cache_control" not in result["messages"][3]
+
+
+def test_anthropic_style_checks_role_not_position():
+    """P3: Anthropic 风格校验 role — [user, assistant, user] 只标第一条 user
+
+    之前盲目标 messages[:2], user 在第 1 位 + assistant 在第 2 位会被错标
+    """
+    body = _make_body([
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "user", "content": "second"},
+    ])
+    channel = {"api_style": "anthropic"}
+    result = _parse(_inject_prompt_cache(body, channel))
+    assert result["messages"][0]["cache_control"] == {"type": "ephemeral"}
+    # assistant 不标
+    assert "cache_control" not in result["messages"][1]
+    # 第二条 user 也不标 (只标第一条)
+    assert "cache_control" not in result["messages"][2]
 
 
 def test_anthropic_style_idempotent():
@@ -77,7 +94,7 @@ def test_anthropic_style_idempotent():
 
 
 def test_openai_style_adds_prompt_cache_key():
-    """OpenAI 风格: 加 prompt_cache_key (system content hash[:16])"""
+    """OpenAI 风格: 加 prompt_cache_key (分段 hash, 16 位)"""
     body = _make_body([
         {"role": "system", "content": "you are helpful"},
         {"role": "user", "content": "hi"},
@@ -86,17 +103,31 @@ def test_openai_style_adds_prompt_cache_key():
     result = _parse(_inject_prompt_cache(body, channel))
     assert "prompt_cache_key" in result
     assert len(result["prompt_cache_key"]) == 16
-    # 同样 system content 应得同样 key (deterministic)
-    body2 = _make_body([
-        {"role": "system", "content": "you are helpful"},
-        {"role": "user", "content": "different"},  # user 变了
+
+
+def test_openai_style_stable_prefix_same_key_across_turns():
+    """P3 核心: 多轮对话前缀稳定 → 同 key
+
+    agent loop 场景: system + 首条 user 跨轮不变, 后续 append — 应同 key
+    """
+    ch = {"api_style": "openai"}
+    turn1 = _make_body([
+        {"role": "system", "content": "you are an agent"},
+        {"role": "user", "content": "do task A"},
     ])
-    result2 = _parse(_inject_prompt_cache(body2, channel))
-    assert result["prompt_cache_key"] == result2["prompt_cache_key"]
+    turn2 = _make_body([
+        {"role": "system", "content": "you are an agent"},
+        {"role": "user", "content": "do task A"},
+        {"role": "assistant", "content": "step 1 done"},
+        {"role": "user", "content": "continue"},
+    ])
+    r1 = _parse(_inject_prompt_cache(turn1, ch))
+    r2 = _parse(_inject_prompt_cache(turn2, ch))
+    assert r1["prompt_cache_key"] == r2["prompt_cache_key"]
 
 
 def test_openai_style_different_system_different_key():
-    """OpenAI 风格: 不同 system content -> 不同 cache key"""
+    """OpenAI 风格: 不同 system -> 不同 cache key"""
     body1 = _make_body([{"role": "system", "content": "A"}, {"role": "user", "content": "x"}])
     body2 = _make_body([{"role": "system", "content": "B"}, {"role": "user", "content": "x"}])
     ch = {"api_style": "openai"}
@@ -105,13 +136,62 @@ def test_openai_style_different_system_different_key():
     assert r1["prompt_cache_key"] != r2["prompt_cache_key"]
 
 
-def test_openai_style_no_system_message_uses_empty_hash():
-    """无 system message -> cache key 是空字符串 hash"""
-    body = _make_body([{"role": "user", "content": "hi"}])
+def test_openai_style_no_system_uses_first_user():
+    """P3: 无 system -> fallback 用首条 user 消息 (消灭全局空串 key)"""
+    ch = {"api_style": "openai"}
+    b1 = _make_body([{"role": "user", "content": "question A"}])
+    b2 = _make_body([{"role": "user", "content": "question B"}])
+    r1 = _parse(_inject_prompt_cache(b1, ch))
+    r2 = _parse(_inject_prompt_cache(b2, ch))
+    assert len(r1["prompt_cache_key"]) == 16
+    # 不同首条 user -> 不同 key
+    assert r1["prompt_cache_key"] != r2["prompt_cache_key"]
+
+
+def test_openai_style_multiple_system_messages_all_hashed():
+    """P3: 多条 system 全部参与 hash (之前只取第一条)"""
+    ch = {"api_style": "openai"}
+    b1 = _make_body([
+        {"role": "system", "content": "rule 1"},
+        {"role": "system", "content": "rule 2"},
+        {"role": "user", "content": "x"},
+    ])
+    b2 = _make_body([
+        {"role": "system", "content": "rule 1"},
+        {"role": "user", "content": "x"},
+    ])
+    r1 = _parse(_inject_prompt_cache(b1, ch))
+    r2 = _parse(_inject_prompt_cache(b2, ch))
+    # 第二条 system 参与了 hash -> 不同 key
+    assert r1["prompt_cache_key"] != r2["prompt_cache_key"]
+
+
+def test_openai_style_preserves_caller_provided_key():
+    """P3: 调用方已传 prompt_cache_key 时不覆盖"""
+    body = _make_body(
+        [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}],
+        prompt_cache_key="caller-key-123",
+    )
     channel = {"api_style": "openai"}
     result = _parse(_inject_prompt_cache(body, channel))
-    # 空 system_content 的 hash (deterministic, 16 chars)
-    assert len(result["prompt_cache_key"]) == 16
+    assert result["prompt_cache_key"] == "caller-key-123"
+
+
+def test_openai_style_truncation_equivalence():
+    """P3: 首条 user 超过 4096 字符时截断 — 超长部分不影响 key"""
+    long_content = "x" * 5000
+    messages_truncated_prefix = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": long_content},
+    ]
+    messages_with_extra = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": long_content + "extra tail"},
+    ]
+    k1 = _stable_prefix_cache_key(messages_truncated_prefix)
+    k2 = _stable_prefix_cache_key(messages_with_extra)
+    # 4096 之后的内容被截断, key 相同
+    assert k1 == k2
 
 
 def test_openai_style_system_content_as_list():

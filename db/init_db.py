@@ -45,6 +45,9 @@ async def ensure_migrations():
     - model_group_members.is_active / removed_at / removed_reason / removed_by (P1-2, 2026-08-06) — 软删除
     - model_feedback_summary (V4.4.A) — 模型周反馈汇总表
         - accounts.notes (V4.5 fix, 2026-08-08) — add_account.py --notes 缺列补 migration
+    - usage_logs.caller_id (V4.8, 2026-08-19) — 多用户 caller 计量
+    - users / api_keys 表 (V4.8, 2026-08-19) — 多用户 + 多 key 鉴权 (create_all 自动建表)
+    - model_registry.raw_ids / supports_prompt_cache (P0-2, 2026-08-14) — 上游 raw_id 映射 + cache 支持
     """
     async with engine.begin() as conn:
         # intel_sources.last_content
@@ -115,6 +118,15 @@ async def ensure_migrations():
         else:
             logger.debug("迁移: channels.billing_mode 已存在，跳过")
 
+        # P2-B (2026-08-20): channels.drop_params — 按 channel 剥离不支持的上游参数
+        if "drop_params" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE channels ADD COLUMN drop_params TEXT"
+            ))
+            logger.info("迁移: channels 添加 drop_params 列 (P2-B)")
+        else:
+            logger.debug("迁移: channels.drop_params 已存在，跳过")
+
         # usage_logs.group_id (Phase 3.A, 2026-07-29)
         # 用于 Dashboard 命中率聚合查询, 老数据全部 NULL (精确模型路由)
         result = await conn.execute(text("PRAGMA table_info('usage_logs')"))
@@ -174,6 +186,48 @@ async def ensure_migrations():
             logger.info("迁移: accounts 添加 notes 列 (V4.5 fix)")
         else:
             logger.debug("迁移: accounts.notes 已存在，跳过")
+
+        # usage_logs.caller_id (V4.8, 2026-08-19): 多用户 caller 计量
+        # NULL = legacy 数据 / 未鉴权请求; 新请求带 caller_id = users.id
+        result = await conn.execute(text("PRAGMA table_info('usage_logs')"))
+        columns = {row[1] for row in result.fetchall()}
+        if "caller_id" not in columns:
+            await conn.execute(text("ALTER TABLE usage_logs ADD COLUMN caller_id INTEGER"))
+            logger.info("迁移: usage_logs 添加 caller_id 列 (V4.8 多用户)")
+        else:
+            logger.debug("迁移: usage_logs.caller_id 已存在，跳过")
+
+        # V4.8: usage_logs (caller_id, created_at) 索引 — per-user 限额查询用
+        # check_user_quota 查 SUM(input+output) WHERE caller_id=? AND created_at>=?
+        # 3~5 人场景该索引保证查询走索引而非全表扫描
+        result = await conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_usage_caller_time'"
+        ))
+        if not result.fetchone():
+            await conn.execute(text(
+                "CREATE INDEX idx_usage_caller_time ON usage_logs(caller_id, created_at)"
+            ))
+            logger.info("迁移: usage_logs 添加 (caller_id, created_at) 索引 (V4.8 限额查询)")
+        else:
+            logger.debug("迁移: idx_usage_caller_time 已存在，跳过")
+
+        # P0-2 (2026-08-14): model_registry.raw_ids / supports_prompt_cache
+        # raw_ids: JSON, 各渠道上游原始 model_id 映射
+        # supports_prompt_cache: 0/1, router/proxy 看这个字段才注入 cache_control
+        result = await conn.execute(text("PRAGMA table_info('model_registry')"))
+        columns = {row[1] for row in result.fetchall()}
+        if "raw_ids" not in columns:
+            await conn.execute(text("ALTER TABLE model_registry ADD COLUMN raw_ids TEXT"))
+            logger.info("迁移: model_registry 添加 raw_ids 列 (P0-2)")
+        else:
+            logger.debug("迁移: model_registry.raw_ids 已存在，跳过")
+        if "supports_prompt_cache" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE model_registry ADD COLUMN supports_prompt_cache INTEGER NOT NULL DEFAULT 0"
+            ))
+            logger.info("迁移: model_registry 添加 supports_prompt_cache 列 (P0-2)")
+        else:
+            logger.debug("迁移: model_registry.supports_prompt_cache 已存在，跳过")
 
 
 async def drop_all():

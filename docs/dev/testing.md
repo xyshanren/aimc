@@ -6,7 +6,7 @@
 ## 1. 跑测试
 
 ```bash
-# 全部 (74 个 test)
+# 全部 (473 个 test)
 python -m pytest tests/ -v
 
 # 单文件
@@ -22,19 +22,45 @@ python -m pytest tests/ --cov=gateway --cov=intelligence --cov-report=term-missi
 
 pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`），async test 自动运行。
 
-## 2. 现有测试结构（74 个）
+## 2. 现有测试结构（473 个，48 个文件）
 
-| 文件 | 测试内容 | 对应 commit |
-|------|---------|------------|
-| `test_multimodal_skip.py` | `_has_multimodal_content` 11 个 case | P0-3 |
-| `test_score_based.py` | score 5 维加权公式 16 个 | P0-7 + 阶段3 |
-| `test_quota_check.py` | `check_account_quota` 8 个（含 P1-15 balance_cny 修复）| P0-6 + P1-15 |
-| `test_cache_inject.py` | `_inject_prompt_cache` 10 个 | P1-8 |
-| `test_usage_log_parse.py` | cached_tokens 解析 13 个 + _extract_group_id 2 个 | P0-3-followup |
-| `test_sf_prices.py` | `find_sf_prices` 11 个 | 阶段B |
-| `test_group_id_fk.py` | FK + UNIQUE 约束 5 个 | P0-1 |
+| 文件 | 测试数 | 测试内容 | 对应 commit |
+|------|--------|---------|------------|
+| `test_multimodal_skip.py` | 11 | `_has_multimodal_content` case | P0-3 |
+| `test_score_based.py` | 16 | score 5 维加权公式 | P0-7 + 阶段3 |
+| `test_quota_check.py` | 8 | `check_account_quota`（含 P1-15 balance_cny 修复）| P0-6 + P1-15 |
+| `test_cache_inject.py` | 15 | `_inject_prompt_cache`（含路径 A 稳定前缀 hash）| P1-8 + P3 路径 A |
+| `test_usage_log_parse.py` | 14 | cached_tokens 解析 + group_id 归一化 | P0-3-followup |
+| `test_sf_prices.py` | 11 | `find_sf_prices` | 阶段B |
+| `test_group_id_fk.py` | 5 | FK + UNIQUE 约束 | P0-1 |
+| `test_p0_usage_fixes.py` | 15 | streaming usage 记录 + cache token 入库 | P0-1/2/3 |
+| `test_vision_routing.py` | 19 | tier:vision 400 专项修复（5 fixes）| P2-A |
+| `test_drop_params.py` | 19 | drop_params 按 channel 剥离上游参数 | P2-B |
+| `test_proxy_body_rewrite.py` | 7 | body.model 改写 + fuzzy 匹配 | V4.6.4 |
+| `test_thinking_strip.py` | 10 | thinking 字段剥离 | V4.7 |
+| `test_null_price_routing.py` | 3 | 聚合渠道价格 999 兜底 + 模糊匹配 | cadddb5 |
+| `test_router_member_priority.py` | 5 | 组内 member priority 排序 | P0-1 |
+| `test_group_members_consistency.py` | 6 | group member 一致性检查 | P0-1 |
+| `test_cleanup_inactive_members.py` | 4 | 失效 member 清理 | P2-A |
+| `test_models_api.py` | 6 | `/v1/models` 端点 | 阶段3 |
+| `test_model_consistency.py` | 7 | model_registry 一致性 | P0-2 |
+| `test_model_sync_auto_group.py` | 6 | SF 同步 + 自动分组 | P2-A |
+| `test_migrate_price_snapshots.py` | 9 | price_snapshots 迁移 | P0-2 |
+| `test_pricing_sources.py` | 5 | 定价源解析 | 阶段B |
+| `test_phase2_e2e.py` | 4 | e2e（MockTransport 化，CI 可跑）| P3-1 |
+| `test_phase3_*.py` (6 个) | 73 | 情报采集层（sources/parser/sync/pricing/verification/api）| 阶段2-3 |
+| `test_phase3e_headers.py` | 7 | 响应头 X-AIMC-* | 阶段3 |
+| `test_phase4_*.py` (4 个) | 44 | 建议审批 / 价格告警 / 跨源验证 / 软删除 | Phase 4 |
+| `test_v44_*.py` (3 个) | 27 | 告警 / CLI / 反馈汇总 | V4.4 |
+| `test_v45_reports.py` | 7 | 周报生成 | V4.5 |
+| `test_v46_*.py` (5 个) | 51 | cooldown / 多账号 / score 路由 / dashboard / e2e / benchmark | V4.6 |
+| `test_v48_multi_user.py` | 18 | 多用户鉴权 + caller_id + 个人限额 | V4.8 |
+| `test_v48_cli.py` | 10 | add_user_key / list_user_keys CLI | V4.8 |
+| `test_v48_dashboard.py` | 6 | per-user 用量 + Key 管理 Dashboard | V4.8 |
+| `test_analyze_usage.py` | 13 | 稳定期使用分析 | V4.7+ |
+| `test_qianwenai_source.py` | 6 | 千问 AI 源采集 | 阶段2 |
 
-**总计**：7 个文件 / 74 个 test / 9.6s 跑通
+**总计**：48 个文件 / 473 个 test（4 skipped）/ ~3 分钟跑通
 
 ## 3. 写新测试
 
@@ -139,7 +165,7 @@ python -m pytest tests/test_xxx.py::test_specific -s
 
 ## 5. CI（待 P2-16）
 
-当前 74 tests 只在本地跑通。CI 集成（GitHub Actions / Gitee Go）待后续：
+e2e 已 MockTransport 化无网络依赖（P3-1），CI 可直接跑。CI 平台集成（GitHub Actions / Gitee Go）仍待后续：
 
 ```yaml
 # .github/workflows/test.yml (待做)
@@ -253,7 +279,7 @@ python -m pytest tests/test_xxx.py -v
 
 ## 9. CI 现状（2026-08-15）
 
-- ✅ 本地 74 tests 全过
+- ✅ 本地 473 tests 全过
 - ❌ GitHub Actions / Gitee Go 集成（个人项目无必要）
 - ❌ Coverage 报告（可选）
 

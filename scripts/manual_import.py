@@ -18,6 +18,15 @@ Phase 1 使用：在爬虫未就绪前，手动录入渠道信息。
 
 借鉴 hermes-tray：env-first，避免在 .py 里出现任何 key 字面量。
 
+V4.6.4 重要区别（2026-08-13）：
+- 本脚本的 *_API_KEY 环境变量跟 .env 里 OPENAI_API_KEY / OPENAI_BASE_URL /
+  PARSE_MODEL 是两套独立配置，互不重叠：
+  - 本脚本：创建 mini渠道 + 写入 db.accounts.ciphertext（面向业务网关）
+  - 上面 OPENAI_*：intelligence/parser.py 爬取页面后的 AI 结构化提取使用
+- 例如：.env 里可以同时配 MINIMAX_API_KEY（供本脚本创建 minimax_compat 渠道）
+  和 OPENAI_API_KEY=<同一个 MiniMax token> + OPENAI_BASE_URL=https://api.minimaxi.com/v1
+  （供 parser.py 用 MiniMax-M2.7 提取页面内容）。同一个 key 可能要配两份。
+
 V4.4 引导：多账号场景下，推荐使用 scripts/add_account.py CLI：
     python scripts/add_account.py \\
         --channel deepseek \\
@@ -45,6 +54,7 @@ load_dotenv()
 from db.engine import async_session_factory
 from db.init_db import init_db
 from db import crud
+from db.normalizers import normalize_model_id, normalize_family  # Phase 4 v4.3.1 (2026-08-13): 防御性归一化
 from config import settings  # API-Sec-1: 读 AIMC_MASTER_KEY
 
 
@@ -61,10 +71,13 @@ CHANNELS = [
         "priority": 10,
         "env_var": "DEEPSEEK_API_KEY",
         "qpm": 60,
+        # Phase 4 v4.3.1 (2026-08-13): 改用 V4 系列 model (跟 1005111 commit 对齐)
+        # 历史 deepseek-chat / deepseek-reasoner 是 V4.4 时代老 model,
+        # 官方 API 当前 (2026-08) 只支持 V4 系列.
         "prices": [
-            ("deepseek-chat", "normal", "全天", 1.0, 2.0),
-            ("deepseek-chat", "offpeak", "00:00-08:00", 0.5, 1.0),
-            ("deepseek-reasoner", "normal", "全天", 4.0, 16.0),
+            ("deepseek-v4-pro", "normal", "全天", 4.0, 16.0),
+            ("deepseek-v4-flash", "normal", "全天", 1.0, 2.0),
+            ("deepseek-v4-flash", "offpeak", "00:00-08:00", 0.5, 1.0),
         ],
     },
     {
@@ -102,15 +115,24 @@ CHANNELS = [
         "priority": 5,
         "env_var": "KIMI_API_KEY",
         "qpm": 30,
+        # Phase 4 v4.3.1 (2026-08-13): 保持 cfg model 跟实际 Moonshot API 一致.
+        # model_id 命名以 "moonshot-" 开头 (family=moonshot, 跟 registry 对齐).
+        # 注意: 这俩 model 不在 model_registry (registry 只 seed 了 moonshot-v1-8k),
+        # 跑 check_group_members_consistency 时会报 "model 不在 registry",
+        # 如需加可手动 seed 进去.
         "prices": [
             ("moonshot-v1-128k", "normal", "全天", 6.0, 6.0),
             ("moonshot-v1-32k", "normal", "全天", 3.0, 3.0),
         ],
     },
     {
-        # Phase 2D-3: MiniMax 渠道 (2026-07-24)
-        # OpenAI-compatible 代理 — base_url + model 名称需用户填 (留 placeholder)
-        # 用 MINIMAX_BASE_URL + MINIMAX_MODEL 单独配（其他渠道用硬编码 base_url）
+        # Phase 2D-3: MiniMax 渠道 (2026-07-24, V4.6.4 修正: 用 MiniMax 官方 model 名)
+        # MiniMax OpenAI-compatible 代理 — base_url 需用户填 (留 placeholder)
+        # 用 MINIMAX_BASE_URL 单独配 endpoint（其他渠道用硬编码 base_url）
+        # V4.6.4 fix: prices 用 MiniMax 官方当前 8 个 model (取代错误的 gpt-4o-mini placeholder)
+        #   - MiniMax-M3 / MiniMax-M2.7 / MiniMax-M2.7-highspeed / MiniMax-M2.5
+        #   - MiniMax-M2.5-highspeed / MiniMax-M2.1 / MiniMax-M2.1-highspeed / MiniMax-M2
+        # 价格默认 0.0 (placeholder) - 等真实计费后改
         "key": "minimax",
         "name": "minimax_compat",
         "provider": "minimax",
@@ -119,8 +141,17 @@ CHANNELS = [
         "env_var": "MINIMAX_API_KEY",
         "qpm": 60,
         "prices": [
-            # 价格 placeholder — 等用户填真实计费后改
-            ("gpt-4o-mini", "normal", "全天", 0.0, 0.0),
+            # V4.6.4: MiniMax 官方当前 8 个 model (从 platform.minimaxi.com/docs 查, 2026-08-08)
+            # Phase 4 v4.3.1 (2026-08-13): model_id 全小写 namespace (跟 450499c 对齐).
+            # 跟 model_registry / seed_model_groups / seed_model_cards 一致.
+            ("minimax-m3",              "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.7",            "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.7-highspeed",  "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.5",            "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.5-highspeed",  "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.1",            "normal", "全天", 0.0, 0.0),
+            ("minimax-m2.1-highspeed",  "normal", "全天", 0.0, 0.0),
+            ("minimax-m2",              "normal", "全天", 0.0, 0.0),
         ],
     },
 
@@ -190,6 +221,32 @@ CHANNELS = [
             ("step-1o", "normal", "全天", 0.0, 0.0),  # placeholder
         ],
     },
+    {
+        # V4.6.4: 商汤日日新 SenseNova (2026-08-09)
+        # 官方推荐 base_url: https://token.sensenova.cn/v1 (公测 token plan 入口)
+        # 历史默认 api.sensenova.cn 错误 (少数 model 在该域名 1214 modelCode不存在)
+        # env SENSENOVA_BASE_URL 可运行时覆盖 db (gateway/router.py _resolve_effective_base_url)
+        # 鉴权: 标准 Bearer token (sk- 开头), 跟其他渠道一样
+        # model (V4.6.4 update):
+        #   - SenseChat: 移除 (上游已失效, code 5 model not found)
+        #   - sensenova-6.8-flash-lite: 公测 token plan 主力 (8/8 取代 6.7)
+        #   - sensenova-u1-fast: U1 加速版
+        #   - deepseek-v4-flash: 公测免费 (跨渠道 model_id)
+        #   - sensenova-6.7-flash-lite: 保留到 8/31, deprecated (官方重定向将失效)
+        "key": "sensenova",
+        "name": "sensenova_official",
+        "provider": "sensenova",
+        "base_url": os.getenv("SENSENOVA_BASE_URL", "https://token.sensenova.cn/v1"),
+        "priority": 5,
+        "env_var": "SENSENOVA_API_KEY",
+        "qpm": 30,
+        "prices": [
+            ("sensenova-6.8-flash-lite", "normal", "全天", 0.0, 0.0),  # 主力
+            ("sensenova-u1-fast", "normal", "全天", 0.0, 0.0),  # 加速版
+            ("deepseek-v4-flash", "normal", "全天", 0.0, 0.0),  # 公测免费 (跨渠道)
+            ("sensenova-6.7-flash-lite", "normal", "全天", 0.0, 0.0),  # 8/31 后失效, 保留兼容
+        ],
+    },
 ]
 
 
@@ -216,6 +273,21 @@ async def import_one_channel(session, cfg: dict) -> bool:
     if not api_key or api_key.startswith("sk-your-"):
         print(f"[skip] {cfg['name']}: {cfg['env_var']} 未配置")
         return False
+
+    # V4.6.4: minimax_compat 是 OpenAI 代理, endpoint 必须显式配
+    # 如果 .env 没 MINIMAX_BASE_URL, base_url 落到 PLACEHOLDER 默认值
+    # -> 创建出来的 channel 请求会发到 PLACEHOLDER.minimax (404)
+    # 修复: 强制要求 MINIMAX_BASE_URL 配好 (避免静默错误)
+    if cfg["provider"] == "minimax":
+        base_url = _clean_env_value(os.getenv("MINIMAX_BASE_URL", ""))
+        if not base_url or "PLACEHOLDER" in base_url:
+            print(
+                f"[skip] {cfg['name']}: MINIMAX_BASE_URL 未配置或为 PLACEHOLDER"
+            )
+            print(
+                f"       修复: nano ~/.env, 加 MINIMAX_BASE_URL=https://你的代理endpoint/v1"
+            )
+            return False
 
     # API-Sec-1: master key 校验
     if not settings.aimc_master_key:
@@ -278,10 +350,17 @@ async def import_one_channel(session, cfg: dict) -> bool:
     print(f"[+] 创建账号: {account.account_name} (key 已加密)")
 
     for model, price_type, time_range, in_p, out_p in cfg["prices"]:
+        # Phase 4 v4.3.1 (2026-08-13): 防御性归一化
+        # 即使 cfg 写了 "MiniMax-M3" 之类的大写, 也能在写入 db 前归一化为 "minimax-m3".
+        # 跟 db/crud.py upsert_model_registry 一致.
+        model_norm = normalize_model_id(model)
+        assert model_norm == model, (
+            f"manual_import.py cfg 里 model='{model}' 应已归一化为 '{model_norm}'"
+        )
         await crud.create_price_snapshot(
             session,
             channel_id=channel.id,
-            model=model,
+            model=model_norm,
             price_type=price_type,
             time_range=time_range,
             input_price=in_p,

@@ -39,6 +39,29 @@ class QwenActivitySource(IntelSourceBase):
         )
 
 
+class QwenAnnouncementSource(IntelSourceBase):
+    """阿里云百炼 announcement 公告页采集 (Phase 4 v4.3.1, 2026-08-13)
+
+    URL: https://help.aliyun.com/zh/model-studio/developer-reference/announcement
+    抓取策略: domcontentloaded (阿里云帮助中心 SSR)
+    频率: 30 分钟 (DEFAULT_POLL_INTERVALS[ANNOUNCEMENT])
+
+    注: 现有 QwenActivitySource 是 web_page 类型 (通用活动页),
+        本 source 专门针对 announcement (新模型/新功能发布)
+    """
+
+    def __init__(self):
+        super().__init__(
+            provider="qwen",
+            url="https://help.aliyun.com/zh/model-studio/developer-reference/announcement",
+            source_type="announcement",
+            poll_interval=1800,
+            css_selector="article",
+            wait_until="domcontentloaded",
+            wait_for=None,
+        )
+
+
 class QwenModelListSource(IntelSourceBase):
     """阿里云百炼 model 列表 (Phase 3.6, 2026-08-06)
 

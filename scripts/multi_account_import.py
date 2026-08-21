@@ -39,8 +39,8 @@
 - 多 key: DEEPSEEK_API_KEYS=sk-1,sk-2,sk-3  (V4.4+ 推荐)
 - 都填时: 多 key 优先 (覆盖单 key), 避免重复建账号
 
-支持 9 个 channel (跟 manual_import.py 一致):
-  deepseek / qwen / glm / kimi / minimax / siliconflow / volcengine / hunyuan / stepfun
+支持 10 个 channel (跟 manual_import.py 对齐):
+  deepseek / qwen / glm / kimi / minimax / siliconflow / volcengine / hunyuan / stepfun / sensenova
 """
 
 import asyncio
@@ -64,7 +64,7 @@ from sqlalchemy import select  # noqa: E402
 
 
 # ============================================================
-# 9 个 channel 的 provider 元数据 (跟 manual_import.py 对齐)
+# 10 个 channel 的 provider 元数据 (跟 manual_import.py 对齐)
 # ============================================================
 # 注意: 只列 import 必需字段. base_url / prices 等复杂字段这里不写 —
 # 多账号只解决"账号扩展", 渠道 / 价格由 manual_import.py 首次 init.
@@ -80,6 +80,7 @@ PROVIDERS = [
     ("volcengine",   "VOLCENGINE_API_KEY", "VOLCENGINE_API_KEYS", "volcengine_ark"),
     ("hunyuan",      "HUNYUAN_API_KEY",    "HUNYUAN_API_KEYS",    "hunyuan_official"),
     ("stepfun",      "STEPFUN_API_KEY",    "STEPFUN_API_KEYS",    "stepfun_official"),
+    ("sensenova",    "SENSENOVA_API_KEY",  "SENSENOVA_API_KEYS",  "sensenova_official"),  # V4.6.4
 ]
 
 

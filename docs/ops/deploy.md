@@ -60,6 +60,36 @@ systemctl --user status aimc
 - `StartLimitBurst=5`：5 分钟内最多 5 次重启（防崩溃循环）
 - `MemoryMax=2G`：AIMC 单进程足够
 
+> ⚠️ **`.env` 行内注释陷阱**：systemd 的 `EnvironmentFile=` **不剥离行内注释** —
+> `KEY=value  # 注释` 会把注释整段带进值里（pydantic 直读 `.env` 时会剥离，两条路径
+> 行为不一致，曾导致 `ALERT_CHANNEL` 值污染、周报推送失败）。**`.env` 生效行的值后
+> 不要跟 `#` 注释**，注释一律独立成行。详见 [user/configure.md](../user/configure.md)。
+
+## 1.5 周报定时器（aimc-weekly-report.timer）
+
+每周一 09:00（本地时间）自动生成周报 + 推送（飞书/Bark/Server 酱，走
+`ALERT_CHANNEL`）。unit 文件在 `scripts/deploy/aimc-weekly-report.{service,timer}`。
+
+```bash
+cp scripts/deploy/aimc-weekly-report.service scripts/deploy/aimc-weekly-report.timer \
+   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now aimc-weekly-report.timer
+
+# 确保用户 linger 已开（aimc.service 安装时通常已开）
+loginctl enable-linger $USER 2>/dev/null || true
+
+# 验证：下次触发时间应显示下周一 09:00
+systemctl --user list-timers | grep weekly
+
+# 手动触发一次验证（不等周一）
+systemctl --user start aimc-weekly-report.service
+journalctl --user -u aimc-weekly-report.service --no-pager -n 20
+ls -la ~/aimc/reports/weekly-latest.md
+```
+
+`Persistent=true`：机器在周一宕机、周二恢复时会补跑一次。
+
 ## 2. LXC 容器部署
 
 AIMC 已在 Ubuntu 24.04 LXC 容器（`192.168.56.12:8080`）验证：
@@ -151,10 +181,12 @@ sudo iptables -A INPUT -p tcp --dport 8080 -j DROP
 ## 6. 启动检查清单
 
 - [ ] `.env` 填了至少 1 个渠道 API Key
+- [ ] `.env` 生效行**没有行内 `#` 注释**（systemd 陷阱，见 §1 警告块）
 - [ ] `systemctl --user daemon-reload`（改 service 文件后）
 - [ ] `systemctl --user enable aimc`（开机自启）
 - [ ] `systemctl --user start aimc`
 - [ ] `curl http://localhost:8080/health` 返 `{"status":"ok"}`
+- [ ] 周报 timer 已启用（`systemctl --user list-timers | grep weekly`，见 §1.5）
 - [ ] 防火墙放行 8080（或用 reverse proxy）
 - [ ] Dashboard token 设了（生产环境）
 - [ ] AIMC_API_KEY 设了（生产环境）
@@ -174,6 +206,29 @@ systemctl --user restart aimc
 # 跑测试确认
 python -m pytest tests/ -v
 ```
+
+**版本注意事项**：
+- 升级到 ≥ `3f90d5e`（2026-08-21）：`usage_logs.created_at` 从 UTC 改为本地时间，
+  **存量行需一次性迁移**（否则历史统计窗口偏 8 小时）：
+  ```bash
+  cp data/aimc.db data/aimc.db.bak.$(date +%Y%m%d_%H%M%S)   # 先备份
+  .venv/bin/python -c "
+  import asyncio, sys
+  from datetime import datetime
+  from sqlalchemy import text
+  sys.path.insert(0, '.')
+  from db.engine import async_session_factory
+  async def m():
+      off = round((datetime.now() - datetime.utcnow()).total_seconds() / 3600)
+      async with async_session_factory() as s:
+          r = await s.execute(text(\"UPDATE usage_logs SET created_at = datetime(created_at, :o)\"), {\"o\": f'+{off} hours'})
+          await s.commit()
+          print('migrated', r.rowcount, 'rows')
+  asyncio.run(m())
+  "
+  ```
+- 升级到 ≥ `041000e`（优惠情报治理）：建议清理历史"未知活动"垃圾条目：
+  `sqlite3 data/aimc.db "DELETE FROM promotions WHERE title='未知活动' OR flagged=1"`
 
 ## 故障排查（部署阶段）
 
