@@ -458,18 +458,28 @@ async def get_cache_stats(days: int = 7, session: AsyncSession = Depends(get_ses
     # 计算时间窗口 (UTC 偏移不考虑, db 存的是本地 time)
     cutoff = datetime.now() - timedelta(days=days)
 
+    # P3 fix (2026-08-21): cached tokens 纳入 Anthropic 风格 cache_read
+    # (一行日志要么 OpenAI 风格 cached_input_tokens 要么 Anthropic 风格
+    #  cache_read_input_tokens, 相加不会双算; cache_creation 是写缓存成本,
+    #  不算"节省"故不纳入)
+    cache_tokens_expr = func.coalesce(
+        func.coalesce(UsageLog.cached_input_tokens, 0)
+        + func.coalesce(UsageLog.cache_read_input_tokens, 0),
+        0,
+    )
+
     # 1. 按 channel 聚合 (用 COALESCE 处理 NULL)
     channel_stmt = (
         select(
             UsageLog.channel_id,
             Channel.name.label("channel_name"),
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageLog.cached_input_tokens), 0).label("cached_tokens"),
+            func.coalesce(func.sum(cache_tokens_expr), 0).label("cached_tokens"),
         )
         .join(Channel, UsageLog.channel_id == Channel.id)
         .where(UsageLog.created_at >= cutoff)
         .group_by(UsageLog.channel_id, Channel.name)
-        .order_by(func.sum(UsageLog.cached_input_tokens).desc())
+        .order_by(func.sum(cache_tokens_expr).desc())
     )
     channel_rows = (await session.execute(channel_stmt)).all()
 
@@ -478,11 +488,11 @@ async def get_cache_stats(days: int = 7, session: AsyncSession = Depends(get_ses
         select(
             UsageLog.model,
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(UsageLog.cached_input_tokens), 0).label("cached_tokens"),
+            func.coalesce(func.sum(cache_tokens_expr), 0).label("cached_tokens"),
         )
         .where(UsageLog.created_at >= cutoff)
         .group_by(UsageLog.model)
-        .order_by(func.sum(UsageLog.cached_input_tokens).desc())
+        .order_by(func.sum(cache_tokens_expr).desc())
         .limit(10)  # TOP 10 model
     )
     model_rows = (await session.execute(model_stmt)).all()

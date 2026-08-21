@@ -108,8 +108,8 @@ tier:light 命名对齐 (小修, 可独立先做):
 ### 验收
 
 - [x] vision 场景 400 率从 ~12% 降到 < 3% (P2-A 完成, 待生产数据验证)
-- [ ] drop_params 单测 + 真实 vision 请求冒烟
-- [ ] tier:light 6 个 member 全部入库 (当前 4/6)
+- [x] drop_params 单测 (test_drop_params.py 19 passed; 真实 vision 请求冒烟并入观察期)
+- [x] tier:light member 全部入库 (5/5, 与 seed_model_groups.py 一致; 文档原"4/6"是旧设计)
 
 ---
 
@@ -161,6 +161,22 @@ embedding + 相似度命中。
   向量存储 (sqlite-vec/Chroma, SQLite 无原生向量支持) + 原文持久化 + 相似度阈值/风控
 - **冲突点**: 2-3 个重依赖与"轻量级、无外部中间件"的项目哲学直接冲突
 - **结论**: 除非项目定位从"个人轻量工具"升级, 否则不做
+
+---
+
+## 八、观察期小项清理 (2026-08-21)
+
+- ✅ 删除废弃脚本 `redesign_groups_v2.py` (会重建 scene:free, 与 seed 冲突)
+- ✅ `test_usage_log_parse.py` 改 import 生产 `_parse_cache_tokens` (防逻辑漂移) +
+  补 group_id 斜杠归一化测试
+- ✅ dashboard 缓存统计纳入 Anthropic 风格 `cache_read_input_tokens`
+  (cache_creation 是写缓存成本, 不算节省, 不纳入)
+- ✅ `batch_crawl_siliconflow` job 已自愈 (healthy, 调度间隔长导致曾 warning)
+- ✅ 勾掉过时 TODO (tier:light 5/5, drop_params 单测已有)
+
+**待办 (观察期后)**: 操作审计系统 — 无 audit 表, key 轮换/吊销/用户创建/channel
+与 settings 修改均无审计记录 (security.md 已知缺口)。当前 LAN+单用户风险可控,
+公网/多用户前必修。约 1 天 (新表 + middleware 钩子)。
 
 ---
 

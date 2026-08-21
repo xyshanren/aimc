@@ -33,29 +33,13 @@ def _make_mock_response(usage_dict, status_code=200, model="gpt-4"):
 
 
 def _extract_cached_tokens(response):
-    """从 response 中提取 cached_input_tokens (复制 _schedule_usage_log 的解析)"""
-    data = response.json()
-    usage = data.get("usage", {})
-    cached_input_tokens = None
-    cache_read_input_tokens = None
-    cache_creation_input_tokens = None
+    """从 response 提取 cached tokens (直接调生产 _parse_cache_tokens, 防逻辑漂移)
 
-    # OpenAI: usage.prompt_tokens_details.cached_tokens
-    prompt_details = usage.get("prompt_tokens_details")
-    if isinstance(prompt_details, dict):
-        v = prompt_details.get("cached_tokens")
-        if isinstance(v, int):
-            cached_input_tokens = v
-
-    # Anthropic: usage.cache_read_input_tokens + cache_creation_input_tokens
-    v = usage.get("cache_read_input_tokens")
-    if isinstance(v, int):
-        cache_read_input_tokens = v
-    v = usage.get("cache_creation_input_tokens")
-    if isinstance(v, int):
-        cache_creation_input_tokens = v
-
-    return cached_input_tokens, cache_read_input_tokens, cache_creation_input_tokens
+    P3 fix (2026-08-21): 之前这里复制了一份解析逻辑, 生产代码改动时测试不会跟着变
+    """
+    from gateway.proxy import _parse_cache_tokens
+    usage = response.json().get("usage", {})
+    return _parse_cache_tokens(usage)
 
 
 # === OpenAI 风格 ===
@@ -186,6 +170,16 @@ def test_extract_group_id_prefix():
     from gateway.proxy import _extract_group_id
     assert _extract_group_id("tier:flagship") == "tier:flagship"
     assert _extract_group_id("scene:code") == "scene:code"
+
+
+def test_extract_group_id_strips_model_suffix():
+    """P3 fix: tier:xxx/model 后缀剥离 (与 router.py select_channel 对齐)
+
+    之前 tier:vision/glm-4.5v 原样入库, dashboard 显示两行
+    """
+    from gateway.proxy import _extract_group_id
+    assert _extract_group_id("tier:vision/glm-4.5v") == "tier:vision"
+    assert _extract_group_id("tier:balanced/some-model") == "tier:balanced"
 
 
 def test_extract_group_id_exact_model():
