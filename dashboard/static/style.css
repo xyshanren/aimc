@@ -1049,3 +1049,11 @@ details.card-folding > .card-body {
 
 /* ============ 待审建议表 ============ */
 .suggestions-table { font-size: 12px; }
+
+/* ============ 按人用量 — 可展开行 (V4.8.1 label 下钻) ============ */
+.expandable-row { cursor: pointer; }
+.expandable-row:hover { background: var(--bg-hover); }
+.expand-icon { display: inline-block; width: 14px; color: var(--text-secondary); }
+.key-detail-row { background: var(--bg-base); }
+.sub-table { margin: 4px 0 4px 20px; font-size: 12px; width: calc(100% - 20px); }
+.sub-table th { color: var(--text-secondary); font-weight: normal; }

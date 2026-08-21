@@ -1926,9 +1926,14 @@ async def get_per_user_usage(
     """V4.8: 按人聚合用量 (caller_id GROUP BY)
 
     LEFT JOIN users, NULL caller_id 归为 "(未鉴权/legacy)"。
+
+    V4.8.1: 增加 per-key label 下钻 — 每个用户行内嵌 keys 数组,
+    包含该用户各 api_key 的 label + 用量明细。支持前端展开行查看。
     """
     cutoff = datetime.now() - timedelta(days=days)
-    stmt = (
+
+    # 1. 用户级聚合 (现有逻辑)
+    user_stmt = (
         select(
             UsageLog.caller_id,
             User.username,
@@ -1945,9 +1950,44 @@ async def get_per_user_usage(
             (func.sum(UsageLog.input_tokens) + func.sum(UsageLog.output_tokens)).desc()
         )
     )
-    rows = (await session.execute(stmt)).all()
+    user_rows = (await session.execute(user_stmt)).all()
+
+    # 2. key 级聚合 (按 caller_id + key_id GROUP BY, LEFT JOIN api_keys 取 label)
+    key_stmt = (
+        select(
+            UsageLog.caller_id,
+            UsageLog.key_id,
+            ApiKey.label,
+            func.coalesce(func.count(UsageLog.id), 0).label("request_count"),
+            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("total_cost"),
+        )
+        .outerjoin(ApiKey, UsageLog.key_id == ApiKey.id)
+        .where(UsageLog.created_at >= cutoff)
+        .where(UsageLog.key_id.isnot(None))
+        .group_by(UsageLog.caller_id, UsageLog.key_id, ApiKey.label)
+    )
+    key_rows = (await session.execute(key_stmt)).all()
+
+    # 3. 组装: key_map[caller_id] = [key_detail, ...]
+    key_map: dict[int, list] = {}
+    for row in key_rows:
+        cid = row.caller_id
+        if cid not in key_map:
+            key_map[cid] = []
+        key_map[cid].append({
+            "key_id": row.key_id,
+            "label": row.label or "(无标签)",
+            "request_count": row.request_count,
+            "input_tokens": int(row.input_tokens or 0),
+            "output_tokens": int(row.output_tokens or 0),
+            "total_tokens": int((row.input_tokens or 0) + (row.output_tokens or 0)),
+            "total_cost": round(float(row.total_cost or 0), 4),
+        })
+
     items = []
-    for row in rows:
+    for row in user_rows:
         items.append({
             "caller_id": row.caller_id,
             "username": row.username or "(未鉴权/legacy)",
@@ -1957,6 +1997,7 @@ async def get_per_user_usage(
             "output_tokens": int(row.output_tokens or 0),
             "total_tokens": int((row.input_tokens or 0) + (row.output_tokens or 0)),
             "total_cost": round(float(row.total_cost or 0), 4),
+            "keys": key_map.get(row.caller_id, []),
         })
     return {"count": len(items), "days": days, "items": items}
 

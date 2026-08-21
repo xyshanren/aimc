@@ -197,6 +197,14 @@ async def ensure_migrations():
         else:
             logger.debug("迁移: usage_logs.caller_id 已存在，跳过")
 
+        # usage_logs.key_id (V4.8.1, 2026-08-21): 多 key label 计量
+        # NULL = legacy / 未鉴权 / 单 key 模式; 新请求带 key_id = api_keys.id
+        if "key_id" not in columns:
+            await conn.execute(text("ALTER TABLE usage_logs ADD COLUMN key_id INTEGER"))
+            logger.info("迁移: usage_logs 添加 key_id 列 (V4.8.1 多 key label 下钻)")
+        else:
+            logger.debug("迁移: usage_logs.key_id 已存在，跳过")
+
         # V4.8: usage_logs (caller_id, created_at) 索引 — per-user 限额查询用
         # check_user_quota 查 SUM(input+output) WHERE caller_id=? AND created_at>=?
         # 3~5 人场景该索引保证查询走索引而非全表扫描

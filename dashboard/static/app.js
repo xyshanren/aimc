@@ -1499,19 +1499,54 @@ async function loadPerUserUsage() {
             const name = item.display_name
                 ? esc(item.username) + ' (' + esc(item.display_name) + ')'
                 : esc(item.username);
-            html += '<tr>'
-                + '<td>' + name + '</td>'
+            const hasKeys = item.keys && item.keys.length > 0;
+            const expandable = hasKeys && item.keys.some(k => k.key_id);
+            html += '<tr class="' + (expandable ? 'expandable-row' : '') + '"'
+                + (expandable ? ' onclick="toggleKeyDetail(this)"' : '') + '>'
+                + '<td>' + (expandable ? '<span class="expand-icon">▸</span> ' : '') + name + '</td>'
                 + '<td>' + fmtNum(item.request_count) + '</td>'
                 + '<td>' + fmtNum(item.input_tokens) + '</td>'
                 + '<td>' + fmtNum(item.output_tokens) + '</td>'
                 + '<td><strong>' + fmtNum(item.total_tokens) + '</strong></td>'
                 + '<td>' + fmtCost(item.total_cost) + '</td>'
                 + '</tr>';
+            if (expandable) {
+                html += '<tr class="key-detail-row" style="display:none;">'
+                    + '<td colspan="6">'
+                    + '<table class="sub-table"><thead><tr>'
+                    + '<th>Label</th><th>请求数</th><th>Input</th><th>Output</th><th>总Token</th><th>估算费用</th>'
+                    + '</tr></thead><tbody>';
+                for (const k of item.keys.filter(k => k.key_id)) {
+                    html += '<tr>'
+                        + '<td>' + esc(k.label) + '</td>'
+                        + '<td>' + fmtNum(k.request_count) + '</td>'
+                        + '<td>' + fmtNum(k.input_tokens) + '</td>'
+                        + '<td>' + fmtNum(k.output_tokens) + '</td>'
+                        + '<td>' + fmtNum(k.total_tokens) + '</td>'
+                        + '<td>' + fmtCost(k.total_cost) + '</td>'
+                        + '</tr>';
+                }
+                html += '</tbody></table></td></tr>';
+            }
         }
         html += '</tbody></table></div>';
         container.innerHTML = html;
     } catch (e) {
         container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+function toggleKeyDetail(row) {
+    const detail = row.nextElementSibling;
+    if (detail && detail.classList.contains('key-detail-row')) {
+        const icon = row.querySelector('.expand-icon');
+        if (detail.style.display === 'none') {
+            detail.style.display = '';
+            if (icon) icon.textContent = '▾';
+        } else {
+            detail.style.display = 'none';
+            if (icon) icon.textContent = '▸';
+        }
     }
 }
 

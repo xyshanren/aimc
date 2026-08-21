@@ -38,8 +38,9 @@ logger = logging.getLogger(__name__)
 
 
 # Phase 3 (#3): throttle 状态
-# key (e.g. "siliconflow_aggregator:401") -> 最后一次发送成功的 monotonic 时间
-_throttle_state: dict[str, float] = {}
+# key (e.g. "siliconflow_aggregator:401") -> (最后一次发送的 monotonic 时间, 静默窗口秒数)
+# value 从 float 改为 tuple[float, float] 以支持 per-key 自定义静默时长 (V4.8.1)
+_throttle_state: dict[str, tuple[float, float]] = {}
 _throttle_lock = asyncio.Lock()
 THROTTLE_SECONDS = 60.0
 
@@ -101,18 +102,25 @@ def _get_active_channel() -> str:
     return _get_setting("alert_channel", settings.alert_channel).lower().strip() or "log"
 
 
-async def _try_acquire_throttle(key: str) -> bool:
+async def _try_acquire_throttle(key: str, silence_seconds: float | None = None) -> bool:
     """尝试占用 throttle 槽位 (锁内检查+标记, 防并发 race)
+
+    V4.8.1: 支持 per-key 自定义静默时长
+    - silence_seconds=None → 用 THROTTLE_SECONDS (60s, 兼容旧行为)
+    - silence_seconds=1800 → 该 key 静默 30 分钟
 
     Returns:
         True  = 已成功标记 (可继续发)
         False = 在窗口内, 已被占用 (跳过)
     """
+    silence = silence_seconds if silence_seconds is not None else THROTTLE_SECONDS
     async with _throttle_lock:
-        last = _throttle_state.get(key)
-        if last is not None and (time.monotonic() - last) < THROTTLE_SECONDS:
-            return False
-        _throttle_state[key] = time.monotonic()
+        entry = _throttle_state.get(key)
+        if entry is not None:
+            last, window = entry
+            if (time.monotonic() - last) < window:
+                return False
+        _throttle_state[key] = (time.monotonic(), silence)
         return True
 
 
@@ -224,7 +232,10 @@ CHANNEL_HANDLERS = {
 }
 
 
-async def send_alert(message: str, key: Optional[str] = None) -> bool:
+async def send_alert(
+    message: str, key: Optional[str] = None,
+    silence_seconds: Optional[float] = None,
+) -> bool:
     """统一告警入口
 
     根据 runtime override (API-Sec-2) 或 settings.alert_channel 路由：
@@ -232,13 +243,18 @@ async def send_alert(message: str, key: Optional[str] = None) -> bool:
     - 其他 channel  → 调对应 handler，失败时 fallback 到 log
 
     Phase 3 (#3): throttle
-    - key 不为 None 且 channel 不是 log → 60s 内同 key 只发 1 次
+    - key 不为 None 且 channel 不是 log → 静默窗口内同 key 只发 1 次
     - throttle 命中时返回 True (行为对齐"已发过")
     - 锁内 check+mark 一次性原子完成, 防并发 race
+
+    V4.8.1: silence_seconds 支持 per-key 自定义静默时长
+    - 默认 60s (THROTTLE_SECONDS), 兼容旧调用方
+    - 采集告警场景: 首次失败 30min, 连续 3 次 2h
 
     Args:
         message: 告警文本
         key: throttle key (e.g. "channel_name:status_code")，None = 不 throttle
+        silence_seconds: 该 key 的静默窗口秒数, None=用默认 60s
 
     Returns:
         True = 成功推送 / 被 throttle / log-only；False = 真正发送失败
@@ -249,7 +265,7 @@ async def send_alert(message: str, key: Optional[str] = None) -> bool:
     # Throttle: 仅非 log channel + key 非 None 时生效
     # 用 lock 包住检查+标记, 防并发 race (3 个 401 同时来不会发 3 次)
     if channel != "log" and key is not None:
-        if not await _try_acquire_throttle(key):
+        if not await _try_acquire_throttle(key, silence_seconds):
             logger.debug(f"[ALERT throttled] key={key}, skip send")
             return True
 

@@ -325,6 +325,7 @@ async def forward_request(
     channel: dict, body: bytes, headers: Headers,
     requested_model: str = "", actual_model: Optional[str] = None,
     caller_id: Optional[int] = None,
+    caller_key_id: Optional[int] = None,
 ):
     """将请求透传到上游渠道
 
@@ -336,6 +337,7 @@ async def forward_request(
         actual_model: V4.6.4+ — router fallback 路径选择的 channel 模型名
                       (可能跟 requested_model 不同, 此时会替换 body.model)
         caller_id: V4.8 — 调用者 user_id (从 request.state 透传), 写入 usage_logs.caller_id
+        caller_key_id: V4.8.1 — api_keys.id (从 request.state 透传), 写入 usage_logs.key_id
 
     Returns:
         StreamingResponse 或 JSONResponse
@@ -420,12 +422,12 @@ async def forward_request(
         if is_stream:
             return await _forward_stream(
                 target_url, forward_headers, body, channel, start_time, aimc_headers,
-                requested_model, caller_id,
+                requested_model, caller_id, caller_key_id,
             )
         else:
             return await _forward_normal(
                 target_url, forward_headers, body, channel, start_time, aimc_headers,
-                requested_model, caller_id,
+                requested_model, caller_id, caller_key_id,
             )
     except httpx.TimeoutException:
         logger.error(f"上游超时: {channel['name']} ({target_url})")
@@ -455,6 +457,7 @@ async def _forward_stream(
     aimc_headers: dict | None = None,
     requested_model: str = "",
     caller_id: Optional[int] = None,
+    caller_key_id: Optional[int] = None,
 ) -> StreamingResponse:
     """流式透传：原样传递字节给客户端
 
@@ -463,6 +466,7 @@ async def _forward_stream(
     不解析/改变发给客户端的字节, usage 提取只在 finally 里离线扫描缓冲。
 
     V4.8: caller_id 透传到 _schedule_stream_usage_log -> _write_usage_log
+    V4.8.1: caller_key_id 透传到 _schedule_stream_usage_log -> _write_usage_log
     """
 
     client = httpx.AsyncClient(timeout=httpx.Timeout(settings.request_timeout, connect=10.0))
@@ -509,7 +513,7 @@ async def _forward_stream(
             try:
                 _schedule_stream_usage_log(
                     channel, response.status_code, latency_ms,
-                    requested_model, bytes(tail_buffer), caller_id,
+                    requested_model, bytes(tail_buffer), caller_id, caller_key_id,
                 )
             except Exception as e:
                 logger.debug(f"[P0-1] stream usage 记录失败 (非致命): {e}")
@@ -536,11 +540,13 @@ async def _forward_normal(
     aimc_headers: dict | None = None,
     requested_model: str = "",
     caller_id: Optional[int] = None,
+    caller_key_id: Optional[int] = None,
 ) -> JSONResponse:
     """非流式转发：等待完整响应后返回
 
     V4.6.1: 接收 requested_model 透传给 _schedule_usage_log
     V4.8: 接收 caller_id 透传给 _schedule_usage_log
+    V4.8.1: 接收 caller_key_id 透传给 _schedule_usage_log
     """
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(settings.request_timeout, connect=10.0)) as client:
@@ -573,7 +579,7 @@ async def _forward_normal(
         _schedule_alert(channel, response)
 
     # 尝试记录用量（异步，不阻塞响应）
-    _schedule_usage_log(channel, response, latency_ms, requested_model, caller_id)
+    _schedule_usage_log(channel, response, latency_ms, requested_model, caller_id, caller_key_id)
 
     return JSONResponse(
         status_code=response.status_code,
@@ -676,7 +682,7 @@ def _parse_cache_tokens(usage: dict):
     return cached_input_tokens, cache_read_input_tokens, cache_creation_input_tokens
 
 
-def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int, requested_model: str = "", caller_id: Optional[int] = None):
+def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int, requested_model: str = "", caller_id: Optional[int] = None, caller_key_id: Optional[int] = None):
     """异步记录用量日志（fire-and-forget）
 
     Phase 3.A: 接收 requested_model, 提取 group_id 写入 usage_logs
@@ -688,6 +694,7 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
     - fallback 到 requested_model, 再 fallback 到上游响应 data.model
 
     V4.8: caller_id 透传到 _write_usage_log (多用户计量)
+    V4.8.1: caller_key_id 透传到 _write_usage_log (多 key label 下钻)
     """
     try:
         data = response.json()
@@ -722,6 +729,7 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
                     cache_read_input_tokens=cache_read_input_tokens,
                     cache_creation_input_tokens=cache_creation_input_tokens,
                     caller_id=caller_id,
+                    caller_key_id=caller_key_id,
                 )
             )
             # V4.6.4: 添加回调, task 失败时 log 错误 (之前静默)
@@ -756,6 +764,7 @@ async def _write_usage_log(
     cache_read_input_tokens=None,
     cache_creation_input_tokens=None,
     caller_id: int | None = None,
+    caller_key_id: int | None = None,
 ):
     """写入用量日志到数据库
 
@@ -767,6 +776,10 @@ async def _write_usage_log(
     V4.8: caller_id 参数 (多用户计量)
     - NULL = legacy 数据 / 未鉴权请求
     - 非 NULL = users.id (middleware 透传)
+
+    V4.8.1: caller_key_id 参数 (多 key label 下钻)
+    - NULL = legacy / 未鉴权 / 单 key 模式
+    - 非 NULL = api_keys.id (middleware 透传)
     """
     try:
         from db.engine import async_session_factory
@@ -779,6 +792,7 @@ async def _write_usage_log(
                 model=model,
                 group_id=group_id,
                 caller_id=caller_id,
+                key_id=caller_key_id,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 status_code=status_code,
@@ -843,11 +857,13 @@ def _schedule_stream_usage_log(
     channel: dict, status_code: int, latency_ms: int,
     requested_model: str, tail_bytes: bytes,
     caller_id: Optional[int] = None,
+    caller_key_id: Optional[int] = None,
 ):
     """P0-1: 从 streaming 尾部缓冲提取 usage 并记录 (fire-and-forget)
 
     与 _schedule_usage_log 对应, 但输入是原始 SSE 尾部字节而非完整 response。
     V4.8: caller_id 透传到 _write_usage_log
+    V4.8.1: caller_key_id 透传到 _write_usage_log
     """
     try:
         usage = _extract_stream_usage(tail_bytes)
@@ -893,6 +909,7 @@ def _schedule_stream_usage_log(
                     cache_read_input_tokens=cache_read_input_tokens,
                     cache_creation_input_tokens=cache_creation_input_tokens,
                     caller_id=caller_id,
+                    caller_key_id=caller_key_id,
                 )
             )
             task.add_done_callback(_log_task_result)

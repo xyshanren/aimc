@@ -289,6 +289,12 @@ class UsageLog(Base):
         Integer, nullable=True,
         comment="调用者 user_id (V4.8 多用户), NULL=legacy/未鉴权",
     )
+    # V4.8.1 (2026-08-21): key_id = api_keys.id (多 key label 下钻)
+    # NULL = legacy / 未鉴权 / 单 key 模式
+    key_id = Column(
+        Integer, nullable=True,
+        comment="api_keys.id (V4.8.1 多 key 计量), NULL=legacy/未鉴权",
+    )
     # Phase 3.A (2026-07-29): 记录请求时的 group_id
     # - tier:xxx / scene:xxx 前缀时填 group_id (e.g. "tier:balanced")
     # - 精确模型路由时为 NULL

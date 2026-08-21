@@ -146,6 +146,7 @@ async def chat_completions(request: Request):
             from gateway.quota import check_account_quota, check_user_quota
             from db.engine import async_session_factory
             caller_id = getattr(request.state, "caller_id", None)
+            caller_key_id = getattr(request.state, "caller_key_id", None)
             async with async_session_factory() as qsession:
                 allowed, reason = await check_account_quota(
                     qsession,
@@ -181,12 +182,14 @@ async def chat_completions(request: Request):
         # 透传请求到上游 (Phase 2.5: 传 requested_model 用于响应头 X-AIMC-Actual-Model)
         # V4.6.4: 传 channel._actual_model 作为 actual_model
         # V4.8: 传 caller_id (从 request.state, middleware 设的) 到 usage_logs
+        # V4.8.1: 传 caller_key_id (api_keys.id) 到 usage_logs.key_id (多 key label 下钻)
         actual_model = channel.get("_actual_model") or model
         response = await forward_request(
             channel, body, request.headers,
             requested_model=model,
             actual_model=actual_model,
             caller_id=caller_id,
+            caller_key_id=caller_key_id,
         )
 
         # P1-15: 非流式 + 429/5xx + 还有重试机会 -> 继续下一候选

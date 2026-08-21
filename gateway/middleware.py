@@ -203,6 +203,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             request.state.caller_id = None
             request.state.caller_is_admin = False
             request.state.caller_username = None
+            request.state.caller_key_id = None
 
             if settings.auth_enabled:
                 auth_header = request.headers.get("Authorization", "")
@@ -222,6 +223,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     request.state.caller_id = key_info.user_id
                     request.state.caller_is_admin = key_info.is_admin
                     request.state.caller_username = key_info.username
+                    # V4.8.1: 透传 key_id 到 request.state → usage_logs.key_id (多 key label 下钻)
+                    request.state.caller_key_id = key_info.key_id
                     # 异步更新 last_used_at (不阻塞)
                     try:
                         loop = asyncio.get_running_loop()

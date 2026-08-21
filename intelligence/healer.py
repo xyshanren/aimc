@@ -434,6 +434,11 @@ async def handle_fetch_error(source, error: str):
     - 第 3 次失败：告警 + 自动 disable source
     - 第 4+ 次：log only（已 disabled）
 
+    V4.8.1: 告警加 throttle key + 分级静默
+    - 首次失败: key=fetch_error:{provider}:{url}, 静默 30min
+    - 连续 3 次: 同 key, 静默 2h (避免间歇性故障的恢复→再失败循环刷屏)
+    - 恢复时由 differ._update_source_hash 发独立恢复告警
+
     Args:
         source: 采集源对象（in-memory error_count 会被累加并同步到 DB）
         error: 错误描述（来自 fetch_page_with_error 的 reason）
@@ -474,21 +479,28 @@ async def handle_fetch_error(source, error: str):
                     new_source.status = "error"
                 await session.commit()
 
+            # V4.8.1: throttle key 按 (provider, url) 维度, 分级静默
+            alert_key = f"fetch_error:{source.provider}:{source.url}"
+
             if source.error_count == 1:
-                # 首次失败：立即告警
+                # 首次失败：立即告警, 30 分钟内同 source 不重复
                 await send_alert(
                     f"[采集异常] {source.provider} 首次失败\n"
                     f"URL: {source.url}\n"
                     f"错误: {error}\n"
-                    f"error_count={source.error_count}/3"
+                    f"error_count={source.error_count}/3",
+                    key=alert_key,
+                    silence_seconds=1800,
                 )
             elif source.error_count >= 3:
-                # 连续 3 次失败：升级告警 + 自动禁用
+                # 连续 3 次失败：升级告警 + 自动禁用, 2 小时内同 source 不重复
                 await send_alert(
                     f"[采集异常] {source.provider} 连续失败 {source.error_count} 次\n"
                     f"URL: {source.url}\n"
                     f"错误: {error}\n"
-                    f"已自动禁用，请人工检查。"
+                    f"已自动禁用，请人工检查。",
+                    key=alert_key,
+                    silence_seconds=7200,
                 )
 
     except Exception as e:

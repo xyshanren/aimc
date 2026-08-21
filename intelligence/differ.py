@@ -123,10 +123,19 @@ async def _update_source_hash(source, new_hash: str, new_content: Optional[str] 
                 for key, value in update_kwargs.items():
                     setattr(db_source, key, value)
                 # 成功采集时恢复被 handle_fetch_error 禁用的 source (status error→active)
+                # V4.8.1: 恢复时发一条恢复告警 (用独立 key 避免跟失败告警互相 throttle)
                 if db_source.status == "error":
                     db_source.status = "active"
                     logger.info(
                         f"采集源恢复: {db_source.provider} (status error→active)"
+                    )
+                    from intelligence.alerter import send_alert
+                    await send_alert(
+                        f"[采集恢复] {db_source.provider} 已恢复采集\n"
+                        f"URL: {db_source.url}\n"
+                        f"此前连续失败已自动恢复。",
+                        key=f"fetch_recover:{db_source.provider}:{db_source.url}",
+                        silence_seconds=3600,
                     )
                 await session.commit()
             else:
