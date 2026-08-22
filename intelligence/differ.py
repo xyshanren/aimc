@@ -51,10 +51,21 @@ async def has_changed(source, new_content: str) -> bool:
        - 相似度 < 阈值 → True
     4. 哈希不同但没有 last_content（旧数据迁移场景）→ True（保守：宁可错杀）
 
+    V4.8.2: 从 DB 读 last_hash/last_content, 不依赖 in-memory source 对象。
+    原因: APScheduler 用 SQLAlchemyJobStore (pickle) 持久化 job args,
+    每次 tick 反序列化出全新的 source 副本 → in-memory last_hash 永远为 None →
+    每次采集都判定 has_changed=True → 自愈+告警刷屏。
+
     Returns:
         True 表示有变化，需要触发 AI 解析
     """
     new_hash = compute_hash(new_content)
+
+    # V4.8.2: 从 DB 读权威 last_hash/last_content, 覆盖 in-memory 默认值
+    db_hash, db_content = await _load_hash_from_db(source)
+    if db_hash:
+        source.last_hash = db_hash
+        source.last_content = db_content
 
     # 1. 首次采集
     if not source.last_hash:
@@ -155,3 +166,28 @@ async def _update_source_hash(source, new_hash: str, new_content: Optional[str] 
                 await session.commit()
     except Exception as e:
         logger.warning(f"更新采集源哈希失败: {e}")
+
+
+async def _load_hash_from_db(source) -> tuple[Optional[str], Optional[str]]:
+    """从 DB 读 last_hash / last_content
+
+    V4.8.2: APScheduler SQLAlchemyJobStore 每次反序列化 job args 时
+    创建全新 source 副本, in-memory last_hash 永远为 None。
+    本函数在 has_changed 入口处从 DB 加载权威值, 覆盖内存默认值。
+
+    Returns:
+        (last_hash, last_content) — DB 无行时返回 (None, None)
+    """
+    try:
+        from db.engine import async_session_factory
+        from db import crud
+
+        async with async_session_factory() as session:
+            db_source = await crud.get_intel_source_by_provider_url(
+                session, source.provider, source.url
+            )
+            if db_source:
+                return db_source.last_hash, db_source.last_content
+    except Exception as e:
+        logger.debug(f"从 DB 加载 last_hash 失败 (非阻断): {e}")
+    return None, None
