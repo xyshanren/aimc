@@ -424,6 +424,10 @@ async def upsert_intel_source(
     if poll_interval is None:
         poll_interval = kwargs.pop("poll_interval", 900)
 
+    # 修复 V4.8.2: status 也由本函数 hardcode="active", 调用方不应再传
+    # 若传入则静默丢弃, 避免 "got multiple values for keyword argument 'status'"
+    kwargs.pop("status", None)
+
     existing = await get_intel_source_by_provider_url(session, provider, url)
     if existing:
         for key, value in kwargs.items():

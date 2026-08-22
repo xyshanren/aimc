@@ -140,13 +140,16 @@ async def _update_source_hash(source, new_hash: str, new_content: Optional[str] 
                 await session.commit()
             else:
                 # DB 没对应行（dataclass 跟 DB 没关联）→ 自动 upsert 一条
+                # 修复 V4.8.2: 不能传 status="active" — upsert_intel_source 内部
+                # 已 hardcode status="active", 重复传会触发 "got multiple values
+                # for keyword argument 'status'" → DB hash 永远写不进去 →
+                # 每次采集都判定 has_changed=True → 自愈+告警刷屏
                 await crud.upsert_intel_source(
                     session,
                     provider=source.provider,
                     url=source.url,
                     source_type=getattr(source, "source_type", "web_page"),
                     poll_interval=getattr(source, "poll_interval", 900),
-                    status="active",
                     **update_kwargs,
                 )
                 await session.commit()
