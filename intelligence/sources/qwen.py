@@ -14,7 +14,7 @@ class QwenSource(IntelSourceBase):
             provider="qwen",
             url="https://help.aliyun.com/zh/model-studio/billing-overview",
             source_type="web_page",
-            poll_interval=900,
+            poll_interval=1800,  # 30分钟 (V4.8.3: 原 15min→30min)
             css_selector="article",
             # Phase 2B-3: 阿里云帮助中心是 SSR，DOM 解析即可
             wait_until="domcontentloaded",
@@ -30,7 +30,7 @@ class QwenActivitySource(IntelSourceBase):
             provider="qwen",
             url="https://www.aliyun.com/activity/intelligent",
             source_type="web_page",
-            poll_interval=1800,
+            poll_interval=3600,  # 1小时 (V4.8.3: 原 30min→1h)
             css_selector=None,
             # Phase 2B-3: 活动页 SPA 多，等 article 元素出现
             wait_until="domcontentloaded",
@@ -55,7 +55,7 @@ class QwenAnnouncementSource(IntelSourceBase):
             provider="qwen",
             url="https://help.aliyun.com/zh/model-studio/developer-reference/announcement",
             source_type="announcement",
-            poll_interval=1800,
+            poll_interval=3600,  # 1小时 (V4.8.3: 原 30min→1h)
             css_selector="article",
             wait_until="domcontentloaded",
             wait_for=None,

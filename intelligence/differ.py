@@ -74,6 +74,7 @@ async def has_changed(source, new_content: str) -> bool:
 
     # 2. 哈希完全相同
     if source.last_hash == new_hash:
+        await _increment_no_change(source)
         return False
 
     # 3. 哈希不同 → 算相似度（如果有 last_content）
@@ -88,6 +89,7 @@ async def has_changed(source, new_content: str) -> bool:
             )
             # 仍要更新 last_content（保持最新），但跳过 AI 解析
             await _update_source_hash(source, new_hash, new_content)
+            await _increment_no_change(source)
             return False
         else:
             logger.info(
@@ -123,6 +125,7 @@ async def _update_source_hash(source, new_hash: str, new_content: Optional[str] 
                 "last_hash": new_hash,
                 "last_check_at": datetime.now(),
                 "error_count": 0,
+                "consecutive_no_change": 0,  # V4.8.3: 有变化时归零
             }
             if new_content is not None:
                 update_kwargs["last_content"] = new_content[:_LAST_CONTENT_MAX_LEN]
@@ -191,3 +194,50 @@ async def _load_hash_from_db(source) -> tuple[Optional[str], Optional[str]]:
     except Exception as e:
         logger.debug(f"从 DB 加载 last_hash 失败 (非阻断): {e}")
     return None, None
+
+
+async def _increment_no_change(source):
+    """递增连续无变化计数 (V4.8.3 自适应降频)
+
+    无变化时调用: DB consecutive_no_change += 1。
+    有变化时由 _update_source_hash 归零。
+    scheduler._run_source_task 根据此值决定是否跳过本次采集。
+    """
+    try:
+        from db.engine import async_session_factory
+        from db import crud
+
+        async with async_session_factory() as session:
+            db_source = await crud.get_intel_source_by_provider_url(
+                session, source.provider, source.url
+            )
+            if db_source:
+                db_source.consecutive_no_change = (db_source.consecutive_no_change or 0) + 1
+                db_source.last_check_at = datetime.now()
+                await session.commit()
+                logger.debug(
+                    f"无变化计数: {source.provider} → {db_source.consecutive_no_change}"
+                )
+    except Exception as e:
+        logger.debug(f"递增 consecutive_no_change 失败 (非阻断): {e}")
+
+
+async def load_no_change_count(source) -> int:
+    """从 DB 读 consecutive_no_change (供 scheduler 自适应降频用)
+
+    Returns:
+        连续无变化次数, DB 无行时返回 0
+    """
+    try:
+        from db.engine import async_session_factory
+        from db import crud
+
+        async with async_session_factory() as session:
+            db_source = await crud.get_intel_source_by_provider_url(
+                session, source.provider, source.url
+            )
+            if db_source:
+                return db_source.consecutive_no_change or 0
+    except Exception:
+        pass
+    return 0

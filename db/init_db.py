@@ -59,6 +59,13 @@ async def ensure_migrations():
         else:
             logger.debug("迁移: intel_sources.last_content 已存在，跳过")
 
+        # intel_sources.consecutive_no_change (V4.8.3, 自适应降频)
+        if "consecutive_no_change" not in columns:
+            await conn.execute(text("ALTER TABLE intel_sources ADD COLUMN consecutive_no_change INTEGER DEFAULT 0"))
+            logger.info("迁移: intel_sources 添加 consecutive_no_change 列 (V4.8.3 自适应降频)")
+        else:
+            logger.debug("迁移: intel_sources.consecutive_no_change 已存在，跳过")
+
         # promotions.flagged / flagged_reason (Phase 2D-1)
         result = await conn.execute(text("PRAGMA table_info('promotions')"))
         columns = {row[1] for row in result.fetchall()}

@@ -1640,6 +1640,7 @@ document.addEventListener('click', (e) => {
     if (!btn) return;
     const action = btn.dataset.action;
     const id = parseInt(btn.dataset.id, 10);
+    const provider = btn.dataset.provider;
     if (action === 'enable') {
         toggleAccount(id, 'active', btn);
     } else if (action === 'disable') {
@@ -1648,5 +1649,120 @@ document.addEventListener('click', (e) => {
         rotateAccountKey(id, btn);
     } else if (action === 'revoke') {
         revokeKey(id, btn);
+    } else if (action === 'src-run-now') {
+        runSourceNow(provider, btn);
+    } else if (action === 'src-toggle') {
+        toggleSource(provider, btn);
     }
 });
+
+// === V4.8.3: 采集源管理 ===
+
+async function loadSources() {
+    const container = document.getElementById('sources-list');
+    const meta = document.getElementById('sources-meta');
+    if (container) container.innerHTML = '<p class="loading">加载中…</p>';
+    try {
+        const resp = await authFetch('/dashboard/api/sources');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        if (meta) meta.textContent = `共 ${data.count} 个源`;
+
+        if (!data.sources || data.sources.length === 0) {
+            container.innerHTML = '<p class="text-muted">无采集源</p>';
+            return;
+        }
+
+        // 按 provider 分组
+        const groups = {};
+        for (const s of data.sources) {
+            if (!groups[s.provider]) groups[s.provider] = [];
+            groups[s.provider].push(s);
+        }
+
+        let html = '<table class="data-table" style="width:100%;font-size:12px;"><thead><tr>'
+            + '<th>Provider</th><th>类型</th><th>间隔</th><th>状态</th>'
+            + '<th>最后检查</th><th>错误</th><th>无变化</th><th>操作</th>'
+            + '</tr></thead><tbody>';
+        for (const s of data.sources) {
+            const intervalMin = Math.round(s.poll_interval / 60);
+            const intervalStr = intervalMin >= 60
+                ? (intervalMin / 60).toFixed(intervalMin % 60 === 0 ? 0 : 1) + 'h'
+                : intervalMin + 'm';
+            const statusClass = s.enabled
+                ? (s.status === 'error' ? 'status-error' : 'status-active')
+                : 'status-disabled';
+            const statusText = s.enabled ? s.status : 'disabled';
+            const lastCheck = s.last_check_at
+                ? s.last_check_at.slice(5, 16).replace('T', ' ')
+                : '-';
+            const noChangeBadge = s.consecutive_no_change >= 4
+                ? `<span class="badge badge-warn">${s.consecutive_no_change}</span>`
+                : s.consecutive_no_change;
+            const apiBadge = s.api_endpoint_configured
+                ? '<span class="text-muted" title="API 结构化抽取">API</span>'
+                : '<span class="text-muted" title="HTML 抓取">HTML</span>';
+            const toggleBtn = s.enabled
+                ? `<button class="btn-sm btn-disable" data-action="src-toggle" data-provider="${esc(s.provider)}">禁用</button>`
+                : `<button class="btn-sm btn-enable" data-action="src-toggle" data-provider="${esc(s.provider)}">启用</button>`;
+            const runBtn = `<button class="btn-sm" data-action="src-run-now" data-provider="${esc(s.provider)}">采集</button>`;
+            html += '<tr>'
+                + '<td><code>' + esc(s.provider) + '</code></td>'
+                + '<td>' + esc(s.source_type) + ' ' + apiBadge + '</td>'
+                + '<td>' + intervalStr + '</td>'
+                + '<td class="' + statusClass + '">' + esc(statusText) + '</td>'
+                + '<td class="text-muted">' + lastCheck + '</td>'
+                + '<td>' + (s.error_count || 0) + '</td>'
+                + '<td>' + noChangeBadge + '</td>'
+                + '<td>' + runBtn + ' ' + toggleBtn + '</td>'
+                + '</tr>';
+        }
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    } catch (e) {
+        if (container) container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+async function runSourceNow(provider, btn) {
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await authFetch(
+            '/dashboard/api/sources/run-now?provider=' + encodeURIComponent(provider),
+            { method: 'POST' }
+        );
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+            if (btn) {
+                btn.textContent = '已触发';
+                setTimeout(() => { btn.textContent = '采集'; btn.disabled = false; }, 2000);
+            }
+        } else {
+            alert('触发失败: ' + (data.detail || resp.status));
+            if (btn) btn.disabled = false;
+        }
+    } catch (e) {
+        alert('触发失败: ' + e.message);
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function toggleSource(provider, btn) {
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await authFetch(
+            '/dashboard/api/sources/' + encodeURIComponent(provider) + '/toggle',
+            { method: 'POST' }
+        );
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+            await loadSources();
+        } else {
+            alert('操作失败: ' + (data.detail || resp.status));
+            if (btn) btn.disabled = false;
+        }
+    } catch (e) {
+        alert('操作失败: ' + e.message);
+        if (btn) btn.disabled = false;
+    }
+}

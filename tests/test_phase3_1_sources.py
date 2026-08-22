@@ -45,20 +45,21 @@ def test_sourcetype_constants():
 
 
 # ============================================================
-# Test 2: 源注册总数 (34 个: 历次 phase 累加)
+# Test 2: 源注册总数 (37 个: 历次 phase 累加 + V4.8.3)
 # ============================================================
 def test_source_registration():
-    """get_all_sources 应返回 34 个源 (历次 phase 累加)
+    """get_all_sources 应返回 37 个源 (历次 phase 累加)
     演进: P2 6 + P3.1 6 + P3.6 7 + v4.2 1 + v4.3 9 + v4.3.1 7 = 36
     实际去重后 34 (siliconflow pricing 重复合并; 部分源共享 provider)
+    V4.8.3: +3 个 benchmark 源 (artificial_analysis/livebench/opencompass) → 37
     """
     print("\n=== Test 2: 源注册总数 ===")
     from intelligence.sources import get_all_sources
 
     all_sources = get_all_sources()
-    assert len(all_sources) == 34, f"应 34 个源, 实际 {len(all_sources)}"
+    assert len(all_sources) == 37, f"应 37 个源, 实际 {len(all_sources)}"
 
-    # 按 type 分组 (2026-08 v4.3.1 后快照)
+    # 按 type 分组 (V4.8.3 后快照)
     type_counts = {}
     for s in all_sources:
         type_counts[s.source_type] = type_counts.get(s.source_type, 0) + 1
@@ -67,12 +68,12 @@ def test_source_registration():
         "announcement": 9,              # deepseek/glm + v4.3.1 新增 7 家
         "model_list": 9,                # P3.1 2 + P3.6 7
         "price_aggregator": 10,        # siliconflow×2 + openrouter + v4.3 7 + qianwenai
-        "benchmark": 2,                 # lmsys/superclue
+        "benchmark": 5,                 # lmsys/superclue + V4.8.3: artificial_analysis/livebench/opencompass
     }
     assert type_counts == expected_counts, \
         f"type 分布应 = {expected_counts}, 实际 = {type_counts}"
 
-    print(f"  [OK] 总 34 个源: {dict(sorted(type_counts.items()))}")
+    print(f"  [OK] 总 37 个源: {dict(sorted(type_counts.items()))}")
 
 
 # ============================================================
@@ -90,11 +91,11 @@ def test_get_sources_by_type():
         f"model_list 至少含 siliconflow+volcengine, 实际 {providers}"
     assert len(providers) == 9, f"model_list 应 9 家, 实际 {len(providers)}: {providers}"
 
-    # benchmark 应有 2 个
+    # benchmark 应有 5 个 (V4.8.3: +artificial_analysis/livebench/opencompass)
     sources = get_sources_by_type("benchmark")
     providers = {s.provider for s in sources}
-    assert providers == {"lmsys", "superclue"}, \
-        f"benchmark 应含 lmsys+superclue, 实际 {providers}"
+    assert providers == {"lmsys", "superclue", "artificial_analysis", "livebench", "opencompass"}, \
+        f"benchmark 应含 5 家, 实际 {providers}"
 
     # 不存在的 type 返回空
     sources = get_sources_by_type("nonexistent")

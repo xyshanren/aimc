@@ -40,12 +40,13 @@ class SourceType:
 
 # Phase 3.1: 按 source_type 推荐轮询间隔 (秒)
 # 调度器会用这个表决定每个采集源的频率
+# V4.8.3: 温和降频 — web_page 15min→30min, announcement 30min→1h, price_aggregator 6h→12h
 DEFAULT_POLL_INTERVALS = {
-    SourceType.WEB_PAGE: 900,            # 15 分钟 (价格页变动中等)
+    SourceType.WEB_PAGE: 1800,           # 30 分钟 (价格页变动中等)
     SourceType.API_DOC: 3600,            # 1 小时 (API 文档变动少)
-    SourceType.ANNOUNCEMENT: 1800,       # 30 分钟 (公告变动频繁)
+    SourceType.ANNOUNCEMENT: 3600,       # 1 小时 (公告变动频繁, 但配合自适应降频)
     SourceType.MODEL_LIST: 86400,        # 1 天 (新模型不频繁)
-    SourceType.PRICE_AGGREGATOR: 21600,  # 6 小时 (价格变动中等)
+    SourceType.PRICE_AGGREGATOR: 43200,  # 12 小时 (价格变动中等)
     SourceType.BENCHMARK: 604800,        # 1 周 (榜单变动少)
 }
 
@@ -66,7 +67,7 @@ class IntelSourceBase:
     # 来源类型: web_page / api_doc / announcement
     source_type: str = "web_page"
     # 轮询间隔（秒）
-    poll_interval: int = 900
+    poll_interval: int = 1800
     # 上次内容哈希
     last_hash: Optional[str] = None
     # 上次完整内容（截断 50KB，用于相似度计算，避免 99% 一样的页面触发 AI 解析）

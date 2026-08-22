@@ -23,7 +23,7 @@ class MiniMaxAnnouncementSource(IntelSourceBase):
             provider="minimax",
             url="https://platform.minimaxi.com/announcements",
             source_type="announcement",
-            poll_interval=1800,
+            poll_interval=3600,  # 1小时 (V4.8.3: 原 30min→1h)
             css_selector="main",
             wait_until="domcontentloaded",
             wait_for="main",

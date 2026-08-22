@@ -393,6 +393,7 @@ class IntelSource(Base):
     last_hash = Column(Text, nullable=True, comment="上次内容哈希（Diff 用）")
     last_content = Column(Text, nullable=True, comment="上次完整内容（截断 50KB，用于相似度计算）")
     error_count = Column(Integer, default=0)
+    consecutive_no_change = Column(Integer, default=0, comment="连续无变化次数（自适应降频用）")
     created_at = Column(DateTime, default=func.now())
 
 

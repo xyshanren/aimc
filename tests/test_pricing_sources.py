@@ -132,13 +132,13 @@ def test_pricing_sources_init():
     print("\n=== Test 3: 5 个 pricing source 实例化 ===")
 
     cases = [
-        ("deepseek", DeepSeekPricingSource, "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/", 21600),
+        ("deepseek", DeepSeekPricingSource, "https://api-docs.deepseek.com/zh-cn/quick_start/pricing/", 43200),
         ("kimi", KimiPricingSource, "https://platform.kimi.com/", 3600),
         ("minimax", MiniMaxPricingSource, "https://platform.minimaxi.com/subscribe/token-plan", 3600),
         ("glm", GLMPricingSource, "https://bigmodel.cn/glm-coding", 3600),
         ("sensenova", SenseNovaPricingSource, "https://www.sensenova.cn/token-plan", 3600),
         ("stepfun", StepFunPricingSource, "https://platform.stepfun.com/step-plan", 3600),
-        ("siliconflow", SiliconFlowPricingCenterSource, "https://www.siliconflow.cn/pricing", 21600),
+        ("siliconflow", SiliconFlowPricingCenterSource, "https://www.siliconflow.cn/pricing", 43200),
     ]
 
     for expected_provider, cls, expected_url_part, expected_poll in cases:

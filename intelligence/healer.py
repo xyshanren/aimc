@@ -422,7 +422,11 @@ async def _alert_low_confidence(result: ParseResult, source):
         f"链接: {result.url}\n"
         f"请人工确认是否入库。"
     )
-    await send_alert(message)
+    await send_alert(
+        message,
+        key=f"low_confidence:{source.provider}",
+        silence_seconds=3600,
+    )
 
 
 async def handle_fetch_error(source, error: str):
@@ -449,13 +453,19 @@ async def handle_fetch_error(source, error: str):
         from intelligence.alerter import send_alert
 
         async with async_session_factory() as session:
-            # 增加错误计数（in-memory + DB）
-            source.error_count = (source.error_count or 0) + 1
-
-            # Phase 2C-2: 用 (provider, url) 替代 source_id
+            # V4.8.3: 从 DB 读权威 error_count (修 pickle 反序列化重置 bug)
+            # APScheduler SQLAlchemyJobStore 每次 tick 反序列化全新 source 副本,
+            # in-memory error_count 永远=0 → 永远走"首次失败"分支 → 永不自动禁用。
+            # 与 differ.has_changed 读 DB last_hash 同一 bug 类型, 同样修法。
             db_source = await crud.get_intel_source_by_provider_url(
                 session, source.provider, source.url
             )
+            if db_source:
+                source.error_count = db_source.error_count  # 用 DB 值覆盖内存值
+
+            # 增加错误计数（in-memory + DB）
+            source.error_count = (source.error_count or 0) + 1
+
             if db_source:
                 db_source.error_count = source.error_count
                 if source.error_count >= 3:

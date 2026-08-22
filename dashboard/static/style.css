@@ -829,8 +829,43 @@ details.card-folding > .card-body {
 
 /* ============ 状态文字 ============ */
 .status-active { color: var(--color-success); }
-.status-revoked, .status-disabled { color: var(--color-danger); }
+.status-revoked, .status-disabled, .status-error { color: var(--color-danger); }
 .status-pending, .status-approved, .status-applied { color: var(--color-warning); }
+
+/* ============ V4.8.3: 采集源管理表格 + badge ============ */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+.data-table th {
+    text-align: left;
+    padding: 4px 6px;
+    color: var(--text-muted);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border-muted);
+    white-space: nowrap;
+}
+.data-table td {
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border-muted);
+    vertical-align: middle;
+}
+.data-table tr:hover td {
+    background: var(--bg-elevated);
+}
+.badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    font-weight: 600;
+}
+.badge-warn {
+    background: rgba(255, 193, 7, 0.15);
+    color: var(--color-warning);
+    border: 1px solid var(--color-warning);
+}
 
 /* ============ 进度条 (组路由分布) ============ */
 .bar-track {

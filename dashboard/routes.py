@@ -834,6 +834,136 @@ async def run_source_now(provider: str = Query(..., description="厂商标识，
     }
 
 
+@router.get("/api/sources")
+async def list_sources(session: AsyncSession = Depends(get_session)):
+    """V4.8.3: 列出所有采集源（合并内存定义 + DB 状态）
+
+    返回每个源的: provider / source_type / url / poll_interval / status /
+    last_check_at / error_count / consecutive_no_change / enabled / api_endpoint_configured
+
+    用途: 采集源管理仪表盘展示 + 诊断
+    """
+    from intelligence.sources import get_all_sources
+    from intelligence.sources.base import DEFAULT_POLL_INTERVALS
+
+    mem_sources = get_all_sources()
+
+    # 批量从 DB 读状态 (按 provider+url 索引)
+    db_sources_map = {}
+    db_result = await session.execute(select(crud.IntelSource))
+    for row in db_result.scalars():
+        db_sources_map[(row.provider, row.url)] = row
+
+    sources_list = []
+    for src in mem_sources:
+        db_src = db_sources_map.get((src.provider, src.url))
+        interval = src.poll_interval or DEFAULT_POLL_INTERVALS.get(src.source_type, 900)
+        sources_list.append({
+            "provider": src.provider,
+            "source_type": src.source_type,
+            "url": src.url or "(API only)",
+            "poll_interval": interval,
+            "status": db_src.status if db_src else "new",
+            "last_check_at": db_src.last_check_at.isoformat() if db_src and db_src.last_check_at else None,
+            "error_count": db_src.error_count if db_src else 0,
+            "consecutive_no_change": db_src.consecutive_no_change if db_src else 0,
+            "enabled": src.enabled and (not db_src or db_src.status != "disabled"),
+            "api_endpoint_configured": bool(getattr(src, "api_endpoint", None)),
+        })
+
+    # 按 provider 分组排序
+    sources_list.sort(key=lambda s: (s["provider"], s["source_type"]))
+
+    return {"count": len(sources_list), "sources": sources_list}
+
+
+@router.post("/api/sources/{provider}/toggle")
+async def toggle_source(
+    provider: str,
+    session: AsyncSession = Depends(get_session),
+):
+    """V4.8.3: 启用/禁用某个 provider 的所有采集源
+
+    在 DB 中把 status 切换为 disabled / active。
+    scheduler._run_source_task 检查 DB status, disabled 时跳过。
+    """
+    from intelligence.sources import get_source_by_provider
+
+    sources = get_source_by_provider(provider)
+    if not sources:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+
+    toggled = 0
+    new_status = None
+    for src in sources:
+        db_src = await crud.get_intel_source_by_provider_url(session, src.provider, src.url)
+        if db_src:
+            if db_src.status == "disabled":
+                db_src.status = "active"
+                new_status = "active"
+            else:
+                db_src.status = "disabled"
+                new_status = "disabled"
+            toggled += 1
+        else:
+            # DB 无行 → upsert 一条并设为 disabled
+            await crud.upsert_intel_source(
+                session,
+                provider=src.provider,
+                url=src.url,
+                source_type=src.source_type,
+                poll_interval=src.poll_interval or 900,
+            )
+            # 刚 upsert 是 active, 如果要 disable 需要再查一次
+            db_src = await crud.get_intel_source_by_provider_url(session, src.provider, src.url)
+            if db_src:
+                db_src.status = "disabled"
+                new_status = "disabled"
+                toggled += 1
+
+    await session.commit()
+    return {"status": "ok", "provider": provider, "new_status": new_status, "toggled": toggled}
+
+
+@router.post("/api/sources/{provider}/interval")
+async def update_source_interval(
+    provider: str,
+    interval: int = Query(..., description="新的轮询间隔（秒）", ge=60, le=604800),
+    session: AsyncSession = Depends(get_session),
+):
+    """V4.8.3: 调整某个 provider 所有源的 poll_interval
+
+    写入 DB intel_sources.poll_interval。
+    注意: 实际调度间隔在 scheduler.start_scheduler 时从内存 source 定义读取,
+    此端点仅更新 DB 记录 (仪表盘展示用 + 下次重启时如读 DB 可生效)。
+    要立即生效需重启服务。
+    """
+    from intelligence.sources import get_source_by_provider
+
+    sources = get_source_by_provider(provider)
+    if not sources:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+
+    updated = 0
+    for src in sources:
+        db_src = await crud.get_intel_source_by_provider_url(session, src.provider, src.url)
+        if db_src:
+            db_src.poll_interval = interval
+            updated += 1
+        else:
+            await crud.upsert_intel_source(
+                session,
+                provider=src.provider,
+                url=src.url,
+                source_type=src.source_type,
+                poll_interval=interval,
+            )
+            updated += 1
+
+    await session.commit()
+    return {"status": "ok", "provider": provider, "new_interval": interval, "updated": updated}
+
+
 @router.post("/api/cache/refresh")
 async def refresh_route_cache():
     """手动刷新路由缓存 (Phase 3 #5)

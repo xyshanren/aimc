@@ -115,9 +115,9 @@ def test_qianwenai_registered_in_get_all_sources():
     assert isinstance(qianwenai_src, QianwenAISource)
     assert qianwenai_src.source_type == "price_aggregator"
 
-    # 总 source 数 (v4.3.1 后全量快照 = 34)
-    assert len(sources) == 34, (
-        f"v4.3.1 后应 34 个 source, 实际 {len(sources)}"
+    # 总 source 数 (V4.8.3 后全量快照 = 37)
+    assert len(sources) == 37, (
+        f"V4.8.3 后应 37 个 source, 实际 {len(sources)}"
     )
 
     print(f"  [OK] get_all_sources 共 {len(sources)} 个, qianwenai 已注册")
@@ -174,14 +174,15 @@ def test_qianwenai_poll_interval_off_peak():
     openrouter_poll = by_provider["openrouter"]
     qianwenai_poll = by_provider["qianwenai"]
 
-    # 错峰: qianwenai (1 天) vs siliconflow/openrouter (6 小时)
+    # 错峰: qianwenai (1 天) vs siliconflow/openrouter (12 小时)
+    # V4.8.3: price_aggregator 从 6h→12h, qianwenai 仍 1 天, 错峰比例 2x
     assert qianwenai_poll == 86400, f"qianwenai 应 1 天 (86400), 实际 {qianwenai_poll}"
-    assert siliconflow_poll == 21600, f"siliconflow 应 6h (21600), 实际 {siliconflow_poll}"
-    assert openrouter_poll == 21600, f"openrouter 应 6h (21600), 实际 {openrouter_poll}"
+    assert siliconflow_poll == 43200, f"siliconflow 应 12h (43200), 实际 {siliconflow_poll}"
+    assert openrouter_poll == 43200, f"openrouter 应 12h (43200), 实际 {openrouter_poll}"
 
-    # qianwenai 比另两个慢 (4 倍以上间隔)
-    assert qianwenai_poll >= 4 * siliconflow_poll, (
-        "qianwenai 应与 siliconflow 错峰, 频次 ≥ 4 倍"
+    # qianwenai 比另两个慢 (2 倍以上间隔)
+    assert qianwenai_poll >= 2 * siliconflow_poll, (
+        "qianwenai 应与 siliconflow 错峰, 频次 ≥ 2 倍"
     )
 
     print(f"  [OK] 错峰: siliconflow={siliconflow_poll}s, "

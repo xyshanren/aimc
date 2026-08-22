@@ -22,7 +22,7 @@ class SiliconFlowPricingSource(IntelSourceBase):
             provider="siliconflow",
             url="https://docs.siliconflow.cn/cn-userguide/pricing",
             source_type=SourceType.PRICE_AGGREGATOR,
-            poll_interval=21600,  # 6 小时
+            poll_interval=43200,  # 12 小时 (V4.8.3: 原 6h→12h)
             css_selector="article, main, body",
             wait_until="domcontentloaded",
             wait_for=None,
@@ -40,7 +40,7 @@ class OpenRouterPricingSource(IntelSourceBase):
             provider="openrouter",
             url="https://openrouter.ai/models",
             source_type=SourceType.PRICE_AGGREGATOR,
-            poll_interval=21600,  # 6 小时
+            poll_interval=43200,  # 12 小时 (V4.8.3: 原 6h→12h)
             css_selector="main, body",
             wait_until="networkidle",  # SPA 多, 等网络空闲
             wait_for="main",
@@ -67,7 +67,7 @@ class DeepSeekPricingSource(IntelSourceBase):
             provider="deepseek",
             url="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/",
             source_type=SourceType.PRICE_AGGREGATOR,
-            poll_interval=21600,  # 6 小时
+            poll_interval=43200,  # 12 小时 (V4.8.3: 原 6h→12h)
             css_selector="table, main, article",
             wait_until="domcontentloaded",
         )
@@ -138,7 +138,7 @@ class SiliconFlowPricingCenterSource(IntelSourceBase):
             provider="siliconflow",
             url="https://www.siliconflow.cn/pricing",
             source_type=SourceType.PRICE_AGGREGATOR,
-            poll_interval=21600,  # 6 小时
+            poll_interval=43200,  # 12 小时 (V4.8.3: 原 6h→12h)
             css_selector="main, .pricing-table, table",
             wait_until="domcontentloaded",
         )

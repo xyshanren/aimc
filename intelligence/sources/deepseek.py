@@ -14,7 +14,7 @@ class DeepSeekSource(IntelSourceBase):
             provider="deepseek",
             url="https://api.deepseek.com/pricing",
             source_type="web_page",
-            poll_interval=900,  # 15分钟
+            poll_interval=1800,  # 30分钟 (V4.8.3: 原 15min→30min)
             css_selector="main",
             # Phase 2B-3: pricing 页是静态 HTML，DOM 解析完即可
             wait_until="domcontentloaded",
@@ -30,7 +30,7 @@ class DeepSeekAnnouncementSource(IntelSourceBase):
             provider="deepseek",
             url="https://api.deepseek.com/news",
             source_type="announcement",
-            poll_interval=1800,  # 30分钟
+            poll_interval=3600,  # 1小时 (V4.8.3: 原 30min→1h)
             css_selector="main",
             # Phase 2B-3: 公告页可能 JS 加载，等主内容容器出现
             wait_until="domcontentloaded",

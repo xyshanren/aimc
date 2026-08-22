@@ -46,6 +46,10 @@ from intelligence.sources.benchmark import (
     LMSYSArenaBenchmarkSource,
     SuperCLUEBenchmarkSource,
 )
+# V4.8.3: 注册 3 个已有但未挂载的 benchmark 源 (V4.6.3 写了源类, 未注册到 get_all_sources)
+from intelligence.sources.artificial_analysis import ArtificialAnalysisBenchmarkSource
+from intelligence.sources.livebench import LiveBenchBenchmarkSource
+from intelligence.sources.opencompass import OpenCompassBenchmarkSource
 # Phase 4 v4.3.1 (2026-08-13): 7 家 announcement source (优惠情报采集)
 from intelligence.sources.kimi import KimiAnnouncementSource
 from intelligence.sources.minimax import MiniMaxAnnouncementSource
@@ -66,6 +70,8 @@ def get_all_sources() -> list[IntelSourceBase]:
 
     Phase 4 v4.2 (2026-08-06): +1 个观察性聚合源 QianwenAISource → 共 19 个
     - 3 个 price_aggregator (siliconflow / openrouter / qianwenai)
+
+    V4.8.3 (2026-08-21): +3 个 benchmark 源 (artificial_analysis / livebench / opencompass) → 共 35 个
     """
     return [
         # Phase 2A 原有 (价格页/公告页)
@@ -103,6 +109,10 @@ def get_all_sources() -> list[IntelSourceBase]:
         # Phase 3.1 benchmark
         LMSYSArenaBenchmarkSource(),
         SuperCLUEBenchmarkSource(),
+        # V4.8.3: 注册 3 个已有但未挂载的 benchmark 源
+        ArtificialAnalysisBenchmarkSource(),
+        LiveBenchBenchmarkSource(),
+        OpenCompassBenchmarkSource(),
         # Phase 4 v4.3.1 announcement source (7 家,补齐 9 厂商优惠情报采集)
         KimiAnnouncementSource(),
         MiniMaxAnnouncementSource(),

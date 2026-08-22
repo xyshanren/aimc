@@ -14,7 +14,7 @@ class GLMSource(IntelSourceBase):
             provider="glm",
             url="https://open.bigmodel.cn/pricing",
             source_type="web_page",
-            poll_interval=900,
+            poll_interval=1800,  # 30分钟 (V4.8.3: 原 15min→30min)
             css_selector="main",
             # Phase 2B-3: 定价页静态
             wait_until="domcontentloaded",
@@ -30,7 +30,7 @@ class GLMActivitySource(IntelSourceBase):
             provider="glm",
             url="https://open.bigmodel.cn/news",
             source_type="announcement",
-            poll_interval=1800,
+            poll_interval=3600,  # 1小时 (V4.8.3: 原 30min→1h)
             css_selector="main",
             # Phase 2B-3: 公告页
             wait_until="domcontentloaded",

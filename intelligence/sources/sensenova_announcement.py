@@ -25,7 +25,7 @@ class SenseNovaAnnouncementSource(IntelSourceBase):
             provider="sensenova",
             url="https://platform.sensenova.cn/news",
             source_type="announcement",
-            poll_interval=1800,
+            poll_interval=3600,  # 1小时 (V4.8.3: 原 30min→1h)
             css_selector="main",
             wait_until="domcontentloaded",
             wait_for="main",

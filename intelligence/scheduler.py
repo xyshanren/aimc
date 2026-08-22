@@ -83,42 +83,44 @@ async def start_scheduler():
     # - 减少 apscheduler_jobs 表行数 + 减少错峰计算
     # - 保留每个 source 独立的 fire-and-forget 行为
     from collections import defaultdict
-    by_provider: dict[str, list] = defaultdict(list)
+    # V4.8.3: 按 (provider, poll_interval) 分组调度, 替代旧的 min(poll_interval) 批量
+    # 旧逻辑: 一个 provider 一个 batch job, 间隔=min(所有源 poll_interval)
+    #   → 86400s 的 model_list 源被 900s 的 web_page 源拉低到每 15 分钟跑一次
+    #   → model_list 源每天被采 96 次而非 1 次 → 无意义 401 告警刷屏
+    # 新逻辑: 按 poll_interval 分组, 同间隔的源共享一个 job
+    #   → 900s 源每 15 分钟跑, 86400s 源每天跑一次, 互不干扰
+    by_provider_interval: dict[tuple[str, int], list] = defaultdict(list)
     for source in sources:
-        by_provider[source.provider].append(source)
+        interval = source.poll_interval or DEFAULT_POLL_INTERVALS.get(source.source_type, 900)
+        by_provider_interval[(source.provider, interval)].append(source)
 
-    # 删旧 per-source job (一次性迁移)
+    # 删旧 per-provider batch job (一次性迁移: batch_crawl_{provider} → batch_crawl_{provider}_{interval})
+    # 同时删更早的 per-source job
     for source in sources:
-        old_job_id = f"crawl_{source.provider}_{source.source_type}"
-        try:
-            scheduler.remove_job(old_job_id)
-            logger.info(f"阶段2: 移除旧 per-source job {old_job_id}")
-        except Exception:
-            pass  # job 不存在 OK
+        for old_job_id in (
+            f"crawl_{source.provider}_{source.source_type}",
+            f"batch_crawl_{source.provider}",
+        ):
+            try:
+                scheduler.remove_job(old_job_id)
+            except Exception:
+                pass  # job 不存在 OK
 
-    for provider, provider_sources in by_provider.items():
-        # batch 间隔 = 该 provider 所有 source 的最短 poll_interval
-        # (高频 source 拉低 batch 间隔, 低频 source 跟上)
-        intervals = [
-            s.poll_interval or DEFAULT_POLL_INTERVALS.get(s.source_type, 900)
-            for s in provider_sources
-        ]
-        batch_interval = min(intervals) if intervals else 3600
-        # 限频: batch 内每个 source 至少间隔 30s (避免同时 fetch 撞限流)
+    for (provider, interval), group_sources in by_provider_interval.items():
         scheduler.add_job(
             _run_provider_batch,
             trigger=IntervalTrigger(
-                seconds=batch_interval,
-                jitter=min(300, max(1, batch_interval // 20)),
+                seconds=interval,
+                jitter=min(300, max(1, interval // 20)),
             ),
-            args=[provider, provider_sources],
-            id=f"batch_crawl_{provider}",
-            name=f"批量采集: {provider} ({batch_interval}s, {len(provider_sources)} sources)",
+            args=[provider, group_sources],
+            id=f"batch_crawl_{provider}_{interval}",
+            name=f"批量采集: {provider} ({interval}s, {len(group_sources)} sources)",
             replace_existing=True,
         )
         logger.info(
-            f"注册批量采集: {provider} ({len(provider_sources)} sources, "
-            f"间隔 {batch_interval}s)"
+            f"注册批量采集: {provider} ({len(group_sources)} sources, "
+            f"间隔 {interval}s)"
         )
 
     # 路由缓存定时刷新
@@ -322,6 +324,51 @@ async def _run_source_task(source):
         logger.debug(f"采集已禁用 (AIMC_CRAWL_ENABLED=false), skip: {source.provider}")
         return
 
+    # V4.8.3: per-source 禁用检查 (dashboard toggle 写 DB status=disabled)
+    try:
+        from db.engine import async_session_factory
+        from db import crud
+        async with async_session_factory() as session:
+            db_src = await crud.get_intel_source_by_provider_url(
+                session, source.provider, source.url
+            )
+            if db_src and db_src.status == "disabled":
+                logger.debug(
+                    f"源已禁用 (dashboard toggle), skip: "
+                    f"{source.provider}/{source.source_type}"
+                )
+                return
+    except Exception as e:
+        logger.debug(f"per-source 禁用检查失败 (非阻断): {e}")
+
+    # V4.8.3: 自适应降频 — 连续无变化的源降低采集频率
+    # consecutive_no_change >= 4 → 4x 间隔 (15min 源 → 1h)
+    # consecutive_no_change >= 10 → 8x 间隔 (15min 源 → 2h)
+    # 有变化时 differ._update_source_hash 会归零 consecutive_no_change
+    try:
+        from intelligence.differ import load_no_change_count
+        no_change = await load_no_change_count(source)
+        if no_change >= 4:
+            interval = source.poll_interval or 900
+            multiplier = 8 if no_change >= 10 else 4
+            effective_interval = interval * multiplier
+            from datetime import datetime as _dt
+            from db.engine import async_session_factory
+            from db import crud
+            async with async_session_factory() as session:
+                db_src = await crud.get_intel_source_by_provider_url(
+                    session, source.provider, source.url
+                )
+                last_check = db_src.last_check_at if db_src else None
+            if last_check and (_dt.now() - last_check).total_seconds() < effective_interval:
+                logger.debug(
+                    f"自适应降频: {source.provider} 连续 {no_change} 次无变化, "
+                    f"距上次检查不足 {effective_interval}s, 跳过"
+                )
+                return
+    except Exception as e:
+        logger.debug(f"自适应降频检查失败 (非阻断): {e}")
+
     try:
         from intelligence.fetcher import fetch_page_with_error
         from intelligence.differ import has_changed
@@ -334,6 +381,16 @@ async def _run_source_task(source):
         # Phase 3.6: 优先 API 结构化抽取 (如配置了)
         if getattr(source, "api_endpoint", None):
             api_key = await _resolve_api_key(source)
+            # V4.8.3: 无可用 API key + 无 HTML fallback → 静默跳过, 不告警
+            # 这 7 个 model_list 源 (deepseek/glm/qwen/stepfun/sensenova/hunyuan/moonshot)
+            # 配了 api_endpoint 但无对应 channel 的 API key → 每次 401 → 告警刷屏。
+            # 配了 key 后自动恢复采集 (api_key 非 None 即走正常流程)。
+            if not api_key and not source.url:
+                logger.info(
+                    f"{source.provider} model_list 源无可用 API key, 静默跳过 "
+                    f"(配置 api_key_from='{source.api_key_from}' 对应 channel 后自动恢复)"
+                )
+                return
             try:
                 model_ids = await fetch_models_via_api(
                     base_url=source.api_endpoint,
@@ -532,7 +589,11 @@ async def _monthly_official_audit_task():
                     f"- 爬取失败: {fetch_errors} 个厂商\n"
                     f"建议: 跑 python scripts/check_model_consistency.py --check official 查看详情"
                 )
-                await send_alert(msg)
+                await send_alert(
+                    msg,
+                    key="monthly_audit:official_source_drift",
+                    silence_seconds=86400,
+                )
             except Exception as e:
                 logger.warning(f"月度审查告警发送失败 (非阻断): {e}")
     except Exception as e:

@@ -89,20 +89,20 @@ def test_new_sources_configured():
 
 
 # ============================================================
-# Test 2: get_all_sources 返回 34 个 (v4.3.1 后全量快照)
+# Test 2: get_all_sources 返回 37 个 (V4.8.3 后全量快照)
 # ============================================================
 def test_get_all_sources_count():
-    print("\n=== Test 2: get_all_sources() 返回 34 个 source ===")
+    print("\n=== Test 2: get_all_sources() 返回 37 个 source ===")
     from intelligence.sources import get_all_sources
 
     srcs = get_all_sources()
-    assert len(srcs) == 34, f"v4.3.1 后应 34 个 source, 实际 {len(srcs)}"
+    assert len(srcs) == 37, f"V4.8.3 后应 37 个 source, 实际 {len(srcs)}"
 
     by_type = {}
     for s in srcs:
         by_type.setdefault(s.source_type, []).append(s.provider)
 
-    print(f"  [OK] 总数 34: {dict((k, len(v)) for k, v in by_type.items())}")
+    print(f"  [OK] 总数 37: {dict((k, len(v)) for k, v in by_type.items())}")
     for st, providers in sorted(by_type.items()):
         print(f"        {st}: {providers}")
 
@@ -126,12 +126,16 @@ def test_model_list_sources_count():
 
 
 # ============================================================
-# Test 4: scheduler API 失败 + url="" → 跳过
+# Test 4: scheduler 无 API key + url='' → 静默跳过 (V4.8.3)
 # ============================================================
 def test_scheduler_skip_empty_url_on_api_fail():
-    print("\n=== Test 4: scheduler API 失败 + url='' → 跳过 ===")
+    """V4.8.3: api_endpoint 配了但无可用 API key 且 url='' → 静默跳过, 不告警
+
+    旧逻辑 (2026-08 前): API 失败 → handle_fetch_error → 飞书告警刷屏
+    新逻辑 (V4.8.3):     无 key + 无 url → return, 不调 API 也不告警
+    """
+    print("\n=== Test 4: scheduler 无 API key + url='' → 静默跳过 ===")
     from intelligence.scheduler import _run_source_task
-    from intelligence.sources.api_models import FetchApiError
     from intelligence.sources.base import IntelSourceBase
 
     # 模拟 StepFun source (url="", api_endpoint="https://api.stepfun.com/v1")
@@ -144,27 +148,23 @@ def test_scheduler_skip_empty_url_on_api_fail():
         api_key_from="stepfun",
     )
 
-    # patch fetch_models_via_api → raise FetchApiError(401)
-    # patch fetch_page_with_error → 不应被调用
-    # patch _resolve_api_key → 返 None
-    # patch handle_fetch_error → 验证被调用
-
+    api_called = {"count": 0}
     fetch_called = {"count": 0}
+    fetch_err_called = {"msg": None}
 
     async def _mock_fetch_api(*a, **kw):
-        raise FetchApiError("HTTP 401: invalid api key", status_code=401, url="https://api.stepfun.com/v1")
+        api_called["count"] += 1
+        return []
 
     async def _mock_fetch_page(*a, **kw):
         fetch_called["count"] += 1
         return None, "should not be called"
 
-    fetch_err_called = {"msg": None}
-
     async def _mock_handle_fetch_error(s, err):
         fetch_err_called["msg"] = err
 
     async def _mock_resolve_api_key(s):
-        return None
+        return None  # 模拟无可用 key
 
     async def _mock_has_changed(s, content):
         return True
@@ -180,16 +180,19 @@ def test_scheduler_skip_empty_url_on_api_fail():
          patch("intelligence.healer.handle_parse_result", _mock_handle_parse_result):
         asyncio.run(_run_source_task(source))
 
+    # 验证: 无 key + 无 url → 静默跳过, 不调 API
+    assert api_called["count"] == 0, (
+        f"无 API key 时不应调 fetch_models_via_api, 实际调用 {api_called['count']} 次"
+    )
     # 验证: 不应调用 fetch_page_with_error (因为 url="")
     assert fetch_called["count"] == 0, (
         f"url='' 时不应走 HTML fallback, 实际调用 {fetch_called['count']} 次"
     )
-    # 验证: handle_fetch_error 被调用 (告知用户 API 失败且无 HTML 兜底)
-    assert fetch_err_called["msg"] is not None, "应调用 handle_fetch_error"
-    assert "无 HTML" in fetch_err_called["msg"] or "API" in fetch_err_called["msg"], (
-        f"错误信息应提及 API/HTML, 实际: {fetch_err_called['msg']}"
+    # 验证: 不应调用 handle_fetch_error (V4.8.3: 静默跳过, 不告警)
+    assert fetch_err_called["msg"] is None, (
+        f"静默跳过不应调 handle_fetch_error, 实际调用了: {fetch_err_called['msg']!r}"
     )
-    print(f"  [OK] url='' 时跳过 HTML fallback, msg={fetch_err_called['msg']!r}")
+    print("  [OK] 无 key + url='' → 静默跳过, 不调 API/HTML/告警")
 
 
 # ============================================================
