@@ -22,6 +22,9 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# V4.8.4: 追踪 run_source_now 派发的 in-flight task, 供 shutdown 优雅等待
+_inflight_tasks: set[asyncio.Task] = set()
+
 
 def _build_scheduler() -> AsyncIOScheduler:
     """构建 scheduler（Phase 2C-2: 用 SQLAlchemyJobStore 持久化 jobs）
@@ -244,6 +247,28 @@ async def stop_scheduler():
         logger.info("调度器已停止")
 
 
+async def wait_inflight_fetches(timeout: float = 30):
+    """V4.8.4: 优雅等待 in-flight fetch task 完成 (shutdown 时调用)
+
+    stop_scheduler 只停调度器 (不再派发新 task), 但已通过 run_source_now 或
+    _run_provider_batch 派发的 task 仍在运行. 若此时直接 close_browser 会
+    导致正在使用的 context/page 崩溃. 本函数给它们一个优雅退出的窗口.
+    """
+    if not _inflight_tasks:
+        return
+    logger.info(f"等待 {len(_inflight_tasks)} 个 in-flight fetch task (timeout={timeout}s)")
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*_inflight_tasks, return_exceptions=True),
+            timeout=timeout,
+        )
+        logger.info("所有 in-flight fetch task 已完成")
+    except asyncio.TimeoutError:
+        logger.warning(f"等待 in-flight task 超时 ({timeout}s), 强制取消 {len(_inflight_tasks)} 个")
+        for t in list(_inflight_tasks):
+            t.cancel()
+
+
 async def run_source_now(provider: str) -> int:
     """立即触发指定 provider 的所有 source（不等待定时器）
 
@@ -269,8 +294,10 @@ async def run_source_now(provider: str) -> int:
 
     count = 0
     for source in sources:
-        # fire-and-forget：每个 source 一个独立 task
-        asyncio.create_task(_run_source_task(source))
+        # V4.8.4: 追踪 in-flight task (旧: 纯 fire-and-forget, shutdown 无法等待)
+        task = asyncio.create_task(_run_source_task(source))
+        _inflight_tasks.add(task)
+        task.add_done_callback(_inflight_tasks.discard)
         count += 1
 
     logger.info(f"手动触发 {provider}: 启动 {count} 个 task")

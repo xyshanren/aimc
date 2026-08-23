@@ -111,7 +111,7 @@ curl http://localhost:8080/dashboard/api/data-freshness \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
-返回 ~21 个 APScheduler job 的健康状态（`last_success_at` / `health`: healthy/warning/stale/unknown）。
+返回 ~36 个 APScheduler job 的健康状态（`last_success_at` / `health`: healthy/warning/stale/unknown）。
 
 ### GET /dashboard/api/suggestions?status=pending
 
@@ -199,8 +199,9 @@ curl 'http://localhost:8080/dashboard/api/stats/per-user?days=7' \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
-返回 `{count, days, items: [{caller_id, username, request_count, input_tokens, output_tokens, total_tokens, total_cost}]}`。
+返回 `{count, days, items: [{caller_id, username, request_count, input_tokens, output_tokens, total_tokens, total_cost, keys: [{key_id, label, request_count, ...}]}]}`。
 `caller_id=NULL` 的行显示为 `(未鉴权/legacy)`（走全局 key 的请求）。
+V4.8.1 起每行内嵌 `keys` 子数组（按 key label 下钻，key_id 为 NULL 的请求不入子数组）。
 
 ### GET /dashboard/api/keys（V4.8）
 
@@ -260,6 +261,54 @@ curl http://localhost:8080/dashboard/api/pending-review \
 
 返回字段含 `display_name`（来自 `model_registry`，方便用户判断）和 `field_changed`（前端映射为中文标签：create→新模型入库、tier→档位调整、metadata→元信息变更等）。
 
+### GET /dashboard/api/sources（V4.8.3）
+
+采集源列表（合并内存定义 + DB 状态）：
+
+```bash
+curl http://localhost:8080/dashboard/api/sources \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+返回 `{count, sources: [{provider, source_type, url, poll_interval, status, last_check_at, error_count, consecutive_no_change, enabled, api_endpoint_configured}]}`。
+
+### POST /dashboard/api/sources/{provider}/toggle（V4.8.3）
+
+启用/禁用该 provider 的所有源（DB `status` 在 `disabled` / `active` 间切换，
+scheduler 对 `disabled` 源跳过采集）：
+
+```bash
+curl -X POST http://localhost:8080/dashboard/api/sources/deepseek/toggle \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+返回 `{"status":"ok","provider","new_status","toggled"}`（`toggled` = 本次切换的源数，
+取决于 DB 中已有行数）。未知 provider 返回 404。
+
+### POST /dashboard/api/sources/{provider}/interval（V4.8.3）
+
+调整该 provider 所有源的轮询间隔（写入 DB `intel_sources.poll_interval`，
+**重启后生效**——实际调度间隔在启动时从内存 source 定义读取）：
+
+```bash
+curl -X POST 'http://localhost:8080/dashboard/api/sources/deepseek/interval?interval=3600' \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+`interval` 取值 60~604800 秒。
+
+### POST /dashboard/api/sources/run-now
+
+立即触发指定 provider 的采集（后台 fire-and-forget，接口立即返回）：
+
+```bash
+curl -X POST 'http://localhost:8080/dashboard/api/sources/run-now?provider=deepseek' \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+# {"status":"started","provider":"deepseek","count":4}
+```
+
+未知 provider 返回 400。
+
 ## 错误响应格式
 
 AIMC 网关错误（4xx/5xx）用 OpenAI 兼容格式：
@@ -294,6 +343,7 @@ FROM usage_logs ORDER BY id DESC LIMIT 5
 |------|------|
 | `channel_id` / `account_id` | 走哪个渠道/账号 |
 | `caller_id` | 调用方 user id（V4.8；走全局 key 时 NULL）|
+| `key_id` | 命中的 api_keys.id（V4.8.1；按 key label 下钻用，走全局 key 时 NULL）|
 | `model` | 实际命中的 model（精确路由 = requested_model；组路由 = 实际命中）|
 | `group_id` | tier:/scene: 路由时的组 ID（精确路由 NULL；`tier:xxx/model` 写法已归一化存 `tier:xxx`）|
 | `input_tokens` / `output_tokens` | 真实 token 用量 |

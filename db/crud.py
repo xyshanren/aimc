@@ -278,6 +278,38 @@ async def expire_promotion(session: AsyncSession, promo_id: int):
     await session.execute(stmt)
 
 
+# === 优惠审查队列操作 (V4.8.4) ===
+
+async def create_promotion_review(session: AsyncSession, **kwargs):
+    """写入低置信度优惠审查队列"""
+    from db.models import PromotionReviewQueue
+    item = PromotionReviewQueue(**kwargs)
+    session.add(item)
+    await session.flush()
+    return item
+
+
+async def list_pending_promotion_reviews(
+    session: AsyncSession, limit: int = 50
+) -> list:
+    """列出 approved=0 的待审条目, 按创建时间倒序"""
+    from db.models import PromotionReviewQueue
+    stmt = (
+        select(PromotionReviewQueue)
+        .where(PromotionReviewQueue.approved == 0)
+        .order_by(PromotionReviewQueue.created_at.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def get_promotion_review(session: AsyncSession, review_id: int):
+    """按 id 查单条审查记录"""
+    from db.models import PromotionReviewQueue
+    return await session.get(PromotionReviewQueue, review_id)
+
+
 # === 频限配额操作 ===
 
 async def create_quota(session: AsyncSession, **kwargs) -> ChannelQuota:

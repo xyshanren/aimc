@@ -11,7 +11,7 @@
 |------|------|----------|
 | **模型分组建议**（方案A） | 待审/已批/已应用的 model + group 调整建议 | §1 |
 | **Prompt Cache 节省** | cache 命中率 + 节省金额 | §2 |
-| **数据新鲜度** | apscheduler job（按 provider 数浮动，约 21 个）的健康状态 | §3 |
+| **数据新鲜度** | apscheduler job（按 provider × 轮询间隔分组，约 36 个）的健康状态 | §3 |
 | **用量统计** | 每天请求数 / token / 平均延迟 | §4 |
 | **组路由命中率** | tier:xxx 调用频次 + 跳到 fallback 的次数 | §5 |
 | **按人用量**（V4.8） | 近 7 天各调用方的请求数/token/费用 | §6 |
@@ -19,6 +19,7 @@
 | **账号管理** | 渠道账号增删 / 过期扫描 | §7 |
 | **待确认能力变更** | AI 推断的模型能力变更，人工批准/拒绝 | §7 |
 | **优惠情报** | 各厂商活动（已过滤低置信度垃圾条目） | §7 |
+| **采集源管理**（V4.8.3） | 采集源列表 / 立即采集 / 禁用启用 | §8 |
 
 ---
 
@@ -69,8 +70,9 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 **怎么用**：
 - � = 该 job 失败了，看 `journalctl --user -u aimc -n 50` 查原因
 - 🟡 = 该 job 超过 1 天没成功（数据可能过期；注意部分 job 如
-  batch_crawl_siliconflow 调度间隔长，偶尔 warning 是正常的）
-- job 列表含 batch_crawl_<provider> + refresh_route_cache + check_key_rotation +
+  batch_crawl_siliconflow_43200 调度间隔长，偶尔 warning 是正常的）
+- job 列表含 batch_crawl_<provider>_<interval>（V4.8.3 按 provider × 轮询间隔分组）
+  + refresh_route_cache + check_key_rotation +
   cross_source_detection + monthly_official_audit + weekly_suggest_changes
 
 **API**：`GET /dashboard/api/data-freshness`。
@@ -100,6 +102,7 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 **按人用量**：近 7 天各调用方（caller）的请求数 / input / output / 总 token / 估算费用。
 - 带 `aimc-` 前缀多用户 key 的请求按用户名分组
 - 走全局 `AIMC_API_KEY` 的请求显示为 `(未鉴权/legacy)`
+- 点击行可展开该用户各 key（label）的明细用量（V4.8.1 起）
 
 **Key 管理**：用户列表 + 每人的 key（前缀脱敏）/ admin 标记 / 日月限额 / 最后使用时间。
 - 吊销：点对应 key 的「吊销」按钮，立即失效不可恢复
@@ -126,6 +129,25 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 - 同一厂商同名活动自动去重：写入时按 (provider, title) 查 7 天窗口去重，读取时
   按 (provider, title) 取最新一条，避免重扫重复刷屏（2026-08-21 起）。
 - 条目附「查看原文 ↗」链接，点击跳转采集源页面（2026-08-21 起）。
+
+## §8 采集源管理（V4.8.3）
+
+**位置**：dashboard 底部（折叠卡片）
+
+**显示**：全部 37 个采集源的 provider / 类型（API / HTML）/ 轮询间隔 / 状态 /
+最后检查时间 / 错误次数 / 连续无变化次数。
+
+**操作**：
+- 「采集」— 立即触发该 provider 的所有源（不等定时器，后台 fire-and-forget）
+- 「禁用 / 启用」— 按 provider 切换（写 DB `status=disabled`，scheduler 跳过禁用源）
+
+**注意**：
+- 连续无变化 ≥ 4 次的源会自适应降频（4 倍间隔；≥ 10 次降为 8 倍），前端黄色
+  badge 提示，无需手动处理
+- 调整轮询间隔暂无 UI 按钮，走 API（`POST /dashboard/api/sources/{provider}/interval`，
+  重启后生效，见 [dev/api.md](../dev/api.md)）
+
+**API**：`GET /dashboard/api/sources`。
 
 ---
 
@@ -155,3 +177,4 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 - `GET /dashboard/api/keys` — 用户 key 列表（脱敏）
 - `GET /dashboard/api/stats/group_routing` — 组路由命中分布
 - `GET /dashboard/api/promotions` — 优惠情报（默认过滤低置信度）
+- `GET /dashboard/api/sources` — 采集源列表（V4.8.3）

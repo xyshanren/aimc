@@ -204,6 +204,31 @@ class Promotion(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
+class PromotionReviewQueue(Base):
+    """低置信度优惠审查队列 (V4.8.4)
+
+    AI 解析置信度 < threshold 的优惠不直接入 promotions 表,
+    而是暂存到此表等待人工审批。参照 model_capabilities_log 的 approved 模式。
+
+    - approved=0: 待审 (dashboard 展示)
+    - approved=1 + action="approved": 已批准 (已入 promotions 表)
+    - approved=1 + action="rejected": 已拒绝 (不入 promotions 表, 记录留底)
+    """
+    __tablename__ = "promotion_review_queue"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(Text, nullable=False, comment="厂商标识")
+    title = Column(Text, nullable=True, comment="AI 解析的活动标题")
+    summary = Column(Text, nullable=True, comment="AI 解析的摘要")
+    url = Column(Text, nullable=True, comment="活动链接")
+    confidence = Column(Float, nullable=True, comment="AI 解析置信度 0-1")
+    raw_data = Column(Text, nullable=True, comment="完整 ParseResult JSON (批准时用于入库)")
+    approved = Column(Integer, default=0, comment="0=待审, 1=已处理")
+    action = Column(Text, nullable=True, comment="approved / rejected (approved=1 时有值)")
+    created_at = Column(DateTime, default=func.now())
+    reviewed_at = Column(DateTime, nullable=True, comment="人工处理时间")
+
+
 class ChannelQuota(Base):
     """频限配额表"""
     __tablename__ = "channel_quotas"

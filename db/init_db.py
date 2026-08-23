@@ -48,6 +48,7 @@ async def ensure_migrations():
     - usage_logs.caller_id (V4.8, 2026-08-19) — 多用户 caller 计量
     - users / api_keys 表 (V4.8, 2026-08-19) — 多用户 + 多 key 鉴权 (create_all 自动建表)
     - model_registry.raw_ids / supports_prompt_cache (P0-2, 2026-08-14) — 上游 raw_id 映射 + cache 支持
+    - promotion_review_queue 表 (V4.8.4, 2026-08-21) — 低置信度优惠审查队列 (create_all 自动建表)
     """
     async with engine.begin() as conn:
         # intel_sources.last_content

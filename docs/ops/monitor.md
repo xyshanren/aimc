@@ -5,7 +5,7 @@
 
 ## 1. 数据新鲜度（job_health）
 
-Dashboard "数据新鲜度" 卡片显示 ~21 个 APScheduler job 的健康度。
+Dashboard "数据新鲜度" 卡片显示 ~36 个 APScheduler job 的健康度。
 
 ### 健康度等级
 

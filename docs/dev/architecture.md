@@ -40,7 +40,7 @@
 │  │  建议生成 (analytics/suggest_changes.py)            │ │
 │  │  报警 (alerter.py - Bark/飞书/Server酱)            │ │
 │  └─────────────────────────────────────────────────────┘ │
-│           ~21 个 APScheduler job (按 provider 数浮动)   │
+│           ~36 个 APScheduler job (provider×间隔分组, V4.8.3)│
 │           + listener 写 job_health (P0-8)               │
 └────────────────┬───────────────────────────────────────────┘
                  │
@@ -150,9 +150,12 @@ check_account_quota(account_id, estimated_tokens) [P0-6]
 ### `intelligence/scheduler.py` — 定时任务（阶段 2）
 
 ```
-21 个 APScheduler job:
-├── batch_crawl_<provider> (15 个): 合并 announcement + model_list + price_aggregator
-├── refresh_route_cache (1): 60s TTL 刷新路由缓存
+36 个 APScheduler job (V4.8.3 起):
+├── batch_crawl_<provider>_<interval> (30 个): 按 provider × poll_interval 分组
+│   (V4.8.3 修复旧 min(interval) 批量导致 model_list 源被拉高频;
+│    默认间隔: web_page 30min / announcement 1h / price_aggregator 12h /
+│    model_list 1d / benchmark 1w; 连续无变化自适应降频 4x/8x)
+├── refresh_route_cache (1): 刷新路由缓存 (间隔 ROUTE_REFRESH_INTERVAL, TTL 60s)
 ├── check_key_rotation (1): 每天检查 key 轮换
 ├── cross_source_detection (1): 每天跨源交叉验证
 ├── monthly_official_audit (1): 每月 1 号官方源审查

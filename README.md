@@ -22,7 +22,7 @@ AIMC（AI Model Compass）是一款专为个人开发者设计的**轻量级 LLM
 - **多维限额** — 账号 7 维度（rpm/tpm/daily/weekly/5h/concurrent/balance）+ 用户日/月维度，超限自动 failover
 - **Prompt Cache 真实集成** — 稳定前缀分段 hash 注入 `prompt_cache_key`（OpenAI）/ `cache_control`（Anthropic），cache 命中省钱（实测 7 天命中率 91.8%，省 ¥137）
 - **多账号 cooldown + score-based 选择** — 失败账号自动冷却，5 维加权选最优
-- **Dashboard 账号管理 UI** — 无需 SSH，Web 加/轮换/启用/禁用账号
+- **Dashboard 账号管理 UI** — 无需 SSH，Web 加/轮换/启用/禁用账号；采集源管理（V4.8.3）
 - **周报自动生成 + 建议中心** — systemd timer 周一 09:00 周报 + 飞书/Bark 推送 + 自动发现 model 错配建议
 - **稳定期使用分析** — `scripts/analyze_usage.py` 自动提取 V4.7+ 优先级信号
 
@@ -81,13 +81,15 @@ aimc/
 | Dashboard | htmx + Chart.js |
 | 测试 | pytest + pytest-asyncio |
 
-## 最近变更（2026-08-16~21）
+## 最近变更（2026-08-16~22）
 
 - **V4.8 多用户**：users/api_keys 表、`aimc-` key 按人记账 + 日/月限额、CLI（add_user_key）、Dashboard 按人用量 + Key 管理
 - **P3 工程加固**：e2e 测试 MockTransport 化（CI 可跑）；周报 systemd timer + 飞书推送
 - **路径 A 缓存优化**：prompt_cache_key 稳定前缀分段 hash（多轮对话命中率提升）
 - **生产级修复**：usage_logs UTC→本地时钟（quota 漏判）、聚合渠道价格 999 兜底、group_id 归一化、.env 行内注释陷阱
 - **Dashboard 治理**：V4.8 CSS 补全、待审 JSON 格式化、优惠情报垃圾过滤（1002→81 条）
+- **V4.8.1 告警分级静默 + 按人用量下钻**：采集失败首次静默 30min/连续静默 2h；按人用量可展开到 key label
+- **V4.8.3 采集系统优化**：调度按 (provider, poll_interval) 分组修复 model_list 源被拉高频、自适应降频（无变化 ≥4 次降 4x）、采集源管理卡片（总源 34→37）
 
 更早的 21 commit 架构整改（2026-08-14~15）见 [docs/dev/post-merge-fixes.md](docs/dev/post-merge-fixes.md)，
 路线图见 [docs/dev/next-step-plan.md](docs/dev/next-step-plan.md)。

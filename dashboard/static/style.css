@@ -941,6 +941,19 @@ details.card-folding > .card-body {
     font-size: 10px;
     font-family: var(--font-mono);
 }
+.pr-summary {
+    color: var(--text-secondary);
+    font-size: 11px;
+    margin-top: var(--space-xs);
+    word-break: break-all;
+}
+.pr-summary a {
+    color: var(--color-info, #58a6ff);
+    text-decoration: none;
+}
+.pr-summary a:hover {
+    text-decoration: underline;
+}
 .pr-actions {
     display: flex;
     gap: var(--space-sm);

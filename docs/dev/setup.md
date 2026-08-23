@@ -77,7 +77,7 @@ aimc/
 │   ├── fallback.py         # fallback 链
 │   └── middleware.py       # 请求日志 + 鉴权 + P1-7 dashboard token
 ├── intelligence/           # 情报采集层
-│   ├── scheduler.py        # APScheduler (阶段 2: 38→21 jobs + listener)
+│   ├── scheduler.py        # APScheduler (V4.8.3: provider×interval 分组 ~36 jobs + listener)
 │   ├── sources/            # 厂商采集源
 │   │   ├── deepseek.py / glm.py / qwen.py / minimax.py / ...
 │   ├── pricing_sync.py     # 价格拉取

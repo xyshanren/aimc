@@ -22,6 +22,22 @@ logger = logging.getLogger(__name__)
 
 # Playwright 浏览器实例（延迟初始化）
 _browser = None
+_pw = None  # V4.8.4: 保存 playwright driver 句柄, close_browser 需调 pw.stop() 释放进程
+
+# V4.8.4: 防并发 init 竞争 (多 source 同时首次 fetch 可触发多个 browser 实例)
+_browser_lock = asyncio.Lock()
+
+# V4.8.4: 并发 context 上限 — 防大量 source 同时 fetch 打爆内存
+# 延迟初始化: 避免模块 import 时读 settings (测试 mock settings 无此属性会 AttributeError)
+_FETCH_SEMAPHORE: Optional[asyncio.Semaphore] = None
+
+
+def _get_fetch_semaphore() -> asyncio.Semaphore:
+    """延迟创建 Semaphore (首次 fetch 时读 settings.browser_max_concurrent)"""
+    global _FETCH_SEMAPHORE
+    if _FETCH_SEMAPHORE is None:
+        _FETCH_SEMAPHORE = asyncio.Semaphore(settings.browser_max_concurrent)
+    return _FETCH_SEMAPHORE
 
 # 资源拦截：屏蔽图片/CSS/字体（节省 60-80% 带宽，3-5x 加速）
 # Playwright 的 glob 支持 {a,b,c} 语法，单字符串即可
@@ -48,15 +64,22 @@ def _get_stealth():
 
 
 async def _get_browser():
-    """获取或创建浏览器实例"""
-    global _browser
-    if _browser is None:
+    """获取或创建浏览器实例
+
+    V4.8.4: double-checked locking 防并发 init 竞争 + 保存 pw 句柄
+    """
+    global _browser, _pw
+    if _browser is not None:
+        return _browser
+    async with _browser_lock:
+        if _browser is not None:
+            return _browser
         from playwright.async_api import async_playwright
-        pw = await async_playwright().start()
+        _pw = await async_playwright().start()
         launch_args = {"headless": True}
         if settings.proxy_url:
             launch_args["proxy"] = {"server": settings.proxy_url}
-        _browser = await pw.chromium.launch(**launch_args)
+        _browser = await _pw.chromium.launch(**launch_args)
         logger.info("Playwright 浏览器已启动")
     return _browser
 
@@ -120,8 +143,11 @@ async def fetch_page(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            content = await _fetch_page_once(
-                url, wait_until, timeout, wait_for, wait_for_timeout
+            content = await asyncio.wait_for(
+                _fetch_page_once(
+                    url, wait_until, timeout, wait_for, wait_for_timeout
+                ),
+                timeout=settings.browser_fetch_timeout,
             )
             if content is not None:
                 if attempt > 1:
@@ -166,28 +192,32 @@ async def _fetch_page_once(
 
     Phase 2C-3: 加 stealth 反爬
     - 顺序很重要：先 new_context → 后 apply_stealth（init script）
+
+    V4.8.4: 加 Semaphore (并发 context 上限) + 不再在此层包 wait_for
+    (wait_for 由调用方 fetch_page / fetch_page_with_error 统一包)
     """
-    browser = await _get_browser()
-    context = await browser.new_context()
-    await _apply_stealth(context)
-    await _apply_resource_blocking(context)
-    page = await context.new_page()
-    try:
-        await page.goto(url, wait_until=wait_until, timeout=timeout)
-        # Phase 2B-3: 等关键元素出现（可选）
-        # 比硬编码 sleep 2s 更精准 — 元素出现立即继续，没出现等到超时
-        if wait_for:
-            try:
-                await page.wait_for_selector(wait_for, timeout=wait_for_timeout)
-                logger.debug(f"wait_for 命中: {wait_for!r} ({url})")
-            except Exception as e:
-                # wait_for 超时 — 这是告警级事件，但仍然返回当前 content
-                logger.warning(f"wait_for 超时 ({wait_for!r}): {e}")
-        content = await page.content()
-        return content
-    finally:
-        await page.close()
-        await context.close()
+    async with _get_fetch_semaphore():
+        browser = await _get_browser()
+        context = await browser.new_context()
+        await _apply_stealth(context)
+        await _apply_resource_blocking(context)
+        page = await context.new_page()
+        try:
+            await page.goto(url, wait_until=wait_until, timeout=timeout)
+            # Phase 2B-3: 等关键元素出现（可选）
+            # 比硬编码 sleep 2s 更精准 — 元素出现立即继续，没出现等到超时
+            if wait_for:
+                try:
+                    await page.wait_for_selector(wait_for, timeout=wait_for_timeout)
+                    logger.debug(f"wait_for 命中: {wait_for!r} ({url})")
+                except Exception as e:
+                    # wait_for 超时 — 这是告警级事件，但仍然返回当前 content
+                    logger.warning(f"wait_for 超时 ({wait_for!r}): {e}")
+            content = await page.content()
+            return content
+        finally:
+            await page.close()
+            await context.close()
 
 
 async def fetch_text(
@@ -210,25 +240,26 @@ async def fetch_text(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            browser = await _get_browser()
-            context = await browser.new_context()
-            await _apply_stealth(context)
-            await _apply_resource_blocking(context)
-            page = await context.new_page()
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
-                await page.wait_for_timeout(1500)
+            async with _get_fetch_semaphore():
+                browser = await _get_browser()
+                context = await browser.new_context()
+                await _apply_stealth(context)
+                await _apply_resource_blocking(context)
+                page = await context.new_page()
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+                    await page.wait_for_timeout(1500)
 
-                if css_selector:
-                    element = await page.query_selector(css_selector)
-                    if element:
-                        return await element.inner_text()
-                    return None
-                else:
-                    return await page.inner_text("body")
-            finally:
-                await page.close()
-                await context.close()
+                    if css_selector:
+                        element = await page.query_selector(css_selector)
+                        if element:
+                            return await element.inner_text()
+                        return None
+                    else:
+                        return await page.inner_text("body")
+                finally:
+                    await page.close()
+                    await context.close()
 
         except Exception as e:
             last_error = e
@@ -250,12 +281,25 @@ async def fetch_text(
 
 
 async def close_browser():
-    """关闭浏览器"""
-    global _browser
+    """关闭浏览器 + playwright driver (V4.8.4)
+
+    旧 bug: pw 句柄是局部变量未保存 → close_browser 只关 browser, 不关 driver →
+    driver 进程泄漏. 现在保存 _pw 全局句柄, close 后调 pw.stop() 彻底释放.
+    """
+    global _browser, _pw
     if _browser:
-        await _browser.close()
+        try:
+            await _browser.close()
+        except Exception as e:
+            logger.warning(f"关 browser 异常: {e}")
         _browser = None
-        logger.info("Playwright 浏览器已关闭")
+    if _pw:
+        try:
+            await _pw.stop()
+        except Exception as e:
+            logger.warning(f"关 playwright driver 异常: {e}")
+        _pw = None
+    logger.info("Playwright 浏览器已关闭")
 
 
 async def fetch_page_with_error(
@@ -285,8 +329,11 @@ async def fetch_page_with_error(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            content = await _fetch_page_once(
-                url, wait_until, timeout, wait_for, wait_for_timeout
+            content = await asyncio.wait_for(
+                _fetch_page_once(
+                    url, wait_until, timeout, wait_for, wait_for_timeout
+                ),
+                timeout=settings.browser_fetch_timeout,
             )
             if content is not None:
                 if attempt > 1:

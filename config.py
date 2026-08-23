@@ -114,6 +114,9 @@ class Settings(BaseSettings):
     diff_similarity_threshold: float = 0.9  # 相似度阈值，低于此值触发解析
     parse_confidence_threshold: float = 0.8  # 自愈置信度阈值
     crawl_enabled: bool = True  # 总开关：False = 跳过所有采集（试用阶段省心）
+    # V4.8.4: Playwright 进程回收防护
+    browser_max_concurrent: int = 4  # 并发 page context 上限 (防内存爆炸)
+    browser_fetch_timeout: int = 60  # 单次 fetch 整体超时 (秒, 含 page.goto + wait_for)
 
     # === 价格波动告警 (Phase 4 E2, 2026-07-29) ===
     # input_price 或 output_price 任一方向变动 ≥ 此百分比即触发告警

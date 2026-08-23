@@ -22,7 +22,7 @@ python -m pytest tests/ --cov=gateway --cov=intelligence --cov-report=term-missi
 
 pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`），async test 自动运行。
 
-## 2. 现有测试结构（473 个，48 个文件）
+## 2. 现有测试结构（473 个，49 个文件）
 
 | 文件 | 测试数 | 测试内容 | 对应 commit |
 |------|--------|---------|------------|
@@ -60,7 +60,7 @@ pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`）�
 | `test_analyze_usage.py` | 13 | 稳定期使用分析 | V4.7+ |
 | `test_qianwenai_source.py` | 6 | 千问 AI 源采集 | 阶段2 |
 
-**总计**：48 个文件 / 473 个 test（4 skipped）/ ~3 分钟跑通
+**总计**：49 个文件 / 473 个 test（4 skipped）/ ~3 分钟跑通
 
 ## 3. 写新测试
 

@@ -96,6 +96,8 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
         renderGroupRouting(target);
     } else if (target.id === 'pending-review-list') {
         renderPendingReview(target);
+    } else if (target.id === 'promotion-review-list') {
+        renderPromotionReview(target);
     } else if (target.id === 'cross-source-list') {
         renderCrossSource(target);
     }
@@ -486,6 +488,74 @@ function renderPendingReview(container) {
     } catch (e) {
         console.error('renderPendingReview failed:', e);
         container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+// V4.8.4: 低置信度优惠审查队列
+function renderPromotionReview(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+        const items = data.items || [];
+        if (items.length === 0) {
+            container.innerHTML = '<p class="loading">✓ 当前无待审低置信度优惠</p>';
+            return;
+        }
+        let html = `<p class="meta">共 <strong>${esc(data.count)} 条待审</strong>，按时间倒序</p>`;
+        for (const item of items) {
+            const conf = item.confidence || 0;
+            const confLabel = item.confidence_level || 'low';
+            const created = item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '?';
+            html += `<div class="pr-card">
+                <div class="pr-row">
+                    <code class="pr-model">${esc(item.provider)}</code>
+                    <span class="pr-display-name">${esc(item.title || '(无标题)')}</span>
+                    <span class="pr-conf conf-${esc(confLabel)}">${esc(conf.toFixed(2))} · ${esc(confLabel)}</span>
+                    <span class="pr-time">${esc(created)}</span>
+                </div>
+                ${item.summary ? `<div class="pr-summary">${esc(item.summary)}</div>` : ''}
+                ${item.url ? `<div class="pr-summary"><a href="${esc(item.url)}" target="_blank">${esc(item.url)}</a></div>` : ''}
+                <div class="pr-actions">
+                    <button class="btn-approve" onclick="approvePromotionReview(${esc(item.id)}, this)">批准入库</button>
+                    <button class="btn-reject" onclick="rejectPromotionReview(${esc(item.id)}, this)">拒绝</button>
+                </div>
+            </div>`;
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderPromotionReview failed:', e);
+        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+async function approvePromotionReview(reviewId, btn) {
+    if (!confirm(`确定批准 #${reviewId} 入库? 将写入 Promotion 表`)) return;
+    try {
+        const resp = await authFetch(`/dashboard/api/promotion-reviews/${reviewId}/approve`, { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            const card = btn.closest('.pr-card');
+            if (card) card.remove();
+        } else {
+            alert('批准失败: ' + (data.detail || resp.statusText));
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
+    }
+}
+
+async function rejectPromotionReview(reviewId, btn) {
+    if (!confirm(`确定拒绝 #${reviewId}? 不入库, 记录保留`)) return;
+    try {
+        const resp = await authFetch(`/dashboard/api/promotion-reviews/${reviewId}/reject`, { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            const card = btn.closest('.pr-card');
+            if (card) card.remove();
+        } else {
+            alert('拒绝失败: ' + (data.detail || resp.statusText));
+        }
+    } catch (e) {
+        alert('网络错误: ' + e.message);
     }
 }
 

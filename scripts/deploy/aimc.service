@@ -9,11 +9,20 @@ Type=simple
 WorkingDirectory=%h/aimc
 Environment="PATH=%h/aimc/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 EnvironmentFile=%h/aimc/.env
+
+# V4.8.4: 启动前清理上次崩溃残留的孤儿 chromium 进程 (防内存泄漏累积)
+ExecStartPre=/usr/bin/pkill -f "chromium.*headless" || true
+
 ExecStart=%h/aimc/.venv/bin/python main.py
 Restart=on-failure
 RestartSec=5
 StartLimitBurst=5
 StartLimitIntervalSec=60
+
+# V4.8.4: 停止时给 30s 优雅退出 (等待 in-flight fetch + close_browser), 超时 systemd 发 SIGKILL
+TimeoutStopSec=30
+# V4.8.4: 杀整个 cgroup (含 playwright driver 子进程), 不留孤儿
+KillMode=control-group
 
 # 日志走 journald (journalctl --user -u aimc)
 StandardOutput=journal

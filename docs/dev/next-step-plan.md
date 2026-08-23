@@ -239,6 +239,21 @@ embedding + 相似度命中。
 - dashboard routes: `/api/stats/per-user` 新增 per-key 聚合, 返回 `keys` 子数组
 - app.js + style.css: 按人用量表格改为可展开行, 点击展开显示 per-label 明细
 
+### 2026-08-22 V4.8.3 完成 (commit b748f6f)
+
+**采集系统综合优化**:
+- 告警止血: model_list 源无 API key 时静默跳过 (不再 401 刷屏); error_count
+  从 DB 读权威值 (修 pickle 反序列化重置 bug); 低置信度告警同 provider 1h 节流
+- 调度修复: 按 (provider, poll_interval) 分组调度, 修复 min 批量间隔导致
+  model_list 源被拉高频的 bug
+- 自适应降频: `consecutive_no_change` ≥4 降频 4x, ≥10 降频 8x
+- 频率+覆盖: `DEFAULT_POLL_INTERVALS` 温和降频 (web_page 30min / announcement 1h /
+  price_aggregator 12h); 注册 3 个 orphan benchmark 源, 总源 34→37
+- 仪表盘: 采集源管理卡片 (列表 / 禁用启用 / 立即采集; 调间隔走 API 无 UI 按钮)
+  + 3 个 API (`GET /api/sources`、`POST toggle`、`POST interval`);
+  scheduler 支持单源禁用 (DB `status=disabled` 跳过)。
+  §十一 Phase 2 的失败分类 / 编辑入口仍未做
+
 ---
 
 ## 十一、采集失败恢复策略 (待定, 观察后决策)

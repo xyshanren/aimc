@@ -2196,3 +2196,126 @@ async def revoke_api_key(key_id: int, session: AsyncSession = Depends(get_sessio
             logger.warning("清 middleware _apikey_cache 失败 (非致命, 30s 后自动过期): %s", e)
 
     return {"status": "revoked", "key": _api_key_to_dict(api_key)}
+
+
+# ============================================================
+# V4.8.4: 低置信度优惠审查队列
+# ============================================================
+
+@router.get("/api/promotion-reviews")
+async def list_promotion_reviews(
+    limit: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+):
+    """V4.8.4: 列出待审低置信度优惠
+
+    数据源: promotion_review_queue WHERE approved=0
+    按创建时间倒序。
+    """
+    rows = await crud.list_pending_promotion_reviews(session, limit=limit)
+    items = []
+    for r in rows:
+        items.append({
+            "id": r.id,
+            "provider": r.provider,
+            "title": r.title,
+            "summary": r.summary,
+            "url": r.url,
+            "confidence": r.confidence,
+            "confidence_level": (
+                "high" if (r.confidence or 0) >= 0.8
+                else "medium" if (r.confidence or 0) >= 0.6
+                else "low"
+            ),
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+    return {
+        "count": len(items),
+        "items": items,
+    }
+
+
+@router.post("/api/promotion-reviews/{review_id}/approve")
+async def approve_promotion_review(
+    review_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """V4.8.4: 批准低置信度优惠 → 从审查队列取出, 入 promotions 表
+
+    流程:
+    1. 从 raw_data 反序列化 ParseResult
+    2. 调 _save_promotion 入 Promotion 表 (含去重 + sanity check)
+    3. 审查记录标记 approved=1, action="approved"
+    """
+    review = await crud.get_promotion_review(session, review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail=f"Review {review_id} not found")
+    if review.approved == 1:
+        raise HTTPException(status_code=400, detail="已处理")
+
+    # 从 raw_data 反序列化 ParseResult
+    from schemas.intel import ParseResult
+    from intelligence.healer import _save_promotion
+    from types import SimpleNamespace
+
+    raw = json.loads(review.raw_data) if review.raw_data else {}
+    # 去掉 _save_promotion 内部会添加的 _source_type / _intelligence_kind
+    raw.pop("_source_type", None)
+    raw.pop("_intelligence_kind", None)
+    try:
+        result = ParseResult(**raw)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"raw_data 反序列化失败: {e}",
+        )
+
+    # 构造轻量 source 对象供 _save_promotion 使用
+    fake_source = SimpleNamespace(
+        provider=review.provider,
+        source_type=raw.get("source_type", "web_page"),
+        url=review.url or "",
+    )
+
+    # 入 Promotion 表 (内部含 7 天去重 + sanity check + model_sync)
+    await _save_promotion(result, fake_source)
+
+    # 标记审查记录
+    review.approved = 1
+    review.action = "approved"
+    review.reviewed_at = datetime.now()
+    await session.commit()
+
+    logger.info(f"优惠审查批准入库: review_id={review_id} provider={review.provider}")
+    return {
+        "status": "approved",
+        "review_id": review_id,
+        "provider": review.provider,
+    }
+
+
+@router.post("/api/promotion-reviews/{review_id}/reject")
+async def reject_promotion_review(
+    review_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """V4.8.4: 拒绝低置信度优惠 → 不入 promotions 表, 保留审查记录
+
+    审查记录标记 approved=1, action="rejected", 留底供后续审计。
+    """
+    review = await crud.get_promotion_review(session, review_id)
+    if not review:
+        raise HTTPException(status_code=404, detail=f"Review {review_id} not found")
+    if review.approved == 1:
+        raise HTTPException(status_code=400, detail="已处理")
+
+    review.approved = 1
+    review.action = "rejected"
+    review.reviewed_at = datetime.now()
+    await session.commit()
+
+    logger.info(f"优惠审查拒绝: review_id={review_id} provider={review.provider}")
+    return {
+        "status": "rejected",
+        "review_id": review_id,
+    }

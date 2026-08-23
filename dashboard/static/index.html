@@ -218,6 +218,13 @@
         </details>
 
         <details class="card-folding">
+            <summary><span class="card-title-main">优惠审查</span><span class="card-title-sub">低置信度 · 人工确认</span></summary>
+            <div class="card-body">
+                <div id="promotion-review-list" hx-get="/dashboard/api/promotion-reviews" hx-trigger="load, every 30s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+            </div>
+        </details>
+
+        <details class="card-folding">
             <summary><span class="card-title-main">采集源管理</span><span class="card-title-sub">V4.8.3 · 调度/频率/状态</span></summary>
             <div class="card-body">
                 <div class="accounts-toolbar">

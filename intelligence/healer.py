@@ -411,22 +411,64 @@ async def _save_promotion(result: ParseResult, source):
 
 
 async def _alert_low_confidence(result: ParseResult, source):
-    """低置信度告警"""
-    from intelligence.alerter import send_alert
+    """低置信度优惠 → 写入审查队列 + 发飞书告警
 
+    V4.8.4: 不再只发告警丢数据。低置信度 ParseResult 持久化到
+    promotion_review_queue 等待人工审批, 飞书告警提示去 Dashboard 处理。
+    Promotion 表只含高置信度 + 人工确认的优惠, 保持干净。
+    """
+    from intelligence.alerter import send_alert
+    from db.engine import async_session_factory
+    from db import crud
+    from db.models import PromotionReviewQueue
+
+    # 1. 持久化到审查队列 (24h 内同 provider+title 去重)
+    raw_data_json = json.dumps(result.model_dump(), ensure_ascii=False)
+    try:
+        async with async_session_factory() as session:
+            existing = await session.execute(
+                select(PromotionReviewQueue.id).where(
+                    PromotionReviewQueue.provider == (result.provider or source.provider),
+                    PromotionReviewQueue.title == (result.title or ""),
+                    PromotionReviewQueue.approved == 0,
+                    PromotionReviewQueue.created_at >= datetime.now() - timedelta(hours=24),
+                ).limit(1)
+            )
+            if existing.scalar_one_or_none() is not None:
+                logger.debug(
+                    f"低置信度审查去重(24h): [{source.provider}] {result.title}"
+                )
+                return
+
+            await crud.create_promotion_review(
+                session,
+                provider=result.provider or source.provider,
+                title=result.title,
+                summary=result.summary,
+                url=result.url,
+                confidence=result.confidence,
+                raw_data=raw_data_json,
+            )
+            await session.commit()
+    except Exception as e:
+        logger.error(f"低置信度优惠写入审查队列失败: {e}")
+        return  # DB 写入失败时不发告警 (避免告警了却没数据可审)
+
+    # 2. 发飞书告警 (带 dashboard 提示)
     message = (
         f"[低置信度] {source.provider} 发现疑似优惠\n"
         f"标题: {result.title}\n"
         f"置信度: {result.confidence:.2f}\n"
         f"摘要: {result.summary}\n"
         f"链接: {result.url}\n"
-        f"请人工确认是否入库。"
+        f"已加入审查队列, 请到 Dashboard 确认是否入库。"
     )
     await send_alert(
         message,
         key=f"low_confidence:{source.provider}",
         silence_seconds=3600,
     )
+    logger.info(f"低置信度优惠已入审查队列: [{source.provider}] {result.title}")
 
 
 async def handle_fetch_error(source, error: str):
