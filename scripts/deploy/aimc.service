@@ -11,7 +11,8 @@ Environment="PATH=%h/aimc/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/us
 EnvironmentFile=%h/aimc/.env
 
 # V4.8.4: 启动前清理上次崩溃残留的孤儿 chromium 进程 (防内存泄漏累积)
-ExecStartPre=/usr/bin/pkill -f "chromium.*headless" || true
+# 注意: pkill 只接受单 pattern, 用 -f "chromium" 匹配命令行
+ExecStartPre=/usr/bin/pkill -f chromium || true
 
 ExecStart=%h/aimc/.venv/bin/python main.py
 Restart=on-failure
