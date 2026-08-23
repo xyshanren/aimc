@@ -10,9 +10,10 @@ WorkingDirectory=%h/aimc
 Environment="PATH=%h/aimc/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 EnvironmentFile=%h/aimc/.env
 
-# V4.8.4: 启动前清理上次崩溃残留的孤儿 chromium/chrome 进程 (防内存泄漏累积)
-# Playwright 的浏览器二进制名是 chrome, 用 pgrep 确认有匹配才 pkill
-ExecStartPre=/bin/bash -c 'pgrep -f "chrome-linux64/chrome" >/dev/null 2>&1 && pkill -f "chrome-linux64/chrome" || true'
+# V4.8.4: 启动前清理上次崩溃残留的孤儿 chrome 进程 (防内存泄漏累积)
+# 注意: pkill -f 会匹配自身命令行导致自杀, 用 chrome 的进程名 (非完整路径) 避开
+# Playwright headless chrome 进程名含 "chrome" 但不含 "pkill"
+ExecStartPre=/bin/bash -c 'pids=$(pgrep -f "[c]hrome-linux64/chrome" 2>/dev/null); [ -n "$pids" ] && kill $pids 2>/dev/null; true'
 
 ExecStart=%h/aimc/.venv/bin/python main.py
 Restart=on-failure
