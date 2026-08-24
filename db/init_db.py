@@ -245,6 +245,44 @@ async def ensure_migrations():
         else:
             logger.debug("迁移: model_registry.supports_prompt_cache 已存在，跳过")
 
+        # V4.8.5: price_snapshots 唯一索引迁移 (channel_id, model) → 四元组
+        # 旧二元组导致同一 model 写不同 price_type 行时 IntegrityError, 阻断 promotion 价行
+        result = await conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='price_snapshots'"
+        ))
+        ps_index_names = {row[0] for row in result.fetchall()}
+        if "uq_ps_channel_model" in ps_index_names:
+            await conn.execute(text("DROP INDEX uq_ps_channel_model"))
+            logger.info("迁移: 删除旧索引 uq_ps_channel_model (V4.8.5 四元组迁移)")
+        if "uq_ps_channel_model_type" not in ps_index_names:
+            # 清理历史重复行: 老 (channel_id, model) 索引允许同 model 多行,
+            # 新四元组唯一索引会冲突. 保留每组最新一行 (MAX(id)), 删除旧行.
+            dup_check = await conn.execute(text(
+                "SELECT COUNT(*) FROM ("
+                "  SELECT channel_id, model, price_type, time_range"
+                "  FROM price_snapshots"
+                "  GROUP BY channel_id, model, price_type, time_range"
+                "  HAVING COUNT(*) > 1"
+                ")"
+            ))
+            dup_count = dup_check.scalar()
+            if dup_count and dup_count > 0:
+                logger.warning(
+                    "迁移: price_snapshots 发现 %d 组重复行, 清理保留最新行 (V4.8.5)",
+                    dup_count,
+                )
+                await conn.execute(text(
+                    "DELETE FROM price_snapshots WHERE id NOT IN ("
+                    "  SELECT MAX(id) FROM price_snapshots"
+                    "  GROUP BY channel_id, model, price_type, time_range"
+                    ")"
+                ))
+            await conn.execute(text(
+                "CREATE UNIQUE INDEX uq_ps_channel_model_type "
+                "ON price_snapshots(channel_id, model, price_type, time_range)"
+            ))
+            logger.info("迁移: 创建四元组唯一索引 uq_ps_channel_model_type (V4.8.5)")
+
 
 async def drop_all():
     """删除所有表（仅开发/测试用）"""

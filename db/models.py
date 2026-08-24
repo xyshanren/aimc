@@ -172,9 +172,11 @@ class PriceSnapshot(Base):
         comment="0=日常价格, 1=优惠期价格 (跟 effective_from/to 联动, 优惠期过自动失效)",
     )
 
-    # P0-2: UNIQUE 索引 (channel_id, model) — 避免重复录入
+    # V4.8.5: UNIQUE 索引改为四元组 (channel_id, model, price_type, time_range)
+    # 原二元组 (channel_id, model) 导致同一 model 写第二条 price_type 行必 IntegrityError
+    # 四元组让 normal + promotion + cache_hit 等多价格类型共存
     __table_args__ = (
-        Index("uq_ps_channel_model", "channel_id", "model", unique=True),
+        Index("uq_ps_channel_model_type", "channel_id", "model", "price_type", "time_range", unique=True),
     )
 
     # 关系

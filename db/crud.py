@@ -211,6 +211,7 @@ async def upsert_price_snapshot(
     time_range: str = "全天",
     effective_from: Optional[str] = None,
     effective_to: Optional[str] = None,
+    is_promotion: int = 0,
 ) -> tuple[PriceSnapshot, bool]:
     """按 (channel, model, price_type, time_range) upsert 价椌快照
 
@@ -218,6 +219,7 @@ async def upsert_price_snapshot(
         (PriceSnapshot, created) created=True 表示新建, False 表示更新
 
     Phase 3.4: 价椌变动会调用此函数, 以 source=crawler 标记便于区分手动录入.
+    V4.8.5: 加 is_promotion 参数, 让 promotion 价行标记 is_promotion=1.
     """
     stmt = select(PriceSnapshot).where(
         PriceSnapshot.channel_id == channel_id,
@@ -234,6 +236,7 @@ async def upsert_price_snapshot(
         snapshot.source = source
         snapshot.effective_from = effective_from or snapshot.effective_from
         snapshot.effective_to = effective_to or snapshot.effective_to
+        snapshot.is_promotion = is_promotion
         return snapshot, False
 
     snapshot = PriceSnapshot(
@@ -247,6 +250,7 @@ async def upsert_price_snapshot(
         effective_from=effective_from,
         effective_to=effective_to,
         source=source,
+        is_promotion=is_promotion,
     )
     session.add(snapshot)
     await session.flush()

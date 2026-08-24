@@ -14,6 +14,34 @@ from schemas.intel import ParseResult
 logger = logging.getLogger(__name__)
 
 
+def _infer_title_from_css(target, text: str, selectors: list[str]) -> str:
+    """V4.8.5: 从 CSS 命中节点推断非空标题，修复降级路径被 _save_promotion 丢弃的断链。
+
+    优先级:
+    1. 首个 heading 元素 (h1-h6) 文本
+    2. target 的 title / aria-label 属性
+    3. 文本首行截断 80 字符
+    4. selector + 字符数兜底 (保证非空)
+    """
+    # 1. heading 元素
+    heading = target.find(["h1", "h2", "h3", "h4", "h5", "h6"])
+    if heading:
+        t = heading.get_text(strip=True)[:100]
+        if t:
+            return t
+    # 2. 属性
+    t = target.get("title") or target.get("aria-label")
+    if t and t.strip():
+        return t.strip()[:100]
+    # 3. 文本首行
+    if text:
+        first_line = text.split("\n", 1)[0].strip()
+        if first_line:
+            return first_line[:80]
+    # 4. 兜底
+    return f"[CSS降级] {selectors[0]} ({len(text)}字符)"
+
+
 def extract_by_css(
     html: str,
     css_selector: str,
@@ -73,7 +101,7 @@ def extract_by_css(
     return ParseResult(
         is_promotion=True,  # 降级路径默认当作 promotion 入库
         confidence=confidence,
-        title=None,  # CSS 提取无法可靠推断标题
+        title=_infer_title_from_css(target, text, selectors),  # V4.8.5: 不再硬编码 None
         provider=provider,
         discount_desc=None,
         content=text,
