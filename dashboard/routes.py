@@ -1474,7 +1474,9 @@ async def approve_pending_review(
     await session.commit()
 
     # P1-1 fix: 路由缓存即刻刷新. 失败只 logger 警告, 不让 dashboard 5xx.
+    # V4.8.5 fix: 补局部 import, 否则 NameError 被 except 吞掉, 缓存实际从不刷新
     try:
+        from gateway.router import route_engine
         await route_engine.refresh_cache()
     except Exception as e:
         logger.warning("approve 后刷新路由缓存失败: log_id=%s err=%s", log_id, e)
@@ -1647,7 +1649,9 @@ async def resolve_cross_source_discrepancy(
     await session.commit()
 
     # P1-10 fix: 路由缓存即刻刷新. 失败只 logger 警告, 不让 dashboard 5xx.
+    # V4.8.5 fix: 补局部 import, 否则 NameError 被 except 吞掉, 缓存实际从不刷新
     try:
+        from gateway.router import route_engine
         await route_engine.refresh_cache()
     except Exception as e:
         logger.warning("resolve 后刷新路由缓存失败: discrepancy_id=%s err=%s", discrepancy_id, e)
