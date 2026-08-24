@@ -66,7 +66,7 @@ SYSTEM_PROMPT = """你是一个 AI 大模型情报分析助手。
       "tier_reason": "推断依据",
       "pricing": [
         {
-          "type": "normal|cache_hit|free",
+          "type": "normal|cache_hit|free|peak|offpeak",
           "input_price": 6.0,
           "output_price": 12.0,
           "time_range": "全天"
@@ -86,6 +86,8 @@ SYSTEM_PROMPT = """你是一个 AI 大模型情报分析助手。
   - 表格列 "缓存命中" 或 "cache hit" → type="cache_hit", input_price/output_price 通常为 0
   - "免费" / "限时免费" / "Free" → type="free", input_price=0, output_price=0
   - 常规按时段计费 → type="normal", time_range="全天" 或具体时段如 "00:00-08:00"
+  - 峰谷计费 (e.g. DeepSeek "忙时"/"闲时") → 高峰 type="peak", time_range="工作日09:00-12:00" (按实际时段); 低谷 type="offpeak", time_range="非高峰全天"
+    注意: 如果页面只列出高峰时段 (如 "工作日 9:00-12:00, 14:00-18:00 忙时"), 低谷用 type="offpeak", time_range="非高峰全天" 兜底
 - 不确定的 tier 设 null，禁止无依据猜测；每个模型 confidence 独立评分。
 - capabilities 只能使用给定标签；无法确定的字段设为 null 或空数组。
 - confidence 必须在 0.0-1.0；日期统一 YYYY-MM-DD。

@@ -75,9 +75,14 @@ CHANNELS = [
         # 历史 deepseek-chat / deepseek-reasoner 是 V4.4 时代老 model,
         # 官方 API 当前 (2026-08) 只支持 V4 系列.
         "prices": [
-            ("deepseek-v4-pro", "normal", "全天", 4.0, 16.0),
-            ("deepseek-v4-flash", "normal", "全天", 1.0, 2.0),
-            ("deepseek-v4-flash", "offpeak", "00:00-08:00", 0.5, 1.0),
+            # V4.8.7: DeepSeek 峰谷计费 — 工作日 9-12/14-18 高峰, 其余低谷
+            # 高峰价 = 常规价 ×2, 低谷价 = 常规价 (官方文档: 闲时执行标准价, 忙时2倍)
+            ("deepseek-v4-pro", "peak", "工作日09:00-12:00", 8.0, 24.0),
+            ("deepseek-v4-pro", "peak", "工作日14:00-18:00", 8.0, 24.0),
+            ("deepseek-v4-pro", "offpeak", "非高峰全天", 4.0, 16.0),
+            ("deepseek-v4-flash", "peak", "工作日09:00-12:00", 2.0, 4.0),
+            ("deepseek-v4-flash", "peak", "工作日14:00-18:00", 2.0, 4.0),
+            ("deepseek-v4-flash", "offpeak", "非高峰全天", 1.0, 2.0),
         ],
     },
     {

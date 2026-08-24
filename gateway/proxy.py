@@ -71,10 +71,10 @@ def _estimate_cost(
     """
     try:
         from gateway.router import route_engine
-        current_hour = datetime.now().hour
-        price = route_engine._get_current_price(channel, model, current_hour)
+        now = datetime.now()
+        price = route_engine._get_current_price(channel, model, now)
         if price is None:
-            price = route_engine._get_fuzzy_price(channel, model, current_hour)
+            price = route_engine._get_fuzzy_price(channel, model, now)
         if price is None:
             return None
     except Exception as e:

@@ -581,12 +581,12 @@ class RouteEngine:
         if not self._channels_cache:
             return None
 
-        current_hour = datetime.now().hour
+        now = datetime.now()
 
         # 1. 筛选支持该模型的渠道
         candidates = []
         for ch in self._channels_cache:
-            price_info = self._get_current_price(ch, model, current_hour)
+            price_info = self._get_current_price(ch, model, now)
             if price_info is not None:
                 # V4.6.5: 给 channel 加 _channel_model 给 proxy body 替换
                 # 当 price_model != model (e.g. "zai-org/GLM-4.5V" vs "glm-4.5v"), 上游用 price_model
@@ -598,7 +598,7 @@ class RouteEngine:
         if not candidates:
             # 尝试模糊匹配（如 deepseek-chat 匹配 deepseek 前缀）
             for ch in self._channels_cache:
-                price_info = self._get_fuzzy_price(ch, model, current_hour)
+                price_info = self._get_fuzzy_price(ch, model, now)
                 if price_info is not None:
                     # V4.6.5: fuzzy match 同样存 _channel_model (可能 prefix-stripped)
                     if price_info.get("model") != model:
@@ -616,7 +616,7 @@ class RouteEngine:
                 # - siliconflow upstream: zai-org/GLM-4.5V
                 # - 直接发 glm-4.5v -> upstream 20012 (model not exist)
                 # - 我们用 fuzzy 找到的 price_model 替换, 上游能识别
-                fuzzy_price = self._get_fuzzy_price(fallback, model, current_hour)
+                fuzzy_price = self._get_fuzzy_price(fallback, model, now)
                 if fuzzy_price:
                     fallback["_channel_model"] = fuzzy_price["model"]  # proxy 用这个
                     logger.info(
@@ -764,18 +764,19 @@ class RouteEngine:
 
         return best_channel
 
-    def _get_current_price(self, channel: dict, model: str, current_hour: int) -> Optional[dict]:
+    def _get_current_price(self, channel: dict, model: str, now: datetime) -> Optional[dict]:
         """获取渠道在指定模型和当前时段的价格
 
         V4.8.5: 同一 model 可能有多条价格行 (normal + promotion), promotion 行优先返回
         (优惠期内比 normal 便宜). _is_price_effective 已在 cache 构建时过滤掉过期行,
         所以这里只需在有效行中优先选 is_promotion=1 的.
+        V4.8.7: now: datetime 替代 current_hour, 支持工作日/周末峰谷时段匹配.
         """
         normal_match = None
         for p in channel["prices"]:
             if p["model"] != model:
                 continue
-            if not self._match_time_range(p["time_range"], current_hour):
+            if not self._match_time_range(p["time_range"], now):
                 continue
             if p.get("is_promotion") == 1:
                 return p
@@ -800,7 +801,7 @@ class RouteEngine:
             )
         )
 
-    def _get_fuzzy_price(self, channel: dict, model: str, current_hour: int) -> Optional[dict]:
+    def _get_fuzzy_price(self, channel: dict, model: str, now: datetime) -> Optional[dict]:
         """模糊匹配模型名（V4.6.4 增强, 2026-08-18）
 
         匹配规则:
@@ -817,6 +818,7 @@ class RouteEngine:
 
         V4.8.5: 同一 model 可能有多条价格行 (normal + promotion), promotion 优先.
         两趟遍历: 先找 promotion 命中, 没有再取第一个 normal 命中.
+        V4.8.7: now: datetime 替代 current_hour, 支持工作日/周末峰谷时段匹配.
         """
         model_lower = model.lower()
         # 剥 model 的可能前缀 (e.g. "qwen-" / "deepseek-")
@@ -832,14 +834,14 @@ class RouteEngine:
             price_model = p["model"].lower()
             price_stripped = price_model.split("/")[-1] if "/" in price_model else price_model
             if self._fuzzy_model_match(model_lower, model_stripped, price_model, price_stripped):
-                if self._match_time_range(p["time_range"], current_hour):
+                if self._match_time_range(p["time_range"], now):
                     return p
         # 第二趟: 取第一个 normal 匹配
         for p in channel["prices"]:
             price_model = p["model"].lower()
             price_stripped = price_model.split("/")[-1] if "/" in price_model else price_model
             if self._fuzzy_model_match(model_lower, model_stripped, price_model, price_stripped):
-                if self._match_time_range(p["time_range"], current_hour):
+                if self._match_time_range(p["time_range"], now):
                     return p
         return None
 
@@ -873,28 +875,62 @@ class RouteEngine:
             return False
         return True
 
-    def _match_time_range(self, time_range: str, current_hour: int) -> bool:
-        """判断当前时间是否在时段范围内
+    def _match_time_range(self, time_range: str, now: datetime) -> bool:
+        """判断当前时间是否在时段范围内 (V4.8.7: 支持工作日/周末峰谷)
 
         支持格式：
-        - "全天" -> 始终匹配
-        - "00:00-08:00" -> 0点到8点
-        - "08:00-24:00" -> 8点到24点
+        - "全天" / "" → 始终匹配
+        - "00:00-08:00" → 每天 0-8 点 (向后兼容)
+        - "工作日09:00-12:00" → 工作日 9-12 点
+        - "工作日14:00-18:00" → 工作日 14-18 点
+        - "周末全天" / "周末00:00-24:00" → 周末
+        - "非高峰全天" → 非高峰时段 (工作日非9-12/14-18 + 周末全天)
         """
         if not time_range or time_range == "全天":
             return True
 
+        is_weekend = now.weekday() >= 5  # 周六=5, 周日=6
+        current_hour = now.hour
+
+        # "非高峰全天": 工作日非高峰时段 + 周末全天
+        if time_range == "非高峰全天":
+            if is_weekend:
+                return True
+            in_peak = (9 <= current_hour < 12) or (14 <= current_hour < 18)
+            return not in_peak
+
+        # "周末..." → 只在周末匹配
+        if time_range.startswith("周末"):
+            if not is_weekend:
+                return False
+            rest = time_range[2:]
+            if not rest or rest == "全天":
+                return True
+            return self._match_hour_range(rest, current_hour)
+
+        # "工作日..." → 只在工作日匹配
+        if time_range.startswith("工作日"):
+            if is_weekend:
+                return False
+            rest = time_range[3:]
+            if not rest or rest == "全天":
+                return True
+            return self._match_hour_range(rest, current_hour)
+
+        # 向后兼容: 纯 "HH:MM-HH:MM" → 每天该时段
+        return self._match_hour_range(time_range, current_hour)
+
+    def _match_hour_range(self, time_range: str, current_hour: int) -> bool:
+        """解析 "HH:MM-HH:MM" 并判断 current_hour 是否在 [start, end) 内"""
         try:
             parts = time_range.split("-")
             if len(parts) != 2:
                 return True
             start_hour = int(parts[0].split(":")[0])
             end_hour = int(parts[1].split(":")[0])
-            if end_hour == 24:
-                end_hour = 24
             return start_hour <= current_hour < end_hour
         except (ValueError, IndexError):
-            return True  # 解析失败则默认匹配
+            return True
 
     def get_available_models(self) -> list[str]:
         """获取所有可用模型列表"""
@@ -1149,13 +1185,13 @@ class RouteEngine:
 
     def get_candidates(self, model: str) -> list[dict]:
         """获取指定模型的所有候选渠道（用于 fallback）"""
-        current_hour = datetime.now().hour
+        now = datetime.now()
         candidates = []
 
         for ch in self._channels_cache:
-            price_info = self._get_current_price(ch, model, current_hour)
+            price_info = self._get_current_price(ch, model, now)
             if price_info is None:
-                price_info = self._get_fuzzy_price(ch, model, current_hour)
+                price_info = self._get_fuzzy_price(ch, model, now)
             if price_info is not None:
                 candidates.append(ch)
 
@@ -1445,10 +1481,10 @@ class RouteEngine:
         复用 _get_current_price + _get_fuzzy_price 逻辑, 返回 float (None → 999 兜底)
         跟 select_best_channel 一致: 先精确, 再模糊 (e.g. glm-5.2 → zai-org/GLM-5.2)
         """
-        hour = datetime.now().hour
-        price_info = self._get_current_price(channel, model, hour)
+        now = datetime.now()
+        price_info = self._get_current_price(channel, model, now)
         if price_info is None:
-            price_info = self._get_fuzzy_price(channel, model, hour)
+            price_info = self._get_fuzzy_price(channel, model, now)
         if price_info and price_info.get("input_price") is not None:
             return float(price_info["input_price"])
         return 999.0  # 未知价格排到最后
