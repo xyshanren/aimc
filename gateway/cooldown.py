@@ -106,8 +106,21 @@ class CooldownManager:
         return len(expired)
 
     def snapshot(self) -> dict[int, dict]:
-        """调试用: 当前所有冷却状态快照."""
-        return {k: dict(v) for k, v in self._state.items()}
+        """调试用: 当前所有冷却状态快照 (V4.8.7: 加 remaining_seconds + in_cooldown)."""
+        now = time.time()
+        result = {}
+        for aid, s in self._state.items():
+            remaining = 0.0
+            cu = s.get("cooldown_until")
+            if cu is not None and cu > now:
+                remaining = cu - now
+            result[aid] = {
+                "count": s.get("count", 0),
+                "cooldown_until": cu,
+                "remaining_seconds": round(remaining, 1),
+                "in_cooldown": remaining > 0,
+            }
+        return result
 
 
 # 全局单例 (跟 limiter 一致)

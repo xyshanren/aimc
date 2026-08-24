@@ -442,6 +442,32 @@ async def get_data_freshness(session: AsyncSession = Depends(get_session)):
     }
 
 
+@router.get("/api/cooldown")
+async def get_cooldown_status():
+    """V4.8.7 P7: 渠道冷却状态快照 — 让用户看到哪些 account 被冷却了
+
+    返回 cooldown_manager.snapshot() 的增强版, 通过 router cache 反查 channel_name + account_name.
+    """
+    from gateway.cooldown import cooldown_manager
+    from gateway.router import route_engine
+
+    raw = cooldown_manager.snapshot()
+    result = []
+    for aid, state in raw.items():
+        ch_info = None
+        for ch in route_engine._channels_cache:
+            if ch.get("account_id") == aid:
+                ch_info = ch
+                break
+        result.append({
+            "account_id": aid,
+            "channel_name": ch_info["name"] if ch_info else "?",
+            "account_name": ch_info.get("account_name", "") if ch_info else "",
+            **state,
+        })
+    return result
+
+
 @router.get("/api/cache/stats")
 async def get_cache_stats(days: int = 7, session: AsyncSession = Depends(get_session)):
     """阶段1 (2026-08-14): prompt cache 节省成本统计

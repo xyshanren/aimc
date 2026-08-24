@@ -120,6 +120,9 @@ async def chat_completions(request: Request):
     is_stream = bool(body_json.get("stream", False))
     max_retries = settings.max_fallback_retries if model.startswith(("tier:", "scene:")) else 0
 
+    # V4.8.7 P7: 收集重试链中每个失败的渠道, 最终注入响应头让调用方定位余额不足渠道
+    failed_channels = []
+
     for attempt in range(max_retries + 1):
         # P0-3 (2026-08-14): 传 messages 给 router, 让纯文本请求跳过 multimodal candidate
         if attempt == 0:
@@ -136,8 +139,10 @@ async def chat_completions(request: Request):
                     "error": {
                         "message": f"No available channel for model: {model}",
                         "type": "service_unavailable",
+                        "failed_channels": failed_channels,
                     }
                 },
+                headers={"X-AIMC-Failed-Channels": json.dumps(failed_channels, ensure_ascii=False)} if failed_channels else {},
             )
 
         # P0-6 (2026-08-14): 多维限额检查 (rpm/tpm/concurrent/daily/weekly/5h)
@@ -205,17 +210,46 @@ async def chat_completions(request: Request):
             cooldown_manager.mark_failure(
                 channel["account_id"], reason=f"upstream_{response.status_code}"
             )
+            # V4.8.7 P7: 记录失败渠道, 供最终响应注入
+            failed_channels.append({
+                "channel": channel["name"],
+                "account": channel.get("account_name", ""),
+                "account_id": channel.get("account_id"),
+                "status": response.status_code,
+            })
             logger.warning(
                 f"P1-15: {channel['name']} {response.status_code}, "
                 f"failover 到下一候选 (attempt {attempt + 1}/{max_retries})"
             )
             continue
 
+        # V4.8.7 P7: 最后一次也失败 (或非 retryable), 把失败链注入响应头
+        if failed_channels:
+            try:
+                content = response.body
+                parsed = json.loads(content)
+            except Exception:
+                parsed = {"error": {"message": "Upstream error", "type": "upstream_error"}}
+            if isinstance(parsed, dict) and "error" in parsed:
+                parsed["error"]["failed_channels"] = failed_channels
+            new_headers = dict(response.headers)
+            new_headers["X-AIMC-Failed-Channels"] = json.dumps(failed_channels, ensure_ascii=False)
+            return JSONResponse(
+                status_code=response.status_code,
+                content=parsed,
+                headers=new_headers,
+            )
+
         return response
 
-    # 兜底 (理论上到不了这)
+    # 兜底 (理论上到不了这, 但如果到说明所有重试都 continue 了)
     from fastapi.responses import JSONResponse as _JR
     return _JR(
         status_code=503,
-        content={"error": {"message": "All upstream channels failed", "type": "service_unavailable"}},
+        content={"error": {
+            "message": "All upstream channels failed",
+            "type": "service_unavailable",
+            "failed_channels": failed_channels,
+        }},
+        headers={"X-AIMC-Failed-Channels": json.dumps(failed_channels, ensure_ascii=False)} if failed_channels else {},
     )

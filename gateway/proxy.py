@@ -643,6 +643,22 @@ async def _forward_stream(
     # V4.6.1: 上游 status_code → cooldown_manager
     _update_cooldown(channel, response.status_code)
 
+    # V4.8.7 P7: 流式 429 同样标记 cooldown (之前只有非流式 _forward_normal 有)
+    # 场景: 流式请求打到余额不足渠道, 上游返回 429 但流式路径没标记 cooldown,
+    #       导致后续请求继续撞同一个 channel
+    if response.status_code == 429:
+        try:
+            from gateway.cooldown import cooldown_manager
+            cooldown_manager.mark_failure(
+                channel["account_id"], reason="upstream_429_quota_exhausted_stream"
+            )
+            logger.warning(
+                f"P7: {channel['name']} 429 (stream, quota/plan), 标记 cooldown "
+                f"account_id={channel['account_id']}"
+            )
+        except Exception as e:
+            logger.debug(f"P7 stream: mark_failure 失败 (非致命): {e}")
+
     # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
     if response.status_code in (401, 403, 500, 502, 503, 504):
         _schedule_alert(channel, response)
