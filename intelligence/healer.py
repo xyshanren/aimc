@@ -28,6 +28,82 @@ from schemas.intel import ParseResult
 
 logger = logging.getLogger(__name__)
 
+# V4.8.5 P0-4: 折扣率正则 — 匹配 "5折" "半价" "8.5折" "打5折" "5折优惠" 等
+_DISCOUNT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*折|半价")
+
+
+async def _promotion_to_price_rows(result: ParseResult, provider: str) -> int:
+    """V4.8.5 P0-4: 高置信度优惠 → 限时优惠价格行（打通核心卖点）。
+
+    从 discount_desc/content 解析折扣率, 乘以当前 normal 价生成 promotion 价行.
+    price_type="promotion", is_promotion=1, effective_from/to 来自 result 日期.
+    路由侧 _is_price_effective 自动按日期生效/失效, 零改动消费.
+
+    Returns: 成功生成/刷新的 promotion 价行数
+    """
+    from intelligence.pricing_sync import sync_price_change, apply_price_change_to_route_cache
+    from db.engine import async_session_factory
+    from db.models import PriceSnapshot
+
+    # 1. 解析折扣率
+    text = f"{result.discount_desc or ''} {result.content or ''}"
+    m = _DISCOUNT_RE.search(text)
+    if not m:
+        logger.debug(f"优惠转价格行跳过(无法解析折扣率): {provider} {result.title}")
+        return 0
+    if m.group(0) == "半价":
+        discount = 0.5
+    else:
+        raw = float(m.group(1))
+        # "5折"→0.5, "0.5折"→0.05; raw>=1 视为 X折 (raw/10), raw<1 视为直接比例
+        discount = raw / 10.0 if raw >= 1 else raw
+    if discount <= 0 or discount >= 1:
+        logger.debug(f"优惠转价格行跳过(折扣率异常 {discount}): {provider}")
+        return 0
+
+    # 2. 查 provider 的 channel + 当前 normal 价格行
+    async with async_session_factory() as session:
+        from db import crud
+        channel = await crud.get_channel_by_provider(session, provider)
+        if not channel:
+            return 0
+        stmt = select(PriceSnapshot).where(
+            PriceSnapshot.channel_id == channel.id,
+            PriceSnapshot.price_type == "normal",
+        )
+        rows = (await session.execute(stmt)).scalars().all()
+
+    if not rows:
+        logger.debug(f"优惠转价格行跳过(无 normal 价基础): {provider}")
+        return 0
+
+    # 3. 逐 model 生成 promotion 价行
+    effective_from = result.start_date
+    effective_to = result.end_date
+    synced = 0
+    for row in rows:
+        if row.input_price is None and row.output_price is None:
+            continue
+        promo_input = row.input_price * discount if row.input_price is not None else None
+        promo_output = row.output_price * discount if row.output_price is not None else None
+        change = await sync_price_change(
+            provider, row.model, promo_input, promo_output,
+            source="crawler", price_type="promotion",
+            is_promotion=1,
+            effective_from=effective_from, effective_to=effective_to,
+        )
+        if change and change.changed:
+            await apply_price_change_to_route_cache(change)
+            synced += 1
+
+    if synced:
+        logger.info(
+            f"优惠转价格行: {provider} {result.title} 折扣={discount} "
+            f"→ {synced} 个 model 生成 promotion 价行 "
+            f"(effective {effective_from}~{effective_to})"
+        )
+    return synced
+
 # Sanity check 阈值 (Phase 2D-1, 2026-07-24)
 # 这些是经验值，不追求精确 — 宁可误标也不漏标（人工过滤比 AI 编造好）
 _SANITY_MIN_CONFIDENCE = 0.6      # < 0.6 标黄（AI 自己都不确信）
@@ -385,6 +461,16 @@ async def _save_promotion(result: ParseResult, source):
     except Exception as e:
         logger.error(f"优惠入库失败: {e}")
         return  # P0-1 fix: 优惠入库失败时不要跳下游 process_promotion
+
+    # V4.8.5 P0-4: 高置信度优惠 → 限时优惠价格行（打通"情报→省钱"核心链路）
+    # 折扣率可解析时, 乘以当前 normal 价生成 promotion 价行, 路由侧自动按日期生效/失效
+    if (promo_id is not None
+            and result.is_promotion
+            and result.confidence >= settings.parse_confidence_threshold):
+        try:
+            await _promotion_to_price_rows(result, result.provider or source.provider)
+        except Exception as e:
+            logger.warning(f"优惠转价格行失败(非阻断): {e}")
 
     # P0-1 fix: model_metadata 入库后, 立即触发 Phase 3.3 自动入组消费
     if (promo_id is not None

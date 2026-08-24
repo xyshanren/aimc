@@ -62,6 +62,9 @@ async def sync_price_change(
     source: str = "crawler",
     price_type: str = "normal",
     time_range: str = "全天",
+    is_promotion: int = 0,
+    effective_from: Optional[str] = None,
+    effective_to: Optional[str] = None,
 ) -> Optional[PriceChange]:
     """同步价格变动。
 
@@ -69,6 +72,9 @@ async def sync_price_change(
     走 upsert_price_snapshot。返回值:
     - None: provider 找不到 active channel
     - PriceChange: 包含 old/new 价格 (changed 属性判定是否真变动)
+
+    V4.8.5: 加 is_promotion / effective_from / effective_to 参数,
+    让高置信度优惠能生成限时 promotion 价行 (price_type="promotion", is_promotion=1).
     """
     if input_price is None and output_price is None:
         logger.debug("价格同步跳过: %s/%s 入参为空", provider, model)
@@ -99,6 +105,9 @@ async def sync_price_change(
                 source=source,
                 price_type=price_type,
                 time_range=time_range,
+                is_promotion=is_promotion,
+                effective_from=effective_from,
+                effective_to=effective_to,
             )
             await session.commit()
 

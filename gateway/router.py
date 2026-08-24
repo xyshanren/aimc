@@ -247,6 +247,10 @@ class RouteEngine:
                     "time_range": p.time_range,
                     "input_price": p.input_price,
                     "output_price": p.output_price,
+                    # V4.8.5: 补 cache 价格 + promotion 标记, 供 proxy 算 cost_estimate + 路由优先 promotion 价
+                    "cached_input_price": p.cached_input_price,
+                    "cache_write_price": p.cache_write_price,
+                    "is_promotion": p.is_promotion,
                 }
                 for p in ch.price_snapshots
                 if self._is_price_effective(p)
@@ -350,6 +354,10 @@ class RouteEngine:
                 "time_range": p.time_range,
                 "input_price": p.input_price,
                 "output_price": p.output_price,
+                # V4.8.5: 补 cache 价格 + promotion 标记, 供 proxy 算 cost_estimate + 路由优先 promotion 价
+                "cached_input_price": p.cached_input_price,
+                "cache_write_price": p.cache_write_price,
+                "is_promotion": p.is_promotion,
             }
             for p in ch.price_snapshots
             if self._is_price_effective(p)
@@ -756,13 +764,40 @@ class RouteEngine:
         return best_channel
 
     def _get_current_price(self, channel: dict, model: str, current_hour: int) -> Optional[dict]:
-        """获取渠道在指定模型和当前时段的价格"""
+        """获取渠道在指定模型和当前时段的价格
+
+        V4.8.5: 同一 model 可能有多条价格行 (normal + promotion), promotion 行优先返回
+        (优惠期内比 normal 便宜). _is_price_effective 已在 cache 构建时过滤掉过期行,
+        所以这里只需在有效行中优先选 is_promotion=1 的.
+        """
+        normal_match = None
         for p in channel["prices"]:
             if p["model"] != model:
                 continue
-            if self._match_time_range(p["time_range"], current_hour):
+            if not self._match_time_range(p["time_range"], current_hour):
+                continue
+            if p.get("is_promotion") == 1:
                 return p
-        return None
+            if normal_match is None:
+                normal_match = p
+        return normal_match
+
+    def _fuzzy_model_match(
+        self, model_lower: str, model_stripped: str, price_model: str, price_stripped: str
+    ) -> bool:
+        """V4.8.5: 抽取 fuzzy 匹配逻辑, 供 _get_fuzzy_price 两趟遍历复用"""
+        return (
+            model_lower.startswith(price_model)
+            or price_model.startswith(model_lower)
+            or model_lower.startswith(price_stripped)
+            or price_stripped.startswith(model_lower)
+            or model_lower in price_stripped
+            or price_stripped in model_lower
+            or model_stripped and price_stripped and (
+                model_stripped in price_stripped
+                or price_stripped in model_stripped
+            )
+        )
 
     def _get_fuzzy_price(self, channel: dict, model: str, current_hour: int) -> Optional[dict]:
         """模糊匹配模型名（V4.6.4 增强, 2026-08-18）
@@ -778,6 +813,9 @@ class RouteEngine:
         - registry "glm-4.5v"  -> price "zai-org/GLM-4.5V"  → match (剥前缀, 末段 "glm-4.5v" == "glm-4.5v")
         - registry "qwen-qwen3-vl-32b-instruct" -> price "Qwen/Qwen3-VL-32B-Instruct"
           → match (剥前缀, 末段 "qwen3-vl-32b-instruct" 重叠 "qwen-qwen3-vl-32b-instruct")
+
+        V4.8.5: 同一 model 可能有多条价格行 (normal + promotion), promotion 优先.
+        两趟遍历: 先找 promotion 命中, 没有再取第一个 normal 命中.
         """
         model_lower = model.lower()
         # 剥 model 的可能前缀 (e.g. "qwen-" / "deepseek-")
@@ -786,25 +824,20 @@ class RouteEngine:
             if model_stripped.startswith(prefix):
                 model_stripped = model_stripped[len(prefix):]
 
+        # 第一趟: 找 promotion 价行
+        for p in channel["prices"]:
+            if p.get("is_promotion") != 1:
+                continue
+            price_model = p["model"].lower()
+            price_stripped = price_model.split("/")[-1] if "/" in price_model else price_model
+            if self._fuzzy_model_match(model_lower, model_stripped, price_model, price_stripped):
+                if self._match_time_range(p["time_range"], current_hour):
+                    return p
+        # 第二趟: 取第一个 normal 匹配
         for p in channel["prices"]:
             price_model = p["model"].lower()
-            # 剥掉 provider 前缀 (e.g. "zai-org/", "qwen/", "deepseek-ai/")
             price_stripped = price_model.split("/")[-1] if "/" in price_model else price_model
-
-            match = (
-                model_lower.startswith(price_model)  # "glm-4.5v" in "zai-org/..."
-                or price_model.startswith(model_lower)  # "zai-org/..." in "glm-4.5v"
-                or model_lower.startswith(price_stripped)  # "glm-4.5v" startswith "glm-4.5v"
-                or price_stripped.startswith(model_lower)
-                or model_lower in price_stripped
-                or price_stripped in model_lower
-                # V4.6.4 fix 2: 剥前缀后 末段重叠
-                or model_stripped and price_stripped and (
-                    model_stripped in price_stripped
-                    or price_stripped in model_stripped
-                )
-            )
-            if match:
+            if self._fuzzy_model_match(model_lower, model_stripped, price_model, price_stripped):
                 if self._match_time_range(p["time_range"], current_hour):
                     return p
         return None
