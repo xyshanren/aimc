@@ -77,6 +77,12 @@ class Channel(Base):
         Text, nullable=True,
         comment="需剥离的顶层参数 JSON list, e.g. [\"reasoning_effort\"]; NULL=全透传",
     )
+    # V4.8.7: 上游 400 时自动学习 drop_params (默认启用)
+    # 0=不自动学习, 1=上游 400 unsupported param 时自动加入 drop_params
+    auto_drop_params = Column(
+        Integer, nullable=False, server_default="1",
+        comment="0=不自动学习, 1=上游 400 unsupported param 时自动加入 drop_params",
+    )
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 

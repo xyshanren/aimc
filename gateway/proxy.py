@@ -22,6 +22,16 @@ THINKING_FIELDS_TO_STRIP = (
 # messages = 请求内容, model = 路由必需, stream = 传输模式
 ALWAYS_KEEP_PARAMS = frozenset({"messages", "model", "stream"})
 
+# V4.8.7: 已知 OpenAI 请求参数白名单 — 只对这些参数做自动 drop 学习
+# 避免从错误消息里误提取非参数字符串
+_KNOWN_REQUEST_PARAMS = frozenset({
+    "reasoning_effort", "max_tokens", "temperature", "top_p",
+    "frequency_penalty", "presence_penalty", "logprobs", "top_logprobs",
+    "n", "stop", "seed", "response_format", "tools", "tool_choice",
+    "user", "metadata", "stream_options", "service_tier",
+    "prompt_cache_key", "store", "logit_bias",
+})
+
 import json
 import os
 import time
@@ -171,6 +181,100 @@ def _drop_params(body: bytes, channel: dict) -> tuple:
         del body_dict[k]
     new_body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
     return new_body, dropped
+
+
+def _extract_unsupported_params(response, body: bytes) -> list[str]:
+    """V4.8.7: 从上游 400 响应中提取被拒绝的参数名
+
+    覆盖主流上游错误格式:
+    1. OpenAI 风格: {"error": {"param": "reasoning_effort", ...}}
+    2. 消息文本提取: "unsupported parameter: 'reasoning_effort'"
+       / "unknown parameter 'reasoning_effort'"
+       / "unrecognized request argument supplied: 'reasoning_effort'"
+
+    安全过滤:
+    - 只保留白名单 _KNOWN_REQUEST_PARAMS 中的参数名
+    - 只保留 body 顶层已存在的 key (避免误杀)
+    - ALWAYS_KEEP_PARAMS 永远不提取
+    """
+    try:
+        data = response.json()
+    except Exception:
+        return []
+    err = data.get("error", data) if isinstance(data, dict) else {}
+    if not isinstance(err, dict):
+        return []
+
+    candidates: list[str] = []
+    # 1. OpenAI 风格 error.param
+    param = err.get("param")
+    if isinstance(param, str) and param:
+        candidates.append(param)
+
+    # 2. 从 message 文本提取引号包裹的参数名
+    msg = err.get("message", "")
+    if isinstance(msg, str):
+        import re
+        for m in re.finditer(r"['\"]([a-z_][a-z0-9_]*)['\"]", msg):
+            candidates.append(m.group(1))
+
+    # 过滤: 白名单 + body 存在 + 非 ALWAYS_KEEP_PARAMS
+    try:
+        body_dict = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        body_dict = {}
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for p in candidates:
+        p = p.strip().lower()
+        if p in seen:
+            continue
+        if p in ALWAYS_KEEP_PARAMS:
+            continue
+        if p not in _KNOWN_REQUEST_PARAMS:
+            continue
+        if p not in body_dict:
+            continue
+        seen.add(p)
+        result.append(p)
+    return result
+
+
+async def _auto_learn_drop_params(channel: dict, params: list[str]):
+    """V4.8.7: 异步把新参数追加到 channel.drop_params, 刷新 router 缓存
+
+    fire-and-forget: 不阻塞响应, 失败只 log.
+    """
+    try:
+        from db.engine import async_session_factory
+        from db.models import Channel
+        from sqlalchemy import select
+        from gateway.router import route_engine
+
+        async with async_session_factory() as session:
+            ch = (await session.execute(
+                select(Channel).where(Channel.id == channel["id"])
+            )).scalars().first()
+            if not ch:
+                return
+            existing = _parse_drop_params(ch.drop_params)
+            new_params = [p for p in params if p not in existing]
+            if not new_params:
+                return
+            merged = existing + new_params
+            ch.drop_params = json.dumps(merged, ensure_ascii=False)
+            await session.commit()
+            logger.warning(
+                f"V4.8.7 auto-drop: channel={channel['name']} "
+                f"learned {new_params} (drop_params={merged})"
+            )
+        try:
+            await route_engine.invalidate_channel(channel["id"])
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug(f"V4.8.7 auto-learn failed (non-fatal): {e}")
 
 
 def _maybe_rewrite_body_model(
@@ -543,6 +647,16 @@ async def _forward_stream(
     if response.status_code in (401, 403, 500, 502, 503, 504):
         _schedule_alert(channel, response)
 
+    # V4.8.7: 流式 400 同样自动学习 drop_params
+    if response.status_code == 400 and channel.get("auto_drop_params", 1):
+        bad_params = _extract_unsupported_params(response, body)
+        if bad_params:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_auto_learn_drop_params(channel, bad_params))
+            except RuntimeError:
+                pass
+
     async def stream_generator():
         # P0-1: 滑动缓冲, 只保留末尾 N 字节用于扫描 usage chunk
         # usage 出现在流的最后 (OpenAI: [DONE] 前一个 chunk; Anthropic: message_delta 事件)
@@ -633,6 +747,16 @@ async def _forward_normal(
     # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
     if response.status_code in (401, 403, 500, 502, 503, 504):
         _schedule_alert(channel, response)
+
+    # V4.8.7: 上游 400 时自动学习 drop_params
+    if response.status_code == 400 and channel.get("auto_drop_params", 1):
+        bad_params = _extract_unsupported_params(response, body)
+        if bad_params:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_auto_learn_drop_params(channel, bad_params))
+            except RuntimeError:
+                pass
 
     # 尝试记录用量（异步，不阻塞响应）
     _schedule_usage_log(channel, response, latency_ms, requested_model, caller_id, caller_key_id)

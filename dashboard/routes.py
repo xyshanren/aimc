@@ -213,6 +213,7 @@ async def get_channels_status(session: AsyncSession = Depends(get_session)):
             "api_style": ch.api_style or "openai",  # P1-12: openai / anthropic
             "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: 0/1
             "drop_params": ch.drop_params,  # P2-B: 需剥离的顶层参数 (JSON list / 逗号分隔)
+            "auto_drop_params": ch.auto_drop_params,  # V4.8.7: 上游 400 自动学习
             "accounts": len(ch.accounts),
             "active_accounts": len([a for a in ch.accounts if a.status == "active"]),
         }
@@ -257,11 +258,12 @@ async def update_channel(channel_id: int, request: Request,
         "status": ch.status,
         "priority": ch.priority,
         "drop_params": ch.drop_params,
+        "auto_drop_params": ch.auto_drop_params,
     }
 
     # 更新字段
     allowed_fields = {"base_url", "api_base", "api_style", "supports_prompt_cache",
-                      "status", "priority", "drop_params"}
+                      "status", "priority", "drop_params", "auto_drop_params"}
     for field, value in body.items():
         if field in allowed_fields:
             setattr(ch, field, value)
@@ -282,6 +284,7 @@ async def update_channel(channel_id: int, request: Request,
         "status": ch.status,
         "priority": ch.priority,
         "drop_params": ch.drop_params,
+        "auto_drop_params": ch.auto_drop_params,
     }
     return {"ok": True, "before": before, "after": after}
 

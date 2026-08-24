@@ -391,6 +391,7 @@ class RouteEngine:
                 "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: cache 支持
                 "disable_thinking_pass_through": ch.disable_thinking_pass_through,  # V4.6.4: thinking 剥离
                 "drop_params": ch.drop_params,  # P2-B: 按通道剥离不支持的上游参数
+                "auto_drop_params": ch.auto_drop_params,  # V4.8.7: 上游 400 自动学习
                 "priority": ch.priority,
                 "provider_type": ch.provider_type,
                 "billing_mode": ch.billing_mode,

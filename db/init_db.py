@@ -137,6 +137,15 @@ async def ensure_migrations():
         else:
             logger.debug("迁移: channels.drop_params 已存在，跳过")
 
+        # V4.8.7: channels.auto_drop_params — 上游 400 时自动学习 drop_params
+        if "auto_drop_params" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE channels ADD COLUMN auto_drop_params INTEGER NOT NULL DEFAULT 1"
+            ))
+            logger.info("迁移: channels 添加 auto_drop_params 列 (V4.8.7)")
+        else:
+            logger.debug("迁移: channels.auto_drop_params 已存在，跳过")
+
         # usage_logs.group_id (Phase 3.A, 2026-07-29)
         # 用于 Dashboard 命中率聚合查询, 老数据全部 NULL (精确模型路由)
         result = await conn.execute(text("PRAGMA table_info('usage_logs')"))
