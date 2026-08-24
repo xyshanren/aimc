@@ -27,6 +27,7 @@ import os
 import time
 import logging
 import asyncio
+from datetime import datetime
 from typing import Optional
 
 import httpx
@@ -36,6 +37,61 @@ from starlette.datastructures import Headers
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _estimate_cost(
+    channel: dict,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cached_input_tokens=0,
+    cache_read_input_tokens=0,
+    cache_creation_input_tokens=0,
+) -> Optional[float]:
+    """V4.8.5: 按当期价格估算单次请求费用（元）。
+
+    价格单位 = 元/百万tokens, token 数需除以 1_000_000.
+    三类 cache token 互斥 (同一请求只有一种风格):
+    - cached_input_tokens (OpenAI cache_hit) → cached_input_price
+    - cache_read_input_tokens (Anthropic cache_read) → cached_input_price
+    - cache_creation_input_tokens (Anthropic cache_write) → cache_write_price
+    非 cache 的 input 部分按 input_price 计费.
+
+    返回 None 表示价格未找到 (e.g. 999 兜底价 / model 不在价格表).
+    """
+    try:
+        from gateway.router import route_engine
+        current_hour = datetime.now().hour
+        price = route_engine._get_current_price(channel, model, current_hour)
+        if price is None:
+            price = route_engine._get_fuzzy_price(channel, model, current_hour)
+        if price is None:
+            return None
+    except Exception as e:
+        logger.debug(f"cost_estimate 价格查询失败: model={model} err={e}")
+        return None
+
+    input_price = price.get("input_price") or 0.0
+    output_price = price.get("output_price") or 0.0
+    cached_price = price.get("cached_input_price")  # 可能为 None
+    cache_write = price.get("cache_write_price")     # 可能为 None
+
+    # cache 命中的 input 部分按 cached_price 计费 (若有), 否则按 input_price
+    cache_hit_tokens = (cached_input_tokens or 0) + (cache_read_input_tokens or 0)
+    normal_input_tokens = max(input_tokens - cache_hit_tokens, 0)
+
+    cost = 0.0
+    cost += normal_input_tokens * input_price
+    cost += (output_tokens or 0) * output_price
+    if cache_hit_tokens > 0 and cached_price is not None:
+        cost += cache_hit_tokens * cached_price
+    elif cache_hit_tokens > 0:
+        # 无 cached_price 定价, fallback 按 input_price (保守)
+        cost += cache_hit_tokens * input_price
+    if (cache_creation_input_tokens or 0) > 0 and cache_write is not None:
+        cost += (cache_creation_input_tokens or 0) * cache_write
+
+    return cost / 1_000_000  # 元/百万tokens → 元
 
 
 def _strip_thinking_fields(body_dict: dict) -> dict:
@@ -709,6 +765,13 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
             _parse_cache_tokens(usage)
         )
 
+        # V4.8.5: 估算单次请求费用 (激活成本告警 / 周报 / 看板省钱量化)
+        cost_estimate = _estimate_cost(
+            channel, actual_model,
+            usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
+            cached_input_tokens, cache_read_input_tokens, cache_creation_input_tokens,
+        )
+
         # 创建异步任务写入数据库
         # 修复 V4.6.4: 用 asyncio.create_task 替代 asyncio.get_event_loop().create_task
         # 之前: get_event_loop() 在 Python 3.12 + uvicorn 多 worker 场景下可能返回错的 loop 或 RuntimeError
@@ -730,6 +793,7 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
                     cache_creation_input_tokens=cache_creation_input_tokens,
                     caller_id=caller_id,
                     caller_key_id=caller_key_id,
+                    cost_estimate=cost_estimate,
                 )
             )
             # V4.6.4: 添加回调, task 失败时 log 错误 (之前静默)
@@ -765,6 +829,7 @@ async def _write_usage_log(
     cache_creation_input_tokens=None,
     caller_id: int | None = None,
     caller_key_id: int | None = None,
+    cost_estimate: Optional[float] = None,
 ):
     """写入用量日志到数据库
 
@@ -780,6 +845,10 @@ async def _write_usage_log(
     V4.8.1: caller_key_id 参数 (多 key label 下钻)
     - NULL = legacy / 未鉴权 / 单 key 模式
     - 非 NULL = api_keys.id (middleware 透传)
+
+    V4.8.5: cost_estimate 参数 (单次请求估算费用, 元)
+    - NULL = 价格未找到 / 999 兜底价场景
+    - 非 NULL = 按 _estimate_cost 算出的费用, 激活 v44_alerts 周环比告警 + 看板省钱量化
     """
     try:
         from db.engine import async_session_factory
@@ -801,6 +870,8 @@ async def _write_usage_log(
                 cached_input_tokens=cached_input_tokens,
                 cache_read_input_tokens=cache_read_input_tokens,
                 cache_creation_input_tokens=cache_creation_input_tokens,
+                # V4.8.5: 估算费用 (激活成本告警 / 周报 / 看板省钱量化)
+                cost_estimate=cost_estimate,
             )
             session.add(log)
             await session.commit()
@@ -891,6 +962,13 @@ def _schedule_stream_usage_log(
         input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
         output_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
 
+        # V4.8.5: 估算单次请求费用 (激活成本告警 / 周报 / 看板省钱量化)
+        cost_estimate = _estimate_cost(
+            channel, actual_model,
+            input_tokens, output_tokens,
+            cached_input_tokens, cache_read_input_tokens, cache_creation_input_tokens,
+        )
+
         # P0-1: 对齐 V4.6.4 修复 — 用 get_running_loop() 替代 get_event_loop()
         # get_event_loop() 在 Python 3.12 + uvicorn 多 worker 下可能返回错的 loop 或 RuntimeError
         try:
@@ -910,6 +988,7 @@ def _schedule_stream_usage_log(
                     cache_creation_input_tokens=cache_creation_input_tokens,
                     caller_id=caller_id,
                     caller_key_id=caller_key_id,
+                    cost_estimate=cost_estimate,
                 )
             )
             task.add_done_callback(_log_task_result)
