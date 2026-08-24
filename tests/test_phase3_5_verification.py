@@ -53,6 +53,28 @@ _install_mock_config()
 # ============================================================
 # 共享 mock session (model_sync / pricing_sync 都用)
 # ============================================================
+class _MockResult:
+    """Mock SQLAlchemy result object for session.execute() calls."""
+    def scalar_one_or_none(self):
+        return None
+
+    @property
+    def rowcount(self):
+        return 0
+
+    def all(self):
+        return []
+
+    def scalars(self):
+        class _Scalars:
+            def first(self_inner):
+                return None
+
+            def all(self_inner):
+                return []
+        return _Scalars()
+
+
 class _MockSession:
     async def __aenter__(self):
         return self
@@ -65,6 +87,9 @@ class _MockSession:
 
     async def flush(self):
         pass
+
+    async def execute(self, stmt=None, *a, **kw):
+        return _MockResult()
 
     def begin_nested(self):
         class _Savepoint:
@@ -131,7 +156,8 @@ def test_new_model_auto_join():
         return True
 
     async def _log_cap_change(session, model_id, field_changed, old_value, new_value,
-                              source="ai_infer", confidence=None, approved=0):
+                              source="ai_infer", confidence=None, approved=0,
+                              provider=None):
         state["logs"].append({
             "model_id": model_id, "field": field_changed, "old": old_value, "new": new_value,
             "source": source, "confidence": confidence, "approved": approved,
@@ -143,12 +169,17 @@ def test_new_model_auto_join():
             return "tier:flagship"
         return None
 
+    # V4.8.6: model_sync 入库前校验渠道可用性
+    async def _has_available_channel(session, model_id):
+        return True
+
     # Apply patch
     import db.crud as crud
     crud.get_model_registry = _get_registry
     crud.upsert_model_registry = _upsert_registry
     crud.add_model_group_member = _add_member
     crud.log_capability_change = _log_cap_change
+    crud.has_available_channel = _has_available_channel
 
     import intelligence.model_sync as model_sync
     model_sync._find_target_group = _find_target_group
@@ -378,7 +409,8 @@ def test_deprecated_model_soft_delete():
         ]
 
     async def _log_cap_change(session, model_id, field_changed, old_value, new_value,
-                              source="ai_infer", confidence=None, approved=0):
+                              source="ai_infer", confidence=None, approved=0,
+                              provider=None):
         state["logs"].append({
             "model_id": model_id, "field": field_changed, "old": old_value, "new": new_value,
             "source": source, "confidence": confidence, "approved": approved,
@@ -493,7 +525,8 @@ def test_low_confidence_change_triggers_alert():
         return False
 
     async def _log_cap_change(session, model_id, field_changed, old_value, new_value,
-                              source="ai_infer", confidence=None, approved=0):
+                              source="ai_infer", confidence=None, approved=0,
+                              provider=None):
         state["logs"].append({
             "model_id": model_id, "field": field_changed, "old": old_value, "new": new_value,
             "source": source, "confidence": confidence, "approved": approved,

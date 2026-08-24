@@ -309,6 +309,25 @@ curl -X POST 'http://localhost:8080/dashboard/api/sources/run-now?provider=deeps
 
 未知 provider 返回 400。
 
+### GET /dashboard/api/cooldown（V4.8.7）
+
+渠道冷却状态快照 — 让用户看到哪些 account 被冷却了、剩余多少秒：
+
+```bash
+curl http://localhost:8080/dashboard/api/cooldown \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+返回数组，每项含 `account_id` / `channel_name` / `account_name` / `count`（连续失败次数）/ `cooldown_until`（Unix 时间戳）/ `remaining_seconds`（剩余冷却秒数，1 位小数）/ `in_cooldown`（布尔）。无冷却状态时返回空数组。
+
+### X-AIMC-Failed-Channels 响应头（V4.8.7）
+
+当组路由（`tier:xxx`）重试所有渠道都失败时，最终 4xx/5xx 响应会注入：
+- **响应头** `X-AIMC-Failed-Channels`: JSON 数组，每项含 `{channel, account, account_id, status}`
+- **响应体** `error.failed_channels`: 同上数据，方便客户端解析展示
+
+这让上层 agent / Dashboard 能看到是哪个渠道 429 或 500，而不只是一个 "All upstream failed"。
+
 ## 错误响应格式
 
 AIMC 网关错误（4xx/5xx）用 OpenAI 兼容格式：

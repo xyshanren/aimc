@@ -86,7 +86,7 @@ python scripts/sync_siliconflow_prices.py --apply          # 53 行 input/output
 systemctl --user restart aimc
 
 # === 阶段 7: 验证 + 测试 ===
-python -m pytest tests/ -v   # 期望 473 passed
+python -m pytest tests/ -v   # 期望 547 passed
 ```
 
 ## 3. 验证清单
@@ -124,7 +124,7 @@ sqlite3 data/aimc.db "SELECT dimension, COUNT(*) FROM account_quotas GROUP BY di
 
 # 5. 测试套件
 python -m pytest tests/ -v | tail -3
-# 期望: 473 passed
+# 期望: 547 passed
 
 # 6. e2e
 KEY=$(grep ^AIMC_API_KEY= .env | cut -d= -f2)

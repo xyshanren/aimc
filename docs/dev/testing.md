@@ -22,7 +22,7 @@ python -m pytest tests/ --cov=gateway --cov=intelligence --cov-report=term-missi
 
 pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`），async test 自动运行。
 
-## 2. 现有测试结构（473 个，49 个文件）
+## 2. 现有测试结构（547 个，55 个文件）
 
 | 文件 | 测试数 | 测试内容 | 对应 commit |
 |------|--------|---------|------------|
@@ -59,8 +59,15 @@ pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`）�
 | `test_v48_dashboard.py` | 6 | per-user 用量 + Key 管理 Dashboard | V4.8 |
 | `test_analyze_usage.py` | 13 | 稳定期使用分析 | V4.7+ |
 | `test_qianwenai_source.py` | 6 | 千问 AI 源采集 | 阶段2 |
+| `test_v486_channel_check.py` | 11 | model_sync 入库前渠道可用性校验 | V4.8.6 |
+| `test_v486_pending_dedup.py` | 9 | pending 行 upsert 去重 | V4.8.6 |
+| `test_v486_provider_tracking.py` | 12 | log_capability_change provider 参数 | V4.8.6 |
+| `test_v487_auto_drop_params.py` | 15 | 上游 400 自动学习 drop_params | V4.8.7 |
+| `test_v487_time_pricing.py` | 72 | 分时段定价（工作日/周末/非高峰） | V4.8.7 |
+| `test_v487_cooldown_429.py` | 54 | 429 失败链 + cooldown API + stream 429 | V4.8.7 |
+| `test_phase3_5_verification.py` | 4 | 情报采集 → registry/group 闭环验证 | 阶段3-5 |
 
-**总计**：49 个文件 / 473 个 test（4 skipped）/ ~3 分钟跑通
+**总计**：55 个文件 / 547 个 test（4 skipped）/ ~4 分钟跑通
 
 ## 3. 写新测试
 
@@ -279,7 +286,7 @@ python -m pytest tests/test_xxx.py -v
 
 ## 9. CI 现状（2026-08-15）
 
-- ✅ 本地 473 tests 全过
+- ✅ 本地 547 tests 全过
 - ❌ GitHub Actions / Gitee Go 集成（个人项目无必要）
 - ❌ Coverage 报告（可选）
 

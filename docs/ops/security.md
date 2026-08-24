@@ -14,7 +14,7 @@
 - ✅ **Dashboard Token 鉴权**（`/dashboard/*`）— `AIMC_DASHBOARD_TOKEN`，支持 header/cookie/query
 - ✅ **账号 key Fernet 加密**（P0-5）— 厂商 API key 加密入库
 - ✅ **多维限额**（P0-6）— 防止单 channel 滥用
-- ✅ **473 tests** — 鉴权 / 限额 / cooldown 等核心路径有测试
+- ✅ **547 tests** — 鉴权 / 限额 / cooldown 等核心路径有测试
 
 ### 已知缺口（**内网不严重，公网必须修**）
 

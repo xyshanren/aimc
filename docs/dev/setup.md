@@ -102,7 +102,7 @@ aimc/
 ├── schemas/                # Pydantic 模型 (API 序列化)
 ├── security/               # API-Sec-1 XOR 加密 (历史, P0-5 改 Fernet)
 ├── scripts/                # 运维 + seed + sync 脚本
-├── tests/                  # 502 tests (pytest)
+├── tests/                  # 547 tests (pytest)
 ├── docs/                   # 文档
 ├── main.py                 # 入口
 ├── config.py               # Pydantic settings

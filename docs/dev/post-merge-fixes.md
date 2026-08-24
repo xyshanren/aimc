@@ -302,7 +302,7 @@ systemctl --user restart aimc  (router cache 重建)
 | `503f215` | 阶段C | README 同步 | — |
 | `c7967a4` | 阶段B | SF 53 个 model 真实价格 (input/output) | — |
 | `f287a9d` | P1-15 | 上游 429 failover + balance_cny 未 sync 不拦截 | minimax 真实问题 |
-| `5eab24a` | 阶段D | 测试套件 (初始 74 tests, 后续增长至 473) | 回归保护 |
+| `5eab24a` | 阶段D | 测试套件 (初始 74 tests, 后续增长至 547) | 回归保护 |
 
 ### 新 migration 执行顺序（reset_db 后）
 
@@ -358,7 +358,7 @@ sqlite3 data/aimc.db "SELECT COUNT(*) FROM price_snapshots WHERE channel_id=3 AN
 
 # 4. 测试套件 (阶段D)
 python -m pytest tests/ -v
-# 期望: 473 passed (当时 74, 后续持续增长至 473)
+# 期望: 547 passed (当时 74, 后续持续增长至 547)
 
 # 5. dashboard 端到端 (P1-7)
 curl -s http://127.0.0.1:8080/dashboard/api/data-freshness | python3 -m json.tool | head -20

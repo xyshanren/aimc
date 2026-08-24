@@ -361,6 +361,50 @@ V4.8.1 上线后观察 **1-2 周**, 评估是否需要进一步优化:
 
 ---
 
+## V4.8.6 渠道可用性校验 + 采集来源追踪 + pending 去重 (2026-08-24)
+
+### 渠道可用性校验
+- **问题**: model_sync 新模型入库时 status=active，但用户可能还没配渠道，导致路由 cache 选到后 400
+- **修复**: `crud.has_available_channel()` 检查 price_snapshots 是否有该 model 的 active channel 行；入库前调用，无渠道时 status=inactive（路由 cache 不加载），用户配好渠道后 scheduler 复扫自动翻 active
+- **文件**: db/crud.py, intelligence/model_sync.py
+
+### 采集来源 provider 追踪
+- **问题**: model_capabilities_log 不知道变更来源是哪个 provider
+- **修复**: `log_capability_change` 加 `provider` 参数；model_sync 所有调用点传 `item.source_provider`
+- **文件**: db/crud.py, intelligence/model_sync.py
+
+### pending 行 upsert 去重
+- **问题**: 用户不处理 pending 审查项时，同类信息无限堆积
+- **修复**: `log_capability_change` 在 approved=0 时做 upsert — 同 (model_id, field_changed) 已有 pending 行时更新而非新增
+- **文件**: db/crud.py
+
+---
+
+## V4.8.7 三项修复 (2026-08-24)
+
+### P5: drop_params 自动检测
+- **问题**: drop_params 需手动配置，上游返回 400 "unsupported parameter" 后请求直接失败，无自动学习机制
+- **修复**: `_forward_normal` / `_forward_stream` 捕获上游 400 响应体，解析错误信息中被拒参数名（OpenAI 风格 `error.param` + 消息文本提取），白名单过滤 + ALWAYS_KEEP_PARAMS 保护后 fire-and-forget 异步写入 channel.drop_params，刷新路由缓存
+- **新增列**: `channels.auto_drop_params`（默认 1）
+- **文件**: gateway/proxy.py, db/models.py, db/init_db.py, gateway/router.py, dashboard/routes.py
+- **测试**: test_v487_auto_drop_params.py (15 tests)
+
+### P6: 分时段峰谷定价 (工作日/周末)
+- **问题**: DeepSeek 官方峰谷计费（工作日 9-12/14-18 高峰，其余低谷），`_match_time_range` 只比较小时无工作日/周末概念；种子数据 `"00:00-08:00"` 是错的
+- **修复**: `_match_time_range` 签名改为接收 `now: datetime`，支持 `"工作日HH:MM-HH:MM"` / `"周末全天"` / `"非高峰全天"` token；所有调用点（router.py 4 处 + proxy.py 1 处）改传 `datetime.now()`；DeepSeek 种子改为 6 行（peak 工作日高峰 + offpeak 非高峰全天）；parser SYSTEM_PROMPT 加 peak/offpeak 规则
+- **文件**: gateway/router.py, gateway/proxy.py, scripts/manual_import.py, intelligence/parser.py
+- **测试**: test_v487_time_pricing.py (72 tests)
+
+### P7: 429 渠道定位
+- **问题**: 组路由报 429 时用户看不到是哪个渠道余额不足；CooldownManager.snapshot() 无 API 暴露；stream 路径 429 不触发 cooldown
+- **修复**: routes.py 重试循环收集 `{channel, account, account_id, status}`，最终响应注入 `X-AIMC-Failed-Channels` 响应头 + `error.failed_channels` 响应体；新增 `GET /dashboard/api/cooldown` API（snapshot 含 remaining_seconds/in_cooldown，通过 router cache 反查 channel_name）；`_forward_stream` 补 429 cooldown 标记
+- **文件**: gateway/routes.py, gateway/cooldown.py, dashboard/routes.py, gateway/proxy.py
+- **测试**: test_v487_cooldown_429.py (54 tests)
+
+全量 547 passed。
+
+---
+
 ## 路线图（P1 及以下，本轮未做）
 
 以下项记入路线图，待后续按优先级实施：
