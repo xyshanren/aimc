@@ -123,7 +123,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 curl -X POST http://localhost:8080/dashboard/api/cache/refresh
 
 # 看 router 日志 (DEBUG 级)
-LOG_LEVEL=DEBUG python main.py
+AIMC_LOG_LEVEL=DEBUG python main.py
 
 # 改 migration 后测
 python db/migrations/<new_migration>.py --dry-run

@@ -323,17 +323,17 @@ journalctl --user -u aimc-weekly-report.service --no-pager
 ls -la ~/aimc/reports/weekly-latest.md
 ```
 
-预期输出：`reports/weekly_YYYY-MM-DD.md` + `reports/weekly-latest.md`，`publish_report.py` 走 `.env` 里的 `ALERT_CHANNEL` 推送摘要。
+预期输出：`reports/weekly_YYYY-MM-DD.md` + `reports/weekly-latest.md`，`publish_report.py` 走 `.env` 里的 `AIMC_ALERT_CHANNEL` 推送摘要。
 
 ### 配置推送通道
 
-默认 `ALERT_CHANNEL=log`（只记日志，不真发）。切换推送通道改 `.env`：
+默认 `AIMC_ALERT_CHANNEL=log`（只记日志，不真发）。切换推送通道改 `.env`：
 
 ```bash
 nano ~/aimc/.env
-# 设 ALERT_CHANNEL=bark 并填 BARK_KEY (iOS Bark app)
-# 或 ALERT_CHANNEL=feishu 并填 FEISHU_WEBHOOK_URL
-# 或 ALERT_CHANNEL=serverchan 并填 SERVERCHAN_KEY
+# 设 AIMC_ALERT_CHANNEL=bark 并填 AIMC_BARK_KEY (iOS Bark app)
+# 或 AIMC_ALERT_CHANNEL=feishu 并填 AIMC_FEISHU_WEBHOOK_URL
+# 或 AIMC_ALERT_CHANNEL=serverchan 并填 AIMC_SERVERCHAN_KEY
 ```
 
 改完不需要重启主服务（周报是独立 oneshot，下次触发时读新 `.env`）。

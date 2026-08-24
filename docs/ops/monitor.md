@@ -102,10 +102,10 @@ sqlite3 data/aimc.db "
 ## 5. 报警阈值（.env）
 
 ```bash
-PRICE_ALERT_THRESHOLD=30.0      # 价格波动 > 30% 告警 (%)
-BARK_KEY=...                    # Bark iOS push
-FEISHU_WEBHOOK_URL=...          # 飞书机器人
-SERVERCHAN_KEY=...             # Server酱
+AIMC_PRICE_ALERT_THRESHOLD_PCT=30.0   # 价格波动 > 30% 告警 (%)
+AIMC_BARK_KEY=...                    # Bark iOS push
+AIMC_FEISHU_WEBHOOK_URL=...          # 飞书机器人
+AIMC_SERVERCHAN_KEY=...             # Server酱
 ```
 
 详见 [.env.example §告警](../../.env.example)。

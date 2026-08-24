@@ -8,15 +8,15 @@
 
 AIMC 的 systemd unit 用 `EnvironmentFile=` 加载 `.env`。**systemd 不剥离行内注释** —
 `KEY=value  # 注释` 会把 `# 注释`（含前面空格）整段带进值里，而 pydantic 直接读
-`.env` 文件时会剥离，两条路径行为不一致（曾导致 `ALERT_CHANNEL` 值污染、周报推送失败）。
+`.env` 文件时会剥离，两条路径行为不一致（曾导致 `AIMC_ALERT_CHANNEL` 值污染、周报推送失败）。
 
 ```ini
 # ❌ 错误 (systemd 下值会变成 "feishu          # 飞书机器人")
-ALERT_CHANNEL=feishu          # 飞书机器人
+AIMC_ALERT_CHANNEL=feishu          # 飞书机器人
 
 # ✅ 正确 (注释单独一行)
 # 飞书机器人
-ALERT_CHANNEL=feishu
+AIMC_ALERT_CHANNEL=feishu
 ```
 
 规则：**`.env` 里任何生效行的值后不要跟 `#` 注释**，注释一律独立成行。
@@ -25,9 +25,9 @@ ALERT_CHANNEL=feishu
 
 ```ini
 # === 网关 ===
-HOST=0.0.0.0
-PORT=8080
-LOG_LEVEL=INFO
+AIMC_HOST=0.0.0.0
+AIMC_PORT=8080
+AIMC_LOG_LEVEL=INFO
 
 # === 鉴权 ===
 # 网关 API Key (客户端用 OpenAI SDK 时填), 留空 = 关闭鉴权
@@ -54,24 +54,24 @@ STEPFUN_API_KEY=xxx
 
 # === 路由 / 缓存 / 限额 ===
 # 路由缓存刷新 (秒)
-ROUTE_REFRESH_INTERVAL=300
-# 路由缓存 TTL (秒, P0-4)
+AIMC_ROUTE_REFRESH_INTERVAL=300
+# 路由缓存 TTL (秒, P0-4) — router.py 直读, 非 pydantic settings
 AIMC_ROUTER_CACHE_TTL=60
 # 总采集开关 (试用阶段可关)
 AIMC_CRAWL_ENABLED=true
 # 价格波动告警阈值 (%)
-PRICE_ALERT_THRESHOLD=30.0
+AIMC_PRICE_ALERT_THRESHOLD_PCT=30.0
 
 # === AI 解析 (优惠情报用) ===
 OPENAI_API_KEY=sk-xxx
 # 可指向 SF 兼容 endpoint 省 token
 OPENAI_BASE_URL=https://api.siliconflow.cn/v1
-PARSE_MODEL=MiniMax-M2.7
+AIMC_PARSE_MODEL=MiniMax-M2.7
 
 # === 告警 ===
-BARK_KEY=
-FEISHU_WEBHOOK_URL=
-SERVERCHAN_KEY=
+AIMC_BARK_KEY=
+AIMC_FEISHU_WEBHOOK_URL=
+AIMC_SERVERCHAN_KEY=
 ```
 
 完整字段见 `.env.example`（[dev/setup.md](../dev/setup.md) 有字段详解）。

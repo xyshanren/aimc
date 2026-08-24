@@ -15,22 +15,32 @@ logger = logging.getLogger(__name__)
 class Settings(BaseSettings):
     """全局配置项，优先级：环境变量 > .env 文件 > 默认值"""
 
+    # env_prefix="AIMC_" 统一前缀 (2026-08-24 修复 .env 变量名不生效 bug):
+    # 之前 .env.example / deploy/env.template 写 AIMC_HOST / AIMC_CRAWL_ENABLED 等,
+    # 但 config 没 prefix -> pydantic 按 HOST / CRAWL_ENABLED 匹配 -> AIMC_* 全部静默丢弃。
+    # 加 prefix 后 AIMC_HOST / AIMC_PORT / AIMC_CRAWL_ENABLED 等全部正确生效。
+    # 例外 (validation_alias 覆盖 prefix, 保持业界标准变量名):
+    #   - aimc_master_key -> AIMC_MASTER_KEY (字段名自带 aimc_ 前缀, 加 prefix 会变 AIMC_AIMC_MASTER_KEY)
+    #   - api_key / dashboard_token -> AIMC_API_KEY / AIMC_DASHBOARD_TOKEN (prefix 已覆盖, alias 保留显式)
+    #   - openai_api_key / openai_base_url -> OPENAI_API_KEY / OPENAI_BASE_URL (OpenAI SDK 业界标准, 不加前缀)
     model_config = SettingsConfigDict(
+        env_prefix="AIMC_",
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
     # === 服务配置 ===
-    host: str = "0.0.0.0"
-    port: int = 8080
-    log_level: str = "INFO"
+    host: str = "0.0.0.0"          # env: AIMC_HOST
+    port: int = 8080               # env: AIMC_PORT
+    log_level: str = "INFO"        # env: AIMC_LOG_LEVEL
 
     # === 加密 (API-Sec-1, 2026-07-29) ===
     # Fernet master key (44 字符 url-safe base64, 32 bytes 原始)
     # 生成: python scripts/gen_master_key.py
     # 丢了 = 全部 ciphertext 不可解 = 永久性数据丢失, 务必存到密码管理器
-    aimc_master_key: str = ""
+    # env: AIMC_MASTER_KEY (validation_alias 覆盖 prefix, 避免变 AIMC_AIMC_MASTER_KEY)
+    aimc_master_key: str = Field(default="", validation_alias="AIMC_MASTER_KEY")
 
     @field_validator("aimc_master_key")
     @classmethod
@@ -60,20 +70,22 @@ class Settings(BaseSettings):
         return v
 
     # === 数据库 ===
-    db_path: str = "./data/aimc.db"
+    db_path: str = "./data/aimc.db"   # env: AIMC_DB_PATH
 
     # === 网关鉴权 ===
     # BUGFIX (2026-08-17): 加 validation_alias 强制读取 AIMC_API_KEY env var
     # 之前 Pydantic 默认按字段名匹配, 期望 env var "API_KEY" (而不是 "AIMC_API_KEY")
     # 导致 .env 里设了 AIMC_API_KEY 也读不到 -> api_key="" -> auth_enabled=False
     # -> 任意 client 都能无鉴权访问 /v1/* (鉴权旁路)
+    # V4.8.5 (2026-08-24): env_prefix="AIMC_" 已覆盖此字段, alias 保留作为显式契约
+    # env: AIMC_API_KEY
     api_key: str = Field(default="", validation_alias="AIMC_API_KEY")  # 留空则不鉴权 (/v1/* OpenAI/Anthropic API)
 
     # P1-7 (2026-08-14): dashboard 鉴权 (跟 api_key 分开, 独立管理)
     # - 未设 = 维持 legacy 行为 (LAN 内裸开, 跟你 brief 里的"已知遗留"一致)
     # - 设了 = /dashboard/* 路径需要 token 校验 (header 或 ?token=)
     # - 跟 api_key 分开的原因: dashboard 数据敏感 (账号/限额/优惠), 应该独立管理
-    # - env var 用 AIMC_DASHBOARD_TOKEN (跟 api_key 的 AIMC_API_KEY 命名一致)
+    # env: AIMC_DASHBOARD_TOKEN (env_prefix 已覆盖, alias 保留作为显式契约)
     dashboard_token: str = Field(default="", validation_alias="AIMC_DASHBOARD_TOKEN")
 
     @property
@@ -82,9 +94,11 @@ class Settings(BaseSettings):
         return bool(self.dashboard_token)
 
     # === AI 解析引擎 ===
-    openai_api_key: str = ""
-    openai_base_url: str = "https://api.openai.com/v1"
-    parse_model: str = "gpt-4o-mini"
+    # validation_alias 覆盖 prefix: OPENAI_API_KEY / OPENAI_BASE_URL 是 OpenAI SDK 业界标准变量名,
+    # 加 AIMC_ 前缀会破坏兼容性 (SDK / 用户肌肉记忆都期望无前缀)
+    openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
+    openai_base_url: str = Field(default="https://api.openai.com/v1", validation_alias="OPENAI_BASE_URL")
+    parse_model: str = "gpt-4o-mini"   # env: AIMC_PARSE_MODEL
 
     # === 告警通道（Phase 试用简化）===
     # alert_channel:
@@ -92,36 +106,36 @@ class Settings(BaseSettings):
     #   "bark"       - iOS Bark（国内首选）
     #   "telegram"   - Telegram bot（需翻墙）
     #   "serverchan" - Server 酱（推微信）
-    alert_channel: str = "log"
-    bark_key: str = ""  # Bark device key（iPhone app 注册时给）
-    bark_server: str = ""  # 自建 Bark server URL（留空用官方 https://api.day.app）
-    serverchan_key: str = ""  # Server 酱 SendKey
-    feishu_webhook_url: str = ""  # 飞书自定义机器人 webhook URL
+    alert_channel: str = "log"         # env: AIMC_ALERT_CHANNEL
+    bark_key: str = ""                 # env: AIMC_BARK_KEY (Bark device key)
+    bark_server: str = ""              # env: AIMC_BARK_SERVER (留空用官方 https://api.day.app)
+    serverchan_key: str = ""           # env: AIMC_SERVERCHAN_KEY (Server 酱 SendKey)
+    feishu_webhook_url: str = ""       # env: AIMC_FEISHU_WEBHOOK_URL
     # === Telegram 告警（已废弃，国内不实用；保留字段避免破坏旧 .env）===
-    telegram_bot_token: str = ""
-    telegram_chat_id: str = ""
+    telegram_bot_token: str = ""       # env: AIMC_TELEGRAM_BOT_TOKEN
+    telegram_chat_id: str = ""         # env: AIMC_TELEGRAM_CHAT_ID
 
     # === 代理设置 ===
-    proxy_url: str = ""
+    proxy_url: str = ""                # env: AIMC_PROXY_URL
 
     # === 路由配置 ===
-    route_refresh_interval: int = 300  # 价格缓存刷新间隔（秒）
-    max_fallback_retries: int = 2  # 故障转移最大重试次数
-    request_timeout: float = 120.0  # 上游请求超时（秒）
+    route_refresh_interval: int = 300  # env: AIMC_ROUTE_REFRESH_INTERVAL (价格缓存刷新间隔, 秒)
+    max_fallback_retries: int = 2      # env: AIMC_MAX_FALLBACK_RETRIES (故障转移最大重试次数)
+    request_timeout: float = 120.0     # env: AIMC_REQUEST_TIMEOUT (上游请求超时, 秒)
 
     # === 情报采集 ===
-    crawl_interval: int = 900  # 默认爬取间隔（秒），15分钟
-    diff_similarity_threshold: float = 0.9  # 相似度阈值，低于此值触发解析
-    parse_confidence_threshold: float = 0.8  # 自愈置信度阈值
-    crawl_enabled: bool = True  # 总开关：False = 跳过所有采集（试用阶段省心）
+    crawl_interval: int = 900          # env: AIMC_CRAWL_INTERVAL (默认爬取间隔, 秒, 15分钟)
+    diff_similarity_threshold: float = 0.9  # env: AIMC_DIFF_SIMILARITY_THRESHOLD (低于此值触发解析)
+    parse_confidence_threshold: float = 0.8  # env: AIMC_PARSE_CONFIDENCE_THRESHOLD (自愈置信度阈值)
+    crawl_enabled: bool = True         # env: AIMC_CRAWL_ENABLED (总开关: False = 跳过所有采集)
     # V4.8.4: Playwright 进程回收防护
-    browser_max_concurrent: int = 4  # 并发 page context 上限 (防内存爆炸)
-    browser_fetch_timeout: int = 60  # 单次 fetch 整体超时 (秒, 含 page.goto + wait_for)
+    browser_max_concurrent: int = 4    # env: AIMC_BROWSER_MAX_CONCURRENT (并发 page context 上限)
+    browser_fetch_timeout: int = 60    # env: AIMC_BROWSER_FETCH_TIMEOUT (单次 fetch 整体超时, 秒)
 
     # === 价格波动告警 (Phase 4 E2, 2026-07-29) ===
     # input_price 或 output_price 任一方向变动 ≥ 此百分比即触发告警
     # 可被 SettingsRuntime 表 key="price_alert_threshold" 覆盖 (无需重启)
-    price_alert_threshold_pct: float = 30.0
+    price_alert_threshold_pct: float = 30.0  # env: AIMC_PRICE_ALERT_THRESHOLD_PCT
 
     @property
     def db_url(self) -> str:

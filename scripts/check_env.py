@@ -126,7 +126,7 @@ def main() -> int:
         "AIMC_API_KEY": "网关鉴权 (留空则不鉴权)",
         "AIMC_DB_PATH": "数据库路径",
         "OPENAI_API_KEY": "AI 解析引擎 (情报层)",
-        "ALERT_CHANNEL": "告警通道 (log/bark/serverchan/feishu)",
+        "AIMC_ALERT_CHANNEL": "告警通道 (log/bark/serverchan/feishu)",
         "AIMC_PROXY_URL": "代理 (爬虫用)",
     }
     for k, desc in optional.items():

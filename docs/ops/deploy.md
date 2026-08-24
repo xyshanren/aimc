@@ -117,7 +117,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-ENV HOST=0.0.0.0 PORT=8080
+ENV AIMC_HOST=0.0.0.0 AIMC_PORT=8080
 EXPOSE 8080
 
 CMD ["python", "main.py"]
