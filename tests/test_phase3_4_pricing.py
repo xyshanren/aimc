@@ -197,6 +197,7 @@ def _install_mock_db():
             self.channel_id = kw.get("channel_id")
             self.model = kw.get("model")
             self.source = kw.get("source", "manual")
+            self.is_promotion = kw.get("is_promotion", 0)
             self.id = id(self)
 
     # 内存 store: [(channel, [price...])]
@@ -257,19 +258,21 @@ def _install_mock_db():
 
     async def _upsert(session, channel_id, model, input_price, output_price,
                        source="crawler", price_type="normal", time_range="全天",
-                       effective_from=None, effective_to=None):
+                       effective_from=None, effective_to=None, is_promotion=0):
         for p in _state["prices"]:
             if (p.channel_id == channel_id and p.model == model
                     and p.price_type == price_type and p.time_range == time_range):
                 p.input_price = input_price
                 p.output_price = output_price
                 p.source = source
+                p.is_promotion = is_promotion
                 return p, False
         p = _MockPrice(
             channel_id=channel_id, model=model,
             input_price=input_price, output_price=output_price,
             price_type=price_type, time_range=time_range, source=source,
             effective_from=effective_from, effective_to=effective_to,
+            is_promotion=is_promotion,
         )
         _state["prices"].append(p)
         return p, True

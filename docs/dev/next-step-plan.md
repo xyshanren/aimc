@@ -315,3 +315,55 @@ V4.8.1 上线后观察 **1-2 周**, 评估是否需要进一步优化:
 - ✅ P2 真实失败 37 个全清 (含 2 个生产级 bug: NULL 价格路由回归 / `_update_cooldown` hook 断线)
 - ✅ phase2_e2e 标 integration marker
 - ✅ 最终: 391 passed / 4 skipped (commit `7afa113`)
+
+---
+
+## V4.8.4 完成记录 (2026-08-21)
+
+- ✅ Playwright 进程回收 4 层防护：fetcher Lock + pw 句柄 + Semaphore + wait_for 超时
+- ✅ scheduler in-flight 追踪 + 优雅关闭（关闭时等待进行中任务完成）
+- ✅ systemd ExecStartPre 清孤儿进程 + TimeoutStopSec 强制回收
+- ✅ 低置信度优惠审查队列闭环：promotion_review_queue 表 + 3 API + Dashboard 审查卡片
+- commit: 4967e37
+
+---
+
+## V4.8.5 断链修复四项 (2026-08-23)
+
+基于情报系统分析报告（12 项断链清单），本轮聚焦 P0 四项"小改动大价值"断链修复。
+
+### P0-1: 写入 cost_estimate（激活成本告警 / 周报 / 看板省钱量化）
+- **断链**: `UsageLog.cost_estimate` 列存在但唯一生产写入函数 `_write_usage_log` 从不传它 → 恒 NULL → v44_alerts 周环比费用告警永不触发, Dashboard total_cost 恒为 0
+- **修复**: router cache prices dict 补 cached_input_price/cache_write_price/is_promotion 三字段; proxy 新增 `_estimate_cost` 按当期价格算费用; 两个 `_schedule_*` 函数算 cost 透传; `_write_usage_log` 接收并写入
+- **文件**: gateway/router.py, gateway/proxy.py
+
+### P0-2: 修 routes.py route_engine import（NameError 被 except 吞掉）
+- **断链**: `approve_pending_review` (L1478) 和 `resolve_cross_source_discrepancy` (L1651) 调 `route_engine.refresh_cache()` 但无局部 import → NameError 被 `except Exception` 吞成 warning → 路由缓存实际从未刷新
+- **修复**: 两处补 `from gateway.router import route_engine` 局部 import
+- **文件**: dashboard/routes.py
+
+### P0-3: 修 CSS 降级 title 断裂 + price_snapshots 唯一索引冲突
+- **断链 7**: extractor.py:76 硬编码 `title=None` → healer.py:329 `if not result.title` 丢弃 → CSS 降级路径永远无法入库
+- **断链 9**: DB UNIQUE 索引 `(channel_id, model)` 与 upsert 四元组查询 `(channel_id, model, price_type, time_range)` 冲突 → 同 model 写第二条 price_type 行必 IntegrityError
+- **修复**: extractor 新增 `_infer_title_from_css` 从 heading/属性/首行/兜底推断非空 title; models.py UNIQUE 索引改四元组; init_db.py 加幂等迁移 DROP 旧索引 + CREATE 新索引; crud.py upsert_price_snapshot 加 is_promotion 参数
+- **文件**: intelligence/extractor.py, db/models.py, db/init_db.py, db/crud.py
+
+### P0-4: 高置信度优惠 → 限时优惠价格行（打通核心卖点）
+- **断链**: promotions 表优惠只进展示卡片从不参与路由; price_snapshots.is_promotion 字段无人写入; 折扣从不换算成价格行
+- **修复**: pricing_sync.sync_price_change 加 is_promotion/effective_from/effective_to 参数; healer 新增 `_promotion_to_price_rows` 从 discount_desc 解析折扣率 × normal 价生成 promotion 价行; `_save_promotion` commit 后调用; router `_get_current_price`/`_get_fuzzy_price` 优先返回 promotion 行; `_is_price_effective` 自动按日期生效/失效
+- **文件**: intelligence/pricing_sync.py, intelligence/healer.py, gateway/router.py
+
+---
+
+## 路线图（P1 及以下，本轮未做）
+
+以下项记入路线图，待后续按优先级实施：
+
+- **P1-1 differ 先 clean 再 hash**: `differ.py` compute_hash/compute_similarity 前调 clean_html，避免 HTML 噪声导致"有变化"误判
+- **P1-2 API 抽取结果直连 model_sync**: scheduler.py API 分支短路，跳过 AI 重解析直接喂 model_sync
+- **P1-3 score_bonus 接入组路由 sort_key**: router.py:1362 sort_key 加 -score_bonus tie-break
+- **P1-4 promotions 拆表 + SourceRuntimeService 收敛**: 架构级重构，promotions 拆成 promotion_activities / model_metadata_candidates / benchmark_snapshots 等表
+- **断链 #5 跨源分歧 UI 挂载容器**: index.html 缺 cross-source-list 容器，app.js 渲染器已写好
+- **断链 #8 API 抽取结果跳过 clean_html 截断**: 与 P1-2 合并
+- **断链 #10 Chart.js 图表实际挂载**: JS 引入了但 canvas 容器未挂载
+- **断链 #11/#12 cache 命中率权重 + cached_input_price 参与路由 score**: 路由评分维度补全
