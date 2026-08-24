@@ -188,7 +188,7 @@ def test_aggregate_single_source():
     ]
     agg = aggregate(entries)
     assert agg["m1"].composite_score == 80.0
-    assert agg["m2"].composite_score == 70.0
+    assert agg["m2"].composite_score == 70.0  # IEEE 754: 70*w/w 可能得 69.999..., aggregator 已 round(,2)
     assert agg["m1"].sample_size == 1
     print(f"  [OK] m1=80, m2=70 (单 source 无加权变化)")
 

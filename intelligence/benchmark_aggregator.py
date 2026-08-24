@@ -157,10 +157,14 @@ def _aggregate_one_model(
         })
 
     # 计算 composite
+    # round 到 2 位小数 — 避免 IEEE 754 浮点误差累积
+    # (e.g. 70.0 × w / w 可能得 69.99999999999999), 同时所有下游
+    # 消费者 (to_dict / to_model_cards_rows) 本来就 round(,2),
+    # 在源头统一规整更可靠.
     if weight_total == 0:
         composite = 0.0
     else:
-        composite = weighted_sum / weight_total
+        composite = round(weighted_sum / weight_total, 2)
 
     # 回填 contribution_pct
     if weight_total > 0:
