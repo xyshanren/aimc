@@ -62,13 +62,13 @@ systemctl --user status aimc
 
 > ⚠️ **`.env` 行内注释陷阱**：systemd 的 `EnvironmentFile=` **不剥离行内注释** —
 > `KEY=value  # 注释` 会把注释整段带进值里（pydantic 直读 `.env` 时会剥离，两条路径
-> 行为不一致，曾导致 `ALERT_CHANNEL` 值污染、周报推送失败）。**`.env` 生效行的值后
+> 行为不一致，曾导致 `AIMC_ALERT_CHANNEL` 值污染、周报推送失败）。**`.env` 生效行的值后
 > 不要跟 `#` 注释**，注释一律独立成行。详见 [user/configure.md](../user/configure.md)。
 
 ## 1.5 周报定时器（aimc-weekly-report.timer）
 
 每周一 09:00（本地时间）自动生成周报 + 推送（飞书/Bark/Server 酱，走
-`ALERT_CHANNEL`）。unit 文件在 `scripts/deploy/aimc-weekly-report.{service,timer}`。
+`AIMC_ALERT_CHANNEL`）。unit 文件在 `scripts/deploy/aimc-weekly-report.{service,timer}`。
 
 ```bash
 cp scripts/deploy/aimc-weekly-report.service scripts/deploy/aimc-weekly-report.timer \

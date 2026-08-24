@@ -193,6 +193,6 @@ systemctl --user restart aimc
 | 症状 | 排查命令 |
 |------|----------|
 | 收不到周报 Bark | `journalctl --user -u aimc \| grep -i bark` |
-| 告警发不出 | 检查 `.env` `BARK_KEY` / `FEISHU_WEBHOOK_URL` |
+| 告警发不出 | 检查 `.env` `AIMC_BARK_KEY` / `AIMC_FEISHU_WEBHOOK_URL` |
 | 限额监控不准 | 跑 `python scripts/sync_balance_quota.py`（如果存在）|
 | 数据新鲜度全 🟡 | 看 shadow log + 看 intelligence/scheduler.py |

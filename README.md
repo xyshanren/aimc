@@ -66,7 +66,7 @@ aimc/
 ├── db/                     # 数据库层 (含 12 个 migration)
 ├── dashboard/              # Dashboard 后端 (FastAPI routes) + 前端 (htmx + chart.js)
 ├── scripts/                # 运维脚本 (sync_prices / apply_suggestions / weekly_report)
-├── tests/                  # 473 个测试 (pytest, ~3min)
+├── tests/                  # 502 个测试 (pytest, ~4min)
 └── docs/                   # 完整文档 (见 docs/index.md)
 ```
 
@@ -81,7 +81,7 @@ aimc/
 | Dashboard | htmx + Chart.js |
 | 测试 | pytest + pytest-asyncio |
 
-## 最近变更（2026-08-16~23）
+## 最近变更（2026-08-16~24）
 
 - **V4.8 多用户**：users/api_keys 表、`aimc-` key 按人记账 + 日/月限额、CLI（add_user_key）、Dashboard 按人用量 + Key 管理
 - **P3 工程加固**：e2e 测试 MockTransport 化（CI 可跑）；周报 systemd timer + 飞书推送
@@ -91,7 +91,7 @@ aimc/
 - **V4.8.1 告警分级静默 + 按人用量下钻**：采集失败首次静默 30min/连续静默 2h；按人用量可展开到 key label
 - **V4.8.3 采集系统优化**：调度按 (provider, poll_interval) 分组修复 model_list 源被拉高频、自适应降频（无变化 ≥4 次降 4x）、采集源管理卡片（总源 34→37）
 - **V4.8.4 Playwright 进程回收 + 低置信度审查队列**：fetcher 4 层防护（Lock + pw 句柄 + Semaphore + wait_for 超时）；scheduler in-flight 追踪 + 优雅关闭；systemd ExecStartPre 清孤儿 + TimeoutStopSec；低置信度优惠审查队列闭环（promotion_review_queue 表 + 3 API + Dashboard 审查卡片）
-- **V4.8.5 断链修复四项**：cost_estimate 实写入（激活成本告警/周报/看板省钱量化）；route_engine import 补全（批准/拍板后缓存即刻刷新）；CSS 降级 title 推断（降级路径不再被丢弃）；高置信度优惠→限时 promotion 价行（打通"情报→省钱"核心链路）+ price_snapshots 唯一索引迁移四元组
+- **V4.8.5 断链修复 + env_prefix + 浮点修复**：cost_estimate 实写入（激活成本告警/周报/看板省钱量化）；route_engine import 补全（批准/拍板后缓存即刻刷新）；CSS 降级 title 推断（降级路径不再被丢弃）；高置信度优惠→限时 promotion 价行（打通"情报→省钱"核心链路）+ price_snapshots 唯一索引迁移四元组；config.py `env_prefix="AIMC_"` 修复 .env 变量名不生效；benchmark aggregator 浮点精度 round(,2)
 
 更早的 21 commit 架构整改（2026-08-14~15）见 [docs/dev/post-merge-fixes.md](docs/dev/post-merge-fixes.md)，
 路线图见 [docs/dev/next-step-plan.md](docs/dev/next-step-plan.md)。

@@ -328,9 +328,10 @@ V4.8.1 上线后观察 **1-2 周**, 评估是否需要进一步优化:
 
 ---
 
-## V4.8.5 断链修复四项 (2026-08-23)
+## V4.8.5 断链修复四项 (2026-08-23 ~ 24)
 
-基于情报系统分析报告（12 项断链清单），本轮聚焦 P0 四项"小改动大价值"断链修复。
+基于情报系统分析报告（12 项断链清单），本轮聚焦 P0 四项"小改动大价值"断链修复，
+另含 env_prefix 修复 + benchmark 浮点精度修复。
 
 ### P0-1: 写入 cost_estimate（激活成本告警 / 周报 / 看板省钱量化）
 - **断链**: `UsageLog.cost_estimate` 列存在但唯一生产写入函数 `_write_usage_log` 从不传它 → 恒 NULL → v44_alerts 周环比费用告警永不触发, Dashboard total_cost 恒为 0
@@ -352,6 +353,11 @@ V4.8.1 上线后观察 **1-2 周**, 评估是否需要进一步优化:
 - **断链**: promotions 表优惠只进展示卡片从不参与路由; price_snapshots.is_promotion 字段无人写入; 折扣从不换算成价格行
 - **修复**: pricing_sync.sync_price_change 加 is_promotion/effective_from/effective_to 参数; healer 新增 `_promotion_to_price_rows` 从 discount_desc 解析折扣率 × normal 价生成 promotion 价行; `_save_promotion` commit 后调用; router `_get_current_price`/`_get_fuzzy_price` 优先返回 promotion 行; `_is_price_effective` 自动按日期生效/失效
 - **文件**: intelligence/pricing_sync.py, intelligence/healer.py, gateway/router.py
+
+### 附: env_prefix 修复 + benchmark 浮点精度修复 (2026-08-24)
+
+- **env_prefix**: `config.py` 加 `env_prefix="AIMC_"`，修复 `.env` 里 `AIMC_HOST`/`AIMC_PORT`/`AIMC_CRAWL_ENABLED` 等变量被静默忽略的 bug（只有 unprefixed `HOST`/`PORT` 生效）。`aimc_master_key`/`openai_api_key`/`openai_base_url` 用 `validation_alias` 保留原名。全量 502 passed。
+- **benchmark 浮点**: `benchmark_aggregator._aggregate_one_model` 计算 composite 时 `round(,2)`，修复 `70.0 × w / w = 69.999...` 的 IEEE 754 误差（`BenchmarkEntry` 的 `default_factory=datetime.now` 导致 `recency_weight` 不精确为 1.0）。
 
 ---
 

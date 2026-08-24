@@ -38,7 +38,7 @@ python main.py
 ## 4. 跑测试
 
 ```bash
-# 全跑 (473 个 test)
+# 全跑 (502 个 test)
 python -m pytest tests/ -v
 
 # 单文件
@@ -102,7 +102,7 @@ aimc/
 ├── schemas/                # Pydantic 模型 (API 序列化)
 ├── security/               # API-Sec-1 XOR 加密 (历史, P0-5 改 Fernet)
 ├── scripts/                # 运维 + seed + sync 脚本
-├── tests/                  # 473 tests (pytest)
+├── tests/                  # 502 tests (pytest)
 ├── docs/                   # 文档
 ├── main.py                 # 入口
 ├── config.py               # Pydantic settings

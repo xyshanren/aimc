@@ -114,7 +114,7 @@ AIMC_SERVERCHAN_KEY=...             # Server酱
 
 ```bash
 # 每周日凌晨 3 点统计 db 健康度, 发到 Bark
-0 3 * * 0 echo "{\"text\":\"AIMC weekly stats: $(sqlite3 /home/lxc/aimc/data/aimc.db 'SELECT COUNT(*) FROM accounts, channels;')...\"}" | curl -X POST "https://api.day.app/$BARK_KEY" -H 'Content-Type: application/json' -d @-
+0 3 * * 0 echo "{\"text\":\"AIMC weekly stats: $(sqlite3 /home/lxc/aimc/data/aimc.db 'SELECT COUNT(*) FROM accounts, channels;')...\"}" | curl -X POST "https://api.day.app/$AIMC_BARK_KEY" -H 'Content-Type: application/json' -d @-
 ```
 
 ## 故障排查（监控阶段）
@@ -125,4 +125,4 @@ AIMC_SERVERCHAN_KEY=...             # Server酱
 | 限额接近 100% | 加账号 或 在 Dashboard 限额管理调 |
 | 上游 429 频繁 | `journalctl \| grep 429 \| tail -50` 看是哪个渠道 |
 | 数据新鲜度全 🟡 | 看 `intelligence/scheduler.py` 是否启动 + db 可写 |
-| 周报没收到 Bark | `.env BARK_KEY` 对吗 / journal 看 `alerter` 模块 |
+| 周报没收到 Bark | `.env AIMC_BARK_KEY` 对吗 / journal 看 `alerter` 模块 |
