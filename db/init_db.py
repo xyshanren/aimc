@@ -49,6 +49,8 @@ async def ensure_migrations():
     - users / api_keys 表 (V4.8, 2026-08-19) — 多用户 + 多 key 鉴权 (create_all 自动建表)
     - model_registry.raw_ids / supports_prompt_cache (P0-2, 2026-08-14) — 上游 raw_id 映射 + cache 支持
     - promotion_review_queue 表 (V4.8.4, 2026-08-21) — 低置信度优惠审查队列 (create_all 自动建表)
+    - model_capabilities_log.provider 列 (V4.8.6, 2026-08-24) — 采集来源渠道追溯
+    - model_capabilities_log pending 去重索引 (V4.8.6, 2026-08-24) — 同 model+field approved=0 只留 1 条
     """
     async with engine.begin() as conn:
         # intel_sources.last_content
@@ -282,6 +284,50 @@ async def ensure_migrations():
                 "ON price_snapshots(channel_id, model, price_type, time_range)"
             ))
             logger.info("迁移: 创建四元组唯一索引 uq_ps_channel_model_type (V4.8.5)")
+
+        # V4.8.6: model_capabilities_log 添加 provider 列 (采集来源渠道追溯)
+        result = await conn.execute(text("PRAGMA table_info('model_capabilities_log')"))
+        mcl_columns = {row[1] for row in result.fetchall()}
+        if "provider" not in mcl_columns:
+            await conn.execute(text(
+                "ALTER TABLE model_capabilities_log ADD COLUMN provider TEXT"
+            ))
+            logger.info("迁移: model_capabilities_log 添加 provider 列 (V4.8.6)")
+        else:
+            logger.debug("迁移: model_capabilities_log.provider 已存在，跳过")
+
+        # V4.8.6: model_capabilities_log pending 去重
+        # 1) 清理历史重复 approved=0 行 (同 model_id+field_changed 只保留最新一条)
+        dup_check = await conn.execute(text(
+            "SELECT COUNT(*) FROM ("
+            "  SELECT model_id, field_changed FROM model_capabilities_log"
+            "  WHERE approved = 0"
+            "  GROUP BY model_id, field_changed HAVING COUNT(*) > 1"
+            ")"
+        ))
+        dup_count = dup_check.scalar()
+        if dup_count and dup_count > 0:
+            logger.warning(
+                "迁移: model_capabilities_log 发现 %d 组重复 pending 行, 清理保留最新 (V4.8.6)",
+                dup_count,
+            )
+            await conn.execute(text(
+                "DELETE FROM model_capabilities_log WHERE id NOT IN ("
+                "  SELECT MAX(id) FROM model_capabilities_log"
+                "  WHERE approved = 0"
+                "  GROUP BY model_id, field_changed"
+                ") AND approved = 0"
+            ))
+        # 2) 建 partial unique index (approved=0 时同 model+field 唯一)
+        result = await conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='uq_mcl_pending'"
+        ))
+        if not result.fetchone():
+            await conn.execute(text(
+                "CREATE UNIQUE INDEX uq_mcl_pending "
+                "ON model_capabilities_log(model_id, field_changed) WHERE approved = 0"
+            ))
+            logger.info("迁移: model_capabilities_log 添加 pending 去重索引 (V4.8.6)")
 
 
 async def drop_all():

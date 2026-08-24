@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Phase 3.6: 标准 OpenAI 兼容 /v1/models 路径
 # 9 家国内厂商均支持:
-# - DeepSeek:      https://api.deepseek.com/v1
+# - DeepSeek:      https://api.deepseek.com (V4.8.6: 文档 base_url 无 /v1, fetch_models_via_api 自动补 /models)
 # - Qwen (DashScope): https://dashscope.aliyuncs.com/compatible-mode/v1
 # - GLM:           https://open.bigmodel.cn/api/paas/v4
 # - SiliconFlow:   https://api.siliconflow.cn/v1

@@ -15,7 +15,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column, Integer, Text, Float, DateTime, ForeignKey, LargeBinary, func,
-    Index, UniqueConstraint,
+    Index, UniqueConstraint, text as sa_text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -586,6 +586,11 @@ class ModelCapabilitiesLog(Base):
     - AI 推断的变更 default approved=0，必须 dashboard 人工批准才生效
     - manual 写入的变更直接 approved=1
     - 完整 audit trail 留底
+
+    V4.8.6:
+    - 加 provider 列: 采集来源渠道, 让用户在待确认队列中追溯模型来自哪个渠道
+    - pending 去重: 同 (model_id, field_changed) 在 approved=0 时只保留 1 条 (partial unique index)
+      避免 tier/metadata 类型变更不处理时每次重扫堆积新行
     """
     __tablename__ = "model_capabilities_log"
 
@@ -597,7 +602,20 @@ class ModelCapabilitiesLog(Base):
     source = Column(Text, nullable=False, comment="manual / intel_crawler / ai_infer")
     confidence = Column(Float, nullable=True, comment="AI 推断时的置信度 (manual 时为 NULL)")
     approved = Column(Integer, default=0, comment="是否已人工确认 (0/1)")
+    # V4.8.6: 采集来源渠道 (moonshot/deepseek/siliconflow/...), NULL=legacy 数据
+    provider = Column(Text, nullable=True, comment="采集来源渠道 (moonshot/deepseek/siliconflow/...)")
     created_at = Column(DateTime, default=func.now())
+
+    # V4.8.6: pending 去重 — 同 (model_id, field_changed) 在 approved=0 时只保留 1 条.
+    # 用 partial unique index (SQLite/PostgreSQL 均支持), approved=1 的审计行不受约束.
+    __table_args__ = (
+        Index(
+            "uq_mcl_pending", "model_id", "field_changed",
+            unique=True,
+            sqlite_where=sa_text("approved = 0"),
+            postgresql_where=sa_text("approved = 0"),
+        ),
+    )
 
 
 class CrossSourceDiscrepancy(Base):

@@ -1438,6 +1438,7 @@ async def get_pending_review(
             "old_value": log.old_value,
             "new_value": log.new_value,
             "confidence": log.confidence,
+            "provider": log.provider,
             "created_at": log.created_at.isoformat() if log.created_at else None,
             "confidence_level": (
                 "high" if (log.confidence or 0) >= 0.8
@@ -1486,6 +1487,10 @@ async def approve_pending_review(
     new_group = None
     if log.field_changed == "tier" and log.new_value:
         new_group = await crud.find_target_group_for_tier(session, log.new_value)
+    # V4.8.6: create 批准时检查渠道可用性, 返回 channel_ok 给前端提示
+    channel_activated = False
+    if log.field_changed == "create":
+        channel_activated = await crud.has_available_channel(session, log.model_id)
     return {
         "status": "approved",
         "log_id": log.id,
@@ -1493,6 +1498,7 @@ async def approve_pending_review(
         "applied": applied,
         "model_id": log.model_id,
         "new_group": new_group,
+        "channel_activated": channel_activated,
     }
 
 

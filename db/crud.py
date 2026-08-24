@@ -489,9 +489,16 @@ async def upsert_intel_source(
 # === ModelRegistry 操作 (Phase 3.3, 2026-07-29) ===
 
 async def get_model_registry(session: AsyncSession, model_id: str) -> Optional["ModelRegistry"]:
-    """按 model_id 查 ModelRegistry (Phase 3.3 消费者)"""
+    """按 model_id 查 ModelRegistry (Phase 3.3 消费者)
+
+    V4.8.6: model_id 不是 PK (PK 是自增 id), session.get() 按 PK 查会返回 None.
+    改用 select 查询 model_id 唯一列.
+    """
     from db.models import ModelRegistry
-    return await session.get(ModelRegistry, model_id)
+    from sqlalchemy import select
+    return (await session.execute(
+        select(ModelRegistry).where(ModelRegistry.model_id == model_id)
+    )).scalar_one_or_none()
 
 
 async def upsert_model_registry(
@@ -508,8 +515,11 @@ async def upsert_model_registry(
     AI 推断的 tier 只能写 capabilities_log，待 dashboard 确认后才生效。
     """
     from db.models import ModelRegistry
+    from sqlalchemy import select
 
-    existing = await session.get(ModelRegistry, model_id)
+    existing = (await session.execute(
+        select(ModelRegistry).where(ModelRegistry.model_id == model_id)
+    )).scalar_one_or_none()
     if existing:
         for key, value in kwargs.items():
             setattr(existing, key, value)
@@ -677,12 +687,39 @@ async def log_capability_change(
     source: str = "ai_infer",
     confidence: Optional[float] = None,
     approved: int = 0,
+    provider: Optional[str] = None,
 ) -> None:
     """写 model_capabilities_log (Phase 3.3 审计)。
 
     approved 默认 0，dashboard 人工确认后才置 1。
+
+    V4.8.6: pending 行 (approved=0) 做 upsert — 同 (model_id, field_changed) 已有
+    pending 行时更新该行而非新增, 避免用户不处理时同类信息无限堆积。
     """
     from db.models import ModelCapabilitiesLog
+
+    # V4.8.6: pending 去重 upsert
+    if approved == 0:
+        stmt = (
+            select(ModelCapabilitiesLog)
+            .where(
+                ModelCapabilitiesLog.model_id == model_id,
+                ModelCapabilitiesLog.field_changed == field_changed,
+                ModelCapabilitiesLog.approved == 0,
+            )
+            .limit(1)
+        )
+        existing = (await session.execute(stmt)).scalar_one_or_none()
+        if existing:
+            existing.old_value = old_value
+            existing.new_value = new_value
+            existing.confidence = confidence
+            existing.source = source
+            if provider is not None:
+                existing.provider = provider
+            existing.created_at = datetime.now()
+            await session.flush()
+            return
 
     row = ModelCapabilitiesLog(
         model_id=model_id,
@@ -692,9 +729,29 @@ async def log_capability_change(
         source=source,
         confidence=confidence,
         approved=approved,
+        provider=provider,
     )
     session.add(row)
     await session.flush()
+
+
+async def has_available_channel(session: AsyncSession, model_id: str) -> bool:
+    """V4.8.6: 检查当前是否有 active channel 为该 model_id 配过价格 (price_snapshots).
+
+    用于 model_sync 入库前判断 "这个模型是否有渠道能真正路由".
+    返回 True 表示有可用渠道, False 表示用户当前配置的渠道都不支持该模型.
+    """
+    from db.models import PriceSnapshot, Channel
+
+    stmt = (
+        select(PriceSnapshot.id)
+        .join(Channel, PriceSnapshot.channel_id == Channel.id)
+        .where(PriceSnapshot.model == model_id)
+        .where(Channel.status == "active")
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none() is not None
 
 
 async def find_candidate_group_for_tier(tier: str) -> Optional[str]:
@@ -759,7 +816,6 @@ async def approve_capability_change(
     log.approved = 1
 
     if log.field_changed == "tier" and log.new_value:
-        # tier 是唯一被人工批准后可立即生效的字段
         # 创建或更新 ModelRegistry 的 tier (registry 可能不存在 -> 跳过)
         registry = await session.get(ModelRegistry, log.model_id)
         if registry:
@@ -791,8 +847,27 @@ async def approve_capability_change(
                     log.model_id, log.new_value,
                 )
     elif log.field_changed == "create":
-        # 首次创建: 不动 registry (已由 model_sync 创建, 此处仅确认 metadata)
-        pass
+        # V4.8.6: 批准 create 时检查渠道可用性.
+        # 无渠道模型以 status=inactive 入库; 用户批准时如已有渠道则翻 active,
+        # 仍无渠道则保持 inactive 并提示用户先配渠道.
+        # 注意: model_id 不是 PK (PK 是自增 id), 用 select 查询而非 session.get.
+        from sqlalchemy import select as _select
+        registry = (await session.execute(
+            _select(ModelRegistry).where(ModelRegistry.model_id == log.model_id)
+        )).scalar_one_or_none()
+        if registry and registry.status == "inactive":
+            channel_ok = await has_available_channel(session, log.model_id)
+            if channel_ok:
+                registry.status = "active"
+                logger.info(
+                    "人工批准 create: model=%s inactive -> active (已有可用渠道, log_id=%d)",
+                    log.model_id, log_id,
+                )
+            else:
+                logger.warning(
+                    "人工批准 create: model=%s 仍无可用渠道, 保持 inactive (log_id=%d)",
+                    log.model_id, log_id,
+                )
     elif log.field_changed == "status" and log.new_value == "deprecated":
         # 出组已被 L2 高置信度自动批准 (approved=1), 此路径通常不命中
         registry = await session.get(ModelRegistry, log.model_id)

@@ -328,6 +328,8 @@ def normalize_model_item(data: dict) -> ModelIntelItem:
         confidence_level=confidence_level(confidence),
         tier_reason=data.get("tier_reason") or fallback_reason,
         pricing=pricing_list,
+        # V4.8.6: 透传采集来源渠道
+        source_provider=data.get("source_provider"),
     )
 
 

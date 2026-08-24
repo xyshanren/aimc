@@ -35,6 +35,9 @@ class ModelIntelItem(BaseModel):
     tier_reason: Optional[str] = None
     # Phase 4 v4.3: 价格快照列表 (一条 model 可对应多个 price_type)
     pricing: list[ModelPricingItem] = Field(default_factory=list)
+    # V4.8.6: 采集来源渠道 (provider 标识, e.g. "moonshot" / "deepseek")
+    # 用于变更记录追溯 "这个模型是从哪个渠道采集到的"
+    source_provider: Optional[str] = None
 
 
 class IntelSourceCreate(BaseModel):

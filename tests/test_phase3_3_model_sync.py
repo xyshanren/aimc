@@ -107,12 +107,18 @@ def _install_mock_db():
 
     async def log_capability_change(session, model_id, field_changed, old_value,
                                        new_value, source="ai_infer",
-                                       confidence=None, approved=0):
+                                       confidence=None, approved=0,
+                                       provider=None):
         _state["logs"].append({
             "model_id": model_id, "field_changed": field_changed,
             "old_value": old_value, "new_value": new_value,
             "source": source, "confidence": confidence, "approved": approved,
+            "provider": provider,
         })
+
+    # V4.8.6: mock has_available_channel — 测试环境无 DB, 默认返回 True (有可用渠道)
+    async def has_available_channel(session, model_id):
+        return True
 
     # Patch crud
     crud.get_model_registry = get_model_registry
@@ -120,6 +126,7 @@ def _install_mock_db():
     crud.add_model_group_member = add_model_group_member
     crud.remove_model_group_members_by_model = remove_model_group_members_by_model
     crud.log_capability_change = log_capability_change
+    crud.has_available_channel = has_available_channel
 
     # Patch model_sync._find_target_group (直接读内存 groups)
     from db.models import ModelGroup

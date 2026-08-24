@@ -431,6 +431,8 @@ async def _run_source_task(source):
                         "model_id": mid,
                         "family": source.provider,
                         "source": "api_models",
+                        # V4.8.6: 采集来源渠道, 透传到 ModelCapabilitiesLog.provider
+                        "source_provider": source.provider,
                         # confidence=1.0 因 API 抽取是 100% 确定性
                         "confidence": 1.0,
                         "confidence_level": "high",

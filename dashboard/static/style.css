@@ -918,6 +918,23 @@ details.card-folding > .card-body {
 }
 .pr-model { font-family: var(--font-mono); color: var(--text-primary); }
 .pr-display-name { color: var(--text-muted); font-size: 11px; }
+.pr-provider {
+    color: var(--text-secondary);
+    font-size: 11px;
+    padding: 1px 5px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-muted);
+}
+.pr-warn {
+    color: var(--color-danger);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: var(--radius-sm);
+    background: rgba(255, 107, 107, 0.08);
+    border: 1px solid rgba(255, 107, 107, 0.3);
+}
 .pr-field { color: var(--text-secondary); }
 .pr-old { color: var(--color-danger); text-decoration: line-through; }
 .pr-arrow { color: var(--text-muted); }

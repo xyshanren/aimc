@@ -124,6 +124,7 @@ async def process_model_item(
                 source="ai_infer",
                 confidence=item.confidence,
                 approved=1,  # auto_left 自动生效 (因为有 LEAVE_THRESHOLD 0.9 兜底)
+                provider=item.source_provider,
             )
             logger.info(
                 "自动出组: model=%s status %s -> deprecated (conf=%.2f)",
@@ -179,6 +180,7 @@ async def process_model_item(
             source="ai_infer",
             confidence=item.confidence,
             approved=0,
+            provider=item.source_provider,
         )
         action = "pending_review" if item.confidence >= 0.6 else "rejected"
         logger.debug(
@@ -194,7 +196,21 @@ async def process_model_item(
     target_group = await _find_target_group(session, item.inferred_tier)
     existing = await crud.get_model_registry(session, model_id)
     if not existing:
-        # 新增 registry (tier 字段保留 T2 占位, 实际 tier 走 log + 人工确认)
+        # V4.8.6: 入库前校验渠道可用性 — 无可用渠道时 status=inactive,
+        # 路由 cache 只加载 status=active 的模型, inactive 模型天然不会被选中.
+        # scheduler 周期复扫会在用户配好渠道后自动翻 active.
+        channel_ok = await crud.has_available_channel(session, model_id)
+        new_value_meta = item.model_dump()
+        if channel_ok:
+            initial_status = item.status or "active"
+        else:
+            initial_status = "inactive"
+            new_value_meta["channel_available"] = False
+            logger.warning(
+                "新模型入库但无可用渠道: model=%s (provider=%s) — 以 status=inactive 入库, "
+                "待用户配好渠道后由 scheduler 复扫自动翻 active",
+                model_id, item.source_provider,
+            )
         await crud.upsert_model_registry(
             session,
             model_id=model_id,
@@ -205,7 +221,7 @@ async def process_model_item(
             modality=item.modality or "text",
             is_open_source=1 if item.is_open_source else 0 if item.is_open_source is False else 1,
             release_date=None,
-            status=item.status or "active",
+            status=initial_status,
             notes=f"auto-joined from intel (conf={item.confidence:.2f})",
         )
         await crud.log_capability_change(
@@ -213,12 +229,24 @@ async def process_model_item(
             model_id=model_id,
             field_changed="create",
             old_value=None,
-            new_value=json.dumps(item.model_dump(), ensure_ascii=False),
+            new_value=json.dumps(new_value_meta, ensure_ascii=False),
             source="ai_infer",
             confidence=item.confidence,
             approved=0,
+            provider=item.source_provider,
         )
     else:
+        # V4.8.6: 渠道恢复 — 之前因无渠道以 inactive 入库的模型,
+        # 用户配好渠道后下次扫描在这里自动翻 active.
+        if existing.status == "inactive":
+            channel_ok = await crud.has_available_channel(session, model_id)
+            if channel_ok:
+                existing.status = item.status or "active"
+                logger.info(
+                    "渠道恢复: model=%s inactive -> active (用户已配置可用渠道)",
+                    model_id,
+                )
+
         # P0-5 fix: 字段变更全部走 model_capabilities_log (approved=0 等待人工),
         # 不直接 mutate existing.* (之前 context_length / modality 绕过审批,
         # 与 docstring 中 "capabilities / context_length / modality 变更也走 log" 矛盾).
@@ -232,6 +260,7 @@ async def process_model_item(
                 source="ai_infer",
                 confidence=item.confidence,
                 approved=0,
+                provider=item.source_provider,
             )
         if item.context_length and existing.context_length != item.context_length:
             await crud.log_capability_change(
@@ -243,6 +272,7 @@ async def process_model_item(
                 source="ai_infer",
                 confidence=item.confidence,
                 approved=0,
+                provider=item.source_provider,
             )
         if item.modality and existing.modality != item.modality:
             await crud.log_capability_change(
@@ -254,6 +284,7 @@ async def process_model_item(
                 source="ai_infer",
                 confidence=item.confidence,
                 approved=0,
+                provider=item.source_provider,
             )
 
     # tier 写 log (P1-4 fix: 仅当新建 或 tier 变动时才写, 避免重复入组刷 tier log 噪声)
@@ -267,6 +298,7 @@ async def process_model_item(
             source="ai_infer",
             confidence=item.confidence,
             approved=0,  # 永远人工确认
+            provider=item.source_provider,
         )
 
     # 自动入组 (仅当找到对应 tier: 组)
@@ -314,10 +346,15 @@ async def process_promotion(
     if not models:
         return []
 
+    # V4.8.6: 从 raw_data 顶层取 provider, 注入到每个 model item (若 item 自身未带)
+    top_provider = data.get("provider")
+
     results: list[SyncResult] = []
     async with async_session_factory() as session:
         for raw in models:
             # 1) Pydantic 验证是 sync 阶段, 失败 skip 后续不写表
+            if top_provider and not raw.get("source_provider"):
+                raw = {**raw, "source_provider": top_provider}
             try:
                 item = ModelIntelItem(**raw)
             except Exception as e:

@@ -42,8 +42,12 @@ class DeepSeekModelListSource(IntelSourceBase):
     """DeepSeek model 列表 (Phase 3.6, 2026-08-06)
 
     用途: 发现 DeepSeek 自家模型 (deepseek-chat / deepseek-coder / deepseek-reasoner)
-    API: https://api.deepseek.com/v1/models (OpenAI 兼容)
+    API: https://api.deepseek.com/models (OpenAI 兼容)
     频率: 1 天 (DEFAULT_POLL_INTERVALS[MODEL_LIST])
+
+    V4.8.6: base URL 改为 https://api.deepseek.com (不带 /v1).
+    DeepSeek 文档明确获取模型列表是 GET /models (无 /v1 前缀).
+    fetch_models_via_api 会自动补 /models 后缀 → https://api.deepseek.com/models
     """
 
     def __init__(self):
@@ -55,6 +59,9 @@ class DeepSeekModelListSource(IntelSourceBase):
             css_selector=None,
             wait_until="domcontentloaded",
             wait_for=None,
-            api_endpoint="https://api.deepseek.com/v1",
+            # V4.8.6: DeepSeek 文档 base_url 是 https://api.deepseek.com (无 /v1)
+            # /v1/models 和 /models 均可访问, 但文档路径是 /models
+            # fetch_models_via_api 会自动补 /models 后缀
+            api_endpoint="https://api.deepseek.com",
             api_key_from="deepseek",  # 需 channels 表有 deepseek active channel
         )

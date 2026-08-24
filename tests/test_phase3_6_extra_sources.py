@@ -61,7 +61,7 @@ def test_new_sources_configured():
 
     cases = [
         # (class, expected_provider, expected_api_endpoint, expected_api_key_from)
-        (DeepSeekModelListSource, "deepseek", "https://api.deepseek.com/v1", "deepseek"),
+        (DeepSeekModelListSource, "deepseek", "https://api.deepseek.com", "deepseek"),
         (QwenModelListSource, "qwen", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen"),
         (GLMModelListSource, "glm", "https://open.bigmodel.cn/api/paas/v4", "glm"),
         (StepFunModelListSource, "stepfun", "https://api.stepfun.com/v1", "stepfun"),

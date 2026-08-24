@@ -381,10 +381,14 @@ function renderGroupRouting(container) {
 async function approvePendingReview(logId, btn) {
     if (!confirm(`确定批准 log #${logId} ? Tier 会自动写入 ModelRegistry`)) return;
     try {
-        const resp = await fetch(`/dashboard/api/pending-review/${logId}/approve`, { method: 'POST' });
+        const resp = await authFetch(`/dashboard/api/pending-review/${logId}/approve`, { method: 'POST' });
         const data = await resp.json();
         if (resp.ok) {
             const card = btn.closest('.pr-card');
+            // V4.8.6: create 批准后, 如果仍无可用渠道, 提示用户
+            if (data.field_changed === 'create' && data.channel_activated === false) {
+                alert(`已批准, 但该模型仍无可用渠道 (status=inactive).\n请先在渠道管理中为该模型配置价格, 下次扫描会自动激活.`);
+            }
             if (card) card.remove();
             const summary = document.getElementById('pr-summary');
             if (summary) {
@@ -402,7 +406,7 @@ async function approvePendingReview(logId, btn) {
 async function rejectPendingReview(logId, btn) {
     if (!confirm(`确定拒绝 log #${logId} ? 不会修改 ModelRegistry`)) return;
     try {
-        const resp = await fetch(`/dashboard/api/pending-review/${logId}/reject`, { method: 'POST' });
+        const resp = await authFetch(`/dashboard/api/pending-review/${logId}/reject`, { method: 'POST' });
         const data = await resp.json();
         if (resp.ok) {
             const card = btn.closest('.pr-card');
@@ -443,13 +447,21 @@ function renderPendingReview(container) {
             const confLabel = item.confidence_level || 'low';
             const confClass = `conf-${confLabel}`;
             const created = item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '?';
+            // V4.8.6: 渠道来源标签 (provider)
+            const providerTag = item.provider
+                ? `<span class="pr-provider" title="采集来源渠道">📡 ${esc(item.provider)}</span>`
+                : '';
             // new_value 可能是 JSON 串 (field_changed=create/metadata), 格式化展示
             let newVal = item.new_value ?? '(空)';
             let oldVal = item.old_value ?? '(空)';
-            // 如果是 JSON 字符串, 解析后按 key=value 展示
+            // V4.8.6: 解析 new_value JSON, 检测 channel_available 标记
+            let channelWarn = '';
             try {
                 if (typeof newVal === 'string' && newVal.startsWith('{')) {
                     const obj = JSON.parse(newVal);
+                    if (obj.channel_available === false) {
+                        channelWarn = '<span class="pr-warn" title="当前无 active 渠道为该模型配过价格">⚠️ 无可用渠道</span>';
+                    }
                     const parts = [];
                     for (const [k, v] of Object.entries(obj)) {
                         const vs = Array.isArray(v) ? v.join(', ') : String(v);
@@ -471,6 +483,8 @@ function renderPendingReview(container) {
                 <div class="pr-row">
                     <code class="pr-model">${esc(item.model_id)}</code>
                     ${item.display_name ? `<span class="pr-display-name">${esc(item.display_name)}</span>` : ''}
+                    ${providerTag}
+                    ${channelWarn}
                     <span class="pr-field" title="${esc(item.field_changed)}">${esc(FIELD_LABELS[item.field_changed] || item.field_changed)}</span>
                     <span class="pr-old">${oldVal}</span>
                     <span class="pr-arrow">→</span>
