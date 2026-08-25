@@ -340,6 +340,12 @@ hermes-agent-cn 不需要"实时"知道 AIMC 模型变动。通过 3 个观测�
 - `X-AIMC-Actual-Channel`：实际命中的渠道
 - `X-AIMC-Group-Id`：命中的 group（仅组路由）
 
+**V4.9 (2026-08-25) 失败链路响应头**（仅在最终失败响应注入）：
+- `X-AIMC-Failed-Channels`：JSON array, 每个对象含 `{channel, account, account_id, status, error_type, error_code, error_msg, needs_human}`
+- `X-AIMC-Last-Error-Type`：最后一个失败的 ErrorCategory（`quota_exhausted` / `auth_failed` / `network_transient` / `upstream_5xx` 等）
+- `X-AIMC-Last-Error-Code`：上游 error.code（如 `1113` / `insufficient_quota`）
+- `Retry-After`：`3600`（仅当 `needs_human=True`，提示人工干预而非重试）
+
 **可选增强**：加 `X-AIMC-Actual-Tier` 和 `X-AIMC-Actual-Capabilities`（JSON），让 hermes-agent-cn 不必再去查 model registry。
 
 ### 6.3 文档与示例（必须，~2 小时）

@@ -123,6 +123,19 @@ class Settings(BaseSettings):
     max_fallback_retries: int = 2      # env: AIMC_MAX_FALLBACK_RETRIES (故障转移最大重试次数)
     request_timeout: float = 120.0     # env: AIMC_REQUEST_TIMEOUT (上游请求超时, 秒)
 
+    # === V4.9 (2026-08-25): Channel 智能探活 ===
+    health_probe_enabled: bool = True                  # env: AIMC_HEALTH_PROBE_ENABLED (总开关)
+    health_probe_interval: int = 60                    # env: AIMC_HEALTH_PROBE_INTERVAL (调度间隔, 秒; 实际只探到期的)
+    health_probe_concurrency: int = 8                  # env: AIMC_HEALTH_PROBE_CONCURRENCY (并发数, 防打爆上游)
+    health_probe_timeout: float = 5.0                  # env: AIMC_HEALTH_PROBE_TIMEOUT (单 channel 超时, 秒)
+    health_probe_max_backoff: int = 3600               # env: AIMC_HEALTH_PROBE_MAX_BACKOFF (指数退避上限, 秒)
+
+    # === V4.9: needs_human 触发阈值 (按 ErrorCategory) ===
+    # 当某 error_type 累计失败次数 >= 此阈值时, 标 needs_human=True (等人介入, 不再主动探)
+    needs_human_quota_threshold: int = 2               # env: AIMC_NEEDS_HUMAN_QUOTA_THRESHOLD (quota 失败 2 次 → 需人工)
+    needs_human_auth_threshold: int = 1                # env: AIMC_NEEDS_HUMAN_AUTH_THRESHOLD (auth 失败 1 次 → 需人工)
+    needs_human_model_threshold: int = 2               # env: AIMC_NEEDS_HUMAN_MODEL_THRESHOLD (model 失败 2 次 → 需人工)
+
     # === 情报采集 ===
     crawl_interval: int = 900          # env: AIMC_CRAWL_INTERVAL (默认爬取间隔, 秒, 15分钟)
     diff_similarity_threshold: float = 0.9  # env: AIMC_DIFF_SIMILARITY_THRESHOLD (低于此值触发解析)
