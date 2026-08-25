@@ -184,6 +184,27 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # V4.9 (2026-08-25): Channel 智能探活 (基于 cooldown_manager.accounts_due_for_probe)
+    # 替代 V4.8.7 P7 的「失败 → 60s 后路由重试」机制
+    # 间隔: AIMC_HEALTH_PROBE_INTERVAL (默认 60s), 实际只探 needs_human=False 且到期的 account
+    from intelligence.channel_health import channel_health_probe, cooldown_cleanup_task
+    scheduler.add_job(
+        channel_health_probe,
+        trigger=IntervalTrigger(seconds=settings.health_probe_interval),
+        id="channel_health_probe",
+        name="Channel 智能探活 (基于状态机)",
+        replace_existing=True,
+    )
+
+    # V4.9: cooldown_manager.cleanup() 周期化 (调研发现从未被自动调过)
+    scheduler.add_job(
+        cooldown_cleanup_task,
+        trigger=IntervalTrigger(minutes=5),
+        id="cooldown_cleanup",
+        name="Cooldown 过期清理",
+        replace_existing=True,
+    )
+
     # 阶段2 (2026-08-14): 注册 apscheduler event listener
     # 同步写 job_health 表 (last_run_at / last_success_at / last_error_at / last_duration_ms)
     # 不阻塞 scheduler, 失败仅 log
