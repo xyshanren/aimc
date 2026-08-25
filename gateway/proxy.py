@@ -640,6 +640,16 @@ async def _forward_stream(
 
     response = await client.send(req, stream=True)
 
+    # V4.9.1 修复: stream 模式下 response.text 会失败 (body 还在 stream),
+    # 必须先 await response.aread() 缓冲到内存, 才能用 .text 提取 error code/message.
+    # 不然 classify(429, None, None) 走 status_code fallback 误判为 rate_limited,
+    # 错过 quota_exhausted 关键字, needs_human 永远不触发.
+    if response.status_code >= 400:
+        try:
+            await response.aread()
+        except Exception:
+            pass
+
     # V4.9: 上游响应 → error_classifier 统一处理 cooldown + needs_human
     _update_cooldown(channel, response)
 
