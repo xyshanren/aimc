@@ -116,8 +116,10 @@ GROUP_MEMBERS = [
 
     # ========== tier:vision (T1 多模态视觉, require_vision=1) ==========
     # minimax-m3 (T1, multimodal, VLM) + qwen-vl 系列 (硅基流动常驻) + glm-4.5v (GLM 视觉)
+    # + deepseek-v4-flash-vision-exp (V4.9.5: DeepSeek 视觉实验版)
     # P2-A: qwen3-vl-* 改为 qwen-vl-* (validate_model_id 要求 model_id 以 "{family}-" 开头)
     ("tier:vision", "minimax-m3",                100, 1.0, None, "manual"),
+    ("tier:vision", "deepseek-v4-flash-vision-exp", 105, 1.0, None, "manual"),
     ("tier:vision", "qwen-vl-32b-instruct",     110, 1.0, None, "manual"),
     ("tier:vision", "qwen-vl-32b-thinking",     120, 1.0, None, "manual"),
     ("tier:vision", "qwen-vl-30b-a3b-thinking", 130, 1.0, None, "manual"),

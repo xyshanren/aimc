@@ -75,14 +75,23 @@ CHANNELS = [
         # 历史 deepseek-chat / deepseek-reasoner 是 V4.4 时代老 model,
         # 官方 API 当前 (2026-08) 只支持 V4 系列.
         "prices": [
-            # V4.8.7: DeepSeek 峰谷计费 — 工作日 9-12/14-18 高峰, 其余低谷
-            # 高峰价 = 常规价 ×2, 低谷价 = 常规价 (官方文档: 闲时执行标准价, 忙时2倍)
-            ("deepseek-v4-pro", "peak", "工作日09:00-12:00", 8.0, 24.0),
-            ("deepseek-v4-pro", "peak", "工作日14:00-18:00", 8.0, 24.0),
-            ("deepseek-v4-pro", "offpeak", "非高峰全天", 4.0, 16.0),
-            ("deepseek-v4-flash", "peak", "工作日09:00-12:00", 2.0, 4.0),
-            ("deepseek-v4-flash", "peak", "工作日14:00-18:00", 2.0, 4.0),
-            ("deepseek-v4-flash", "offpeak", "非高峰全天", 1.0, 2.0),
+            # V4.9.5: 对齐 DeepSeek 官方价格 (https://api-docs.deepseek.com/zh-cn/quick_start/pricing)
+            # 高峰: 工作日 09:00-12:00, 14:00-18:00 (北京时间)
+            # 空闲: 其余时段 + 周末全天 (价格 = 高峰 × 0.5)
+            # 价格单位: 元/百万 tokens; 第 6 个元素 = cached_input_price (缓存命中输入价)
+            # deepseek-v4-pro: 高峰 input=9.0/cache=0.30, output=27.0
+            ("deepseek-v4-pro", "peak", "工作日09:00-12:00", 9.0, 27.0, 0.30),
+            ("deepseek-v4-pro", "peak", "工作日14:00-18:00", 9.0, 27.0, 0.30),
+            ("deepseek-v4-pro", "offpeak", "非高峰全天", 4.5, 13.5, 0.15),
+            # deepseek-v4-flash: 高峰 input=3.0/cache=0.10, output=9.0
+            ("deepseek-v4-flash", "peak", "工作日09:00-12:00", 3.0, 9.0, 0.10),
+            ("deepseek-v4-flash", "peak", "工作日14:00-18:00", 3.0, 9.0, 0.10),
+            ("deepseek-v4-flash", "offpeak", "非高峰全天", 1.5, 4.5, 0.05),
+            # deepseek-v4-flash-vision-exp: 视觉实验版, 价格同 v4-flash
+            # 图片转 token 后与文本合并计费
+            ("deepseek-v4-flash-vision-exp", "peak", "工作日09:00-12:00", 3.0, 9.0, 0.10),
+            ("deepseek-v4-flash-vision-exp", "peak", "工作日14:00-18:00", 3.0, 9.0, 0.10),
+            ("deepseek-v4-flash-vision-exp", "offpeak", "非高峰全天", 1.5, 4.5, 0.05),
         ],
     },
     {
@@ -354,7 +363,13 @@ async def import_one_channel(session, cfg: dict) -> bool:
     # 不打印 account.id/敏感字段（只 print 名字）
     print(f"[+] 创建账号: {account.account_name} (key 已加密)")
 
-    for model, price_type, time_range, in_p, out_p in cfg["prices"]:
+    for price_row in cfg["prices"]:
+        # V4.9.5: 支持可选 cached_input_price (第 6 个元素)
+        # 旧格式: (model, price_type, time_range, in_p, out_p)
+        # 新格式: (model, price_type, time_range, in_p, out_p, cached_input_price)
+        model, price_type, time_range, in_p, out_p, *rest = price_row
+        cached_price = rest[0] if rest else None
+
         # Phase 4 v4.3.1 (2026-08-13): 防御性归一化
         # 即使 cfg 写了 "MiniMax-M3" 之类的大写, 也能在写入 db 前归一化为 "minimax-m3".
         # 跟 db/crud.py upsert_model_registry 一致.
@@ -362,8 +377,7 @@ async def import_one_channel(session, cfg: dict) -> bool:
         assert model_norm == model, (
             f"manual_import.py cfg 里 model='{model}' 应已归一化为 '{model_norm}'"
         )
-        await crud.create_price_snapshot(
-            session,
+        kwargs = dict(
             channel_id=channel.id,
             model=model_norm,
             price_type=price_type,
@@ -372,6 +386,9 @@ async def import_one_channel(session, cfg: dict) -> bool:
             output_price=out_p,
             source="manual",
         )
+        if cached_price is not None:
+            kwargs["cached_input_price"] = cached_price
+        await crud.create_price_snapshot(session, **kwargs)
     print(f"[+] {cfg['name']} 价格已录入 ({len(cfg['prices'])} 条)")
 
     await crud.create_quota(

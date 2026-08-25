@@ -63,6 +63,14 @@ MODEL_REGISTRY = [
         ["reasoning", "code", "general"], 128000, "text", 0, "2026-07",
         "V4 Flash 升级到 V4-Flash-0731, 性价比",
     ),
+    # V4.9.5 (2026-08-25): DeepSeek 视觉实验版, 官方已上线
+    # 价格同 v4-flash, 图片转 token 后与文本合并计费
+    # modality=vision, tier=T1, 加入 tier:vision 组
+    (
+        "deepseek-v4-flash-vision-exp", "deepseek", "DeepSeek V4 Flash Vision Exp", "T1",
+        ["vision", "reasoning", "code", "general"], 128000, "vision", 0, "2026-08",
+        "V4 Flash 视觉实验版, 图片转 token 计费, 价格同 v4-flash",
+    ),
 
     # ========== Qwen (6 个) ==========
     (
