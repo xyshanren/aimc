@@ -384,6 +384,46 @@ Index("idx_usage_logs_error_type", UsageLog.error_type)
 Index("idx_usage_logs_needs_human", UsageLog.needs_human)
 
 
+class RequestTranscript(Base):
+    """请求/响应转录日志（V4.9.3 缓存诊断用，默认关闭）
+
+    记录发给上游的完整 request body (注入后) + 上游响应 body,
+    用于排查 "缓存注入是否导致降智" — 对比开/关 cache 的输出质量。
+    由 config.transcript_log_enabled 控制, 超期由 scheduler 自动清理。
+    """
+    __tablename__ = "request_transcripts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    channel_id = Column(Integer, nullable=True)
+    model = Column(Text, nullable=True)
+    request_body = Column(Text, nullable=True, comment="发给上游的请求 body (注入后, 截断)")
+    response_body = Column(Text, nullable=True, comment="上游响应 body (截断)")
+    status_code = Column(Integer, nullable=True)
+    caller_id = Column(Integer, nullable=True)
+    key_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+    def to_dict(self, include_body: bool = False) -> dict:
+        d = {
+            "id": self.id,
+            "channel_id": self.channel_id,
+            "model": self.model,
+            "status_code": self.status_code,
+            "caller_id": self.caller_id,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "request_len": len(self.request_body) if self.request_body else 0,
+            "response_len": len(self.response_body) if self.response_body else 0,
+        }
+        if include_body:
+            d["request_body"] = self.request_body
+            d["response_body"] = self.response_body
+        return d
+
+
+Index("idx_transcripts_created", RequestTranscript.created_at)
+Index("idx_transcripts_channel_time", RequestTranscript.channel_id, RequestTranscript.created_at)
+
+
 class ModelFeedbackSummary(Base):
     """按周聚合的模型隐式反馈（V4.4.A）"""
     __tablename__ = "model_feedback_summary"

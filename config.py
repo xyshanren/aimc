@@ -123,6 +123,17 @@ class Settings(BaseSettings):
     max_fallback_retries: int = 2      # env: AIMC_MAX_FALLBACK_RETRIES (故障转移最大重试次数)
     request_timeout: float = 120.0     # env: AIMC_REQUEST_TIMEOUT (上游请求超时, 秒)
 
+    # === V4.9.3 (2026-08-25): 缓存诊断 A/B + 请求转录 ===
+    # prompt_cache_inject_enabled: 全局开关 prompt cache 注入 (不影响 channel.supports_prompt_cache)
+    #   False = 即使 channel 开了 supports_prompt_cache 也不注入, 用于 A/B 对比 "缓存是否降智"
+    prompt_cache_inject_enabled: bool = True    # env: AIMC_PROMPT_CACHE_INJECT_ENABLED
+    # transcript_log_enabled: 记录请求/响应转录到 request_transcripts 表 (默认关, 诊断时开)
+    transcript_log_enabled: bool = False        # env: AIMC_TRANSCRIPT_LOG_ENABLED
+    # transcript_log_max_body: 单条 body 截断上限 (字符数, 防超大 payload 膨胀 DB)
+    transcript_log_max_body: int = 50000        # env: AIMC_TRANSCRIPT_LOG_MAX_BODY
+    # transcript_log_retention_hours: 转录保留时长 (小时, 超期自动清理)
+    transcript_log_retention_hours: int = 72    # env: AIMC_TRANSCRIPT_LOG_RETENTION_HOURS
+
     # === V4.9 (2026-08-25): Channel 智能探活 ===
     health_probe_enabled: bool = True                  # env: AIMC_HEALTH_PROBE_ENABLED (总开关)
     health_probe_interval: int = 60                    # env: AIMC_HEALTH_PROBE_INTERVAL (调度间隔, 秒; 实际只探到期的)

@@ -363,3 +363,43 @@ async def account_health_log_cleanup_task() -> int:
     """
     retention = getattr(settings, 'account_health_log_retention_days', 7)
     return await account_health_log_cleanup(retention_days=retention)
+
+
+async def transcript_log_cleanup_task() -> int:
+    """V4.9.3 模块级 task wrapper (供 APScheduler 注册, 不能用 lambda)
+
+    清理 request_transcripts 表中超期的记录, 防止诊断数据无限膨胀。
+    从 settings 读 retention_hours (default=72, env: AIMC_TRANSCRIPT_LOG_RETENTION_HOURS)
+    """
+    from datetime import timedelta
+    from db.engine import async_session_factory
+    from db.models import RequestTranscript
+    from sqlalchemy import delete, select, func
+
+    retention_hours = getattr(settings, 'transcript_log_retention_hours', 72)
+    cutoff = datetime.now() - timedelta(hours=retention_hours)
+
+    try:
+        async with async_session_factory() as session:
+            count_stmt = select(func.count()).select_from(RequestTranscript).where(
+                RequestTranscript.created_at < cutoff
+            )
+            to_delete = (await session.execute(count_stmt)).scalar_one()
+
+            if to_delete == 0:
+                logger.debug(f"transcript_log_cleanup: 无过期记录 (保留 {retention_hours}h)")
+                return 0
+
+            delete_stmt = delete(RequestTranscript).where(
+                RequestTranscript.created_at < cutoff
+            )
+            result = await session.execute(delete_stmt)
+            await session.commit()
+            deleted = result.rowcount or to_delete
+            logger.info(
+                f"transcript_log_cleanup: 删 {deleted} 条 (cutoff={cutoff.isoformat()})"
+            )
+            return deleted
+    except Exception as e:
+        logger.warning(f"transcript_log_cleanup 失败: {e}")
+        return 0

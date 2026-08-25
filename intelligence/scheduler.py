@@ -218,6 +218,17 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # V4.9.3: request_transcripts 表 retention (每 6 小时清理超期转录)
+    # 转录日志默认关闭, 只有诊断时才开启; 开启后按 retention_hours 自动清理防膨胀
+    from intelligence.channel_health import transcript_log_cleanup_task
+    scheduler.add_job(
+        transcript_log_cleanup_task,
+        trigger=IntervalTrigger(hours=6),
+        id="transcript_log_cleanup",
+        name="转录日志清理 (保留 N 小时)",
+        replace_existing=True,
+    )
+
     # 阶段2 (2026-08-14): 注册 apscheduler event listener
     # 同步写 job_health 表 (last_run_at / last_success_at / last_error_at / last_duration_ms)
     # 不阻塞 scheduler, 失败仅 log

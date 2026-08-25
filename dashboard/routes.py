@@ -2655,3 +2655,62 @@ async def reject_promotion_review(
         "status": "rejected",
         "review_id": review_id,
     }
+
+
+# ============================================================
+# V4.9.3: 请求/响应转录查询 API (缓存诊断)
+# ============================================================
+
+@router.get("/api/transcripts")
+async def list_transcripts(
+    days: int = Query(3, ge=1, le=30, description="最近 N 天"),
+    limit: int = Query(100, ge=1, le=500, description="最多返回条数"),
+    channel_id: Optional[int] = Query(None, description="按 channel 过滤"),
+    model: Optional[str] = Query(None, description="按 model 模糊过滤"),
+    session: AsyncSession = Depends(get_session),
+):
+    """V4.9.3: 列出最近的请求转录日志 (不含 body, 概览用)
+
+    按 created_at DESC 排序, 返回 id / channel_id / model / status_code /
+    request_len / response_len / created_at。要查完整 body 用 /api/transcripts/{id}。
+    """
+    from db.models import RequestTranscript
+
+    cutoff = datetime.now() - timedelta(days=days)
+    stmt = (
+        select(RequestTranscript)
+        .where(RequestTranscript.created_at >= cutoff)
+        .order_by(RequestTranscript.created_at.desc())
+        .limit(limit)
+    )
+    if channel_id is not None:
+        stmt = stmt.where(RequestTranscript.channel_id == channel_id)
+    if model:
+        stmt = stmt.where(RequestTranscript.model.like(f"%{model}%"))
+
+    result = await session.execute(stmt)
+    rows = result.scalars().all()
+    return {
+        "total": len(rows),
+        "transcripts": [r.to_dict(include_body=False) for r in rows],
+    }
+
+
+@router.get("/api/transcripts/{transcript_id}")
+async def get_transcript(
+    transcript_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """V4.9.3: 单条转录详情 (含完整 request/response body)
+
+    用于 A/B 对比时人工检查 cache 开/关下的上游请求差异和响应质量。
+    """
+    from db.models import RequestTranscript
+
+    result = await session.execute(
+        select(RequestTranscript).where(RequestTranscript.id == transcript_id)
+    )
+    row = result.scalars().first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Transcript {transcript_id} not found")
+    return row.to_dict(include_body=True)

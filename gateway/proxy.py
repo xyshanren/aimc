@@ -567,7 +567,8 @@ async def forward_request(
     # 只在 channel.supports_prompt_cache=1 时启用
     # Anthropic 风格: messages[0] (system) 加 cache_control: {type: "ephemeral"}
     # OpenAI 风格: 加 prompt_cache_key parameter (用 system content hash)
-    if channel.get("supports_prompt_cache"):
+    # V4.9.3: settings.prompt_cache_inject_enabled 全局开关 (A/B 对比用)
+    if channel.get("supports_prompt_cache") and settings.prompt_cache_inject_enabled:
         try:
             body = _inject_prompt_cache(body, channel)
         except Exception as e:
@@ -673,6 +674,8 @@ async def _forward_stream(
         # 保留 64KB 足以覆盖绝大多数 usage chunk, 避免大流量时内存膨胀
         tail_buffer = bytearray()
         TAIL_LIMIT = 65536
+        # V4.9.3: 转录用全量缓冲 (不做滑动窗口, 但受 transcript_log_max_body 截断)
+        full_buffer = bytearray() if settings.transcript_log_enabled else None
         try:
             async for chunk in response.aiter_raw():
                 # 透传给客户端 (原样, 不修改)
@@ -682,6 +685,9 @@ async def _forward_stream(
                 if len(tail_buffer) > TAIL_LIMIT:
                     # 只保留末尾 TAIL_LIMIT 字节 (滑动窗口)
                     del tail_buffer[: len(tail_buffer) - TAIL_LIMIT]
+                # V4.9.3: 转录全量累积 (截断上限内)
+                if full_buffer is not None:
+                    full_buffer.extend(chunk)
         finally:
             await response.aclose()
             await client.aclose()
@@ -697,6 +703,17 @@ async def _forward_stream(
                 )
             except Exception as e:
                 logger.debug(f"[P0-1] stream usage 记录失败 (非致命): {e}")
+            # V4.9.3: 请求/响应转录 (诊断用, 默认关)
+            if full_buffer is not None:
+                try:
+                    _schedule_transcript_log(
+                        channel, body, None, requested_model,
+                        caller_id, caller_key_id,
+                        stream_status=response.status_code,
+                        stream_body=bytes(full_buffer),
+                    )
+                except Exception as e:
+                    logger.debug(f"[V4.9.3] stream 转录记录失败 (非致命): {e}")
 
     # 透传上游响应头（过滤掉 hop-by-hop 头）
     response_headers = {}
@@ -754,6 +771,13 @@ async def _forward_normal(
 
     # 尝试记录用量（异步，不阻塞响应）
     _schedule_usage_log(channel, response, latency_ms, requested_model, caller_id, caller_key_id)
+
+    # V4.9.3: 请求/响应转录 (诊断用, 默认关)
+    if settings.transcript_log_enabled:
+        _schedule_transcript_log(
+            channel, body, response, requested_model,
+            caller_id, caller_key_id,
+        )
 
     return JSONResponse(
         status_code=response.status_code,
@@ -1026,6 +1050,71 @@ async def _write_usage_log(
             await session.commit()
     except Exception as e:
         logger.warning(f"用量日志写入失败: {e}")
+
+
+def _schedule_transcript_log(
+    channel, request_body, response, requested_model="",
+    caller_id=None, caller_key_id=None,
+    stream_status=None, stream_body=None,
+):
+    """V4.9.3: fire-and-forget 写 request_transcripts 表
+
+    记录发给上游的 request body (注入后) + 上游响应 body,
+    用于排查 "缓存注入是否导致降智" — 对比开/关 cache 的输出质量。
+    失败不影响主流程 (pass)。
+    """
+    try:
+        max_len = settings.transcript_log_max_body
+        # 请求 body (注入后的, 即真正发给上游的)
+        req_text = request_body.decode("utf-8", errors="replace")[:max_len]
+        # 响应 body
+        if stream_body is not None:
+            resp_text = stream_body.decode("utf-8", errors="replace")[:max_len]
+            status_code = stream_status
+        elif response is not None:
+            resp_text = response.text[:max_len] if response.text else ""
+            status_code = response.status_code
+        else:
+            resp_text = ""
+            status_code = stream_status or 0
+
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(_write_transcript_log(
+            channel_id=channel.get("id"),
+            model=requested_model,
+            request_body=req_text,
+            response_body=resp_text,
+            status_code=status_code,
+            caller_id=caller_id,
+            caller_key_id=caller_key_id,
+        ))
+        task.add_done_callback(_log_task_result)
+    except Exception:
+        pass  # 转录失败不影响主流程
+
+
+async def _write_transcript_log(
+    channel_id, model, request_body, response_body,
+    status_code, caller_id=None, caller_key_id=None,
+):
+    """V4.9.3: 异步写入 request_transcripts 表"""
+    try:
+        from db.engine import async_session_factory
+        from db.models import RequestTranscript
+        async with async_session_factory() as session:
+            log = RequestTranscript(
+                channel_id=channel_id,
+                model=model,
+                request_body=request_body,
+                response_body=response_body,
+                status_code=status_code,
+                caller_id=caller_id,
+                key_id=caller_key_id,
+            )
+            session.add(log)
+            await session.commit()
+    except Exception as e:
+        logger.warning(f"转录日志写入失败: {e}")
 
 
 def _extract_stream_usage(tail_bytes: bytes) -> dict | None:

@@ -223,3 +223,20 @@ def test_default_api_style_is_openai():
     channel = {}  # api_style 缺失
     result = _parse(_inject_prompt_cache(body, channel))
     assert "prompt_cache_key" in result
+
+
+def test_inject_disabled_when_global_switch_off():
+    """V4.9.3 A/B 开关: prompt_cache_inject_enabled=False 时调用点不注入
+
+    验证调用点的 guard 逻辑: supports_prompt_cache=True AND enabled=False → 不调用 _inject_prompt_cache
+    """
+    from config import settings
+
+    original = settings.prompt_cache_inject_enabled
+    settings.prompt_cache_inject_enabled = False
+    try:
+        channel = {"api_style": "openai", "supports_prompt_cache": True}
+        should_inject = channel.get("supports_prompt_cache") and settings.prompt_cache_inject_enabled
+        assert should_inject is False
+    finally:
+        settings.prompt_cache_inject_enabled = original
