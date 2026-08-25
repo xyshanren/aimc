@@ -235,7 +235,72 @@ journalctl --user -u aimc -n 20 | grep suggest
 | `greenlet_spawn` | sync session 用 async engine | P0-8 已修（独立 sync_engine），如再现重启 |
 | `KeyError: 'cache-hit-tokens'` | SF HTML 结构变了 | SF pricing 解析需更新（阶段B 重抓） |
 
-## 9. 收集诊断信息
+## 9. V4.9.1 探活 / scheduler 启动异常
+
+### 症状：APScheduler 静默挂掉（job 没跑但没报错）
+
+**背景**：V4.9.1 加了 `channel_health_probe` / `cooldown_cleanup` / `account_health_log_cleanup` 3 个 job。如果它们注册时 pickle 失败（比如回调是 lambda），**整个 scheduler.start() 会抛 ValueError，所有 job 都不会跑**，但服务进程仍在（gateway 健康检查 200）。
+
+**判断**：
+
+```bash
+# 1. 看 job 是否都注册了
+grep 'Added job' /tmp/aimc.log | grep -E 'Channel 智能探活|Cooldown 过期清理|探活日志清理'
+# 期望 3 条, 实际 0 条 → scheduler 没起来
+
+# 2. 看有没有 ValueError (lambda 不能 pickle)
+grep -i 'ValueError\|cannot be serialized' /tmp/aimc.log | tail -5
+```
+
+**修复**：检查新增 job 是否用了 `lambda: ...` 回调（**APScheduler 用 SQLAlchemyJobStore 持久化，lambda 不能被 pickle**）。改成模块级函数：
+
+```python
+# 错误 (lambda 不能被 pickle)
+scheduler.add_job(lambda: my_func(arg), ...)
+
+# 正确 (模块级函数)
+async def my_func_with_arg():
+    return await my_func(arg)
+scheduler.add_job(my_func_with_arg, ...)
+```
+
+### 症状：channel_health_probe 跑得太频繁 / 积压几千个待探活
+
+**原因**：网络全挂时 cooldown_manager._state 累积大量 next_probe_at=过去 的 entry。
+
+**检查**：
+
+```bash
+grep 'channel_health_probe:' /tmp/aimc.log | tail -10
+# 看日志是否出现 "due_ids=N > 50" 警告 (max_batch 触发)
+```
+
+**缓解**：调大 `AIMC_HEALTH_PROBE_MAX_BATCH`（默认 50），或调大 `AIMC_HEALTH_PROBE_TOTAL_TIMEOUT`（默认 60s）。
+
+### 症状：account_health_log 表无限增长
+
+**原因**：V4.9.1 前没有 retention，1 channel 每天 1440 条。
+
+**检查**：
+
+```bash
+sqlite3 data/aimc.db "SELECT COUNT(*) FROM account_health_log"
+# 数十万 → 之前漏跑 retention
+```
+
+**手动清理**：
+
+```bash
+sqlite3 data/aimc.db "
+  DELETE FROM account_health_log
+  WHERE probe_at < datetime('now', '-7 days')
+"
+
+# 确认 retention job 跑了
+grep 'account_health_log_cleanup' /tmp/aimc.log | tail -5
+```
+
+## 10. 收集诊断信息
 
 如果以上不能解决，收集以下信息提交 issue：
 

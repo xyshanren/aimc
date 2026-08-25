@@ -172,8 +172,22 @@ cd ~/aimc
 git pull
 source .venv/bin/activate
 pip install -r requirements.txt
-# 如果 schema 变了, 跑 migration
-for m in db/migrations/2026_08_*.py; do python $m --apply; done
+# V4.9 后: schema 变更走 ensure_migrations 自动跑, 不需要手动 migration
+# 只有 db/migrations/2026_08_*.py 这些独立脚本才需要手动跑
+for m in db/migrations/2026_08_*.py; do python $m --apply; done 2>/dev/null || true
+systemctl --user restart aimc
+# 跑测试确认
+python -m pytest tests/ -v
+
+# V4.9.1 部署验证 (必跑! 防止 APScheduler 静默挂掉)
+sleep 5
+# 1. 所有 job 都注册成功 (V4.9.1 新增 3 个)
+grep 'Added job' /tmp/aimc.log | grep -E 'Channel 智能探活|Cooldown 过期清理|探活日志清理'
+# 期望 3 条
+# 2. scheduler 没因 pickle 失败 (lambda 回调) 静默挂掉
+grep -i 'ValueError\|cannot be serialized' /tmp/aimc.log
+# 期望空
+```ne
 systemctl --user restart aimc
 # 跑测试确认
 python -m pytest tests/ -v
@@ -186,6 +200,35 @@ python -m pytest tests/ -v
 ```bash
 python scripts/migrate_encrypt_keys.py --apply
 systemctl --user restart aimc
+```
+
+## V4.9.1 探活防护监控
+
+`channel_health_probe` 是新加的 APScheduler job，**有 3 层防护**防止资源泄漏（吸取 Playwright 采集进程 OOM 教训）：
+
+| 防护 | 监控方式 |
+|------|----------|
+| 共享 httpx.AsyncClient 单例 | `grep 'close_probe_client' /tmp/aimc.log`（应仅 shutdown 出现 1 次） |
+| job hard timeout 60s | `grep 'channel_health_probe.*超时' /tmp/aimc.log`（超时时应出现） |
+| account_health_log retention 7 天 | `sqlite3 data/aimc.db "SELECT COUNT(*) FROM account_health_log"`（应 < 数十万） |
+
+**每 60s 探活触发条件**（不能太频繁）：
+
+- cooldown_manager._state 里的 account 有 `next_probe_at <= now`
+- `needs_human=False` 且 `manual_disabled_at` 为空
+- `cooldown_manager.accounts_due_for_probe()` 返回列表
+
+如果发现探活一直没跑：
+
+```bash
+# 1. job 注册了?
+grep 'Added job' /tmp/aimc.log | grep -E 'Channel 智能探活'
+
+# 2. 总开关是否开了?
+grep AIMC_HEALTH_PROBE_ENABLED /home/lxc/aimc/.env
+
+# 3. cooldown_manager 有没有待探活 account?
+# (无代码检查入口, 直接重启服务看)
 ```
 
 ## 故障排查（运维阶段）

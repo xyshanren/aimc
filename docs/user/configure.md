@@ -93,6 +93,15 @@ AIMC_NEEDS_HUMAN_QUOTA_THRESHOLD=2
 AIMC_NEEDS_HUMAN_AUTH_THRESHOLD=1
 # model 失败 2 次 → 需人工 (避免误判)
 AIMC_NEEDS_HUMAN_MODEL_THRESHOLD=2
+
+# === V4.9.1 探活防护 (防雪崩 / 防资源泄漏) ===
+# 单 job 最多探活数 — 超出下个 job 再探, 防止「网络全挂时积压上千个待探活」
+AIMC_HEALTH_PROBE_MAX_BATCH=50
+# job 总超时 (秒) — 超时回填 NETWORK_TRANSIENT, 不阻塞下次调度
+AIMC_HEALTH_PROBE_TOTAL_TIMEOUT=60.0
+# account_health_log 保留天数 — 凌晨 3 点的清理 job 会删 cutoff 之前记录
+# 7 天够 dashboard 查探活历史 + 周报分析, 调大可保留更久
+AIMC_ACCOUNT_HEALTH_LOG_RETENTION_DAYS=7
 ```
 
 完整字段见 `.env.example`（[dev/setup.md](../dev/setup.md) 有字段详解）。

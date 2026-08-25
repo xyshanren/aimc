@@ -409,6 +409,39 @@ curl -X POST http://localhost:8080/dashboard/api/accounts/5/manual-disable \
 
 解除人工禁用，恢复 `accounts.status='active'`：
 
+```bash
+curl -X POST http://localhost:8080/dashboard/api/accounts/5/manual-enable \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+---
+
+### V4.9.1 探活防护（intelligence/channel_health.py）
+
+V4.9.1 在 V4.9 基础上加 3 层防护，避免「雪崩」和「资源泄漏」（吸取 Playwright 采集进程 OOM 教训）：
+
+| 防护层 | 实现 | 防止 |
+|---|---|---|
+| 共享 httpx client | 模块级 `_PROBE_CLIENT` 单例，`httpx.Limits(max_connections=20)` | 每 60s 频繁创建/销毁 client + 连接池爆炸 |
+| job hard timeout | `asyncio.wait_for(..., timeout=60)` + `max_batch=50` | 网络全挂时积压几千个待探活 |
+| 日志 retention | `account_health_log_cleanup` job（凌晨 3 点）删 7 天前记录 | 表无限增长（1 channel 每天 1440 条） |
+
+**APScheduler pickle 约束**：job 回调函数必须能被 pickle（SQLAlchemyJobStore 持久化），**不能传 lambda**。新增模块级 wrapper `account_health_log_cleanup_task` 是这个原因。
+
+**部署验证**：
+
+```bash
+# 1. 所有 job 都注册成功 (看到 3 条新增)
+grep 'Added job' /tmp/aimc.log | grep -E 'Channel 智能探活|Cooldown 过期清理|探活日志清理'
+# 期望 3 条
+
+# 2. scheduler 没因 pickle 失败静默挂掉
+grep -i 'ValueError\|cannot be serialized' /tmp/aimc.log
+# 期望空
+```
+
+---
+
 ## 错误响应格式
 
 AIMC 网关错误（4xx/5xx）用 OpenAI 兼容格式：
