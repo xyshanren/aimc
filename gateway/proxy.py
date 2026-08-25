@@ -640,24 +640,8 @@ async def _forward_stream(
 
     response = await client.send(req, stream=True)
 
-    # V4.6.1: 上游 status_code → cooldown_manager
-    _update_cooldown(channel, response.status_code)
-
-    # V4.8.7 P7: 流式 429 同样标记 cooldown (之前只有非流式 _forward_normal 有)
-    # 场景: 流式请求打到余额不足渠道, 上游返回 429 但流式路径没标记 cooldown,
-    #       导致后续请求继续撞同一个 channel
-    if response.status_code == 429:
-        try:
-            from gateway.cooldown import cooldown_manager
-            cooldown_manager.mark_failure(
-                channel["account_id"], reason="upstream_429_quota_exhausted_stream"
-            )
-            logger.warning(
-                f"P7: {channel['name']} 429 (stream, quota/plan), 标记 cooldown "
-                f"account_id={channel['account_id']}"
-            )
-        except Exception as e:
-            logger.debug(f"P7 stream: mark_failure 失败 (非致命): {e}")
+    # V4.9: 上游响应 → error_classifier 统一处理 cooldown + needs_human
+    _update_cooldown(channel, response)
 
     # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
     if response.status_code in (401, 403, 500, 502, 503, 504):
@@ -741,24 +725,8 @@ async def _forward_normal(
     latency_ms = int((time.time() - start_time) * 1000)
     logger.info(f"[Normal] {channel['name']} -> {response.status_code} ({latency_ms}ms)")
 
-    # V4.6.1: 上游 status_code → cooldown_manager
-    _update_cooldown(channel, response.status_code)
-
-    # P1-15 (2026-08-15): 429 (quota/plan 耗尽) 标记 cooldown
-    # 场景: minimax TokenPlanMax 用量到上限 -> 上游 429 "已达到 Token Plan 用量上限"
-    # 处理: 标记该 account cooldown (避免反复撞), routes.py retry loop 会选其他 channel
-    if response.status_code == 429:
-        try:
-            from gateway.cooldown import cooldown_manager
-            cooldown_manager.mark_failure(
-                channel["account_id"], reason="upstream_429_quota_exhausted"
-            )
-            logger.warning(
-                f"P1-15: {channel['name']} 429 (quota/plan), 标记 cooldown "
-                f"account_id={channel['account_id']}"
-            )
-        except Exception as e:
-            logger.debug(f"P1-15: mark_failure 失败 (非致命): {e}")
+    # V4.9: 上游响应 → error_classifier 统一处理 cooldown + needs_human
+    _update_cooldown(channel, response)
 
     # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
     if response.status_code in (401, 403, 500, 502, 503, 504):
@@ -797,13 +765,16 @@ def _extract_group_id(requested_model: str) -> str | None:
     return None
 
 
-def _update_cooldown(channel: dict, status_code: int) -> None:
-    """V4.6.1: 路由转发后按上游 status_code 更新 cooldown_manager.
+def _update_cooldown(channel: dict, status_code_or_response) -> None:
+    """V4.6.1 → V4.9: 路由转发后更新 cooldown_manager.
 
-    规则:
-    - 200 → mark_success (清掉之前的失败计数)
-    - 401/403/5xx → mark_failure (累计达阈值进 cooldown, 后续路由跳过该 account)
-    - 其他 (400/404/429…) → 不动 (客户端错误或已有专门处理, 不让账号冷却)
+    V4.9 重构:
+    - 接收 httpx.Response 对象 (或仅 status_code 兼容旧调用)
+    - 用 error_classifier.classify 决定 cooldown 行为
+    - 200 → mark_success
+    - needs_human=True (quota/auth) → mark_failure + needs_human=True
+    - network_transient/5xx/rate_limited → mark_failure (按 suggested_cooldown_seconds)
+    - client_error → 不动 (不进 cooldown)
 
     channel 无 account_id 时静默跳过.
     """
@@ -811,13 +782,41 @@ def _update_cooldown(channel: dict, status_code: int) -> None:
     if not account_id:
         return
     try:
+        import httpx as _httpx
         from gateway.cooldown import cooldown_manager
+        from gateway.error_classifier import ErrorCategory, classify
+
+        # 向后兼容: 只传 status_code (int) 时走老逻辑
+        if isinstance(status_code_or_response, int):
+            status_code = status_code_or_response
+            response_body = None
+        else:
+            # httpx.Response
+            status_code = status_code_or_response.status_code
+            try:
+                response_body = status_code_or_response.text
+            except Exception:
+                response_body = None
+
         if status_code == 200:
             cooldown_manager.mark_success(account_id)
-        elif status_code in (401, 403, 500, 502, 503, 504):
-            cooldown_manager.mark_failure(account_id, reason=f"upstream_{status_code}")
+            return
+
+        info = classify(status_code, response_body, None)
+
+        # client_error 不进 cooldown (跟旧规则一致)
+        if info.category == ErrorCategory.CLIENT_ERROR:
+            return
+
+        # 走 mark_failure(error_info=...) 新签名 (由 Commit 2 实现)
+        cooldown_manager.mark_failure(account_id, error_info=info)
+
+        # V4.9: needs_human=True 的错误触发专门告警 (quota/auth/model_unsupported)
+        # 之前的 _schedule_alert 只覆盖 5xx+401/403, 漏了 420/余额不足等
+        if info.needs_human:
+            _schedule_alert_with_info(channel, info)
     except Exception as e:
-        logger.debug(f"V4.6.1 _update_cooldown 非致命: {e}")
+        logger.debug(f"_update_cooldown 非致命: {e}")
 
 
 def _resolve_actual_model(channel: dict, requested_model: str, fallback_model: str = "") -> str:
@@ -1178,6 +1177,44 @@ def _schedule_alert(channel: dict, response: httpx.Response):
     except Exception as e:
         # V4.6.4: 静默错误 — 之前 _schedule_alert 失败完全没 log
         logger.warning(f"V4.6.4: _schedule_alert task 调度失败: {e}")
+
+
+async def _schedule_alert_with_info(channel: dict, error_info) -> None:
+    """V4.9: needs_human=True 的错误触发告警 (quota/auth/model_unsupported)
+
+    跟 _schedule_alert 区别:
+    - throttle key 含 error_type, 同 channel + 同 error_type 1 小时静默
+    - message 带错误详情 (code + msg + needs_human 提示)
+    - 场景: 余额不足 / key 失效 / 模型不支持, 都需要人工介入
+    """
+    from gateway.error_classifier import ErrorInfo
+    channel_name = channel.get("name", "?")
+    msg = (
+        f"[AIMC 需人工干预] {channel_name} {error_info.category.value}\n"
+        f"账号: {channel.get('account_name', '?')}\n"
+        f"错误码: {error_info.error_code or '-'}\n"
+        f"错误: {error_info.error_msg[:200] or '-'}\n"
+        f"操作: dashboard '#pending' tab 确认 / 禁用 / 充值"
+    )
+    throttle_key = f"needs_human:{channel_name}:{error_info.category.value}"
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(
+            _send_alert_with_silence(msg, key=throttle_key, silence_seconds=3600)
+        )
+    except RuntimeError:
+        logger.warning(f"[alerter fallback needs_human] {msg}")
+    except Exception as e:
+        logger.warning(f"_schedule_alert_with_info 调度失败: {e}")
+
+
+async def _send_alert_with_silence(message: str, key: str | None = None, silence_seconds: float = 3600):
+    """异步调 alerter.send_alert, 带自定义静默窗口"""
+    try:
+        from intelligence.alerter import send_alert
+        await send_alert(message, key=key, silence_seconds=silence_seconds)
+    except Exception as e:
+        logger.warning(f"告警发送失败: {e}")
 
 
 async def _send_alert_async(message: str, key: str | None = None):

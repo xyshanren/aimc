@@ -207,18 +207,30 @@ async def chat_completions(request: Request):
             retryable_status = True
         if (not is_stream) and retryable_status and attempt < max_retries:
             from gateway.cooldown import cooldown_manager
+            from gateway.error_classifier import classify
+            # V4.9: 用 error_classifier 拿到 error_type/error_msg/needs_human
+            try:
+                _resp_body = response.text
+            except Exception:
+                _resp_body = None
+            _error_info = classify(response.status_code, _resp_body, None)
             cooldown_manager.mark_failure(
-                channel["account_id"], reason=f"upstream_{response.status_code}"
+                channel["account_id"], error_info=_error_info
             )
-            # V4.8.7 P7: 记录失败渠道, 供最终响应注入
+            # V4.8.7 P7 + V4.9: 记录失败渠道 + 错误分类, 供最终响应注入
             failed_channels.append({
                 "channel": channel["name"],
                 "account": channel.get("account_name", ""),
                 "account_id": channel.get("account_id"),
                 "status": response.status_code,
+                "error_type": _error_info.category.value,
+                "error_code": _error_info.error_code,
+                "error_msg": _error_info.error_msg[:200],
+                "needs_human": _error_info.needs_human,
             })
             logger.warning(
-                f"P1-15: {channel['name']} {response.status_code}, "
+                f"P1-15: {channel['name']} {response.status_code} "
+                f"({_error_info.category.value}), "
                 f"failover 到下一候选 (attempt {attempt + 1}/{max_retries})"
             )
             continue
@@ -234,6 +246,15 @@ async def chat_completions(request: Request):
                 parsed["error"]["failed_channels"] = failed_channels
             new_headers = dict(response.headers)
             new_headers["X-AIMC-Failed-Channels"] = json.dumps(failed_channels, ensure_ascii=False)
+            # V4.9: 加 X-AIMC-Last-Error-Type + Last-Error-Code, 客户端无需 parse JSON
+            if failed_channels:
+                last = failed_channels[-1]
+                new_headers["X-AIMC-Last-Error-Type"] = last.get("error_type") or "unknown"
+                if last.get("error_code"):
+                    new_headers["X-AIMC-Last-Error-Code"] = str(last["error_code"])
+                # 如果最后失败 needs_human, 加 Retry-After 提示人工
+                if last.get("needs_human"):
+                    new_headers["Retry-After"] = "3600"
             return JSONResponse(
                 status_code=response.status_code,
                 content=parsed,
