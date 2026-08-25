@@ -124,7 +124,12 @@ def test_mark_success_clears_cooldown():
 
     cm.mark_success(600)
     check("mark_success 后不在 cooldown", cm.is_in_cooldown(600), False)
-    check("mark_success 后 snapshot 不含", 600 in cm.snapshot(), False)
+    # V4.9: mark_success 不删 entry, 保留 last_success_at + last_error_* 用于审计
+    check("mark_success 后 snapshot 仍含 (审计用)", 600 in cm.snapshot(), True)
+    snap = cm.snapshot()[600]
+    check("snapshot in_cooldown=False", snap["in_cooldown"], False)
+    check("snapshot count=0", snap["count"], 0)
+    check("snapshot last_success_at 已设置", snap["last_success_at"] is not None, True)
 
 
 # ============================================================
