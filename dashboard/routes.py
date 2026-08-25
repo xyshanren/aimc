@@ -559,31 +559,56 @@ async def get_pending_summary(session: AsyncSession = Depends(get_session)):
         total += len(model_aids)
 
     # === 4. 自动冷却中 (degraded/failing, 非 needs_human) ===
-    cooldown_aids = [aid for aid, s in cooldown_manager.snapshot().items()
+    snap = cooldown_manager.snapshot()
+    cooldown_aids = [aid for aid, s in snap.items()
                      if s.get("in_cooldown") and not s.get("needs_human")
                      and not s.get("manual_disabled")]
     if cooldown_aids:
+        cooldown_examples = []
+        for aid in sorted(cooldown_aids, key=lambda a: snap[a].get("remaining_seconds", 0), reverse=True)[:5]:
+            s = snap[aid]
+            ch_info = _lookup_channel_info(route_engine, aid)
+            err_type = s.get("last_error_type", "")
+            remaining = s.get("remaining_seconds", 0)
+            msg = s.get("last_error_msg", "")[:100]
+            label = f"{err_type} ({remaining:.0f}s)" if err_type else f"冷却中 ({remaining:.0f}s)"
+            cooldown_examples.append({
+                "account_id": aid,
+                "channel": ch_info["name"] if ch_info else "?",
+                "account_name": ch_info.get("account_name", "") if ch_info else "",
+                "error_msg": f"{label} — {msg}" if msg else label,
+            })
         items.append({
             "category": "cooldown_degraded",
             "count": len(cooldown_aids),
             "severity": "warning",
             "label": "⚠️ 自动冷却中",
             "anchor": "accounts-meta",
-            "examples": [],  # 不展开, 太多
+            "examples": cooldown_examples,
         })
         total += len(cooldown_aids)
 
     # === 5. 人工禁用 ===
-    manual_aids = [aid for aid, s in cooldown_manager.snapshot().items()
+    manual_aids = [aid for aid, s in snap.items()
                    if s.get("manual_disabled")]
     if manual_aids:
+        manual_examples = []
+        for aid in manual_aids[:3]:
+            s = snap[aid]
+            ch_info = _lookup_channel_info(route_engine, aid)
+            manual_examples.append({
+                "account_id": aid,
+                "channel": ch_info["name"] if ch_info else "?",
+                "account_name": ch_info.get("account_name", "") if ch_info else "",
+                "error_msg": "人工禁用",
+            })
         items.append({
             "category": "manual_disabled",
             "count": len(manual_aids),
             "severity": "info",
             "label": "🚫 人工禁用",
             "anchor": "accounts-meta",
-            "examples": [],
+            "examples": manual_examples,
         })
         total += len(manual_aids)
 
