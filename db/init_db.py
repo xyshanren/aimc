@@ -146,6 +146,44 @@ async def ensure_migrations():
         else:
             logger.debug("迁移: channels.auto_drop_params 已存在，跳过")
 
+        # V4.9 (2026-08-25): usage_logs 失败事件持久化
+        # 让 dashboard '🔴 待处理' tab 能查历史失败, 不依赖纯内存 cooldown
+        result = await conn.execute(text("PRAGMA table_info('usage_logs')"))
+        columns = {row[1] for row in result.fetchall()}
+        if "error_msg" not in columns:
+            await conn.execute(text("ALTER TABLE usage_logs ADD COLUMN error_msg TEXT"))
+            logger.info("迁移: usage_logs 添加 error_msg 列 (V4.9)")
+        if "error_type" not in columns:
+            await conn.execute(text("ALTER TABLE usage_logs ADD COLUMN error_type TEXT"))
+            logger.info("迁移: usage_logs 添加 error_type 列 (V4.9)")
+        if "error_code" not in columns:
+            await conn.execute(text("ALTER TABLE usage_logs ADD COLUMN error_code TEXT"))
+            logger.info("迁移: usage_logs 添加 error_code 列 (V4.9)")
+        if "failed_channels" not in columns:
+            await conn.execute(text("ALTER TABLE usage_logs ADD COLUMN failed_channels TEXT"))
+            logger.info("迁移: usage_logs 添加 failed_channels 列 (V4.9)")
+        if "needs_human" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE usage_logs ADD COLUMN needs_human INTEGER NOT NULL DEFAULT 0"
+            ))
+            logger.info("迁移: usage_logs 添加 needs_human 列 (V4.9)")
+
+        # V4.9: accounts 健康状态持久化字段
+        result = await conn.execute(text("PRAGMA table_info('accounts')"))
+        acct_columns = {row[1] for row in result.fetchall()}
+        if "last_success_at" not in acct_columns:
+            await conn.execute(text("ALTER TABLE accounts ADD COLUMN last_success_at DATETIME"))
+            logger.info("迁移: accounts 添加 last_success_at 列 (V4.9)")
+        if "last_error_at" not in acct_columns:
+            await conn.execute(text("ALTER TABLE accounts ADD COLUMN last_error_at DATETIME"))
+            logger.info("迁移: accounts 添加 last_error_at 列 (V4.9)")
+        if "last_error_type" not in acct_columns:
+            await conn.execute(text("ALTER TABLE accounts ADD COLUMN last_error_type TEXT"))
+            logger.info("迁移: accounts 添加 last_error_type 列 (V4.9)")
+        if "manual_disabled_at" not in acct_columns:
+            await conn.execute(text("ALTER TABLE accounts ADD COLUMN manual_disabled_at DATETIME"))
+            logger.info("迁移: accounts 添加 manual_disabled_at 列 (V4.9)")
+
         # usage_logs.group_id (Phase 3.A, 2026-07-29)
         # 用于 Dashboard 命中率聚合查询, 老数据全部 NULL (精确模型路由)
         result = await conn.execute(text("PRAGMA table_info('usage_logs')"))

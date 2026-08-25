@@ -14,7 +14,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, Integer, Text, Float, DateTime, ForeignKey, LargeBinary, func,
+    Column, Integer, Text, Float, DateTime, Boolean, ForeignKey, LargeBinary, JSON, func,
     Index, UniqueConstraint, text as sa_text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -101,7 +101,7 @@ class Account(Base):
     account_name = Column(Text, nullable=False, comment="标识: deepseek_01/glm_02")
     api_key = Column(Text, nullable=False, comment="API Key 明文 (deprecated, 迁移期保留, 新数据写空字符串占位)")
     api_key_ciphertext = Column(LargeBinary, nullable=True, comment="API Key 密文 (Fernet, API-Sec-1)")
-    status = Column(Text, default="active", comment="active/exhausted/expired/error")
+    status = Column(Text, default="active", comment="active/exhausted/expired/error/manual_disabled")
     quota_total = Column(Integer, nullable=True, comment="总配额（tokens）")
     quota_used = Column(Integer, default=0, comment="已用配额")
     # API-Sec-3 (2026-07-29): key 轮换审计
@@ -124,6 +124,12 @@ class Account(Base):
         Text, nullable=True,
         comment="账户 plan 类型 (跟 account_quotas 配置联动)",
     )
+    # V4.9 (2026-08-25): 失败/健康状态持久化
+    # 让 dashboard '🔴 待处理' tab 能基于 DB (而非纯内存 cooldown) 显示历史失败
+    last_success_at = Column(DateTime, nullable=True, comment="最后一次成功响应时间")
+    last_error_at = Column(DateTime, nullable=True, comment="最后一次失败时间")
+    last_error_type = Column(Text, nullable=True, comment="最后一次失败的 ErrorCategory")
+    manual_disabled_at = Column(DateTime, nullable=True, comment="人工禁用时间 (NULL=未禁用)")
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
@@ -364,6 +370,18 @@ class UsageLog(Base):
     # daily quota 在本地 00:00-08:00 期间漏算当天用量 (3 个 flaky 测试同根因)。
     # 存量 UTC 行需一次性迁移 (UTC→本地 +时差)。
     created_at = Column(DateTime, default=datetime.now)
+
+    # V4.9 (2026-08-25): 失败事件持久化字段
+    # 之前错误信息只通过 X-AIMC-Failed-Channels 响应头透传, 重启/历史不可查
+    error_msg = Column(Text, nullable=True, comment="上游 error.message (截断 500)")
+    error_type = Column(Text, nullable=True, comment="ErrorCategory: quota_exhausted/auth_failed/...")
+    error_code = Column(Text, nullable=True, comment="上游 error.code (1113 / insufficient_quota)")
+    failed_channels = Column(JSON, nullable=True, comment="JSON array, V4.8.7 P7 失败链路")
+    needs_human = Column(Boolean, default=False, comment="True=需人工干预 (quota/auth/model_unsupported)")
+
+
+Index("idx_usage_logs_error_type", UsageLog.error_type)
+Index("idx_usage_logs_needs_human", UsageLog.needs_human)
 
 
 class ModelFeedbackSummary(Base):
@@ -777,6 +795,37 @@ class JobHealth(Base):
 
 
 Index("idx_job_health_last_success", JobHealth.last_success_at)
+
+
+class AccountHealthLog(Base):
+    """V4.9 (2026-08-25): channel 智能探活时间序列
+
+    每次探活 (scheduled / user_request / recovery_check) 写一条
+    用于:
+    - dashboard 显示某个 channel 历史探活成功率/延迟
+    - 调试: "为什么这个 account 标 needs_human 了?"
+    - 审计: 谁在什么时候 probe 了什么 channel
+
+    类比 JobHealth, 但粒度到 channel/account
+    """
+    __tablename__ = "account_health_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    probe_at = Column(DateTime, default=datetime.now, nullable=False)
+    triggered_by = Column(
+        Text, nullable=False, server_default="scheduled",
+        comment="scheduled (智能探活 job) / user_request (用户请求触发) / recovery_check (人工 ack-recover)",
+    )
+    success = Column(Integer, nullable=False, server_default="0", comment="0=fail, 1=ok")
+    status_code = Column(Integer, nullable=True)
+    error_type = Column(Text, nullable=True, comment="ErrorCategory")
+    error_msg = Column(Text, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+
+
+Index("idx_ahl_account_time", AccountHealthLog.account_id, AccountHealthLog.probe_at)
+Index("idx_ahl_probe_at", AccountHealthLog.probe_at)
 
 
 class SettingsRuntime(Base):
