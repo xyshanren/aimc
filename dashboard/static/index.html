@@ -144,6 +144,26 @@
 
     <div class="col-right">
 
+        <!-- V4.9 (2026-08-25): 待处理 tab — 余额不足 / Key 失效 / 探活状态 -->
+        <details class="card-folding" open>
+            <summary>
+                <span class="card-title-main">
+                    🔴 待处理
+                    <span id="pending-total" class="badge badge-danger">0</span>
+                </span>
+                <span class="card-title-sub">余额 / Key / 探活</span>
+            </summary>
+            <div class="card-body">
+                <div class="accounts-toolbar">
+                    <button class="btn btn-sm" onclick="loadPendingSummary()">刷新</button>
+                    <span id="pending-meta" class="meta"></span>
+                </div>
+                <div id="pending-list">
+                    <div class="loading">加载中…</div>
+                </div>
+            </div>
+        </details>
+
         <div class="card">
             <h2 class="card-title">
                 <span class="card-title-main">

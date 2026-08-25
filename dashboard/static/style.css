@@ -1122,3 +1122,40 @@ details.card-folding > .card-body {
 .key-detail-row { background: var(--bg-base); }
 .sub-table { margin: 4px 0 4px 20px; font-size: 12px; width: calc(100% - 20px); }
 .sub-table th { color: var(--text-secondary); font-weight: normal; }
+
+/* === V4.9 (2026-08-25): 待处理 tab 样式 === */
+.badge-danger {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    font-weight: 600;
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger);
+    margin-left: 6px;
+    min-width: 18px;
+    text-align: center;
+}
+.pending-actions {
+    display: flex;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+}
+.pending-actions .btn {
+    flex: 1;
+    font-size: 11px;
+    padding: 3px 8px;
+}
+.btn-enable {
+    background: rgba(63, 185, 80, 0.15);
+    color: var(--color-success);
+    border: 1px solid var(--color-success);
+}
+.btn-enable:hover { background: rgba(63, 185, 80, 0.25); }
+.btn-disable {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger);
+}
+.btn-disable:hover { background: rgba(248, 81, 73, 0.25); }

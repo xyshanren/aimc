@@ -9,6 +9,7 @@
 
 import json
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -466,6 +467,302 @@ async def get_cooldown_status():
             **state,
         })
     return result
+
+
+# === V4.9 (2026-08-25): '🔴 待处理' tab API ===
+
+@router.get("/api/pending-summary")
+async def get_pending_summary(session: AsyncSession = Depends(get_session)):
+    """V4.9: 聚合 dashboard '🔴 待处理(N)' tab 所需的项
+
+    返回每个 category 的 count + 跳转锚点 + 最新 3 条示例
+    """
+    from gateway.cooldown import cooldown_manager
+    from gateway.router import route_engine
+
+    items: list[dict] = []
+    total = 0
+
+    # === 1. needs_human = quota_exhausted ===
+    quota_aids = [aid for aid, s in cooldown_manager.snapshot().items()
+                  if s.get("needs_human") and s.get("last_error_type") == "quota_exhausted"
+                  and not s.get("manual_disabled")]
+    quota_examples = []
+    for aid in quota_aids[:3]:
+        s = cooldown_manager.snapshot()[aid]
+        ch_info = _lookup_channel_info(route_engine, aid)
+        quota_examples.append({
+            "account_id": aid,
+            "channel": ch_info["name"] if ch_info else "?",
+            "account_name": ch_info.get("account_name", "") if ch_info else "",
+            "error_msg": s.get("last_error_msg", "")[:120],
+            "since": s.get("first_failure_at"),
+        })
+    if quota_aids:
+        items.append({
+            "category": "needs_human_quota",
+            "count": len(quota_aids),
+            "severity": "danger",
+            "label": "💰 余额不足",
+            "anchor": "accounts-meta",
+            "examples": quota_examples,
+        })
+        total += len(quota_aids)
+
+    # === 2. needs_human = auth_failed ===
+    auth_aids = [aid for aid, s in cooldown_manager.snapshot().items()
+                 if s.get("needs_human") and s.get("last_error_type") == "auth_failed"
+                 and not s.get("manual_disabled")]
+    auth_examples = []
+    for aid in auth_aids[:3]:
+        s = cooldown_manager.snapshot()[aid]
+        ch_info = _lookup_channel_info(route_engine, aid)
+        auth_examples.append({
+            "account_id": aid,
+            "channel": ch_info["name"] if ch_info else "?",
+            "account_name": ch_info.get("account_name", "") if ch_info else "",
+            "error_msg": s.get("last_error_msg", "")[:120],
+        })
+    if auth_aids:
+        items.append({
+            "category": "needs_human_auth",
+            "count": len(auth_aids),
+            "severity": "danger",
+            "label": "🔑 Key 失效",
+            "anchor": "accounts-meta",
+            "examples": auth_examples,
+        })
+        total += len(auth_aids)
+
+    # === 3. needs_human = model_unsupported ===
+    model_aids = [aid for aid, s in cooldown_manager.snapshot().items()
+                  if s.get("needs_human") and s.get("last_error_type") == "model_unsupported"
+                  and not s.get("manual_disabled")]
+    if model_aids:
+        examples = []
+        for aid in model_aids[:3]:
+            s = cooldown_manager.snapshot()[aid]
+            ch_info = _lookup_channel_info(route_engine, aid)
+            examples.append({
+                "account_id": aid,
+                "channel": ch_info["name"] if ch_info else "?",
+                "error_msg": s.get("last_error_msg", "")[:120],
+            })
+        items.append({
+            "category": "needs_human_model",
+            "count": len(model_aids),
+            "severity": "warning",
+            "label": "🧩 模型不支持",
+            "anchor": "accounts-meta",
+            "examples": examples,
+        })
+        total += len(model_aids)
+
+    # === 4. 自动冷却中 (degraded/failing, 非 needs_human) ===
+    cooldown_aids = [aid for aid, s in cooldown_manager.snapshot().items()
+                     if s.get("in_cooldown") and not s.get("needs_human")
+                     and not s.get("manual_disabled")]
+    if cooldown_aids:
+        items.append({
+            "category": "cooldown_degraded",
+            "count": len(cooldown_aids),
+            "severity": "warning",
+            "label": "⚠️ 自动冷却中",
+            "anchor": "accounts-meta",
+            "examples": [],  # 不展开, 太多
+        })
+        total += len(cooldown_aids)
+
+    # === 5. 人工禁用 ===
+    manual_aids = [aid for aid, s in cooldown_manager.snapshot().items()
+                   if s.get("manual_disabled")]
+    if manual_aids:
+        items.append({
+            "category": "manual_disabled",
+            "count": len(manual_aids),
+            "severity": "info",
+            "label": "🚫 人工禁用",
+            "anchor": "accounts-meta",
+            "examples": [],
+        })
+        total += len(manual_aids)
+
+    return {"total": total, "items": items}
+
+
+def _lookup_channel_info(route_engine, account_id: int) -> Optional[dict]:
+    """通过 account_id 查 channel name + account_name"""
+    for ch in route_engine._channels_cache:
+        if ch.get("account_id") == account_id:
+            return ch
+    return None
+
+
+@router.get("/api/cooldown/needs-human")
+async def list_needs_human():
+    """V4.9: 列出所有 needs_human=True 的 account (弹窗详细列表用)"""
+    from gateway.cooldown import cooldown_manager
+    from gateway.router import route_engine
+
+    snap = cooldown_manager.snapshot()
+    result = []
+    for aid, s in snap.items():
+        if not s.get("needs_human"):
+            continue
+        ch_info = _lookup_channel_info(route_engine, aid)
+        result.append({
+            "account_id": aid,
+            "channel_name": ch_info["name"] if ch_info else "?",
+            "account_name": ch_info.get("account_name", "") if ch_info else "",
+            "provider": ch_info.get("provider", "") if ch_info else "",
+            "last_error_type": s.get("last_error_type"),
+            "last_error_code": s.get("last_error_code"),
+            "last_error_msg": s.get("last_error_msg"),
+            "first_failure_at": s.get("first_failure_at"),
+            "count": s.get("count"),
+            "manual_disabled": s.get("manual_disabled"),
+        })
+    return {"count": len(result), "items": result}
+
+
+@router.post("/api/cooldown/{account_id}/ack-recover")
+async def ack_recover(account_id: int, note: str = ""):
+    """V4.9: 人工确认账号问题已解决 → mark_success + 立即探活
+
+    Body: {"note": "可选备注"}
+    """
+    from gateway.cooldown import cooldown_manager
+    from db.engine import async_session_factory
+    from db.models import Account
+    from datetime import datetime
+    from sqlalchemy import update
+
+    cooldown_manager.mark_success(account_id)
+    # 更新 DB: last_error_at 清掉
+    async with async_session_factory() as session:
+        await session.execute(
+            update(Account)
+            .where(Account.id == account_id)
+            .values(last_error_at=None, last_error_type=None)
+        )
+        await session.commit()
+
+    # 立即触发一次探活 (异步, 不阻塞响应)
+    asyncio.create_task(_probe_one_now(account_id))
+
+    return {"status": "ok", "account_id": account_id, "note": note}
+
+
+async def _probe_one_now(account_id: int):
+    """立即探活一个 account (供 ack-recover 触发)"""
+    from config import settings
+    from db.engine import async_session_factory
+    from db.models import Account, AccountHealthLog
+    from intelligence.channel_health import _probe_one
+    from gateway.cooldown import cooldown_manager
+    from gateway.error_classifier import ErrorCategory, ErrorInfo
+    from sqlalchemy import select
+
+    try:
+        async with async_session_factory() as session:
+            stmt = select(Account).where(Account.id == account_id)
+            acc = (await session.execute(stmt)).scalar_one_or_none()
+        if not acc:
+            return
+
+        from security.crypto import try_decrypt
+        api_key = None
+        try:
+            if acc.api_key_ciphertext:
+                api_key = try_decrypt(acc.api_key_ciphertext, settings.aimc_master_key)
+        except Exception:
+            pass
+
+        from db.models import Channel
+        async with async_session_factory() as session:
+            ch = (await session.execute(
+                select(Channel).where(Channel.id == acc.channel_id)
+            )).scalar_one_or_none()
+        if not ch:
+            return
+
+        base_url = (ch.api_base or ch.base_url or "").strip()
+        result = await _probe_one(account_id, base_url, api_key)
+
+        # 写日志
+        async with async_session_factory() as session:
+            log = AccountHealthLog(
+                account_id=account_id,
+                triggered_by="recovery_check",
+                success=1 if result["success"] else 0,
+                status_code=result.get("status_code"),
+                error_type=result.get("error_type"),
+                error_msg=result.get("error_msg"),
+                latency_ms=result.get("latency_ms"),
+            )
+            session.add(log)
+            await session.commit()
+
+        # 回写 cooldown
+        if result["success"]:
+            cooldown_manager.probe_result(account_id, success=True)
+        else:
+            try:
+                cat = ErrorCategory(result.get("error_type") or "unknown")
+            except ValueError:
+                cat = ErrorCategory.UNKNOWN
+            info = ErrorInfo(
+                category=cat,
+                error_code=result.get("error_code"),
+                error_msg=result.get("error_msg") or "",
+                needs_human=cat in (ErrorCategory.QUOTA_EXHAUSTED, ErrorCategory.AUTH_FAILED,
+                                     ErrorCategory.MODEL_UNSUPPORTED),
+                suggested_cooldown_seconds=60,
+                suggested_probe_after_seconds=300,
+            )
+            cooldown_manager.probe_result(account_id, success=False, error_info=info)
+    except Exception as e:
+        import logging as _log
+        _log.getLogger(__name__).warning(f"_probe_one_now #{account_id} 失败: {e}")
+
+
+@router.post("/api/accounts/{account_id}/manual-disable")
+async def manual_disable_account(account_id: int):
+    """V4.9: 人工禁用 account (路由永久排除)"""
+    from gateway.cooldown import cooldown_manager
+    from db.engine import async_session_factory
+    from db.models import Account
+    from datetime import datetime
+    from sqlalchemy import update
+
+    cooldown_manager.mark_manual_disabled(account_id)
+    async with async_session_factory() as session:
+        await session.execute(
+            update(Account)
+            .where(Account.id == account_id)
+            .values(status="manual_disabled", manual_disabled_at=datetime.now())
+        )
+        await session.commit()
+    return {"status": "ok", "account_id": account_id}
+
+
+@router.post("/api/accounts/{account_id}/manual-enable")
+async def manual_enable_account(account_id: int):
+    """V4.9: 解除人工禁用"""
+    from gateway.cooldown import cooldown_manager
+    from db.engine import async_session_factory
+    from db.models import Account
+    from sqlalchemy import update
+
+    cooldown_manager.clear_manual_disabled(account_id)
+    async with async_session_factory() as session:
+        await session.execute(
+            update(Account)
+            .where(Account.id == account_id)
+            .values(status="active", manual_disabled_at=None)
+        )
+        await session.commit()
+    return {"status": "ok", "account_id": account_id}
 
 
 @router.get("/api/cache/stats")

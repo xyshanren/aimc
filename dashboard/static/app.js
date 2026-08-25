@@ -1850,3 +1850,125 @@ async function toggleSource(provider, btn) {
         if (btn) btn.disabled = false;
     }
 }
+
+// === V4.9 (2026-08-25): 待处理 tab ===
+
+async function loadPendingSummary() {
+    const container = document.getElementById('pending-list');
+    const meta = document.getElementById('pending-meta');
+    const badge = document.getElementById('pending-total');
+    if (!container) return;
+    try {
+        const resp = await authFetch('/dashboard/api/pending-summary');
+        if (!resp.ok) {
+            container.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
+            return;
+        }
+        const data = await resp.json();
+        const total = data.total || 0;
+        if (badge) badge.textContent = total;
+        if (meta) meta.textContent = total > 0 ? '共 ' + total + ' 项待处理' : '全部正常';
+        const items = data.items || [];
+        if (total === 0) {
+            container.innerHTML = '<div class="text-success" style="padding:8px 0;font-size:12px;">✓ 当前无待处理项</div>';
+            return;
+        }
+        let html = '<div class="flex-col gap-sm">';
+        for (const item of items) {
+            if (item.count === 0) continue;
+            const color = item.severity === 'danger' ? 'var(--color-danger)'
+                        : item.severity === 'warning' ? 'var(--color-warning)'
+                        : 'var(--text-muted)';
+            html += '<div class="pr-card">';
+            html += '<div class="pr-row">';
+            html += '<span class="status-dot-small" style="background:' + color + ';"></span>';
+            html += '<strong>' + esc(item.label) + '</strong>';
+            html += '<span class="badge badge-danger" style="margin-left:auto;">' + item.count + '</span>';
+            html += '</div>';
+            if (item.examples && item.examples.length > 0) {
+                for (const ex of item.examples) {
+                    const aid = ex.account_id;
+                    const ch = ex.channel || '?';
+                    const msg = ex.error_msg || '';
+                    html += '<div style="font-size:11px;margin-top:6px;color:var(--text-secondary);">';
+                    html += '· #' + aid + ' ' + esc(ch) + ': ' + esc(msg);
+                    html += '</div>';
+                    if (item.category && item.category.startsWith('needs_human')) {
+                        html += '<div class="pending-actions">';
+                        html += '<button class="btn btn-sm btn-enable" onclick="ackRecover(' + aid + ', this)">确认恢复</button>';
+                        html += '<button class="btn btn-sm btn-disable" onclick="manualDisable(' + aid + ', this)">禁用</button>';
+                        html += '</div>';
+                    }
+                }
+            }
+            html += '</div>';
+        }
+        html += '</div>';
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+async function ackRecover(accountId, btn) {
+    if (!confirm('确认账号 #' + accountId + ' 问题已解决?将立即触发探活。')) return;
+    const note = prompt('备注 (可选, 充值来源/操作人)');
+    btn.disabled = true;
+    try {
+        const r = await authFetch('/dashboard/api/cooldown/' + accountId + '/ack-recover', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({note: note || ''})
+        });
+        if (r.ok) {
+            btn.closest('.pr-card').remove();
+            await loadPendingSummary();
+        } else {
+            const data = await r.json().catch(() => ({}));
+            alert('确认失败: ' + (data.detail || r.status));
+            btn.disabled = false;
+        }
+    } catch (e) {
+        alert('操作失败: ' + e.message);
+        btn.disabled = false;
+    }
+}
+
+async function manualDisable(accountId, btn) {
+    if (!confirm('确认禁用账号 #' + accountId + '?\n路由将永久排除该账号 (除非手动启用)。')) return;
+    btn.disabled = true;
+    try {
+        const r = await authFetch('/dashboard/api/accounts/' + accountId + '/manual-disable', {method: 'POST'});
+        if (r.ok) {
+            btn.closest('.pr-card').remove();
+            await loadPendingSummary();
+        } else {
+            alert('禁用失败: HTTP ' + r.status);
+            btn.disabled = false;
+        }
+    } catch (e) {
+        alert('操作失败: ' + e.message);
+        btn.disabled = false;
+    }
+}
+
+async function manualEnable(accountId, btn) {
+    if (!confirm('启用账号 #' + accountId + '?')) return;
+    btn.disabled = true;
+    try {
+        const r = await authFetch('/dashboard/api/accounts/' + accountId + '/manual-enable', {method: 'POST'});
+        if (r.ok) {
+            btn.closest('.pr-card').remove();
+            await loadPendingSummary();
+        } else {
+            alert('启用失败: HTTP ' + r.status);
+            btn.disabled = false;
+        }
+    } catch (e) {
+        alert('操作失败: ' + e.message);
+        btn.disabled = false;
+    }
+}
+
+document.addEventListener('DOMContentLoaded', loadPendingSummary);
+setInterval(loadPendingSummary, 30000);
