@@ -305,7 +305,7 @@ async def cooldown_cleanup_task() -> int:
 
 
 async def account_health_log_cleanup(retention_days: int = 7) -> int:
-    """V4.9 防护 #3: 清理 N 天前的 account_health_log (防表无限增长)
+    """V4.9.1 防护 #3: 清理 N 天前的 account_health_log (防表无限增长)
 
     设计:
     - 默认保留 7 天 (够 dashboard 查探活历史 + 周报分析)
@@ -351,3 +351,15 @@ async def account_health_log_cleanup(retention_days: int = 7) -> int:
     except Exception as e:
         logger.warning(f"account_health_log_cleanup 失败: {e}")
         return 0
+
+
+async def account_health_log_cleanup_task() -> int:
+    """V4.9.1 模块级 task wrapper (供 APScheduler 注册, 不能用 lambda)
+
+    APScheduler 用 SQLAlchemyJobStore 持久化 job, 回调函数必须能被 pickle.
+    不能传 lambda, 所以包一层模块级函数.
+
+    从 settings 读 retention_days (default=7, env: AIMC_ACCOUNT_HEALTH_LOG_RETENTION_DAYS)
+    """
+    retention = getattr(settings, 'account_health_log_retention_days', 7)
+    return await account_health_log_cleanup(retention_days=retention)

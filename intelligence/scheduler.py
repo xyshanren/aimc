@@ -207,11 +207,11 @@ async def start_scheduler():
 
     # V4.9.1 防护 #3: account_health_log 表 retention (每天凌晨 3 点删 7 天前)
     # 防止探活日志表无限增长 (1 channel 每天 1440 条, 不清理 1 年 52 万条)
-    from intelligence.channel_health import account_health_log_cleanup
+    # 注意: APScheduler 用 SQLAlchemy 持久化, 回调不能是 lambda (无法 pickle)
+    # 必须用模块级函数
+    from intelligence.channel_health import account_health_log_cleanup_task
     scheduler.add_job(
-        lambda: account_health_log_cleanup(
-            retention_days=settings.account_health_log_retention_days
-        ),
+        account_health_log_cleanup_task,
         trigger=CronTrigger.from_crontab("0 3 * * *"),
         id="account_health_log_cleanup",
         name="探活日志清理 (保留 N 天)",
