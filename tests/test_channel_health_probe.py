@@ -43,10 +43,7 @@ def test_probe_one_success():
         mock_resp = make_mock_response(200, '{"data":[{"id":"gpt-4"}]}')
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        with patch("intelligence.channel_health.httpx.AsyncClient") as MC:
-            MC.return_value = mock_client
+        with patch("intelligence.channel_health._get_probe_client", return_value=mock_client):
             result = await _probe_one(1, "https://api.deepseek.com/v1", "sk-test")
         check("success=True", result["success"], True)
         check("status_code=200", result["status_code"], 200)
@@ -63,10 +60,7 @@ def test_probe_one_auth_failed():
         mock_resp = make_mock_response(401, '{"error":{"code":"invalid_api_key","message":"Invalid"}}')
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        with patch("intelligence.channel_health.httpx.AsyncClient") as MC:
-            MC.return_value = mock_client
+        with patch("intelligence.channel_health._get_probe_client", return_value=mock_client):
             result = await _probe_one(1, "https://api.deepseek.com/v1", "sk-bad")
         check("success=False", result["success"], False)
         check("error_type=auth_failed", result["error_type"], "auth_failed")
@@ -83,10 +77,7 @@ def test_probe_one_quota_exhausted():
         mock_resp = make_mock_response(429, '{"code":"1113","message":"余额不足"}')
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        with patch("intelligence.channel_health.httpx.AsyncClient") as MC:
-            MC.return_value = mock_client
+        with patch("intelligence.channel_health._get_probe_client", return_value=mock_client):
             result = await _probe_one(1, "https://api.deepseek.com/v1", "sk-test")
         check("success=False", result["success"], False)
         check("error_type=quota_exhausted", result["error_type"], "quota_exhausted")
@@ -103,10 +94,7 @@ def test_probe_one_5xx():
         mock_resp = make_mock_response(500, "Internal Server Error")
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_resp)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        with patch("intelligence.channel_health.httpx.AsyncClient") as MC:
-            MC.return_value = mock_client
+        with patch("intelligence.channel_health._get_probe_client", return_value=mock_client):
             result = await _probe_one(1, "https://api.deepseek.com/v1", "sk-test")
         check("success=False", result["success"], False)
         check("error_type=upstream_5xx", result["error_type"], "upstream_5xx")
@@ -122,10 +110,7 @@ def test_probe_one_timeout():
     async def _run():
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        with patch("intelligence.channel_health.httpx.AsyncClient") as MC:
-            MC.return_value = mock_client
+        with patch("intelligence.channel_health._get_probe_client", return_value=mock_client):
             result = await _probe_one(1, "https://api.deepseek.com/v1", "sk-test")
         check("success=False", result["success"], False)
         check("error_type=network_transient", result["error_type"], "network_transient")

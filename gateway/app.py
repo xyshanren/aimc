@@ -74,6 +74,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"关浏览器失败: {e}")
 
+    # 2.5 V4.9.1: 关 probe client (释放 httpx 连接池, 防 FD 泄漏)
+    try:
+        from intelligence.channel_health import close_probe_client
+        await close_probe_client()
+    except Exception as e:
+        logger.warning(f"关 probe client 失败: {e}")
+
     # 关 DB 引擎
     from db.engine import engine
     await engine.dispose()

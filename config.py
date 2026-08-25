@@ -129,6 +129,11 @@ class Settings(BaseSettings):
     health_probe_concurrency: int = 8                  # env: AIMC_HEALTH_PROBE_CONCURRENCY (并发数, 防打爆上游)
     health_probe_timeout: float = 5.0                  # env: AIMC_HEALTH_PROBE_TIMEOUT (单 channel 超时, 秒)
     health_probe_max_backoff: int = 3600               # env: AIMC_HEALTH_PROBE_MAX_BACKOFF (指数退避上限, 秒)
+    # V4.9.1 防护: 防止「雪崩」 — 上限每 job 探活数 + 总超时 (防止网络全挂时积压上千个待探活)
+    health_probe_max_batch: int = 50                   # env: AIMC_HEALTH_PROBE_MAX_BATCH (单 job 最多探活数)
+    health_probe_total_timeout: float = 60.0           # env: AIMC_HEALTH_PROBE_TOTAL_TIMEOUT (job 总超时, 秒)
+    # V4.9.1 防护 #3: account_health_log 保留天数 (防表无限增长)
+    account_health_log_retention_days: int = 7         # env: AIMC_ACCOUNT_HEALTH_LOG_RETENTION_DAYS
 
     # === V4.9: needs_human 触发阈值 (按 ErrorCategory) ===
     # 当某 error_type 累计失败次数 >= 此阈值时, 标 needs_human=True (等人介入, 不再主动探)
