@@ -320,13 +320,94 @@ curl http://localhost:8080/dashboard/api/cooldown \
 
 返回数组，每项含 `account_id` / `channel_name` / `account_name` / `count`（连续失败次数）/ `cooldown_until`（Unix 时间戳）/ `remaining_seconds`（剩余冷却秒数，1 位小数）/ `in_cooldown`（布尔）。无冷却状态时返回空数组。
 
-### X-AIMC-Failed-Channels 响应头（V4.8.7）
+### X-AIMC-Failed-Channels 响应头（V4.8.7 + V4.9 扩展）
 
 当组路由（`tier:xxx`）重试所有渠道都失败时，最终 4xx/5xx 响应会注入：
-- **响应头** `X-AIMC-Failed-Channels`: JSON 数组，每项含 `{channel, account, account_id, status}`
+- **响应头** `X-AIMC-Failed-Channels`: JSON 数组，每项含 `{channel, account, account_id, status, error_type, error_code, error_msg, needs_human}`
 - **响应体** `error.failed_channels`: 同上数据，方便客户端解析展示
 
-这让上层 agent / Dashboard 能看到是哪个渠道 429 或 500，而不只是一个 "All upstream failed"。
+V4.9 扩展字段：
+- `error_type`: 8 种 ErrorCategory 之一（`quota_exhausted` / `auth_failed` / `rate_limited` / `model_unsupported` / `network_transient` / `upstream_5xx` / `client_error` / `unknown`）
+- `error_code`: 上游 `error.code`（如 `"1113"` / `"insufficient_quota"`）
+- `error_msg`: 上游 `error.message`（截断 200 字符）
+- `needs_human`: 布尔，`true` 表示该失败需人工干预（余额不足 / Key 失效 / 模型下架）
+
+### X-AIMC-Last-Error-Type / Last-Error-Code 响应头（V4.9 新增）
+
+最后一次失败的 `ErrorCategory` 和上游 `error.code`，**客户端无需 parse JSON** 即可判别错误类型。
+
+### Retry-After: 3600（V4.9 条件触发）
+
+当最后一次失败 `needs_human=true` 时附加，提示客户端**不要立即重试**，而是去叫人（Dashboard "🔴 待处理" tab / Bark 飞书告警）。
+
+---
+
+### 🔴 待处理 tab API（V4.9 P5）
+
+V4.9 在 Dashboard 新增 5 个端点，让用户在「🔴 待处理 (N)」tab 一眼看到需要人工干预的账号：
+
+#### GET /dashboard/api/pending-summary
+
+聚合 `needs_human_quota` / `needs_human_auth` / `needs_human_model` / `cooldown_degraded` / `manual_disabled` 5 类，每类含 `count` / `severity` / `label` / `anchor` / `examples`（前 3 条示例）：
+
+```bash
+curl http://localhost:8080/dashboard/api/pending-summary \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+```json
+{
+  "total": 3,
+  "items": [
+    {
+      "category": "needs_human_quota",
+      "count": 2,
+      "severity": "danger",
+      "label": "💰 余额不足",
+      "anchor": "accounts-meta",
+      "examples": [
+        {"account_id": 5, "channel": "deepseek_official", "account_name": "ds_01",
+         "error_msg": "余额不足或无可用资源包", "since": 1756099200.0}
+      ]
+    }
+  ]
+}
+```
+
+#### GET /dashboard/api/cooldown/needs-human
+
+列出所有 `needs_human=true` 的 account 详情（弹窗详细列表）：
+
+```bash
+curl http://localhost:8080/dashboard/api/cooldown/needs-human \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+返回 `{count, items: [{account_id, channel_name, account_name, provider, last_error_type, last_error_code, last_error_msg, first_failure_at, count, manual_disabled}]}`。
+
+#### POST /dashboard/api/cooldown/{account_id}/ack-recover
+
+人工确认账号问题已解决 → `mark_success` + 清 DB `last_error_*` + **立即触发探活**（异步 `triggered_by="recovery_check"`）：
+
+```bash
+curl -X POST http://localhost:8080/dashboard/api/cooldown/5/ack-recover \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"note": "已充值，确认余额"}'
+```
+
+#### POST /dashboard/api/accounts/{account_id}/manual-disable
+
+人工禁用 account（路由永久排除，不进 cooldown 也不主动探活），DB `accounts.status='manual_disabled'`：
+
+```bash
+curl -X POST http://localhost:8080/dashboard/api/accounts/5/manual-disable \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+#### POST /dashboard/api/accounts/{account_id}/manual-enable
+
+解除人工禁用，恢复 `accounts.status='active'`：
 
 ## 错误响应格式
 

@@ -66,7 +66,7 @@ aimc/
 ├── db/                     # 数据库层 (含 12 个 migration)
 ├── dashboard/              # Dashboard 后端 (FastAPI routes) + 前端 (htmx + chart.js)
 ├── scripts/                # 运维脚本 (sync_prices / apply_suggestions / weekly_report)
-├── tests/                  # 547 个测试 (pytest, ~4min)
+├── tests/                  # 711 个测试 (pytest, ~5min)
 └── docs/                   # 完整文档 (见 docs/index.md)
 ```
 
@@ -94,6 +94,7 @@ aimc/
 - **V4.8.5 断链修复 + env_prefix + 浮点修复**：cost_estimate 实写入（激活成本告警/周报/看板省钱量化）；route_engine import 补全（批准/拍板后缓存即刻刷新）；CSS 降级 title 推断（降级路径不再被丢弃）；高置信度优惠→限时 promotion 价行（打通"情报→省钱"核心链路）+ price_snapshots 唯一索引迁移四元组；config.py `env_prefix="AIMC_"` 修复 .env 变量名不生效；benchmark aggregator 浮点精度 round(,2)
 - **V4.8.6 渠道可用性校验 + 采集来源追踪 + pending 去重**：model_sync 入库前校验 has_available_channel（无渠道时 status=inactive 待用户配置）；log_capability_change 加 provider 参数记录采集来源；pending 行 upsert 去重避免同类信息无限堆积
 - **V4.8.7 P5 drop_params 自动学习 + P6 分时段峰谷定价 + P7 429 渠道定位**：上游 400 时自动解析被拒参数并追加到 channel.drop_params（fire-and-forget + 白名单保护）；`_match_time_range` 支持工作日/周末/非高峰 token + DeepSeek 种子峰谷修正（工作日 9-12/14-18 高峰，其余低谷）；429 失败渠道链注入 `X-AIMC-Failed-Channels` 响应头 + `error.failed_channels` 响应体；新增 `GET /dashboard/api/cooldown` 冷却状态 API（含 remaining_seconds/in_cooldown）；stream 路径 429 cooldown 标记补齐
+- **V4.9 失败链路增强 + 智能探活 + 人工干预**：(1) 错误分类器 `gateway/error_classifier.py` 8 种 ErrorCategory（quota_exhausted/auth_failed/rate_limited/model_unsupported/network_transient/upstream_5xx/client_error/unknown），failed_channels 响应头扩展 `error_type/error_code/error_msg/needs_human`，新增 `X-AIMC-Last-Error-Type` / `X-AIMC-Last-Error-Code` / `Retry-After: 3600`（needs_human 触发）；(2) CooldownManager 状态机化 5 状态（healthy/failing/degraded/needs_human/manual_disabled）+ 指数退避 + 15 个新方法；(3) `usage_logs` 加 error_msg 等 5 列 + `accounts` 加 last_error_at 等 4 列 + 新表 `account_health_log`（探活时间序列，走 `ensure_migrations` 幂等 ALTER，不生成新 .py migration 脚本）；(4) 智能探活 job `channel_health_probe`（每 60s，仅探 `accounts_due_for_probe()` 的 account，needs_human 不主动探）+ `cooldown_cleanup_task`（每 5min 清理过期 entry）；(5) Dashboard **🔴 待处理 (N)** tab + 5 个新 API：`/api/pending-summary` 聚合 + `/api/cooldown/needs-human` 详情 + `/api/cooldown/{aid}/ack-recover` 确认恢复（立即探活）+ `/api/accounts/{aid}/manual-{disable,enable}`；(6) 8 个新 env：`AIMC_HEALTH_PROBE_{ENABLED,INTERVAL,CONCURRENCY,TIMEOUT,MAX_BACKOFF}` + `AIMC_NEEDS_HUMAN_{QUOTA,AUTH,MODEL}_THRESHOLD`
 
 更早的 21 commit 架构整改（2026-08-14~15）见 [docs/dev/post-merge-fixes.md](docs/dev/post-merge-fixes.md)，
 路线图见 [docs/dev/next-step-plan.md](docs/dev/next-step-plan.md)。

@@ -3,7 +3,7 @@
 > AIMC（AI Model Compass）是一个轻量级 LLM 网关 + 优惠情报聚合工具。
 > 本文档是**所有文档的入口**。按你的角色选择下面任一入口。
 
-**项目状态**：V4.8 多用户 + P3 工程加固完成（2026-08-21），V4.8.1~V4.8.7 持续优化完成（2026-08-24），处于观察期。
+**项目状态**：V4.8 多用户 + P3 工程加固完成（2026-08-21），V4.8.1~V4.8.7 持续优化完成（2026-08-24），**V4.9 失败链路 + 智能探活 + 人工干预 已完成**（2026-08-25），处于观察期。
 路线图见 [dev/next-step-plan.md](dev/next-step-plan.md)。
 
 ---
@@ -32,7 +32,7 @@
 | 本地搭建开发环境 | [dev/setup.md](dev/setup.md) |
 | commit / 分支 / 测试 规范 | [dev/conventions.md](dev/conventions.md) |
 | 写测试 / 提 PR / 贡献代码 | [dev/contributing.md](dev/contributing.md) |
-| 跑 547 个测试 + 加新测试 | [dev/testing.md](dev/testing.md) |
+| 跑 711 个测试 + 加新测试 | [dev/testing.md](dev/testing.md) |
 | 查 post-merge 修复（21 commit 整改）| [dev/post-merge-fixes.md](dev/post-merge-fixes.md) |
 
 ---
@@ -68,7 +68,8 @@
 
 ## 文档元信息
 
-- **最后更新**：2026-08-24
-- **测试覆盖**：547 tests（pytest，~4 分钟跑通）
+- **最后更新**：2026-08-25
+- **测试覆盖**：711 tests（pytest，~5 分钟跑通）
 - **观察期关注**：缓存命中率（路径 A）、周报 timer 首次自动触发（周一）、vision 400 率
+- **V4.9 新功能**：Dashboard **🔴 待处理 (N)** tab（余额不足 / Key 失效 / 智能探活状态），见 [user/dashboard.md](user/dashboard.md)
 - **观察期后待办**：操作审计系统（见 [dev/next-step-plan.md](dev/next-step-plan.md) §八）

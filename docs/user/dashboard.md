@@ -20,6 +20,7 @@
 | **待确认能力变更** | AI 推断的模型能力变更，人工批准/拒绝 | §7 |
 | **优惠情报** | 各厂商活动（已过滤低置信度垃圾条目） | §7 |
 | **采集源管理**（V4.8.3） | 采集源列表 / 立即采集 / 禁用启用 | §8 |
+| **🔴 待处理**（V4.9） | 余额不足 / Key 失效 / 智能探活状态 — 一键人工干预 | §9 |
 
 ---
 
@@ -178,3 +179,53 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 - `GET /dashboard/api/stats/group_routing` — 组路由命中分布
 - `GET /dashboard/api/promotions` — 优惠情报（默认过滤低置信度）
 - `GET /dashboard/api/sources` — 采集源列表（V4.8.3）
+- `GET /dashboard/api/pending-summary` — 🔴 待处理 tab 总览（V4.9）
+- `GET /dashboard/api/cooldown/needs-human` — needs_human 详情列表（V4.9）
+- `POST /dashboard/api/cooldown/{aid}/ack-recover` — 人工确认恢复（V4.9）
+- `POST /dashboard/api/accounts/{aid}/manual-disable` — 人工禁用账号（V4.9）
+- `POST /dashboard/api/accounts/{aid}/manual-enable` — 解除人工禁用（V4.9）
+
+---
+
+## §9 🔴 待处理（V4.9 P5 新增）
+
+**位置**：dashboard 右栏顶部（最显眼），首次进入默认展开。卡片标题有红色 badge 显示总待处理数（如 `🔴 待处理 3`）。
+
+**作用**：聚合 5 类需要关注的项，让你一眼看到哪些账号因什么原因需要人工干预（**不用翻日志/重启服务**）：
+
+| 类别 | 含义 | severity |
+|------|------|----------|
+| 💰 余额不足 | 累计失败 ≥ 阈值（如 quota 2 次）→ `needs_human=true` | danger |
+| 🔑 Key 失效 | auth 失败（如 invalid_api_key / 401） | danger |
+| 🧩 模型不支持 | model_not_found / 已下架 | warning |
+| ⚠️ 自动冷却中 | 自愈中的冷却（如 5xx / 网络） | warning |
+| 🚫 人工禁用 | dashboard 手动禁用的账号 | info |
+
+**每条 needs_human 显示 2 个按钮**：
+- **确认恢复**：调 `POST /api/cooldown/{aid}/ack-recover` → `mark_success` + 立即探活（异步）
+- **禁用**：调 `POST /api/accounts/{aid}/manual-disable` → 路由永久排除
+
+**30s 自动刷新**，无需手动点。
+
+### 工作原理
+
+- 错误分类器（`gateway/error_classifier.py`）8 种 ErrorCategory 把上游失败分类
+- CooldownManager 5 状态机：healthy / failing / degraded / needs_human / manual_disabled
+- 智能探活 job `channel_health_probe`（每 60s，仅探 `accounts_due_for_probe()` 的 account，needs_human 不主动探）写 `account_health_log` 表
+
+### 操作流程示例
+
+余额不足场景：
+1. 用户请求触发 `quota_exhausted` → 1 次 mark_failure, 冷却 1h
+2. 同一账号第 2 次仍 429 → 累计 2 次 ≥ `AIMC_NEEDS_HUMAN_QUOTA_THRESHOLD=2` → `needs_human=true`
+3. Bark/Server酱/飞书推一条 1h 静默告警（throttle key = `needs_human:{channel}:{error_type}`）
+4. Dashboard 「🔴 待处理」badge 变红，显示「💰 余额不足 N」+ 账号/channel/错误消息
+5. 充值后点「确认恢复」 → 立即探活一次确认余额 OK → 移除此条
+
+### 相关 API
+
+- `GET /dashboard/api/pending-summary` — 聚合总览（本卡片数据源）
+- `GET /dashboard/api/cooldown/needs-human` — 详情列表（弹窗用）
+- `POST /dashboard/api/cooldown/{aid}/ack-recover` — 确认恢复
+- `POST /dashboard/api/accounts/{aid}/manual-disable` — 人工禁用
+- `POST /dashboard/api/accounts/{aid}/manual-enable` — 解除禁用

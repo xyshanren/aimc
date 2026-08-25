@@ -98,6 +98,51 @@ journalctl --user -u aimc -n 20 | grep -iE "minimax|429|Token Plan"
 #    - 等 cooldown 60s 后重试
 ```
 
+### 症状：429 余额不足 / needs_human 长时间未恢复（V4.9 行为）
+
+V4.9 起，**余额不足类 429 会被标 `needs_human=true`**，路由**不再主动探活**（避免反复撞死 key）。需要人工处理：
+
+**判断是余额不足还是临时限流**：
+
+| 信号 | 含义 |
+|------|------|
+| `X-AIMC-Last-Error-Code: 1113` | 国内厂商余额不足（DeepSeek/GLM 等） |
+| `X-AIMC-Last-Error-Code: insufficient_quota` | OpenAI 风格配额耗尽 |
+| `X-AIMC-Last-Error-Code: rate_limit_exceeded` 且无 quota 关键字 | 临时限流（**会自愈**） |
+| 响应头 `Retry-After: 3600` | AIMC 判定为 `needs_human`，不要立即重试 |
+
+**处理流程**：
+
+1. **先看 Dashboard「🔴 待处理 (N)」tab**（右栏顶部，红 badge）
+2. 找到「💰 余额不足」类，看具体 channel + 账号 + 错误消息
+3. 充值后点 **「确认恢复」** → 立即触发一次探活 → 移除此条
+4. 如果账号作废（key 撤销），点 **「禁用」** → 路由永久排除
+
+如果没看到 🔴 tab：
+
+```bash
+# 1. 直接查 API
+curl -s http://localhost:8080/dashboard/api/cooldown/needs-human \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN" | jq
+
+# 2. 看 DB usage_logs (V4.9 持久化)
+sqlite3 data/aimc.db "
+  SELECT account_id, error_type, error_code, error_msg, needs_human, created_at
+  FROM usage_logs
+  WHERE error_type IS NOT NULL
+  ORDER BY created_at DESC LIMIT 10
+"
+
+# 3. 看 AccountHealthLog 探活历史
+sqlite3 data/aimc.db "
+  SELECT account_id, triggered_by, success, error_type, probe_at
+  FROM account_health_log
+  ORDER BY probe_at DESC LIMIT 10
+"
+```
+
+调阈值：`.env` 改 `AIMC_NEEDS_HUMAN_QUOTA_THRESHOLD`（默认 2）。
+
 ## 4. 500 / 503 错误
 
 ### 症状：503 "No available channel for model"

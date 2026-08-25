@@ -72,6 +72,27 @@ AIMC_PARSE_MODEL=MiniMax-M2.7
 AIMC_BARK_KEY=
 AIMC_FEISHU_WEBHOOK_URL=
 AIMC_SERVERCHAN_KEY=
+
+# === V4.9 智能探活 (channel 健康状态机) ===
+# 总开关 — false 则 channel_health_probe job 跳过所有探活
+AIMC_HEALTH_PROBE_ENABLED=true
+# 调度间隔 (秒) — 实际只探 cooldown_manager.accounts_due_for_probe() 的 account
+AIMC_HEALTH_PROBE_INTERVAL=60
+# 并发数 — 防打爆上游 (Semaphore 限流)
+AIMC_HEALTH_PROBE_CONCURRENCY=8
+# 单 channel 超时 (秒)
+AIMC_HEALTH_PROBE_TIMEOUT=5.0
+# 指数退避上限 (秒) — 连续探活失败间隔不会超过这个值
+AIMC_HEALTH_PROBE_MAX_BACKOFF=3600
+
+# === V4.9 needs_human 阈值 (按 ErrorCategory) ===
+# 累计失败次数 >= 此阈值时, 标 needs_human=true (等人介入, 不再主动探活)
+# quota 失败 2 次 → 需人工 (避免单次偶发误判)
+AIMC_NEEDS_HUMAN_QUOTA_THRESHOLD=2
+# auth 失败 1 次即需人工 (key 失效不该自愈)
+AIMC_NEEDS_HUMAN_AUTH_THRESHOLD=1
+# model 失败 2 次 → 需人工 (避免误判)
+AIMC_NEEDS_HUMAN_MODEL_THRESHOLD=2
 ```
 
 完整字段见 `.env.example`（[dev/setup.md](../dev/setup.md) 有字段详解）。
