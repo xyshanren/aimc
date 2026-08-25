@@ -1361,18 +1361,6 @@ class RouteEngine:
                     skipped += 1
                     continue
 
-                # P0-3 (2026-08-14): 纯文本请求跳过 multimodal candidate
-                # 背景: multimodal model (modality=multimodal) 拒纯文本 → 上游 400
-                # 修复: messages 不含 image/audio/file 时, 跳过 multimodal member
-                # 例外: tier:vision 组用户显式选 multimodal (但仍可走 text model fallback)
-                has_mm = _has_multimodal_content(messages)
-                if not has_mm and registry.modality == "multimodal":
-                    logger.debug(
-                        f"  [{current}] {model_id} modality=multimodal 但请求纯文本, 跳过"
-                    )
-                    skipped += 1
-                    continue
-
                 # 跑精确模型路由 (复用 select_best_channel)
                 best = self.select_best_channel(model_id, messages=messages)
                 if not best:

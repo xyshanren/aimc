@@ -105,6 +105,13 @@ def infer_modality(model_id: str) -> str:
     return "text"
 
 def infer_tier(model_id: str) -> str:
+    """推断新模型的初始 tier (仅用于 registry 中不存在的模型)。
+
+    注意: 此函数基于参数规模关键词匹配, 对现代模型名 (deepseek-v4-flash,
+    glm-5.2, minimax-m3 等) 无法正确推断, 会返回默认 T2。
+    因此在更新已有模型时绝不应调用此函数覆写 tier —— tier 只应通过
+    human-approved 路径 (approve_capability_change) 变更。
+    """
     m = model_id.lower()
     if any(k in m for k in ["235b", "397b", "122b", "k2-think", "kimi-k2", "r1", "r2"]):
         return "T0"
@@ -207,10 +214,8 @@ async def main():
             if ex:
                 ex.family = c["family"]
                 ex.display_name = c["display_name"]
-                ex.tier = c["tier"]
-                ex.modality = c["modality"]
                 ex.status = "active"
-                print(f"  [UPD] {c['model_id']}")
+                print(f"  [UPD] {c['model_id']} (tier/modality preserved)")
             else:
                 s.add(ModelRegistry(
                     model_id=c["model_id"],
