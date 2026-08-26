@@ -75,7 +75,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 |----|---------------------|------|
 | `tier:flagship` | GLM-5.2, deepseek-v4-pro | 复杂推理 |
 | `tier:strong` | deepseek-v4-flash, minimax-m3, glm-4-plus | 主力通用 |
-| `tier:balanced` | deepseek-v3, minimax-m2.5 | 性价比 |
+| `tier:balanced` | deepseek-v3, minimax-m2.5, sensenova-6.8-flash-lite | 性价比 |
 | `tier:light` | minimax-m2.7-highspeed, qwen3-8b, glm-4-flash | 轻量免费 |
 | `tier:vision` | minimax-m3, qwen3-vl 系列, glm-4.5v | 多模态视觉 |
 | `tier:code` | minimax-m2.7, deepseek-v4-flash, deepseek-v3.2 | 代码 |

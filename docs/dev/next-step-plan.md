@@ -214,6 +214,16 @@ embedding + 相似度命中。
 3. **远期归档** (本文件 §七): 路径 B 响应级 prefix 缓存 (待真实负载触发);
    路径 C 语义缓存 (不做)
 
+4. **sensenova reasoning 字段裁剪** (观察期后按需)
+   - 观察: sensenova-6.8-flash-lite 响应携带大段 `reasoning` 字段,
+     且自我介绍为"由 Google 训练"——公测后端疑似代理 Gemini 模型
+   - 影响: reasoning 字段增加响应体积 + token 消耗, 非标准 OpenAI 字段
+     可能干扰部分客户端
+   - 候选方案: proxy 层在 sensenova 渠道响应中剥离 `reasoning` 字段
+     (类似 drop_params 的响应级过滤)
+   - 触发条件: 若观察期内发现 reasoning 字段导致客户端兼容问题
+     或 token 消耗显著超预期
+
 ### 2026-08-21 补充完成 (commit 483f8b0)
 
 - ✅ V4.4 告警死代码修复: check_all_alerts 从未注册调度, 现补每 6h job

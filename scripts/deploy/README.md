@@ -87,7 +87,7 @@ nano ~/aimc/.env
 | siliconflow | ✅ 填 |
 | volcengine | ⚠️ 填 (查额度) |
 | stepfun | ✅ 填 (1月 tokenplan) |
-| sensenova | ✅ 填 (免费试用) |
+| sensenova | ✅ 填 (公测免费, 提供 sensenova-6.8-flash-lite + 跨渠道免费 glm-5.2) |
 | hunyuan | ❌ 留空 (v4.3 跳过) |
 
 ---

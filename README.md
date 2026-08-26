@@ -81,7 +81,9 @@ aimc/
 | Dashboard | htmx + Chart.js |
 | 测试 | pytest + pytest-asyncio |
 
-## 最近变更（2026-08-16~24）
+## 最近变更（2026-08-16~25）
+
+- **V4.9.5 SenseNova 模型接入**：sensenova-6.8-flash-lite 加入 model_registry + tier:balanced（modality=text，公测免费 price=0.0）；glm-5.2 加入 sensenova_official 渠道 price_snapshots 作为免费第二渠道（cheapest 策略下 0.0 胜过 siliconflow 8.0）；VM 迁移脚本 `db/migrations/2026_08_25_add_sensenova_models.py` 幂等 INSERT
 
 - **V4.8 多用户**：users/api_keys 表、`aimc-` key 按人记账 + 日/月限额、CLI（add_user_key）、Dashboard 按人用量 + Key 管理
 - **P3 工程加固**：e2e 测试 MockTransport 化（CI 可跑）；周报 systemd timer + 飞书推送

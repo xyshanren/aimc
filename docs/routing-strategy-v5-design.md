@@ -477,12 +477,13 @@ Phase 3 (V5.2): normalizers.py 命名规范化 + model_id 迁移
 | minimax-m3 | T1 | 110 |
 | glm-4-plus | T1 | 120 |
 
-### tier:balanced (2 个)
+### tier:balanced (3 个)
 
 | model_id | 注册表 tier | priority |
 |---|---|---|
 | deepseek-v3 | T2 | 100 |
 | minimax-m2.5 | T2 | 110 |
+| sensenova-6.8-flash-lite | T2 | 120 |
 
 ### tier:light (5 个)
 

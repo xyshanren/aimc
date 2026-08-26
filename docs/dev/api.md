@@ -179,7 +179,7 @@ curl -X PUT http://localhost:8080/dashboard/api/settings/router-score-weights \
 ```bash
 curl -X POST http://localhost:8080/dashboard/api/cache/refresh \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
-# {"status":"ok","channels":6,"models":108}
+# {"status":"ok","channels":6,"models":117}
 ```
 
 ### GET /dashboard/api/settings/alert
