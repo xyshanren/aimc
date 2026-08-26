@@ -247,6 +247,7 @@ CHANNELS = [
         #   - sensenova-u1-fast: U1 加速版
         #   - deepseek-v4-flash: 公测免费 (跨渠道 model_id)
         #   - sensenova-6.7-flash-lite: 保留到 8/31, deprecated (官方重定向将失效)
+        #   - glm-5.2: 公测免费 (跨渠道, 免费第二渠道 — cheapest 策略下 0.0 胜过 siliconflow 8.0)
         "key": "sensenova",
         "name": "sensenova_official",
         "provider": "sensenova",
@@ -259,6 +260,7 @@ CHANNELS = [
             ("sensenova-u1-fast", "normal", "全天", 0.0, 0.0),  # 加速版
             ("deepseek-v4-flash", "normal", "全天", 0.0, 0.0),  # 公测免费 (跨渠道)
             ("sensenova-6.7-flash-lite", "normal", "全天", 0.0, 0.0),  # 8/31 后失效, 保留兼容
+            ("glm-5.2", "normal", "全天", 0.0, 0.0),  # 公测免费 (跨渠道, 免费第二渠道)
         ],
     },
 ]

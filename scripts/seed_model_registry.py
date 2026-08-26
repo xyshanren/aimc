@@ -260,6 +260,16 @@ MODEL_REGISTRY = [
         "M2 高效编码/Agent 工作流",
     ),
 
+    # ========== SenseNova (1 个, 商汤日日新公测) ==========
+    # sensenova-6.8-flash-lite: 256K ctx, 支持 tools/json_mode/vision input
+    # API 接受纯文本, modality=text 避免 P0-3 纯文本跳过
+    # price=0.0 (公测免费), sensenova_official 渠道常驻
+    (
+        "sensenova-6.8-flash-lite", "sensenova", "SenseNova 6.8 Flash Lite", "T2",
+        ["reasoning", "general"], 262144, "text", 0, "2026-08",
+        "商汤日日新公测, 256K ctx, 支持 tools/vision, price=0.0 (公测免费)",
+    ),
+
     # ========== Llama (2 个) ==========
     (
         "llama-3.1-70b", "llama", "Llama 3.1 70B", "T2",

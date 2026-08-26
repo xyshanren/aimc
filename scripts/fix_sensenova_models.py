@@ -66,6 +66,7 @@ MODELS_TO_ADD = [
     ("sensenova-6.8-flash-lite", "normal", "全天", 0.0, 0.0),
     ("sensenova-u1-fast",        "normal", "全天", 0.0, 0.0),
     ("deepseek-v4-flash",        "normal", "全天", 0.0, 0.0),
+    ("glm-5.2",                  "normal", "全天", 0.0, 0.0),  # 公测免费 (跨渠道, 免费第二渠道)
     # 6.7 保留 (8/31 前仍可用)
     # ("sensenova-6.7-flash-lite", "normal", "全天", 0.0, 0.0),
 ]

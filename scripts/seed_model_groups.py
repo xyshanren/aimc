@@ -101,8 +101,10 @@ GROUP_MEMBERS = [
 
     # ========== tier:balanced (T2 性价比) ==========
     # deepseek-v3 (T2, 硅基流动常驻) + minimax-m2.5 (T2)
+    # + sensenova-6.8-flash-lite (T2, 公测免费, 256K ctx)
     ("tier:balanced", "deepseek-v3",  100, 1.0, None, "manual"),
     ("tier:balanced", "minimax-m2.5", 110, 1.0, None, "manual"),
+    ("tier:balanced", "sensenova-6.8-flash-lite", 120, 1.0, None, "manual"),
 
     # ========== tier:light (T3 轻量免费) ==========
     # minimax-m2.7-highspeed (主力, 便宜) + qwen-qwen3-8b + qwen-qwen3.5-4b
