@@ -50,9 +50,10 @@ FIXES = [
     ("deepseek-v4-flash", "T1", "text",
      "seed T1, 被 infer_tier 覆写为 T2"),
 
-    # MiniMax — seed 中 m3=T1/multimodal, m2.7=T1, m2.7-highspeed=T2, m2.5=T2
-    ("minimax-m3", "T1", "multimodal",
-     "seed T1/multimodal, 被 infer_tier 覆写为 T3 (匹配 'mini'), infer_modality 覆写为 text"),
+    # MiniMax — seed 中 m3=T1/text (原生多模态但 API 接受纯文本),
+    # m2.7=T1, m2.7-highspeed=T2, m2.5=T2
+    ("minimax-m3", "T1", "text",
+     "seed T1/text; modality=text 避免 P0-3 纯文本跳过 (m3 API 接受纯文本)"),
     ("minimax-m2.7", "T1", "text",
      "seed T1, 被 infer_tier 覆写为 T2"),
     ("minimax-m2.7-highspeed", "T2", "text",

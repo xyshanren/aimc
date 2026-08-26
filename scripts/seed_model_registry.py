@@ -221,8 +221,8 @@ MODEL_REGISTRY = [
     # - 字段约定: family 统一小写 "minimax" (跟 provider / channel.name 对齐, 与其他 family 一致)
     (
         "minimax-m3", "minimax", "MiniMax M3", "T1",
-        ["reasoning", "code", "long_context", "general"], 1000000, "multimodal", 0, "2026-08",
-        "M3 旗舰, 1M ctx, 适用于 Agent 推理/工具调用/代码",
+        ["reasoning", "code", "long_context", "general"], 1000000, "text", 0, "2026-08",
+        "M3 旗舰, 1M ctx, 原生多模态但 API 接受纯文本; modality=text 避免 P0-3 纯文本跳过",
     ),
     (
         "minimax-m2.7", "minimax", "MiniMax M2.7", "T1",
