@@ -60,13 +60,16 @@ from db.models import Channel, PriceSnapshot
 TARGET_PROVIDER = "sensenova"
 # 移除: 商汤上游已失效 (code 5 model not found)
 MODELS_TO_REMOVE = ["SenseChat"]
-# 添加: 官方当前 3 个 Model ID
+# 添加: 官方 Model ID (platform.sensenova.cn/docs 模型总览, 2026-09-02 实查)
 MODELS_TO_ADD = [
     # (model, price_type, time_range, input_price, output_price)
     ("sensenova-6.8-flash-lite", "normal", "全天", 0.0, 0.0),
     ("sensenova-u1-fast",        "normal", "全天", 0.0, 0.0),
     ("deepseek-v4-flash",        "normal", "全天", 0.0, 0.0),
     ("glm-5.2",                  "normal", "全天", 0.0, 0.0),  # 公测免费 (跨渠道, 免费第二渠道)
+    # V5.0 (2026-09-02): 官方新增 2 个免费模型 — TokenPlan 通用积分池 (60k/5h + 600k/周)
+    ("kimi-k3",                  "normal", "全天", 0.0, 0.0),  # 月之暗面 K3, 2.8T 原生视觉, 1M ctx
+    ("deepseek-v4-pro",          "normal", "全天", 0.0, 0.0),  # 0813 正式版, deepseek_official 转付费兜底
     # 6.7 保留 (8/31 前仍可用)
     # ("sensenova-6.7-flash-lite", "normal", "全天", 0.0, 0.0),
 ]

@@ -108,11 +108,11 @@ def test_seed_groups_vision_members():
     """seed_model_groups.py 的 tier:vision 组 member 齐全, model_id 命名正确"""
     from scripts.seed_model_groups import GROUP_MEMBERS
     vision_members = [m for m in GROUP_MEMBERS if m[0] == "tier:vision"]
-    # V4.9.5 加入 deepseek-v4-flash-vision-exp 后共 7 个
-    assert len(vision_members) == 7, f"tier:vision 应有 7 个 member, 实际 {len(vision_members)}"
+    # V5.0: minimax-m3 移出 (V4.9.6 改 modality=text 后被 require_vision
+    # 过滤判死, 是死成员), 剩 6 个
+    assert len(vision_members) == 6, f"tier:vision 应有 6 个 member, 实际 {len(vision_members)}"
     model_ids = {m[1] for m in vision_members}
     expected = {
-        "minimax-m3",
         "deepseek-v4-flash-vision-exp",
         "qwen-vl-32b-instruct",
         "qwen-vl-32b-thinking",

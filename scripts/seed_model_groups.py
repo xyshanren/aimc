@@ -33,7 +33,7 @@ Fallback chain:
 - tier:code     -> tier:balanced
 - tier:light    -> NULL (终极兜底)
 
-规模: 6 group + ~22 group_member
+规模: 6 group + 25 group_member (V5.0: flagship 3 / strong 4 / balanced 3 / light 5 / vision 6 / code 4)
 """
 
 import asyncio
@@ -76,7 +76,11 @@ GROUPS = [
     ),
     (
         # tier:code: 代码专用 (替代 scene:code, 统一 tier: 前缀)
-        "tier:code", "代码专用组", "T2", '["code"]', 0, 0, "cheapest", "tier:balanced", 50,
+        # V5.0: tier T2 -> NULL, capabilities 撤掉 — 精确 tier 过滤 (router.py:1310)
+        # 把 T1 成员 (minimax-m2.7 / deepseek-v4-flash) 全判死, ["code"] caps 过滤
+        # 把 deepseek-v3.2 (仅 ["general"]) 判死, 组内只剩 glm-5.3-flash 在工作。
+        # 组成员本来就是人工精选的代码模型, 过滤器只添乱, 不如不限。
+        "tier:code", "代码专用组", None, None, 0, 0, "cheapest", "tier:balanced", 50,
     ),
     # 注意: scene:code 和 scene:free 已删除 (V4.6.4)
     # - scene:code 跟 tier:code 行为一样, 用 tier: 前缀统一
@@ -88,18 +92,26 @@ GROUPS = [
 # priority 数字越小越优先 (组内同价时 tie-break)
 GROUP_MEMBERS = [
     # ========== tier:flagship (T0/T1 旗舰推理) ==========
-    # deepseek-v4-pro (T0 评分 65.1) + glm-5.2 (T1 旗舰, 硅基流动已接)
+    # deepseek-v4-pro (T0 评分 65.1; V5.0: sensenova 免费第二渠道, 官方付费兜底)
+    # + kimi-k3 (V5.0: sensenova TokenPlan 免费渠道, T0, 原生视觉+1M ctx;
+    #   modality=text 跟 minimax-m3 同例 — API 接受纯文本, 不进 vision 组
+    #   否则被 require_vision 过滤判死; flagship 不限 vision, 带图请求自然落到它)
     # + glm-5.3 (V4.9.7: bigmodel coding plan Lite, 新一代旗舰)
     ("tier:flagship", "deepseek-v4-pro", 100, 1.0, None, "manual"),
-    ("tier:flagship", "glm-5.3",         105, 1.0, None, "manual"),
-    ("tier:flagship", "glm-5.2",         110, 1.0, None, "manual"),
+    ("tier:flagship", "kimi-k3",         105, 1.0, None, "manual"),
+    ("tier:flagship", "glm-5.3",         110, 1.0, None, "manual"),
 
     # ========== tier:strong (T1 主力通用) ==========
     # deepseek-v4-flash (T1 评分 60.4) + minimax-m3 (T1 评分 51.6, 支持视觉)
     # + glm-5.3 (V4.9.7: bigmodel coding plan Lite, 替换无渠道的 glm-4-plus;
     #   Lite 仅支持 GLM-5.3/GLM-5.3-Flash, 历史 glm-4-plus 不在自动切换列表)
+    # + glm-5.2 (V5.0: 从 flagship 下沉 — flagship 有 v4-pro/kimi-k3 两个 T0 后
+    #   glm-5.2 本就排末位; sensenova 免费渠道 (500次/5h), T1 符合 strong 限定)
+    # 排序意图 (V5.1 成员优先级激活后生效): glm-5.3(105) < glm-5.2(108) —
+    #   优先烧 GLM Lite 专属池, 把 sensenova 通用池留给 deepseek/kimi (一池养四模)
     ("tier:strong", "deepseek-v4-flash", 100, 1.0, None, "manual"),
     ("tier:strong", "glm-5.3",           105, 1.0, None, "manual"),
+    ("tier:strong", "glm-5.2",           108, 1.0, None, "manual"),
     ("tier:strong", "minimax-m3",        110, 1.0, None, "manual"),
 
     # ========== tier:balanced (T2 性价比) ==========
@@ -122,11 +134,13 @@ GROUP_MEMBERS = [
     ("tier:light", "glm-4-flash",             140, 1.0, None, "manual"),
 
     # ========== tier:vision (T1 多模态视觉, require_vision=1) ==========
-    # minimax-m3 (T1, multimodal, VLM) + qwen-vl 系列 (硅基流动常驻) + glm-4.5v (GLM 视觉)
+    # qwen-vl 系列 (硅基流动常驻) + glm-4.5v (GLM 视觉)
     # + deepseek-v4-flash-vision-exp (V4.9.5: DeepSeek 视觉实验版)
+    # V5.0: minimax-m3 移出 — V4.9.6 改 modality=text 后被 require_vision
+    # 过滤 (router.py:1354 只认 vision/multimodal) 判成死成员, 留着只是噪音;
+    # m3 的通用流量由 tier:strong 承接, 视觉需求由 vision-exp/glm-4.5v 承接
     # P2-A: qwen3-vl-* 改为 qwen-vl-* (validate_model_id 要求 model_id 以 "{family}-" 开头)
-    ("tier:vision", "minimax-m3",                100, 1.0, None, "manual"),
-    ("tier:vision", "deepseek-v4-flash-vision-exp", 105, 1.0, None, "manual"),
+    ("tier:vision", "deepseek-v4-flash-vision-exp", 100, 1.0, None, "manual"),
     ("tier:vision", "qwen-vl-32b-instruct",     110, 1.0, None, "manual"),
     ("tier:vision", "qwen-vl-32b-thinking",     120, 1.0, None, "manual"),
     ("tier:vision", "qwen-vl-30b-a3b-thinking", 130, 1.0, None, "manual"),
