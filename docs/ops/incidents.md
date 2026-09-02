@@ -354,3 +354,53 @@ ORDER BY errors DESC;
 - 你的密码管理器被入侵
 - 离职 / 设备转让
 - 年度主动轮换 (建议 1 年)
+
+---
+
+## 11. strong 组请求被客户端切换到 balanced + `_channel_model` 共享 dict 污染 (2026-09-02)
+
+### 现象
+
+用户反馈"使用 strong 组被路由到 balanced"。12:11:58 起 usage_logs 全部是
+`tier:balanced`, 而此前 (12:07–12:12) 是 `tier:strong`。
+
+### 排查结论 (两个独立问题)
+
+**问题 1 — 客户端 429 触发切换 (网关无责)**:
+
+- strong 组当时内部退化: deepseek-v4-flash@sensenova 上游 429 (12:11:03/12:11:40,
+  account 5 进 cooldown) + glm-4-plus 无可用渠道 (glm_bigmodel 渠道当时仍是禁用态,
+  不在路由缓存 — 12:50 前缓存一直是"5 个可用渠道账号", 13:10 起 6 个)
+- 12:08:24 和 12:11:04 两次全部重试失败, 429 返回客户端
+- 12:11:04 的 429 后 0.8s, 第一个 `model=tier:balanced` 请求到达 (同一 key) —
+  客户端 (hermes-agent-cn) 收到 429 后自行切换备用模型
+- 网关全天 0 条"组 tier:strong 全部不可用 fallback"警告, 组路由重试保持原组名,
+  **网关没有做 strong→balanced 降级**
+
+**问题 2 — `_channel_model` 共享 dict 污染 (真 bug, 已修)**:
+
+```
+12:11:58,465 [INFO] 组路由: tier:balanced -> minimax-m2.5 via minimax_compat
+12:11:58,592 [INFO] [V4.6.5 body model 替换] tier:balanced -> minimax-m3  ← 串模型!
+```
+
+- 根因: `select_best_channel` 旧逻辑只在 `price_model != model` 时写
+  `ch["_channel_model"]`, 同名精确匹配不清旧值; channel entry 是
+  `_channels_cache` 共享 dict, strong 请求残留的 `minimax-m3` 泄漏给随后的
+  balanced 请求, proxy body 替换读共享 dict (`proxy.py`) 发错模型
+- usage 1994/2001 (group_id=tier:balanced) 上游响应 model=minimax-m3 实证
+- 同源问题: `proxy.py` Phase 2.10 只修了 `_actual_model` 响应头污染, body 路径漏了
+
+### 修复 (V4.9.7)
+
+1. `router.select_best_channel`: 精确/fuzzy 匹配均**无条件覆写** `_channel_model`
+2. `routes`: `select_channel` 返回后 `dict(channel)` 浅拷贝, 隔离 per-request 字段
+   (`_channel_model/_registry_*/_group_id`), 消除并发竞态
+3. 回归测试: `tests/test_v497_channel_model_pollution.py` (3 用例复现事故时序)
+4. 顺带: 补 `GET /v1/models/{model_id}` 端点 (此前客户端探测组 id 必 404)
+
+### 教训
+
+- 客户端有 429 自动切模型行为, 网关侧 429 = 把流量永久赶到备用组, 频限类失败要尽量
+  在组内 failover 消化掉
+- 共享缓存 dict 上挂 per-request 字段是反模式, 新字段一律走请求级快照

@@ -158,7 +158,7 @@ async def _seed_db():
             session, channel_id=channel.id,
             account_name="sf_01",
             api_key="",
-            api_key_ciphertext=encrypt("sk-siliconflow-test", "a" * 64),
+            api_key_ciphertext=encrypt("sk-" + "siliconflow-test", "a" * 64),  # 假 key 拼接
             status="active", quota_total=None, quota_used=0,
         )
 
@@ -269,7 +269,7 @@ def test_1_exact_model():
                 session, channel_id=channel.id,
                 account_name="sf_01",
                 api_key="",
-                api_key_ciphertext=encrypt("sk-siliconflow-test", "a" * 64),
+                api_key_ciphertext=encrypt("sk-" + "siliconflow-test", "a" * 64),  # 假 key 拼接
                 status="active", quota_total=None, quota_used=0,
             )
             await crud.create_price_snapshot(

@@ -61,6 +61,26 @@ async def list_models(include_models: bool = False):
     }
 
 
+@router.get("/v1/models/{model_id}")
+async def get_model(model_id: str):
+    """V4.9.7: 单模型/单组详情 (OpenAI GET /v1/models/{id} 兼容)
+
+    之前只有列表端点, 客户端探测 tier:strong 等组 id 时 404, 会误判模型不存在
+    而静默切走. 复用 list_models 数据源, 命中组或精确 model 均返回 200.
+    """
+    for item in route_engine.get_models_for_openai_sdk(include_models=True):
+        if item.get("id") == model_id:
+            return item
+    return JSONResponse(
+        status_code=404,
+        content={"error": {
+            "message": f"The model '{model_id}' does not exist",
+            "type": "invalid_request_error",
+            "code": "model_not_found",
+        }},
+    )
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """OpenAI 兼容的 chat completions 端点
@@ -131,6 +151,13 @@ async def chat_completions(request: Request):
             # 重试: 重新选 (cooldown account 已被 router 跳过)
             await route_engine._auto_refresh_if_stale()
             channel = route_engine.select_channel(model, prefs=prefs, messages=body_json.get("messages"))
+
+        # V4.9.7: 浅拷贝隔离 per-request 路由字段 (_channel_model/_registry_*/_group_id)
+        # select_channel 返回的是 _channels_cache 里的共享 dict, 并发请求会互相覆盖这些
+        # 字段 (2026-09-02 实测: strong 请求残留 _channel_model=minimax-m3 后, 随后的
+        # balanced 请求 body 被替换成 minimax-m3 发往上游). prices/quotas 等列表只读, 共享无碍
+        if channel is not None:
+            channel = dict(channel)
 
         if channel is None:
             return JSONResponse(

@@ -156,6 +156,17 @@ MODEL_REGISTRY = [
         ["reasoning", "vision", "general"], 128000, "vision", 0, "2026-08",
         "智谱视觉多模态, 硅基流动常驻",
     ),
+    # V4.9.7: bigmodel coding plan Lite 官方渠道 (仅支持 GLM-5.3/GLM-5.3-Flash)
+    (
+        "glm-5.3", "glm", "GLM-5.3", "T1",
+        ["reasoning", "code", "general"], 128000, "text", 0, "2026-08",
+        "智谱新一代旗舰, coding plan Lite; 调用 GLM-5.2/5.1 自动切换至本模型",
+    ),
+    (
+        "glm-5.3-flash", "glm", "GLM-5.3 Flash", "T2",
+        ["general", "code"], 128000, "text", 0, "2026-08",
+        "GLM-5.3 极速版, coding plan Lite; 调用 GLM-5-Turbo/4.7 自动切换至本模型",
+    ),
 
     # ========== Kimi (2 个) ==========
     (

@@ -89,19 +89,24 @@ GROUPS = [
 GROUP_MEMBERS = [
     # ========== tier:flagship (T0/T1 旗舰推理) ==========
     # deepseek-v4-pro (T0 评分 65.1) + glm-5.2 (T1 旗舰, 硅基流动已接)
+    # + glm-5.3 (V4.9.7: bigmodel coding plan Lite, 新一代旗舰)
     ("tier:flagship", "deepseek-v4-pro", 100, 1.0, None, "manual"),
+    ("tier:flagship", "glm-5.3",         105, 1.0, None, "manual"),
     ("tier:flagship", "glm-5.2",         110, 1.0, None, "manual"),
 
     # ========== tier:strong (T1 主力通用) ==========
     # deepseek-v4-flash (T1 评分 60.4) + minimax-m3 (T1 评分 51.6, 支持视觉)
-    # + glm-4-plus (T1, glm 官方 7 元/百万)
+    # + glm-5.3 (V4.9.7: bigmodel coding plan Lite, 替换无渠道的 glm-4-plus;
+    #   Lite 仅支持 GLM-5.3/GLM-5.3-Flash, 历史 glm-4-plus 不在自动切换列表)
     ("tier:strong", "deepseek-v4-flash", 100, 1.0, None, "manual"),
+    ("tier:strong", "glm-5.3",           105, 1.0, None, "manual"),
     ("tier:strong", "minimax-m3",        110, 1.0, None, "manual"),
-    ("tier:strong", "glm-4-plus",        120, 1.0, None, "manual"),
 
     # ========== tier:balanced (T2 性价比) ==========
     # deepseek-v3 (T2, 硅基流动常驻) + minimax-m2.5 (T2)
     # + sensenova-6.8-flash-lite (T2, 公测免费, 256K ctx)
+    # 注: glm-5.3-flash 不进 balanced — glm_bigmodel priority=8 会赢得 0 元平价,
+    # 把 balanced 全量灌进 Lite 套餐; glm 只锚定 strong/flagship (+ code 兜底)
     ("tier:balanced", "deepseek-v3",  100, 1.0, None, "manual"),
     ("tier:balanced", "minimax-m2.5", 110, 1.0, None, "manual"),
     ("tier:balanced", "sensenova-6.8-flash-lite", 120, 1.0, None, "manual"),
@@ -130,9 +135,11 @@ GROUP_MEMBERS = [
 
     # ========== tier:code (T2 代码专用, 替代 scene:code) ==========
     # minimax-m2.7 (T1 代码主力) + deepseek-v4-flash (含 code cap) + deepseek-v3.2
+    # + glm-5.3-flash (V4.9.7: bigmodel coding plan Lite, 含 code cap, 兜底)
     ("tier:code", "minimax-m2.7",        100, 1.0, None, "manual"),
     ("tier:code", "deepseek-v4-flash",   110, 1.0, None, "manual"),
     ("tier:code", "deepseek-v3.2",       120, 1.0, None, "manual"),
+    ("tier:code", "glm-5.3-flash",       130, 1.0, None, "manual"),
 
     # ========== 删的 group (历史, V4.6.4 不再 seed) ==========
     # - scene:code: 跟 tier:code 行为一样, 统一 tier: 前缀

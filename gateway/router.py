@@ -590,9 +590,15 @@ class RouteEngine:
             if price_info is not None:
                 # V4.6.5: 给 channel 加 _channel_model 给 proxy body 替换
                 # 当 price_model != model (e.g. "zai-org/GLM-4.5V" vs "glm-4.5v"), 上游用 price_model
-                if price_info.get("model") != model:
-                    ch["_channel_model"] = price_info["model"]
-                    logger.debug(f"[V4.6.5] _channel_model: {model} -> {price_info['model']} (channel={ch['name']})")
+                # V4.9.7: 无条件覆写 — ch 是 _channels_cache 共享 dict, 旧逻辑"同名精确匹配
+                # 不写入"会让上一请求残留的 _channel_model (e.g. minimax-m3) 泄漏给本次
+                # 同名匹配的请求 (e.g. minimax-m2.5), proxy body 被替换成错误模型
+                channel_model = price_info.get("model") or model
+                if channel_model != model:
+                    logger.debug(
+                        f"[V4.6.5] _channel_model: {model} -> {channel_model} (channel={ch['name']})"
+                    )
+                ch["_channel_model"] = channel_model
                 candidates.append((ch, price_info))
 
         if not candidates:
@@ -601,9 +607,13 @@ class RouteEngine:
                 price_info = self._get_fuzzy_price(ch, model, now)
                 if price_info is not None:
                     # V4.6.5: fuzzy match 同样存 _channel_model (可能 prefix-stripped)
-                    if price_info.get("model") != model:
-                        ch["_channel_model"] = price_info["model"]
-                        logger.debug(f"[V4.6.5 fuzzy] _channel_model: {model} -> {price_info['model']} (channel={ch['name']})")
+                    # V4.9.7: 同上, 无条件覆写防共享 dict 残留值泄漏
+                    channel_model = price_info.get("model") or model
+                    if channel_model != model:
+                        logger.debug(
+                            f"[V4.6.5 fuzzy] _channel_model: {model} -> {channel_model} (channel={ch['name']})"
+                        )
+                    ch["_channel_model"] = channel_model
                     candidates.append((ch, price_info))
 
         if not candidates:
@@ -752,8 +762,8 @@ class RouteEngine:
 
         # Phase 3.E: 精确路由响应头增强 — 注入 _registry_* 字段
         # 跟 _select_by_group 保持一致, 让 _build_aimc_headers 不用关心路由类型
-        # V4.6.5: _channel_model 在前面 candidates.append 阶段已设置 (fuzzy 匹配时),
-        # 不要在这里覆盖. 但精确匹配时 (_channel_model 未设), 透传 model name.
+        # V4.9.7: candidates 循环已无条件写入 _channel_model (精确/fuzzy 均覆盖),
+        # 这里只剩兜底作用 (未来新增候选路径漏写时防共享 dict 残留值裸奔)
         if "_channel_model" not in best_channel:
             best_channel["_channel_model"] = model
         reg = self._registry_cache.get(model)
