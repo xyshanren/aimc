@@ -60,6 +60,31 @@ def _has_multimodal_content(messages):
     return False
 
 
+def _group_cheapest_sort_key(item):
+    """V5.1 (2026-09-02): 组内 cheapest 策略排序 key — 成员优先级激活
+
+    key: (price, family_bonus, member_priority, -channel.priority)
+    - price: subscription/free 计费视为 0.0 (永远最便宜); NULL 价格兜底 999
+    - family_bonus: prefer_family 偏好 tie-break (0=优先)
+    - member_priority: model_group_members.priority (越小越优先) —
+      V5.1 前该值从未参与排序 (channel.priority 反客为主, seed 注释里的
+      priority 数字全部失效), 激活后 seed 里的成员顺序才真正生效
+    - -channel.priority: 最终 tie-break, 渠道优先级越大越优先
+
+    item: (channel, model_id, price, family_bonus, member_priority, channel_model)
+    """
+    ch, _model_id, price, family_bonus, member_priority, _ch_model = item
+    billing = ch.get("billing_mode", "pay_per_token")
+    if billing in ("subscription", "free"):
+        return (0.0, family_bonus, member_priority, -ch.get("priority", 0))
+    return (
+        price if price is not None else 999.0,
+        family_bonus,
+        member_priority,
+        -ch.get("priority", 0),
+    )
+
+
 class RouteEngine:
     """路由决策引擎
 
@@ -291,6 +316,7 @@ class RouteEngine:
             if not grp:
                 self._groups_cache.pop(group_id, None)
                 self._group_members_cache.pop(group_id, None)
+                self._member_priority_cache.pop(group_id, None)
                 logger.info(
                     f"invalidate_group: group {group_id} 不存在, 从 cache 移除"
                 )
@@ -300,15 +326,19 @@ class RouteEngine:
 
             # P1-2: 仅拉 is_active=1 的成员. inactive 行保留在表里作审计,
             # 路由不能命中 (避免 cache 里出现 deprecated model).
+            # V5.1: 同步刷新 _member_priority_cache.
             mem_result = await session.execute(
                 select(ModelGroupMember).where(
                     ModelGroupMember.group_id == group_id,
                     ModelGroupMember.is_active == 1,
                 )
             )
-            self._group_members_cache[group_id] = [
-                m.model_id for m in mem_result.scalars().all()
-            ]
+            members = mem_result.scalars().all()
+            self._group_members_cache[group_id] = [m.model_id for m in members]
+            self._member_priority_cache[group_id] = {
+                m.model_id: (m.priority if m.priority is not None else 100)
+                for m in members
+            }
 
             logger.info(
                 f"invalidate_group: group {group_id} 重新加载, "
@@ -441,12 +471,18 @@ class RouteEngine:
 
         # 3) model_group_members: group_id → [model_id]
         # P1-2: 仅拉 is_active=1 的成员 (软删除的行不进路由 cache).
+        # V5.1: 同时填充 _member_priority_cache (group_id → {model_id: priority}),
+        # 供 _select_by_group cheapest 排序做成员优先级 tie-break (此前从未填充).
         mem_result = await session.execute(
             select(ModelGroupMember).where(ModelGroupMember.is_active == 1)
         )
         self._group_members_cache = {}
+        self._member_priority_cache = {}
         for m in mem_result.scalars().all():
             self._group_members_cache.setdefault(m.group_id, []).append(m.model_id)
+            self._member_priority_cache.setdefault(m.group_id, {})[m.model_id] = (
+                m.priority if m.priority is not None else 100
+            )
         logger.info(
             f"路由缓存: {sum(len(v) for v in self._group_members_cache.values())} "
             f"个 group members 跨 {len(self._group_members_cache)} 个组"
@@ -1407,8 +1443,17 @@ class RouteEngine:
                     if registry.family == prefs["prefer_family"]:
                         family_bonus = 0
 
+                # V5.1: 成员优先级 (model_group_members.priority, 越小越优先)
+                # 预计算, 缺失 (dashboard 动态加的 member 没刷 cache) 兜底 100
+                member_priority = self._member_priority_cache.get(
+                    current, {}
+                ).get(model_id, 100)
+
                 # V4.6.5: 同时存 _channel_model (proxy body 替换用), 防止被后续 member 覆盖
-                candidates.append((best, model_id, input_price, family_bonus, best.get("_channel_model")))
+                candidates.append((
+                    best, model_id, input_price, family_bonus,
+                    member_priority, best.get("_channel_model"),
+                ))
 
             if not candidates:
                 logger.warning(
@@ -1426,20 +1471,11 @@ class RouteEngine:
                 candidates.sort(key=lambda x: x[0].get("priority", 0), reverse=True)
             else:
                 # cheapest (default): subscription/free 视为 0 元, 永远最便宜
-                # 排序 key: (price, family_bonus, -priority) — Phase 2.6 加 family_bonus tie-break
-                def sort_key(item):
-                    ch, _model_id, price, family_bonus, _ch_model = item
-                    billing = ch.get("billing_mode", "pay_per_token")
-                    if billing in ("subscription", "free"):
-                        return (0.0, family_bonus, -ch.get("priority", 0))
-                    return (
-                        price if price is not None else 999.0,
-                        family_bonus,
-                        -ch.get("priority", 0),
-                    )
-                candidates.sort(key=sort_key)
+                # V5.1: 排序 key (price, family_bonus, member_priority, -priority)
+                # — 成员优先级激活, 抽成模块级 _group_cheapest_sort_key 供测试直接引用
+                candidates.sort(key=_group_cheapest_sort_key)
 
-            best_ch, best_model, _, _, correct_channel_model = candidates[0]
+            best_ch, best_model, _, _, _, correct_channel_model = candidates[0]
 
             # 4) 注入调试字段 (Phase 2.5 响应头用)
             # V4.6.5 (2026-08-18): 关键修复

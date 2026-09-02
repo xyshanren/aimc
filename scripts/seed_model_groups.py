@@ -33,7 +33,7 @@ Fallback chain:
 - tier:code     -> tier:balanced
 - tier:light    -> NULL (终极兜底)
 
-规模: 6 group + 25 group_member (V5.0: flagship 3 / strong 4 / balanced 3 / light 5 / vision 6 / code 4)
+规模: 6 group + 22 group_member (V5.1: flagship 3 / strong 3 / balanced 3 / light 3 / vision 6 / code 4)
 """
 
 import asyncio
@@ -60,7 +60,10 @@ GROUPS = [
         "tier:flagship", "旗舰推理组", None, None, 64000, 0, "cheapest", "tier:strong", 10,
     ),
     (
-        "tier:strong", "主力通用组", "T1", None, 0, 0, "cheapest", "tier:balanced", 20,
+        # V5.1: tier T1 → NULL — 组内收 glm-5.3-flash (T2) 做免费兜底,
+        # 精确 tier 过滤 (router.py:1310) 会把 T2 成员判死 (同类 bug 已在
+        # tier:code / m2.7-highspeed 上发生 3 次); 组成员人工精选, 过滤器只添乱
+        "tier:strong", "主力通用组", None, None, 0, 0, "cheapest", "tier:balanced", 20,
     ),
     (
         "tier:balanced", "均衡性价比组", "T2", None, 0, 0, "cheapest", "tier:light", 30,
@@ -101,37 +104,40 @@ GROUP_MEMBERS = [
     ("tier:flagship", "kimi-k3",         105, 1.0, None, "manual"),
     ("tier:flagship", "glm-5.3",         110, 1.0, None, "manual"),
 
-    # ========== tier:strong (T1 主力通用) ==========
-    # deepseek-v4-flash (T1 评分 60.4) + minimax-m3 (T1 评分 51.6, 支持视觉)
-    # + glm-5.3 (V4.9.7: bigmodel coding plan Lite, 替换无渠道的 glm-4-plus;
-    #   Lite 仅支持 GLM-5.3/GLM-5.3-Flash, 历史 glm-4-plus 不在自动切换列表)
-    # + glm-5.2 (V5.0: 从 flagship 下沉 — flagship 有 v4-pro/kimi-k3 两个 T0 后
-    #   glm-5.2 本就排末位; sensenova 免费渠道 (500次/5h), T1 符合 strong 限定)
-    # 排序意图 (V5.1 成员优先级激活后生效): glm-5.3(105) < glm-5.2(108) —
-    #   优先烧 GLM Lite 专属池, 把 sensenova 通用池留给 deepseek/kimi (一池养四模)
+    # ========== tier:strong (主力通用) ==========
+    # deepseek-v4-flash (T1 评分 60.4) + glm-5.2 (T1, sensenova 免费渠道)
+    # + glm-5.3-flash (T2, V5.1: bigmodel Lite 免费兜底 — strong 唯一 GLM Lite
+    #   车道, 商汤 5h 窗口烧穿时组内仍有免费可用)
+    # V5.1 调整: glm-5.3 移出 (Lite 池专心供 flagship, 5.3 积分系数是 flash 3 倍;
+    #   此前 strong 85% 流量实际默认打 glm-5.3 — channel.priority=8 赢 0 元平价)
+    # minimax-m3 移出 → tier:balanced 兜底 (能力低于 v4-flash/flash, TokenPlanMax
+    #   年度额度大, 适合链路下游做容量缓冲: strong→balanced fallback 接住溢出)
     ("tier:strong", "deepseek-v4-flash", 100, 1.0, None, "manual"),
-    ("tier:strong", "glm-5.3",           105, 1.0, None, "manual"),
     ("tier:strong", "glm-5.2",           108, 1.0, None, "manual"),
-    ("tier:strong", "minimax-m3",        110, 1.0, None, "manual"),
+    ("tier:strong", "glm-5.3-flash",     120, 1.0, None, "manual"),
 
     # ========== tier:balanced (T2 性价比) ==========
-    # deepseek-v3 (T2, 硅基流动常驻) + minimax-m2.5 (T2)
+    # deepseek-v3 (T2, 硅基流动常驻, 低价付费)
+    # + minimax-m3 (V5.1: T2 降档后入组, TokenPlanMax 年度额度管饱 —
+    #   0 元 + priority 110 使其成为 balanced 日常默认, 把 sensenova 池
+    #   省给 strong 的 v4-flash/glm-5.2; fallback 链 flagship→strong→balanced
+    #   使其成为全链安全网)
     # + sensenova-6.8-flash-lite (T2, 公测免费, 256K ctx)
-    # 注: glm-5.3-flash 不进 balanced — glm_bigmodel priority=8 会赢得 0 元平价,
-    # 把 balanced 全量灌进 Lite 套餐; glm 只锚定 strong/flagship (+ code 兜底)
+    # 注: glm-5.3-flash 不进 balanced — 保持 strong(+code) 双锚定即可,
+    # 再进 balanced 会把主力组流量灌进 Lite 周池
     ("tier:balanced", "deepseek-v3",  100, 1.0, None, "manual"),
-    ("tier:balanced", "minimax-m2.5", 110, 1.0, None, "manual"),
+    ("tier:balanced", "minimax-m3",   110, 1.0, None, "manual"),
     ("tier:balanced", "sensenova-6.8-flash-lite", 120, 1.0, None, "manual"),
 
     # ========== tier:light (T3 轻量免费) ==========
-    # minimax-m2.7-highspeed (主力, 便宜) + qwen-qwen3-8b + qwen-qwen3.5-4b
-    # + minimax-m2.5-highspeed + glm-4-flash (0.1 元/百万, 最便宜)
-    # P2-B: qwen3-8b → qwen-qwen3-8b (validate_model_id 要求 {family}- 前缀)
-    ("tier:light", "minimax-m2.7-highspeed", 100, 1.0, None, "manual"),
-    ("tier:light", "qwen-qwen3-8b",           110, 1.0, None, "manual"),
-    ("tier:light", "qwen-qwen3.5-4b",         120, 1.0, None, "manual"),
-    ("tier:light", "minimax-m2.5-highspeed",  130, 1.0, None, "manual"),
-    ("tier:light", "glm-4-flash",             140, 1.0, None, "manual"),
+    # V5.1: minimax 旧模型 (m2.7-highspeed/m2.5-highspeed) 移出 — 渠道只主推
+    # m3/m2.7 两个新模型; m2.7-highspeed registry=T2 在 T3 组本就是死成员;
+    # m2.5 同步移出 balanced。直连请求不受影响 (price_snapshots 保留)。
+    # light 移除后无免费车道, 但 balanced 的 m3 (额度管饱) 兜底, fallback
+    # 基本到不了 light
+    ("tier:light", "qwen-qwen3-8b",   100, 1.0, None, "manual"),
+    ("tier:light", "qwen-qwen3.5-4b", 110, 1.0, None, "manual"),
+    ("tier:light", "glm-4-flash",     120, 1.0, None, "manual"),
 
     # ========== tier:vision (T1 多模态视觉, require_vision=1) ==========
     # qwen-vl 系列 (硅基流动常驻) + glm-4.5v (GLM 视觉)
