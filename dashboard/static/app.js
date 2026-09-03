@@ -1972,3 +1972,139 @@ async function manualEnable(accountId, btn) {
 
 document.addEventListener('DOMContentLoaded', loadPendingSummary);
 setInterval(loadPendingSummary, 30000);
+
+// ============================================================
+// V6.0 Phase 2 (2026-09-03): 成本审计 — 标价 vs 实付
+// docs/next-major-v6-plan.md §2.3 Phase B
+// - KPI: 实付 / 官方标价 / 节省 / 标价覆盖率
+// - 趋势图: cost-trend (标价 vs 实付 双线)
+// - 下钻: cost-by-model / cost-by-group / cost-by-user 三个 tab
+// 节省口径: 只统计标价已知 (list_cost_estimate 非空) 的行, 覆盖率低时数字偏保守
+// ============================================================
+
+let _costTrendChart = null;
+let _costTab = 'model';
+
+function _costFmt(n) {
+    if (n === null || n === undefined) return '-';
+    return '¥' + Number(n).toFixed(2);
+}
+
+function _costKeyLabel(key) {
+    return { model: '模型', group_id: '分组', username: '用户' }[key] || key;
+}
+
+async function loadCostAudit() {
+    const table = document.getElementById('cost-audit-table');
+    if (!table) return;
+    try {
+        const [trendResp, dimResp] = await Promise.all([
+            authFetch('/dashboard/api/usage/cost-trend?days=7'),
+            authFetch('/dashboard/api/usage/cost-by-' + _costTab + '?days=7'),
+        ]);
+        if (!trendResp.ok || !dimResp.ok) {
+            table.innerHTML = '<p class="error">加载失败: HTTP ' + trendResp.status + '/' + dimResp.status + '</p>';
+            return;
+        }
+        const trend = await trendResp.json();
+        const dim = await dimResp.json();
+
+        // --- KPI ---
+        const t = dim.totals || {};
+        const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        set('kpi-cost-paid', _costFmt(t.cost_yuan));
+        set('kpi-cost-list', _costFmt(t.list_cost_yuan));
+        set('kpi-cost-saved', _costFmt(t.saved_yuan));
+        set('kpi-cost-coverage', (t.list_coverage_pct || 0) + '%');
+        const covEl = document.getElementById('kpi-cost-coverage');
+        if (covEl) covEl.style.color = (t.list_coverage_pct || 0) < 50 ? 'var(--color-warning, #f0b132)' : '';
+
+        // --- 趋势图 (标价 vs 实付) ---
+        const ctx = document.getElementById('cost-trend-chart');
+        if (ctx) {
+            const labels = (trend.items || []).map(d => d.date);
+            if (_costTrendChart) _costTrendChart.destroy();
+            _costTrendChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '官方标价 ¥',
+                        data: (trend.items || []).map(d => d.list_cost_yuan),
+                        borderColor: '#1d9bf0',
+                        backgroundColor: 'rgba(29,155,240,0.15)',
+                        tension: 0.3,
+                        fill: true,
+                    }, {
+                        label: '实付 ¥',
+                        data: (trend.items || []).map(d => d.cost_yuan),
+                        borderColor: '#00ba7c',
+                        backgroundColor: 'rgba(0,186,124,0.15)',
+                        tension: 0.3,
+                        fill: true,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { labels: { color: '#71767b' } } },
+                    scales: {
+                        x: { ticks: { color: '#71767b' }, grid: { color: '#2f3336' } },
+                        y: { ticks: { color: '#71767b' }, grid: { color: '#2f3336' }, beginAtZero: true }
+                    }
+                }
+            });
+        }
+
+        // --- 下钻表 ---
+        renderCostTable(dim);
+    } catch (e) {
+        if (table) table.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+function renderCostTable(dim) {
+    const table = document.getElementById('cost-audit-table');
+    if (!table) return;
+    const items = dim.items || [];
+    const key = { model: 'model', group: 'group_id', user: 'username' }[_costTab];
+    if (items.length === 0) {
+        table.innerHTML = '<p class="empty">近 ' + (dim.days || 7) + ' 天无用量数据</p>';
+        return;
+    }
+    let html = '<div class="scroll-y-300"><table><thead><tr>'
+        + '<th>' + _costKeyLabel(key) + '</th><th>请求</th><th>Token</th>'
+        + '<th>实付</th><th>标价</th><th>节省</th><th>覆盖率</th>'
+        + '</tr></thead><tbody>';
+    for (const it of items) {
+        const name = it.model || it.group_id || it.username || '-';
+        const label = it.display_name ? esc(name) + ' (' + esc(it.display_name) + ')' : esc(name);
+        const cov = it.request_count ? Math.round(it.list_known_requests / it.request_count * 100) : 0;
+        const savedTxt = it.list_known_requests === 0
+            ? '<span class="text-muted">标价未知</span>'
+            : '<span class="text-success">' + _costFmt(it.saved_yuan) + '</span>';
+        html += '<tr>'
+            + '<td><code class="text-mono">' + label + '</code></td>'
+            + '<td>' + fmtNum(it.request_count) + '</td>'
+            + '<td>' + fmtNum((it.input_tokens || 0) + (it.output_tokens || 0)) + '</td>'
+            + '<td>' + _costFmt(it.cost_yuan) + '</td>'
+            + '<td>' + _costFmt(it.list_cost_yuan) + '</td>'
+            + '<td>' + savedTxt + '</td>'
+            + '<td>' + cov + '%</td>'
+            + '</tr>';
+    }
+    html += '</tbody></table></div>';
+    table.innerHTML = html;
+}
+
+function switchCostTab(tab) {
+    _costTab = tab;
+    // tab 高亮 (btn-primary 只有当前 tab)
+    for (const t of ['model', 'group', 'user']) {
+        const btn = document.getElementById('cost-tab-' + t);
+        if (btn) btn.classList.toggle('btn-primary', t === tab);
+    }
+    loadCostAudit();
+}
+
+document.addEventListener('DOMContentLoaded', () => switchCostTab('model'));
+

@@ -88,6 +88,30 @@
 
         <div class="card">
             <h2 class="card-title" onclick="toggleCard(this)">
+                <span class="card-title-main">成本审计 <span class="card-title-sub">标价 vs 实付 · V6.0 · 近 7 天</span></span>
+                <span class="card-toggle">v</span>
+            </h2>
+            <div class="card-body">
+                <div class="kpi-grid" id="cost-kpis">
+                    <div class="kpi"><div class="kpi-value" id="kpi-cost-paid">¥--</div><div class="kpi-label">实付</div></div>
+                    <div class="kpi"><div class="kpi-value" id="kpi-cost-list">¥--</div><div class="kpi-label">官方标价</div></div>
+                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cost-saved">¥--</div><div class="kpi-label">节省</div></div>
+                    <div class="kpi"><div class="kpi-value" id="kpi-cost-coverage">--%</div><div class="kpi-label">标价覆盖率</div></div>
+                </div>
+                <canvas id="cost-trend-chart" width="600" height="90"></canvas>
+                <div class="toolbar mt-sm" id="cost-tabs">
+                    <button class="btn btn-sm" id="cost-tab-model" onclick="switchCostTab('model')">按模型</button>
+                    <button class="btn btn-sm" id="cost-tab-group" onclick="switchCostTab('group')">按分组</button>
+                    <button class="btn btn-sm" id="cost-tab-user" onclick="switchCostTab('user')">按用户</button>
+                </div>
+                <div id="cost-audit-table">
+                    <div class="loading">加载中…</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2 class="card-title" onclick="toggleCard(this)">
                 <span class="card-title-main">Cache 节省明细 <span class="card-title-sub">P1-8 · 近 7 天</span></span>
                 <span class="card-toggle">v</span>
             </h2>

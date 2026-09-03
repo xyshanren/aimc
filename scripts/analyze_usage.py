@@ -85,6 +85,9 @@ class UsageAnalysis:
     # token 画像
     token_stats: dict = field(default_factory=dict)
 
+    # V6.0 Phase 2 (2026-09-03): 成本审计 (标价 vs 实付)
+    cost_audit: dict = field(default_factory=dict)
+
     # 时段分布 (V4.7+ 缓存/调度决策)
     hourly_distribution: list[int] = field(default_factory=list)  # 24 个 bucket
 
@@ -283,6 +286,44 @@ def _analyze(logs: list[UsageLog], period_start: datetime, period_end: datetime)
             hourly[r.created_at.hour] += 1
     a.hourly_distribution = hourly
 
+    # ----- 6b. V6.0 Phase 2: 成本审计 (标价 vs 实付) -----
+    # 节省只统计标价已知行 (list_cost_estimate 非空) — 标价未知行不计入,
+    # 避免把节省算成负数; 覆盖率单列暴露数据完整度
+    # getattr 防御: mock/异构 log 对象可能没有该属性
+    priced_logs = [
+        r for r in logs if getattr(r, "list_cost_estimate", None) is not None
+    ]
+    cost_total = sum(r.cost_estimate or 0 for r in logs)
+    list_total = sum(r.list_cost_estimate or 0 for r in priced_logs)
+    priced_cost_total = sum(r.cost_estimate or 0 for r in priced_logs)
+    by_model_cost: dict[str, dict] = {}
+    for r in priced_logs:
+        m = by_model_cost.setdefault(
+            r.model or "(未知)", {"requests": 0, "cost": 0.0, "list": 0.0}
+        )
+        m["requests"] += 1
+        m["cost"] += r.cost_estimate or 0
+        m["list"] += r.list_cost_estimate or 0
+    top_cost_models = sorted(by_model_cost.items(), key=lambda kv: -kv[1]["list"])[:10]
+    a.cost_audit = {
+        "request_count": a.request_count,
+        "priced_request_count": len(priced_logs),
+        "coverage_pct": round(len(priced_logs) / a.request_count * 100, 1) if a.request_count else 0.0,
+        "cost_total": round(cost_total, 4),
+        "list_cost_total": round(list_total, 4),
+        "saved_total": round(list_total - priced_cost_total, 4),
+        "by_model": [
+            {
+                "model": m,
+                "requests": d["requests"],
+                "cost": round(d["cost"], 4),
+                "list_cost": round(d["list"], 4),
+                "saved": round(d["list"] - d["cost"], 4),
+            }
+            for m, d in top_cost_models
+        ],
+    }
+
     # ----- 7. 自动 failover 命中率 (V4.6.1 验证) -----
     # 算法: 把连续失败聚合成 cluster, 关注 cluster 后的第一个请求是否切了账号
     # 不设 5s 间隔限制 (按顺序就足以区分 cluster vs 下一个独立请求)
@@ -413,7 +454,21 @@ def _generate_recommendations(a: UsageAnalysis, top5_pct: float) -> list[str]:
                 f"V4.7+ 智能调度/缓存价值提升"
             )
 
-    # 信号 9: 没数据
+    # 信号 9: 免费渠道节省量化 (V6.0 Phase 2)
+    ca = a.cost_audit
+    if ca.get("coverage_pct", 0) >= 50 and ca.get("saved_total", 0) > 0:
+        recs.append(
+            f"💰 **免费/订阅渠道节省 ¥{ca['saved_total']:.2f}** "
+            f"(标价口径 ¥{ca['list_cost_total']:.2f}, 标价覆盖率 {ca['coverage_pct']}%) — "
+            "免费车道有真实价值, 优先把流量引向免费/订阅渠道"
+        )
+    if 0 < ca.get("coverage_pct", 100) < 50 and a.request_count >= 100:
+        recs.append(
+            f"👀 **成本标价覆盖率仅 {ca['coverage_pct']}%** — 部分 model_registry 缺"
+            "官方标价 (list_input_price/list_output_price), 节省量化不完整, 可补标价数据"
+        )
+
+    # 信号 10: 没数据
     if not recs:
         recs.append(
             "✅ **所有信号在健康范围内** — V4.7+ 优先级无明确驱动, "
@@ -549,6 +604,32 @@ def render_markdown(a: UsageAnalysis) -> str:
             )
         lines.append("")
 
+    # 6b. 成本审计 (V6.0 Phase 2)
+    ca = a.cost_audit
+    if ca.get("request_count"):
+        lines.append("## 💰 成本审计 (标价 vs 实付)")
+        lines.append("")
+        lines.append(
+            f"- **实付**: ¥{ca.get('cost_total', 0):.2f} | "
+            f"**官方标价口径**: ¥{ca.get('list_cost_total', 0):.2f} | "
+            f"**节省**: ¥{ca.get('saved_total', 0):.2f}"
+        )
+        lines.append(
+            f"- **标价覆盖率**: {ca.get('coverage_pct', 0)}% "
+            f"({ca.get('priced_request_count', 0)}/{ca.get('request_count', 0)} 请求)"
+            " — 覆盖率低时节省数字偏保守 (标价未知的模型不计入)"
+        )
+        if ca.get("by_model"):
+            lines.append("")
+            lines.append("| 模型 | 请求 | 实付 | 标价 | 节省 |")
+            lines.append("|---|---|---|---|---|")
+            for m in ca["by_model"]:
+                lines.append(
+                    f"| `{m['model']}` | {m['requests']:,} | ¥{m['cost']:.4f} | "
+                    f"¥{m['list_cost']:.4f} | ¥{m['saved']:.4f} |"
+                )
+        lines.append("")
+
     # 7. 时段分布
     if any(a.hourly_distribution):
         lines.append("## ⏰ 时段分布 (V4.7+ 调度/缓存决策)")
@@ -609,6 +690,7 @@ async def analyze(
         "model_concentration": analysis.model_concentration,
         "model_error_breakdown": analysis.model_error_breakdown,
         "token_stats": analysis.token_stats,
+        "cost_audit": analysis.cost_audit,
         "hourly_distribution": analysis.hourly_distribution,
         "long_context_requests": analysis.long_context_requests,
         "recommendations": analysis.recommendations,

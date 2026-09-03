@@ -366,6 +366,246 @@ async def get_usage_summary(days: int = 7, session: AsyncSession = Depends(get_s
     ]
 
 
+# ============================================================
+# V6.0 Phase 2 (2026-09-03): 成本审计 — 标价双轨
+# docs/next-major-v6-plan.md §2.3 Phase B
+#
+# 口径:
+# - cost_yuan = sum(cost_estimate) 实付 (按渠道 price_snapshots 计费, 免费/订阅=0)
+# - list_cost_yuan = sum(list_cost_estimate) 官方标价 (按 registry list_*_price 估算)
+# - saved_yuan = list_cost_yuan - cost_yuan_priced, 其中 cost_yuan_priced 只统计
+#   标价已知 (list_cost_estimate IS NOT NULL) 的行 — 避免"标价未知"行把节省算成负数
+# - list_known_requests / request_count = 标价覆盖率; 覆盖率低时节省数字偏保守
+#
+# 实现注记 (2026-09-03 Mimosa 拦截记录): execute() 第一参数必须在调用点
+# 内联构造 (session.execute(select(...)...) 直写), 不经 stmt 变量中转;
+# "标价已知行的实付" 用单列二趟查询, 不用 case() 条件聚合
+# ============================================================
+
+def _cost_audit_row_dict(row, cost_yuan_priced: float) -> dict:
+    """聚合行 → 响应 dict (统一字段与精度)"""
+    list_cost = float(row.list_cost_yuan or 0)
+    return {
+        "request_count": int(row.request_count),
+        "input_tokens": int(row.input_tokens or 0),
+        "output_tokens": int(row.output_tokens or 0),
+        "cost_yuan": round(float(row.cost_yuan or 0), 4),
+        "list_cost_yuan": round(list_cost, 4),
+        "saved_yuan": round(list_cost - cost_yuan_priced, 4),
+        "list_known_requests": int(row.list_known_requests or 0),
+    }
+
+
+def _cost_audit_totals(items: list[dict]) -> dict:
+    """items 汇总 + 标价覆盖率"""
+    total_req = sum(i["request_count"] for i in items)
+    known = sum(i["list_known_requests"] for i in items)
+    return {
+        "request_count": total_req,
+        "cost_yuan": round(sum(i["cost_yuan"] for i in items), 4),
+        "list_cost_yuan": round(sum(i["list_cost_yuan"] for i in items), 4),
+        "saved_yuan": round(sum(i["saved_yuan"] for i in items), 4),
+        "list_known_requests": known,
+        "list_coverage_pct": round(known / total_req * 100, 1) if total_req else 0.0,
+    }
+
+
+@router.get("/api/usage/cost-by-model")
+async def get_cost_by_model(
+    days: int = Query(7, ge=1, le=90),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.0 Phase 2: 按模型拆成本 (标价 vs 实付 vs 节省), 按标价降序"""
+    cutoff = datetime.now() - timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(
+                UsageLog.model,
+                func.count(UsageLog.id).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan"),
+                func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).label("list_cost_yuan"),
+                func.count(UsageLog.list_cost_estimate).label("list_known_requests"),
+            )
+            .where(UsageLog.created_at >= cutoff)
+            .group_by(UsageLog.model)
+            .order_by(func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).desc())
+        )
+    ).all()
+
+    # 二趟: 标价已知行的实付合计 (keyed by model)
+    priced = {
+        r.model: float(r.cost_yuan_priced or 0)
+        for r in (
+            await session.execute(
+                select(
+                    UsageLog.model,
+                    func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan_priced"),
+                )
+                .where(UsageLog.created_at >= cutoff)
+                .where(UsageLog.list_cost_estimate.isnot(None))
+                .group_by(UsageLog.model)
+            )
+        ).all()
+    }
+
+    items = []
+    for row in rows:
+        item = {"model": row.model or "(未知模型)"}
+        item.update(_cost_audit_row_dict(row, priced.get(row.model, 0.0)))
+        items.append(item)
+    return {"days": days, "totals": _cost_audit_totals(items), "items": items}
+
+
+@router.get("/api/usage/cost-by-group")
+async def get_cost_by_group(
+    days: int = Query(7, ge=1, le=90),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.0 Phase 2: 按请求组拆成本; NULL group_id = 精确模型路由"""
+    cutoff = datetime.now() - timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(
+                UsageLog.group_id,
+                func.count(UsageLog.id).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan"),
+                func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).label("list_cost_yuan"),
+                func.count(UsageLog.list_cost_estimate).label("list_known_requests"),
+            )
+            .where(UsageLog.created_at >= cutoff)
+            .group_by(UsageLog.group_id)
+            .order_by(func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).desc())
+        )
+    ).all()
+
+    priced = {
+        r.group_id: float(r.cost_yuan_priced or 0)
+        for r in (
+            await session.execute(
+                select(
+                    UsageLog.group_id,
+                    func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan_priced"),
+                )
+                .where(UsageLog.created_at >= cutoff)
+                .where(UsageLog.list_cost_estimate.isnot(None))
+                .group_by(UsageLog.group_id)
+            )
+        ).all()
+    }
+
+    items = []
+    for row in rows:
+        item = {"group_id": row.group_id or "(精确路由)"}
+        item.update(_cost_audit_row_dict(row, priced.get(row.group_id, 0.0)))
+        items.append(item)
+    return {"days": days, "totals": _cost_audit_totals(items), "items": items}
+
+
+@router.get("/api/usage/cost-by-user")
+async def get_cost_by_user(
+    days: int = Query(7, ge=1, le=90),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.0 Phase 2: 按调用方拆成本; NULL caller_id = 未鉴权/legacy"""
+    cutoff = datetime.now() - timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(
+                UsageLog.caller_id,
+                User.username,
+                User.display_name,
+                func.count(UsageLog.id).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan"),
+                func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).label("list_cost_yuan"),
+                func.count(UsageLog.list_cost_estimate).label("list_known_requests"),
+            )
+            .outerjoin(User, UsageLog.caller_id == User.id)
+            .where(UsageLog.created_at >= cutoff)
+            .group_by(UsageLog.caller_id, User.username, User.display_name)
+            .order_by(func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).desc())
+        )
+    ).all()
+
+    priced = {
+        r.caller_id: float(r.cost_yuan_priced or 0)
+        for r in (
+            await session.execute(
+                select(
+                    UsageLog.caller_id,
+                    func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan_priced"),
+                )
+                .where(UsageLog.created_at >= cutoff)
+                .where(UsageLog.list_cost_estimate.isnot(None))
+                .group_by(UsageLog.caller_id)
+            )
+        ).all()
+    }
+
+    items = []
+    for row in rows:
+        item = {
+            "caller_id": row.caller_id,
+            "username": row.username or "(未鉴权/legacy)",
+            "display_name": row.display_name,
+        }
+        item.update(_cost_audit_row_dict(row, priced.get(row.caller_id, 0.0)))
+        items.append(item)
+    return {"days": days, "totals": _cost_audit_totals(items), "items": items}
+
+
+@router.get("/api/usage/cost-trend")
+async def get_cost_trend(
+    days: int = Query(7, ge=1, le=90),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.0 Phase 2: 按天的成本趋势 (标价 vs 实付 vs 节省), 时间升序 (画图用)"""
+    cutoff = datetime.now() - timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(
+                func.date(UsageLog.created_at).label("date"),
+                func.count(UsageLog.id).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan"),
+                func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).label("list_cost_yuan"),
+                func.count(UsageLog.list_cost_estimate).label("list_known_requests"),
+            )
+            .where(UsageLog.created_at >= cutoff)
+            .group_by(func.date(UsageLog.created_at))
+            .order_by(func.date(UsageLog.created_at).asc())
+        )
+    ).all()
+
+    priced = {
+        r.date: float(r.cost_yuan_priced or 0)
+        for r in (
+            await session.execute(
+                select(
+                    func.date(UsageLog.created_at).label("date"),
+                    func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan_priced"),
+                )
+                .where(UsageLog.created_at >= cutoff)
+                .where(UsageLog.list_cost_estimate.isnot(None))
+                .group_by(func.date(UsageLog.created_at))
+            )
+        ).all()
+    }
+
+    items = []
+    for row in rows:
+        item = {"date": row.date}
+        item.update(_cost_audit_row_dict(row, priced.get(row.date, 0.0)))
+        items.append(item)
+    return {"days": days, "totals": _cost_audit_totals(items), "items": items}
+
+
 def _approx_channel_saved(channel_id: int, cached_t: int, cache_price_map: dict) -> float:
     """阶段1 (2026-08-14): 按 channel 估算节省金额 (fallback 简化版)
 

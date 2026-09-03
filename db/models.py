@@ -342,6 +342,13 @@ class UsageLog(Base):
     input_tokens = Column(Integer, nullable=True)
     output_tokens = Column(Integer, nullable=True)
     cost_estimate = Column(Float, nullable=True, comment="估算费用（元）")
+    # V6.0 Phase 2 (2026-09-03): 标价双轨 — 按 model_registry 官方标价估算的费用（元）
+    # NULL = 该模型标价未知 (registry list_*_price 为空); 与 cost_estimate 配对,
+    # 节省金额 = list_cost_estimate - cost_estimate (仅对非 NULL 行聚合)
+    list_cost_estimate = Column(
+        Float, nullable=True,
+        comment="按官方标价估算的费用（元）, NULL=标价未知; 与 cost_estimate 配对算节省",
+    )
     status_code = Column(Integer, nullable=True)
     latency_ms = Column(Integer, nullable=True, comment="响应延迟（毫秒）")
     # P0-3 follow-up (2026-08-14): prompt cache token 统计
@@ -558,6 +565,22 @@ class ModelRegistry(Base):
     supports_prompt_cache = Column(
         Integer, nullable=False, server_default="0",
         comment="0=不支持 prompt cache, 1=支持 (e.g. siliconflow/deepseek 支持, qwen 不支持)",
+    )
+
+    # V6.0 Phase 2 (2026-09-03): 官方标价双轨 (成本审计)
+    # - 与 price_snapshots 的"渠道实际计费价"无关, 这是模型维度的官方标价 (元/百万tokens, CNY)
+    # - 用途: 免费/订阅渠道 (sensenova 0元 / glm coding plan) 实付 cost_estimate=0 时,
+    #   仍可按官方标价估算 list_cost_estimate, 量化"节省金额 = 标价 - 实付"
+    # - NULL = 标价未知 (不编造, 聚合时该行不计入节省, 由覆盖率指标暴露)
+    # - 0.0 = 官方明确免费 (e.g. glm-4.7-flash), 与 NULL 区分: 节省=0 是真实结论
+    # - 维护方式: 人工/migration 回填 (docs/next-major-v6-plan.md §2), 不参与路由
+    list_input_price = Column(
+        Float, nullable=True,
+        comment="官方标价-输入 (元/百万tokens, CNY), NULL=未知; 成本审计用, 不参与路由",
+    )
+    list_output_price = Column(
+        Float, nullable=True,
+        comment="官方标价-输出 (元/百万tokens, CNY), NULL=未知; 成本审计用, 不参与路由",
     )
 
 

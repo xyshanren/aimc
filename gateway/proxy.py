@@ -104,6 +104,39 @@ def _estimate_cost(
     return cost / 1_000_000  # 元/百万tokens → 元
 
 
+def _estimate_list_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+) -> Optional[float]:
+    """V6.0 Phase 2: 按官方标价估算单次请求费用（元）— 标价双轨的"标价"轨。
+
+    数据源 = model_registry.list_input_price / list_output_price
+    （人工维护的官方标价，跟渠道实际计费的 price_snapshots 无关）。
+    用途：免费/订阅渠道（sensenova 0元 / glm coding plan）实付 cost_estimate=0 时，
+    仍能回答"没有这些免费渠道，按官方价裸调要花多少"，量化节省金额。
+
+    口径说明（有意从简）：
+    - 不含缓存折扣/时段折扣 — 是"按官方标准价裸调"的上界估计
+    - 返回 None = 标价未知（registry 无此模型 / list 价 NULL），
+      聚合时该行不计入节省，由覆盖率指标暴露
+    """
+    try:
+        from gateway.router import route_engine
+        reg = route_engine._registry_cache.get(model)
+        if reg is None:
+            return None
+        list_in = getattr(reg, "list_input_price", None)
+        list_out = getattr(reg, "list_output_price", None)
+        if list_in is None or list_out is None:
+            return None
+    except Exception as e:
+        logger.debug(f"list_cost_estimate 标价查询失败: model={model} err={e}")
+        return None
+
+    return ((input_tokens or 0) * list_in + (output_tokens or 0) * list_out) / 1_000_000
+
+
 def _strip_thinking_fields(body_dict: dict) -> dict:
     """V4.6.4+: 剥离 body 字典里的 thinking 相关字段 (返回新 dict, 不修改原对象)
 
@@ -945,6 +978,12 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
             cached_input_tokens, cache_read_input_tokens, cache_creation_input_tokens,
         )
 
+        # V6.0 Phase 2: 标价轨 (官方标价口径, 量化免费/订阅渠道的节省)
+        list_cost_estimate = _estimate_list_cost(
+            actual_model,
+            usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
+        )
+
         # 创建异步任务写入数据库
         # 修复 V4.6.4: 用 asyncio.create_task 替代 asyncio.get_event_loop().create_task
         # 之前: get_event_loop() 在 Python 3.12 + uvicorn 多 worker 场景下可能返回错的 loop 或 RuntimeError
@@ -1003,6 +1042,7 @@ async def _write_usage_log(
     caller_id: int | None = None,
     caller_key_id: int | None = None,
     cost_estimate: Optional[float] = None,
+    list_cost_estimate: Optional[float] = None,
 ):
     """写入用量日志到数据库
 
@@ -1022,6 +1062,10 @@ async def _write_usage_log(
     V4.8.5: cost_estimate 参数 (单次请求估算费用, 元)
     - NULL = 价格未找到 / 999 兜底价场景
     - 非 NULL = 按 _estimate_cost 算出的费用, 激活 v44_alerts 周环比告警 + 看板省钱量化
+
+    V6.0 Phase 2: list_cost_estimate 参数 (官方标价口径, 元)
+    - NULL = 该模型标价未知 (registry list_*_price 为空)
+    - 非 NULL = 按 _estimate_list_cost 算出的标价费用, 与 cost_estimate 配对算节省
     """
     try:
         from db.engine import async_session_factory
@@ -1045,6 +1089,8 @@ async def _write_usage_log(
                 cache_creation_input_tokens=cache_creation_input_tokens,
                 # V4.8.5: 估算费用 (激活成本告警 / 周报 / 看板省钱量化)
                 cost_estimate=cost_estimate,
+                # V6.0 Phase 2: 官方标价口径 (成本审计, 节省 = 标价 - 实付)
+                list_cost_estimate=list_cost_estimate,
             )
             session.add(log)
             await session.commit()
@@ -1206,6 +1252,9 @@ def _schedule_stream_usage_log(
             input_tokens, output_tokens,
             cached_input_tokens, cache_read_input_tokens, cache_creation_input_tokens,
         )
+
+        # V6.0 Phase 2: 标价轨 (官方标价口径, 量化免费/订阅渠道的节省)
+        list_cost_estimate = _estimate_list_cost(actual_model, input_tokens, output_tokens)
 
         # P0-1: 对齐 V4.6.4 修复 — 用 get_running_loop() 替代 get_event_loop()
         # get_event_loop() 在 Python 3.12 + uvicorn 多 worker 下可能返回错的 loop 或 RuntimeError
