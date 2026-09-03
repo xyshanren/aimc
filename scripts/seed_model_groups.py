@@ -29,11 +29,13 @@ Fallback chain:
 - tier:flagship -> tier:strong -> tier:balanced -> tier:light
 - tier:strong   -> tier:balanced -> tier:light
 - tier:balanced -> tier:light
-- tier:vision   -> tier:strong
+- tier:vision   -> tier:vision-light -> tier:light   (V6.0: 不再直接跳文本组)
+- tier:vision-light -> tier:light                    (V6.0 新增)
 - tier:code     -> tier:balanced
 - tier:light    -> NULL (终极兜底)
 
-规模: 6 group + 22 group_member (V5.1: flagship 3 / strong 3 / balanced 3 / light 3 / vision 6 / code 4)
+规模: 7 group + 24 group_member
+(V6.0: flagship 3 / strong 3 / balanced 3 / light 4 / vision 2 / vision-light 5 / code 4)
 """
 
 import asyncio
@@ -75,7 +77,20 @@ GROUPS = [
     (
         # tier:vision: 多模态/视觉专用 (VLM)
         # require_vision=1, 路由会自动跳过 text-only model
-        "tier:vision", "多模态视觉组", "T1", None, 0, 1, "cheapest", "tier:strong", 25,
+        # V6.0 (2026-09-03): tier T1 → NULL (glm-5.3-flash 是 T2, 精确 tier
+        # 过滤会判死 — 同类 bug 已发生 3 次); fallback strong → vision-light
+        # (视觉请求先降轻量视觉再落文本, 不再直接跳文本组)
+        # 成员收缩为双旗舰: vision-exp (实验免费) + glm-5.3-flash (多模态补位);
+        # glm-4.5v 移除 (上一代付费, 与免费 glm-4.6v-flash 孰强存疑), qwen-vl
+        # 系列下沉 vision-light
+        "tier:vision", "多模态视觉组", None, None, 0, 1, "cheapest", "tier:vision-light", 25,
+    ),
+    (
+        # V6.0 新增: 轻量视觉组 (免费视觉兜底)
+        # tier=NULL: 组内混 T1 (qwen-vl-32b 系列) 和 T3 (qwen-vl-8b), 精确
+        # tier 过滤必杀一半成员; 组成员人工精选, 过滤器只添乱
+        # fallback → tier:light: 视觉轻量组全灭时落轻量文本组 (有损但保响应)
+        "tier:vision-light", "轻量视觉组", None, None, 0, 1, "cheapest", "tier:light", 26,
     ),
     (
         # tier:code: 代码专用 (替代 scene:code, 统一 tier: 前缀)
@@ -133,25 +148,33 @@ GROUP_MEMBERS = [
     # V5.1: minimax 旧模型 (m2.7-highspeed/m2.5-highspeed) 移出 — 渠道只主推
     # m3/m2.7 两个新模型; m2.7-highspeed registry=T2 在 T3 组本就是死成员;
     # m2.5 同步移出 balanced。直连请求不受影响 (price_snapshots 保留)。
-    # light 移除后无免费车道, 但 balanced 的 m3 (额度管饱) 兜底, fallback
-    # 基本到不了 light
+    # V6.0: + glm-4.7-flash (bigmodel 文本免费, priority 130) — 补回 V5.1
+    # 丢掉的免费车道, 0 元在 cheapest 排序下自然成为 light 默认
     ("tier:light", "qwen-qwen3-8b",   100, 1.0, None, "manual"),
     ("tier:light", "qwen-qwen3.5-4b", 110, 1.0, None, "manual"),
     ("tier:light", "glm-4-flash",     120, 1.0, None, "manual"),
+    ("tier:light", "glm-4.7-flash",   130, 1.0, None, "manual"),
 
-    # ========== tier:vision (T1 多模态视觉, require_vision=1) ==========
-    # qwen-vl 系列 (硅基流动常驻) + glm-4.5v (GLM 视觉)
-    # + deepseek-v4-flash-vision-exp (V4.9.5: DeepSeek 视觉实验版)
-    # V5.0: minimax-m3 移出 — V4.9.6 改 modality=text 后被 require_vision
-    # 过滤 (router.py:1354 只认 vision/multimodal) 判成死成员, 留着只是噪音;
-    # m3 的通用流量由 tier:strong 承接, 视觉需求由 vision-exp/glm-4.5v 承接
-    # P2-A: qwen3-vl-* 改为 qwen-vl-* (validate_model_id 要求 model_id 以 "{family}-" 开头)
+    # ========== tier:vision (多模态视觉旗舰, require_vision=1) ==========
+    # V6.0 重排 (docs/next-major-v6-plan.md §1.2):
+    # - deepseek-v4-flash-vision-exp: 实验免费, 旗舰视觉主车道
+    # - glm-5.3-flash: 多模态补位 (registry modality 已改 multimodal,
+    #   tier→NULL 后 T2 可入组), vision-exp 不可用时兜底
+    # - glm-4.5v 移除: 上一代付费视觉, 与免费 glm-4.6v-flash 孰强存疑,
+    #   不再进任何分组 (registry/price_snapshots 保留, 硅基直连不受影响)
+    # - qwen-vl 系列下沉 tier:vision-light
     ("tier:vision", "deepseek-v4-flash-vision-exp", 100, 1.0, None, "manual"),
-    ("tier:vision", "qwen-vl-32b-instruct",     110, 1.0, None, "manual"),
-    ("tier:vision", "qwen-vl-32b-thinking",     120, 1.0, None, "manual"),
-    ("tier:vision", "qwen-vl-30b-a3b-thinking", 130, 1.0, None, "manual"),
-    ("tier:vision", "qwen-vl-8b-instruct",      140, 1.0, None, "manual"),
-    ("tier:vision", "glm-4.5v",                 150, 1.0, None, "manual"),
+    ("tier:vision", "glm-5.3-flash",                110, 1.0, None, "manual"),
+
+    # ========== tier:vision-light (V6.0 新增, 轻量视觉, require_vision=1) ==========
+    # glm-4.6v-flash 免费 → 免费视觉兜底 (cheapest 自然领跑)
+    # qwen-vl 系列: registry tier 不动 (T1×3 + T3×1), vision-light tier=NULL
+    # 全部可入组, 靠 priority 排序
+    ("tier:vision-light", "glm-4.6v-flash",           100, 1.0, None, "manual"),
+    ("tier:vision-light", "qwen-vl-32b-instruct",     110, 1.0, None, "manual"),
+    ("tier:vision-light", "qwen-vl-32b-thinking",     120, 1.0, None, "manual"),
+    ("tier:vision-light", "qwen-vl-30b-a3b-thinking", 130, 1.0, None, "manual"),
+    ("tier:vision-light", "qwen-vl-8b-instruct",      140, 1.0, None, "manual"),
 
     # ========== tier:code (T2 代码专用, 替代 scene:code) ==========
     # minimax-m2.7 (T1 代码主力) + deepseek-v4-flash (含 code cap) + deepseek-v3.2

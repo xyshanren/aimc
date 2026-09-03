@@ -1395,12 +1395,16 @@ class RouteEngine:
                     skipped += 1
                     continue
 
-                # P0-3 (2026-08-14): 纯文本请求跳过 multimodal candidate
-                # 背景: multimodal model (modality=multimodal) 拒纯文本 → 上游 400
-                # 修复: messages 不含 image/audio/file 时, 跳过 multimodal member
-                # 例外: tier:vision 组用户显式选 multimodal (但仍可走 text model fallback)
+                # P0-3 (2026-08-14) + V6.0 收窄: 纯文本请求跳过 multimodal candidate,
+                # 但只在 require_vision=1 的组内生效
+                # 背景: 原规则全局生效, modality=multimodal 的成员在纯文本请求时
+                # 被所有组跳过 — V6.0 glm-5.3-flash 改 multimodal 进 tier:vision 后,
+                # 它在 strong/code 的文本角色会被误杀 (多分组 text 模型不跳文本,
+                # docs/next-major-v6-plan.md §1.3)
+                # 收窄理由: 非 vision 组成员是人工精选的, 入组即代表该流量下可用;
+                # vision 组内保留保护 (纯文本不选 multimodal, 防 vision-only 模型抢文本)
                 has_mm = _has_multimodal_content(messages)
-                if not has_mm and registry.modality == "multimodal":
+                if group.require_vision and not has_mm and registry.modality == "multimodal":
                     logger.debug(
                         f"  [{current}] {model_id} modality=multimodal 但请求纯文本, 跳过"
                     )

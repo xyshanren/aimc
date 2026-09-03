@@ -105,22 +105,93 @@ def test_seed_registry_vision_validate_namespace():
 
 
 def test_seed_groups_vision_members():
-    """seed_model_groups.py 的 tier:vision 组 member 齐全, model_id 命名正确"""
+    """seed_model_groups.py 的 tier:vision 组 member (V6.0 重排后 2 个旗舰)
+
+    V6.0 (docs/next-major-v6-plan.md §1.2): glm-4.5v 移除 (上一代付费, 与免费
+    glm-4.6v-flash 孰强存疑), qwen-vl 系列下沉 vision-light; glm-5.3-flash
+    多模态补位。组收缩为双旗舰互备。
+    """
     from scripts.seed_model_groups import GROUP_MEMBERS
     vision_members = [m for m in GROUP_MEMBERS if m[0] == "tier:vision"]
-    # V5.0: minimax-m3 移出 (V4.9.6 改 modality=text 后被 require_vision
-    # 过滤判死, 是死成员), 剩 6 个
-    assert len(vision_members) == 6, f"tier:vision 应有 6 个 member, 实际 {len(vision_members)}"
+    assert len(vision_members) == 2, f"tier:vision 应有 2 个 member, 实际 {len(vision_members)}"
     model_ids = {m[1] for m in vision_members}
     expected = {
         "deepseek-v4-flash-vision-exp",
+        "glm-5.3-flash",
+    }
+    assert model_ids == expected, f"tier:vision 成员不匹配: {model_ids ^ expected}"
+
+
+def test_seed_groups_vision_null_tier_fallback_vision_light():
+    """V6.0: tier:vision tier→NULL (glm-5.3-flash T2 免被 tier 过滤判死),
+    fallback strong → vision-light (先降轻量视觉再落文本组)"""
+    from scripts.seed_model_groups import GROUPS
+    by_id = {g[0]: g for g in GROUPS}
+    v = by_id["tier:vision"]
+    assert v[2] is None, f"tier:vision tier 应为 NULL, 实际 {v[2]!r}"
+    assert v[7] == "tier:vision-light", \
+        f"tier:vision fallback 应为 tier:vision-light, 实际 {v[7]!r}"
+
+
+def test_seed_groups_vision_light_group():
+    """V6.0: tier:vision-light 组定义 (require_vision=1, tier=NULL, fallback=light)"""
+    from scripts.seed_model_groups import GROUPS
+    by_id = {g[0]: g for g in GROUPS}
+    assert "tier:vision-light" in by_id, "缺少 tier:vision-light 组"
+    vl = by_id["tier:vision-light"]
+    assert vl[2] is None, "vision-light tier 应为 NULL (混 T1/T3 成员)"
+    assert vl[5] == 1, "vision-light require_vision 应为 1"
+    assert vl[7] == "tier:light", "vision-light fallback 应为 tier:light"
+
+
+def test_seed_groups_vision_light_members():
+    """V6.0: vision-light 成员 = glm-4.6v-flash (免费兜底) + qwen-vl×4"""
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    vl = sorted(m[1] for m in GROUP_MEMBERS if m[0] == "tier:vision-light")
+    assert vl == sorted([
+        "glm-4.6v-flash",
         "qwen-vl-32b-instruct",
         "qwen-vl-32b-thinking",
         "qwen-vl-30b-a3b-thinking",
         "qwen-vl-8b-instruct",
-        "glm-4.5v",
-    }
-    assert model_ids == expected, f"tier:vision 成员不匹配: {model_ids ^ expected}"
+    ]), f"vision-light 成员不匹配: {vl}"
+
+
+def test_seed_groups_glm45v_removed_from_all_groups():
+    """V6.0 用户决策: glm-4.5v 直接移除出所有分组 (registry 保留, 硅基直连不受影响)"""
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    in_group = [m for m in GROUP_MEMBERS if m[1] == "glm-4.5v"]
+    assert in_group == [], f"glm-4.5v 应不在任何分组, 实际 {in_group}"
+
+
+def test_seed_groups_light_has_glm47_flash():
+    """V6.0: tier:light 补 glm-4.7-flash (文本免费, 补回 V5.1 丢掉的免费车道)"""
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    light_ids = {m[1] for m in GROUP_MEMBERS if m[0] == "tier:light"}
+    assert "glm-4.7-flash" in light_ids
+
+
+def test_seed_registry_glm_flash_models():
+    """V6.0: 新增 glm-4.7-flash / glm-4.6v-flash; glm-5.3-flash 多模态化"""
+    from scripts.seed_model_registry import MODEL_REGISTRY
+    by_id = {row[0]: row for row in MODEL_REGISTRY}
+    assert "glm-4.7-flash" in by_id, "缺少 glm-4.7-flash (bigmodel 文本免费)"
+    assert by_id["glm-4.7-flash"][6] == "text"
+    assert by_id["glm-4.7-flash"][3] == "T3", "glm-4.7-flash 应为 T3 (tier:light 过滤要求)"
+    assert "glm-4.6v-flash" in by_id, "缺少 glm-4.6v-flash (bigmodel 视觉免费)"
+    assert by_id["glm-4.6v-flash"][6] == "vision"
+    assert by_id["glm-5.3-flash"][6] == "multimodal", \
+        "glm-5.3-flash modality 应为 multimodal (进 tier:vision 要求)"
+
+
+def test_seed_all_group_members_in_registry():
+    """跨脚本一致性: 所有组成员都在 MODEL_REGISTRY (V6.0 扩到全组)"""
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    from scripts.seed_model_registry import MODEL_REGISTRY
+    reg_ids = {row[0] for row in MODEL_REGISTRY}
+    for member in GROUP_MEMBERS:
+        group_id, model_id = member[0], member[1]
+        assert model_id in reg_ids, f"{group_id}/{model_id} 不在 seed_model_registry"
 
 
 def test_seed_groups_vision_members_in_registry():
@@ -266,7 +337,14 @@ def main():
         ("seed registry 有 vision 模型", test_seed_registry_has_vision_models),
         ("seed registry vision modality", test_seed_registry_vision_modality),
         ("seed registry vision namespace", test_seed_registry_vision_validate_namespace),
-        ("seed groups vision members", test_seed_groups_vision_members),
+        ("seed groups vision members (V6.0 双旗舰)", test_seed_groups_vision_members),
+        ("seed groups vision tier/fallback (V6.0)", test_seed_groups_vision_null_tier_fallback_vision_light),
+        ("seed groups vision-light 组定义 (V6.0)", test_seed_groups_vision_light_group),
+        ("seed groups vision-light 成员 (V6.0)", test_seed_groups_vision_light_members),
+        ("seed groups glm-4.5v 移除 (V6.0)", test_seed_groups_glm45v_removed_from_all_groups),
+        ("seed groups light+glm-4.7-flash (V6.0)", test_seed_groups_light_has_glm47_flash),
+        ("seed registry glm flash 免费模型 (V6.0)", test_seed_registry_glm_flash_models),
+        ("seed 全组成员在 registry (V6.0)", test_seed_all_group_members_in_registry),
         ("seed groups vision 在 registry", test_seed_groups_vision_members_in_registry),
         ("require_vision 接受 multimodal", test_require_vision_accepts_multimodal),
         ("resolve model 精确路由用 _channel_model", test_resolve_model_exact_route_uses_channel_model),

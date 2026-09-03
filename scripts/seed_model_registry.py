@@ -63,6 +63,18 @@ MODEL_REGISTRY = [
         ["reasoning", "code", "general"], 128000, "text", 0, "2026-07",
         "V4 Flash 升级到 V4-Flash-0731, 性价比",
     ),
+    # V6.0 回填: 这两个一直在 tier:code/balanced 组里 (V4.9.5 时代经生产迁移
+    # 入组), 但 seed 文件漏了 — 全新环境 reseed 会因 registry 缺失跳过它们
+    (
+        "deepseek-v3", "deepseek", "DeepSeek V3", "T2",
+        ["general"], 128000, "text", 0, "2026-06",
+        "V3 硅基流动常驻, 低价付费, tier:balanced 主力",
+    ),
+    (
+        "deepseek-v3.2", "deepseek", "DeepSeek V3.2", "T2",
+        ["reasoning", "code", "general"], 128000, "text", 0, "2026-07",
+        "V3.2 代码向, tier:code 成员",
+    ),
     # V4.9.5 (2026-08-25): DeepSeek 视觉实验版, 官方已上线
     # 价格同 v4-flash, 图片转 token 后与文本合并计费
     # modality=vision, tier=T1, 加入 tier:vision 组
@@ -102,6 +114,17 @@ MODEL_REGISTRY = [
         "qwen-2.5-7b", "qwen", "Qwen 2.5 7B", "T3",
         ["general"], 32000, "text", 1, "2024-09",
         "Qwen 2.5 7B 轻量"
+    ),
+    # V6.0 回填: tier:light 成员 (V4.6.4 起在组), seed 漏了 — 同 deepseek-v3 注释
+    (
+        "qwen-qwen3-8b", "qwen", "Qwen3 8B", "T3",
+        ["general"], 128000, "text", 1, "2026-07",
+        "Qwen3 8B 硅基流动常驻, tier:light; 命名带 family 前缀 (validate_model_id 约束)",
+    ),
+    (
+        "qwen-qwen3.5-4b", "qwen", "Qwen3.5 4B", "T3",
+        ["general"], 128000, "text", 1, "2026-08",
+        "Qwen3.5 4B 硅基流动常驻, tier:light; 命名带 family 前缀 (validate_model_id 约束)",
     ),
 
     # ========== Qwen VL 系列 (4 个, P2-A 补充) ==========
@@ -163,9 +186,36 @@ MODEL_REGISTRY = [
         "智谱新一代旗舰, coding plan Lite; 调用 GLM-5.2/5.1 自动切换至本模型",
     ),
     (
+        # V6.0 (2026-09-03): modality text → multimodal — 定价页输入模态为
+        # 图片/视频/文件/文本; 进 tier:vision 补位旗舰 (require_vision 只认
+        # vision/multimodal)。P0-3 已收窄为仅 require_vision 组内跳过,
+        # strong/code 的纯文本角色不受影响 (docs/next-major-v6-plan.md §1.3)
         "glm-5.3-flash", "glm", "GLM-5.3 Flash", "T2",
-        ["general", "code"], 128000, "text", 0, "2026-08",
-        "GLM-5.3 极速版, coding plan Lite; 调用 GLM-5-Turbo/4.7 自动切换至本模型",
+        ["general", "code"], 128000, "multimodal", 0, "2026-08",
+        "GLM-5.3 极速版, coding plan Lite; 多模态; 调用 GLM-5-Turbo/4.7 自动切换至本模型",
+    ),
+    # V6.0 (2026-09-03): bigmodel 免费模型 (定价页确认 + VM 生产 key 实测)
+    # glm-4.7-flash: 文本免费, 200K ctx → tier:light 免费默认
+    # 实测: coding plan 端点识别该 ID 但持续 1305 过载 (无静默切换;
+    # 自动切换规则只影响不带 Flash 的 glm-4.7 → glm-5.3-flash)
+    (
+        "glm-4.7-flash", "glm", "GLM-4.7 Flash", "T3",
+        ["general", "code"], 200000, "text", 0, "2026-09",
+        "GLM-4.7 极速版, bigmodel 免费 (输入/输出/缓存全免费); 常态 1305 过载, 靠 failover 兜底",
+    ),
+    # glm-4.6v-flash: 视觉免费, 128K ctx → tier:vision-light 免费视觉兜底
+    # 实测: coding/paas/v4 200 OK, model 回显自身 (无静默切换)
+    (
+        "glm-4.6v-flash", "glm", "GLM-4.6V Flash", "T3",
+        ["vision", "general"], 131072, "vision", 0, "2026-09",
+        "GLM-4.6V 极速视觉, bigmodel 免费; 接受图片/视频/文件/文本; "
+        "注意与付费 GLM-4.6V (1/3元) 是不同模型",
+    ),
+    # V6.0 回填: tier:strong 成员 (V4.9.5 经生产迁移入组), seed 漏了
+    (
+        "glm-5.2", "glm", "GLM-5.2", "T1",
+        ["reasoning", "code", "general"], 128000, "text", 0, "2026-07",
+        "上一代旗舰, sensenova 免费第二渠道主车型 (官方标称 1M ctx)",
     ),
 
     # ========== Kimi (2 个) ==========
