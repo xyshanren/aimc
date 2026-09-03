@@ -75,9 +75,10 @@
    b. await route_engine._auto_refresh_if_stale()    [P0-4: TTL + mtime]
    c. V4.8: check_user_quota (caller 的日/月 token 限额, 超额 429)
    d. P0-6: check_account_quota (rpm/tpm/5h/concurrent/balance)
-   e. channel = route_engine.select_channel(model, messages=...)  [P0-3: skip multimodal]
+   e. channel = route_engine.select_channel(model, messages=...)
       → tier:xxx 或 tier:xxx/model 前缀 -> _select_by_group (斜杠后缀 V4.6.5)
-      → 精确路由 -> select_best_channel (score-based)
+        [P0-3 V6.0 收窄: 仅 require_vision=1 组内纯文本跳过 multimodal]
+      → 精确路由 -> select_best_channel (score-based, 无 multimodal skip)
    f. P1-15: retry loop on 429/5xx
    g. forward_request(channel, body, headers, requested_model, actual_model)
       → proxy._inject_prompt_cache (P1-8 + P3: 稳定前缀分段 hash)
@@ -107,7 +108,7 @@ RouteEngine
 │   └── _is_channel_usable()      过滤 cooldown / 限额 / 限速
 ├── _select_by_group()            tier:xxx 组路由
 │   ├── 组过滤: tier / capabilities / min_context / require_vision
-│   ├── _has_multimodal_content() 跳过 multimodal [P0-3]
+│   ├── _has_multimodal_content() 跳过 multimodal [P0-3, V6.0 收窄: 仅 require_vision=1 组]
 │   ├── score_account()           5 维加权排序
 │   └── 失败 -> fallback_group
 └── refresh_cache()               全量重 load（60s TTL + mtime）
@@ -187,13 +188,16 @@ model_groups ─┬─ tier:xxx (C2 6 个)
 model_registry
 ├─ model_id (PK)
 ├─ tier (T0/T1/T2/T3/T4)
-├─ modality (text/multimodal)
-└─ supports_prompt_cache (P0-2)
+├─ modality (text/vision/multimodal)
+├─ supports_prompt_cache (P0-2)
+└─ list_input_price / list_output_price (V6.0, 官方标价 元/百万tokens; NULL=未知, 0.0=官方免费; 成本审计用, 不参与路由)
 
 usage_logs
 ├─ caller_id (V4.8, FK -> users.id, 走全局 key 时 NULL)
 ├─ input_tokens / output_tokens
 ├─ cached_input_tokens / cache_read_input_tokens / cache_creation_input_tokens [P0-3-followup]
+├─ cost_estimate (实付估算, 元; 免费/订阅渠道 = 0)
+├─ list_cost_estimate (V6.0 标价估算, 元; NULL=标价未知; 节省 = 标价 - 实付, 仅标价已知行)
 └─ created_at (本地时间, 2026-08-21 起; 存量 UTC 已迁移)
 
 users / api_keys (V4.8 多用户)
@@ -286,7 +290,10 @@ httpx.AsyncClient (上游调用)
 | V4.6.1 | least-used + Cooldown | 多账号分散频限 + 失败账号冷却 |
 | V4.6.4 | body.model 改写 | router fallback 选中的 model 替换给上游 |
 | P0-1 | FK + UNIQUE | 修 int-string 漂移 |
-| P0-3 | multimodal skip | 纯文本请求不选 multimodal model |
+| P0-3 | multimodal skip | 纯文本请求不选 multimodal model（**V6.0 收窄**：仅 `require_vision=1` 组内生效，多分组 multimodal 模型如 glm-5.3-flash 的文本角色不再被误杀）|
 | P0-4 | TTL + mtime | 修 "db 改必 restart" |
 | P0-7 | score weights dashboard | 价格 vs 高可用 trade-off 快速迭代 |
 | P1-15 | 429 failover | 上游 plan 耗尽自动换 channel |
+| V5.1 | 成员优先级激活 | sort key = (price, family_bonus, member_priority, -channel.priority) |
+| V6.0 | vision 分级 + P0-3 收窄 | tier:vision（旗舰）→ tier:vision-light（免费兜底）→ tier:light fallback；GLM 免费模型入组 |
+| V6.0 | 标价双轨成本审计 | registry 官方标价 + usage_logs.list_cost_estimate；免费/订阅渠道实付 0 也可量化节省（节省仅统计标价已知行）|

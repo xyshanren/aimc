@@ -5,7 +5,7 @@
 
 ## 1. 当前 migration 总览
 
-AIMC 当前有 **12 个 migration 脚本**（`db/migrations/`）：
+AIMC 当前有 **19 个 migration 脚本**（`db/migrations/`）：
 
 ```
 2026_07_xx  P0-P0.1  (历史)
@@ -21,7 +21,18 @@ AIMC 当前有 **12 个 migration 脚本**（`db/migrations/`）：
 2026_08_17_p_disable_thinking.py            # V4.6.4 channels.disable_thinking_pass_through
 2026_08_19_v48_multi_user.py                # V4.8 users + api_keys + usage_logs.caller_id
 2026_08_20_p2b_drop_params.py               # P2-B channels.drop_params
+2026_08_25_add_sensenova_models.py          # V4.9.5 SenseNova 渠道/模型/0元价
+2026_08_25_fix_deepseek_pricing.py          # V4.9.5 deepseek 价格修正
+2026_08_25_fix_tier_corruption.py           # V4.9.5 registry tier 修复
+2026_08_25_request_transcripts.py           # V4.9.3 request_transcripts 表
+2026_09_02_v51_m3_tier_t2.py                # V5.1 minimax-m3 tier T1→T2
+2026_09_03_v60_glm_flash_vision.py          # V6.0 Phase1 vision 分级 + GLM 免费模型 + P0-3 收窄
+2026_09_03_v60_phase2_cost_audit.py         # V6.0 Phase2 标价双轨（registry 标价列 + usage_logs.list_cost_estimate + 回填）
 ```
+
+> 生产环境（ubuntu2401）只跑幂等 migration，**不要**跑 `seed_model_groups.py` /
+> `refresh_siliconflow_models.py`（先清后插会丢同步模型与审计历史）。V6.0 起两个
+> `_v60_*` 迁移支持重复执行（已存在列/已有标价自动跳过，不覆盖人工修正）。
 
 ## 2. 完整迁移顺序（reset_db 后）
 
@@ -78,6 +89,24 @@ python db/migrations/2026_08_19_v48_multi_user.py --apply
 # l. channels 加 drop_params (P2-B)
 python db/migrations/2026_08_20_p2b_drop_params.py --apply
 
+# === 阶段 4b: V4.9.3 ~ V6.0 新增 migration ===
+# m. request_transcripts 表 (V4.9.3)
+python db/migrations/2026_08_25_request_transcripts.py --apply
+
+# n-o. SenseNova 渠道/模型/价格 + 修复 (V4.9.5, 3 个按需)
+python db/migrations/2026_08_25_add_sensenova_models.py --apply
+python db/migrations/2026_08_25_fix_deepseek_pricing.py --apply
+python db/migrations/2026_08_25_fix_tier_corruption.py --apply
+
+# p. minimax-m3 tier T1→T2 (V5.1)
+python db/migrations/2026_09_02_v51_m3_tier_t2.py --apply
+
+# q. vision 分级 + GLM 免费模型 + P0-3 收窄 (V6.0 Phase 1)
+python db/migrations/2026_09_03_v60_glm_flash_vision.py --apply
+
+# r. 标价双轨成本审计 (V6.0 Phase 2; 幂等, 可重复跑补新标价)
+python db/migrations/2026_09_03_v60_phase2_cost_audit.py --apply
+
 # === 阶段 5: 价格同步 (脚本, 不是 migration) ===
 python scripts/sync_siliconflow_cache_prices.py --apply   # 9 行 cache 价 (兼容)
 python scripts/sync_siliconflow_prices.py --apply          # 53 行 input/output/cache (阶段B)
@@ -86,7 +115,7 @@ python scripts/sync_siliconflow_prices.py --apply          # 53 行 input/output
 systemctl --user restart aimc
 
 # === 阶段 7: 验证 + 测试 ===
-python -m pytest tests/ -v   # 期望 547 passed
+python -m pytest tests/ -q   # 全量绿 (存量 4 个 e2e teardown FK 失败除外, 见 V6 计划 §4)
 ```
 
 ## 3. 验证清单

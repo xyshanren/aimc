@@ -3,8 +3,8 @@
 > AIMC（AI Model Compass）是一个轻量级 LLM 网关 + 优惠情报聚合工具。
 > 本文档是**所有文档的入口**。按你的角色选择下面任一入口。
 
-**项目状态**：V4.9 失败链路 + 智能探活 + 人工干预 完成（2026-08-25），V4.9.5 SenseNova 模型接入（sensenova-6.8-flash-lite + glm-5.2 免费第二渠道）完成（2026-08-25），处于观察期。
-路线图见 [dev/next-step-plan.md](dev/next-step-plan.md)。
+**项目状态**：**V6.0 完成（2026-09-03）** — Phase 1 模型组分级（tier:vision 重排 + vision-light 新组 + GLM 免费模型 GLM-4.7-Flash/GLM-4.6V-Flash 接入 + P0-3 收窄）、Phase 2 标价双轨成本审计（registry 官方标价 + usage_logs.list_cost_estimate + 4 个 cost API + Dashboard 成本审计卡）。此前：V5.1 成员优先级激活（2026-09-02）、V4.9.5 SenseNova 接入（2026-08-25）。
+版本路线与实施记录见 [next-major-v6-plan.md](next-major-v6-plan.md)（下一站 V6.1 架构 agent 友好化）。
 
 ---
 

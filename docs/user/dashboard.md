@@ -13,6 +13,7 @@
 | **Prompt Cache 节省** | cache 命中率 + 节省金额 | §2 |
 | **数据新鲜度** | apscheduler job（按 provider × 轮询间隔分组，约 36 个）的健康状态 | §3 |
 | **用量统计** | 每天请求数 / token / 平均延迟 | §4 |
+| **成本审计**（V6.0） | 实付 vs 官方标价 vs 节省 + 按模型/分组/用户下钻 | §4b |
 | **组路由命中率** | tier:xxx 调用频次 + 跳到 fallback 的次数 | §5 |
 | **按人用量**（V4.8） | 近 7 天各调用方的请求数/token/费用 | §6 |
 | **Key 管理**（V4.8） | 多用户 key 列表 / 吊销 | §6 |
@@ -87,6 +88,22 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 **怎么读**：
 - 请求数突增 → 可能上游有优惠活动 / 爬虫异常
 - 平均延迟 > 2s → 上游响应慢或本地网络问题
+
+## §4b 成本审计（V6.0 Phase 2）
+
+**显示**：
+- KPI：实付（按渠道实际计费）/ 官方标价（按 registry 标价估算）/ 节省（标价 − 实付）/ 标价覆盖率
+- 近 7 天趋势双线图（官方标价 vs 实付）
+- 按模型 / 按分组 / 按用户三个 tab 下钻（请求 / token / 实付 / 标价 / 节省 / 单行覆盖率）
+
+**怎么读**：
+- 免费模型（glm-4.7-flash 等）标价为 0 → 节省 0 是真实结论，不是数据缺失
+- 标价未知的模型（如 kimi-k3）节省列显示「标价未知」，不计入节省总额；总覆盖率 < 50% 时 KPI 变黄提醒补数据
+- 节省大 = 免费/订阅渠道承接了本应按标价计费的流量（口径不含缓存/时段折扣，是上界估计）
+
+**补标价**：`model_registry.list_input_price / list_output_price` 直接 UPDATE 即可
+（迁移脚本 `db/migrations/2026_09_03_v60_phase2_cost_audit.py` 的 LIST_PRICES 表可作参考；
+迁移只写 NULL 行，不会覆盖手工值）。
 
 ## §5 组路由命中率
 
@@ -175,6 +192,10 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 - `GET /dashboard/api/data-freshness` — job 健康度
 - `GET /dashboard/api/suggestions?status=pending` — 待审建议
 - `GET /dashboard/api/stats/per-user?days=7` — 按人用量
+- `GET /dashboard/api/usage/cost-by-model?days=7` — 按模型成本审计（V6.0）
+- `GET /dashboard/api/usage/cost-by-group?days=7` — 按分组成本审计（V6.0）
+- `GET /dashboard/api/usage/cost-by-user?days=7` — 按用户成本审计（V6.0）
+- `GET /dashboard/api/usage/cost-trend?days=7` — 按天成本趋势（V6.0）
 - `GET /dashboard/api/keys` — 用户 key 列表（脱敏）
 - `GET /dashboard/api/stats/group_routing` — 组路由命中分布
 - `GET /dashboard/api/promotions` — 优惠情报（默认过滤低置信度）

@@ -233,6 +233,27 @@ curl http://localhost:8080/dashboard/api/stats/group_routing \
 返回 `{summary, groups: [{group_id, request_count, model_distribution, channels_used, total_cost}], unmatched}`。
 注：`tier:vision/glm-4.5v` 写法的 group_id 已归一化为 `tier:vision`（2026-08-21 起）。
 
+### GET /dashboard/api/usage/cost-by-model?days=7（V6.0）
+
+成本审计 — 按模型拆「标价 vs 实付 vs 节省」（V6.0 Phase 2，按官方标价降序）：
+
+```bash
+curl 'http://localhost:8080/dashboard/api/usage/cost-by-model?days=7' \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+返回 `{days, totals, items: [{model, request_count, input_tokens, output_tokens, cost_yuan, list_cost_yuan, saved_yuan, list_known_requests}]}`。
+
+**口径**（4 个 cost 端点共用）：
+- `cost_yuan` = `sum(cost_estimate)` 实付（按渠道 price_snapshots 计费，免费/订阅渠道 = 0）
+- `list_cost_yuan` = `sum(list_cost_estimate)` 官方标价（按 `model_registry.list_input_price/list_output_price` 估算；上界口径，不含缓存/时段折扣）
+- `saved_yuan` = `list_cost_yuan − 标价已知行的实付合计` —— **只统计标价已知行**，标价未知（NULL）行不计入，避免把节省算成负数
+- `list_known_requests / request_count` = 标价覆盖率，覆盖率低时节省数字偏保守
+
+同款端点：`/api/usage/cost-by-group`（NULL group_id 归 `(精确路由)`）、
+`/api/usage/cost-by-user`（NULL caller_id 归 `(未鉴权/legacy)`）、
+`/api/usage/cost-trend`（按天升序，画图用）。响应结构一致（分组键不同）。
+
 ### GET /dashboard/api/promotions
 
 优惠情报列表（默认过滤 `flagged=1` 低置信度条目）：
@@ -483,6 +504,8 @@ FROM usage_logs ORDER BY id DESC LIMIT 5
 | `cached_input_tokens` | cache 命中 token（OpenAI 风格，P1-8 起填）|
 | `cache_read_input_tokens` / `cache_creation_input_tokens` | Anthropic 风格 cache 读/写 token |
 | `latency_ms` | 网关总延迟 |
+| `cost_estimate` | 实付估算费用（元，按渠道 price_snapshots 计费；免费/订阅渠道 = 0，价格未找到 = NULL）|
+| `list_cost_estimate` | 标价估算费用（元，按 `model_registry` 官方标价；NULL = 标价未知。V6.0 Phase 2 起；与 `cost_estimate` 配对算节省，见 cost-* 端点口径）|
 | `created_at` | 本地时间（2026-08-21 起写入本地时钟；之前 UTC，存量已迁移）|
 
 ### `price_snapshots` 行示例

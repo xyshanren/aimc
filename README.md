@@ -15,7 +15,8 @@ AIMC（AI Model Compass）是一款专为个人开发者设计的**轻量级 LLM
 ## 核心特性
 
 - **智能路由** — 基于时段/价格/配额/频限多维权重，自动选择最优渠道
-- **多维模型组 (Phase 2)** — 按 `tier:xxx` 前缀调用（支持 `tier:vision/glm-4.5v` 组内指定），AIMC 在组内跨 model 选最便宜
+- **多维模型组 (V6.0 分级)** — 按 `tier:xxx` 前缀调用（支持 `tier:vision/deepseek-v4-flash-vision-exp` 组内指定），组内跨 model 选最便宜；vision → vision-light → light 分级 fallback，接入 GLM 官方免费模型（GLM-4.7-Flash 文本 / GLM-4.6V-Flash 视觉）
+- **标价双轨成本审计 (V6.0)** — 免费/订阅渠道实付 0 也按官方标价量化"省了多少"，4 个成本 API + Dashboard 成本审计卡 + 周分析 💰 信号
 - **零侵入透传** — 兼容 OpenAI SDK，流式/非流式原样透传
 - **多用户 Key (V4.8)** — `aimc-` 前缀按人发 key、按人记账（caller_id）、个人日/月限额、Dashboard 按人用量 + Key 管理
 - **情报聚合** — 定时爬取厂商定价页 + 活动页，AI 结构化提取优惠信息（低置信度自动过滤）
