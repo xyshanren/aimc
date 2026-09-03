@@ -1,7 +1,7 @@
 # AIMC V6.0 总体规划（设计稿）
 
-> 状态: **Phase 1 已实施（本地代码 + 测试通过），待部署 VM** (2026-09-03)
-> 日期: 2026-09-03（v2，按用户五点反馈修订；v3 补实施记录见文末 §6）
+> 状态: **V6.0 Phase 1 已上产并验证** (2026-09-03, commit 76df5a7/83929b2)
+> 日期: 2026-09-03（v2，按用户五点反馈修订；v3 补实施记录见文末 §6；v4 补上产验证 §6.5）
 > 前置: V5.1 (commit 8c8e010) 成员优先级已激活
 > 定位: 下一大版本（V6.0）三条需求统一规划
 
@@ -232,6 +232,21 @@ curl -X POST http://localhost:8080/dashboard/api/cache/refresh   # VM 上, 带 d
 1. glm-4.7-flash 1305 过载频率 → glm_bigmodel 账号 30s 冷却波纹是否波及 glm-5.3-flash 流量（RATE_LIMITED 分类已确认不误报余额不足）
 2. glm-4.6v-flash 免费 vision 兜底命中率
 3. vision→vision-light→light 新 fallback 链的实际降级路径
+
+### 6.5 上产验证结果 (2026-09-03)
+
+迁移在 VM ubuntu2401 执行完成（dry-run 19 项 → apply 全 OK → 刷缓存 6 渠道/113 模型），真实请求验证：
+
+| # | 场景 | 实际命中 | 判定 |
+|---|---|---|---|
+| 1 | tier:vision + 图 | `glm-5.3-flash` @glm_bigmodel | ✅ 0 元领跑（见下方定位修正） |
+| 2 | tier:vision-light + 图 | `glm-4.6v-flash` @glm_bigmodel | ✅ 免费视觉兜底生效 |
+| 3 | tier:light + 文本 | glm-4.7-flash **429(1305)** → failover `qwen-qwen3.5-4b` @siliconflow | ✅ failover 链按设计工作 |
+| 4 | tier:strong + 文本 | `deepseek-v4-flash` @deepseek_official | ✅ 不变 |
+| 5 | tier:vision + 文本（加检） | `deepseek-v4-flash-vision-exp` @deepseek_official | ✅ **P0-3 收窄生效**：multimodal 的 5.3-flash 被跳过，vision 模态成员接住 |
+
+- **观察项①当场闭环**：usage_logs 确认 glm-4.7-flash 429 → glm_01 账号 `last_error_type=rate_limited`、`needs_human=false`、冷却 30s 自愈，未误报余额不足。
+- **vision-exp 定位修正**：生产价格快照为付费价（价格同 v4-flash，非 0 元），故带图场景 glm-5.3-flash（0 元）按 cheapest 正确领跑；vision-exp 实际定位是 **glm Lite 池耗尽时的付费视觉兜底**（场景 5 证明可用）。
 
 ---
 
