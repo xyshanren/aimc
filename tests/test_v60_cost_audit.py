@@ -178,6 +178,19 @@ def test_estimate_list_cost_zero_price_is_zero():
         route_engine._registry_cache = original
 
 
+def test_write_call_sites_pass_list_cost():
+    """防回归: 两个 _write_usage_log 调用点必须传 list_cost_estimate
+
+    V6.0 Phase2 上产首日发现: 两处调用点算了值但没传参, 落库恒 NULL
+    (非流式 + 流式共 2 个调用点 + UsageLog 构造, 共 3 处 kwarg)
+    """
+    src = (ROOT / "gateway" / "proxy.py").read_text(encoding="utf-8")
+    n = src.count("list_cost_estimate=list_cost_estimate")
+    assert n >= 3, (
+        f"_write_usage_log 调用点/UsageLog 构造应有 >=3 处传 list_cost_estimate, 实际 {n}"
+    )
+
+
 # ============================================================
 # Part 2: 成本审计 4 端点 (asyncio.run 包装, 同 test_v48_dashboard 惯例)
 # ============================================================

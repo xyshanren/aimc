@@ -1006,6 +1006,8 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
                     caller_id=caller_id,
                     caller_key_id=caller_key_id,
                     cost_estimate=cost_estimate,
+                    # V6.0 Phase 2: 标价轨 (官方标价口径, 量化免费/订阅渠道节省)
+                    list_cost_estimate=list_cost_estimate,
                 )
             )
             # V4.6.4: 添加回调, task 失败时 log 错误 (之前静默)
@@ -1276,6 +1278,8 @@ def _schedule_stream_usage_log(
                     caller_id=caller_id,
                     caller_key_id=caller_key_id,
                     cost_estimate=cost_estimate,
+                    # V6.0 Phase 2: 标价轨 (官方标价口径, 量化免费/订阅渠道节省)
+                    list_cost_estimate=list_cost_estimate,
                 )
             )
             task.add_done_callback(_log_task_result)
