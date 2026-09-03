@@ -146,7 +146,11 @@ def run(apply: bool) -> int:
         ))
 
     # 步骤 4: 存量 usage_logs 标价回填 (仅 NULL 行; 标价未知模型的历史行保持 NULL)
-    if "list_cost_estimate" in usage_cols and "list_input_price" in registry_cols:
+    # 前提: usage_logs 具备 model/input_tokens/output_tokens 列 (极旧库缺列则跳过)
+    if (
+        "list_cost_estimate" in usage_cols and "list_input_price" in registry_cols
+        and all(c in usage_cols for c in ("model", "input_tokens", "output_tokens"))
+    ):
         n_usage = conn.execute(
             "SELECT COUNT(*) FROM usage_logs "
             "WHERE list_cost_estimate IS NULL AND model IN ("

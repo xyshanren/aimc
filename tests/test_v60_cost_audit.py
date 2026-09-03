@@ -333,13 +333,27 @@ def test_cost_endpoints_empty_db():
 # ============================================================
 
 def _make_old_schema_db(db_path):
-    """旧 schema (无标价列) 的最小库"""
+    """旧 schema (无标价列) 的最小库 (usage_logs 带成本审计所需列)"""
     conn = sqlite3.connect(db_path)
     conn.execute("CREATE TABLE model_registry (id INTEGER PRIMARY KEY, model_id TEXT)")
-    conn.execute("CREATE TABLE usage_logs (id INTEGER PRIMARY KEY)")
+    conn.execute(
+        "CREATE TABLE usage_logs ("
+        "id INTEGER PRIMARY KEY, model TEXT, "
+        "input_tokens INTEGER, output_tokens INTEGER)"
+    )
     conn.execute("INSERT INTO model_registry (model_id) VALUES ('glm-5.3-flash')")
     conn.execute("INSERT INTO model_registry (model_id) VALUES ('kimi-k3')")
     conn.execute("INSERT INTO model_registry (model_id) VALUES ('minimax-m3')")
+    # 存量 usage 行: glm-5.3-flash 1M in / 0.5M out → 标价 0.8 + 1.4 = 2.2 元;
+    # kimi-k3 标价未知 → 保持 NULL
+    conn.execute(
+        "INSERT INTO usage_logs (model, input_tokens, output_tokens) "
+        "VALUES ('glm-5.3-flash', 1000000, 500000)"
+    )
+    conn.execute(
+        "INSERT INTO usage_logs (model, input_tokens, output_tokens) "
+        "VALUES ('kimi-k3', 1000, 500)"
+    )
     conn.commit()
     conn.close()
 
@@ -375,6 +389,16 @@ def test_migration_adds_columns_and_backfills(tmp_path):
     assert rows["glm-5.3-flash"] == (0.8, 2.8)   # 原价标价
     assert rows["kimi-k3"] == (None, None)        # 未知不编造
     assert rows["minimax-m3"] == (None, None)     # 未知不编造
+
+    # 步骤 4: 存量 usage_logs 标价回填
+    usage_rows = {
+        r[0]: r[1]
+        for r in conn.execute(
+            "SELECT model, list_cost_estimate FROM usage_logs"
+        )
+    }
+    assert abs(usage_rows["glm-5.3-flash"] - 2.2) < 1e-9  # 1M*0.8 + 0.5M*2.8 / 1e6
+    assert usage_rows["kimi-k3"] is None                   # 标价未知 → NULL
     conn.close()
 
     # 再跑一遍: 幂等, 已有标价不被覆盖
