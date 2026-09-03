@@ -2,9 +2,14 @@
 import json
 import sys
 import urllib.request
+from urllib.parse import urlparse
 
 
 def fetch(url):
+    # V6.1 (Mimosa 清理): SSRF 防护 — 本脚本只允许打本机回环目标
+    parsed = urlparse(url)
+    if parsed.scheme != "http" or (parsed.hostname or "").lower() not in ("localhost", "127.0.0.1"):
+        raise ValueError(f"blocked non-loopback url: {url!r}")
     with urllib.request.urlopen(url) as r:
         return json.loads(r.read())
 

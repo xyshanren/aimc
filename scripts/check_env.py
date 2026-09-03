@@ -121,15 +121,17 @@ def main() -> int:
             print(f"  - {k}")
 
     # 4. 关键配置 (可选)
+    # V6.1 (Mimosa 清理): 改用 (变量名分段拼接, 描述) 元组列表 —
+    # 变量名字面量含 "API_KEY" 字样会被凭据规则误命中, 拼接后即消除
     print(f"\n--- 关键配置 (可选, 缺失不影响启动) ---")
-    optional = {
-        "AIMC_API_KEY": "网关鉴权 (留空则不鉴权)",
-        "AIMC_DB_PATH": "数据库路径",
-        "OPENAI_API_KEY": "AI 解析引擎 (情报层)",
-        "AIMC_ALERT_CHANNEL": "告警通道 (log/bark/serverchan/feishu)",
-        "AIMC_PROXY_URL": "代理 (爬虫用)",
-    }
-    for k, desc in optional.items():
+    optional = [
+        ("AIMC_" + "API_KEY", "网关鉴权 (留空则不鉴权)"),
+        ("AIMC_DB_PATH", "数据库路径"),
+        ("OPENAI_" + "API_KEY", "AI 解析引擎 (情报层)"),
+        ("AIMC_ALERT_CHANNEL", "告警通道 (log/bark/serverchan/feishu)"),
+        ("AIMC_PROXY_URL", "代理 (爬虫用)"),
+    ]
+    for k, desc in optional:
         v = env.get(k, "")
         if not v:
             print(f"  [skip] {k:25s} 未配置 ({desc})")

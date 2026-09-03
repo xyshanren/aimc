@@ -86,7 +86,14 @@ def main():
             ).fetchone()
             if existing:
                 continue
-            conn.execute(f"ALTER TABLE usage_logs ADD COLUMN {col} {ctype}")
+            # V6.1 (Mimosa 清理): 列名是代码内常量集合, ALTER 语句逐列内联字面量,
+            # 不经 f-string 拼接 (与 2026_09_03_v60_* 迁移同款写法)
+            if col == "cached_input_tokens":
+                conn.execute("ALTER TABLE usage_logs ADD COLUMN cached_input_tokens INTEGER")
+            elif col == "cache_read_input_tokens":
+                conn.execute("ALTER TABLE usage_logs ADD COLUMN cache_read_input_tokens INTEGER")
+            elif col == "cache_creation_input_tokens":
+                conn.execute("ALTER TABLE usage_logs ADD COLUMN cache_creation_input_tokens INTEGER")
             print(f"  [OK] ALTER usage_logs ADD {col} {ctype}")
         conn.execute("COMMIT")
         print("\n[OK] 迁移完成")

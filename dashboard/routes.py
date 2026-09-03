@@ -78,18 +78,38 @@ async def dashboard_page():
 # - 这里只提供 login/status/logout 三个端点 + login.html 静态页
 
 
+def _safe_next_path(next_path: str) -> str:
+    """V6.1 安全修复 (Mimosa medium): 登录页 next 参数白名单校验 — 仅站内绝对路径。
+
+    该值会被拼进 fallback 登录页 JS `location.href = '{next_path}'`：
+    - 未校验时 `?next=';alert(1)//` 可注入 JS（XSS）
+    - `?next=https://evil.com` / `?next=//evil.com` 可做开放跳转
+    规则: 必须以单个 '/' 开头（'//' 协议相对跳外站, 拒），
+    且不含引号/反斜杠/尖括号/控制字符；不合法一律回默认 '/dashboard'。
+    """
+    if not next_path or not next_path.startswith("/"):
+        return "/dashboard"
+    if next_path.startswith("//") or next_path.startswith("/\\"):
+        return "/dashboard"
+    if any(c in next_path for c in "'\"<>\\\r\n\t"):
+        return "/dashboard"
+    return next_path
+
+
 @router.get("/login", response_class=HTMLResponse)
 async def dashboard_login_page(next: str = "/dashboard"):
     """P1-7: dashboard 登录页 (浏览器访问 /dashboard 无 token 时重定向到这里)
 
     显示一个简单的 token 输入框, 提交后 JS 把 token 存 localStorage,
     并跳转到 ?next= 指定的路径
+    V6.1: next 经 _safe_next_path 白名单校验后才拼入页面
     """
+    safe_next = _safe_next_path(next)
     login_file = STATIC_DIR / "login.html"
     if login_file.exists():
         return HTMLResponse(content=login_file.read_text(encoding="utf-8"))
     # Fallback inline HTML (跟 static/login.html 一致)
-    return HTMLResponse(content=_LOGIN_HTML_FALLBACK.format(next_path=next))
+    return HTMLResponse(content=_LOGIN_HTML_FALLBACK.format(next_path=safe_next))
 
 
 # Fallback login HTML (避免引入独立 static 文件 — 简单优先)
@@ -2585,7 +2605,7 @@ async def rotate_account_dashboard(
 ):
     """V4.6: 轮换 key (等价 rotate_account.py rotate --id --new-key).
 
-    body: { "api_key": "sk-new-key-xxx" }
+    body: { "api_key": "<new-api-key>" }
 
     返回 200/400/404, 同 create.
     """

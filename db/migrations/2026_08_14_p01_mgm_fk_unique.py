@@ -114,28 +114,31 @@ def main():
         # Step 1: 软删除孤儿 (不硬删, 留审计)
         if orphans:
             orphan_ids = [o['id'] for o in orphans]
-            placeholders = ','.join('?' * len(orphan_ids))
-            conn.execute(f"""
-                UPDATE model_group_members
-                SET is_active = 0,
-                    removed_at = CURRENT_TIMESTAMP,
-                    removed_reason = 'orphan_group_p01_migration',
-                    removed_by = 'p01_migration'
-                WHERE id IN ({placeholders})
-            """, orphan_ids)
+            # V6.1 (Mimosa 清理): SQL 语句改调用点内联字面量, id 逐行 ? 绑定
+            # (同事务内逐行 UPDATE, 语义与 IN (...) 批量等价)
+            for oid in orphan_ids:
+                conn.execute("""
+                    UPDATE model_group_members
+                    SET is_active = 0,
+                        removed_at = CURRENT_TIMESTAMP,
+                        removed_reason = 'orphan_group_p01_migration',
+                        removed_by = 'p01_migration'
+                    WHERE id = ?
+                """, (oid,))
             print(f"  [OK] 软删除 {len(orphan_ids)} 行孤儿")
 
         # Step 2: 软删除重复
         if dupe_to_soft_delete:
-            placeholders = ','.join('?' * len(dupe_to_soft_delete))
-            conn.execute(f"""
-                UPDATE model_group_members
-                SET is_active = 0,
-                    removed_at = CURRENT_TIMESTAMP,
-                    removed_reason = 'duplicate_p01_migration',
-                    removed_by = 'p01_migration'
-                WHERE id IN ({placeholders})
-            """, dupe_to_soft_delete)
+            # V6.1 (Mimosa 清理): 同上, 逐行 ? 绑定
+            for oid in dupe_to_soft_delete:
+                conn.execute("""
+                    UPDATE model_group_members
+                    SET is_active = 0,
+                        removed_at = CURRENT_TIMESTAMP,
+                        removed_reason = 'duplicate_p01_migration',
+                        removed_by = 'p01_migration'
+                    WHERE id = ?
+                """, (oid,))
             print(f"  [OK] 软删除 {len(dupe_to_soft_delete)} 行重复")
 
         # Step 3: Recreate model_group_members with FK + UNIQUE

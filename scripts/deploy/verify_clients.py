@@ -18,11 +18,33 @@
     python scripts/deploy/verify_clients.py --host 192.168.1.100 --port 8080
 """
 import argparse
+import ipaddress
 import json
 import socket
 import sys
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
+
+
+def assert_safe_target(url: str) -> None:
+    """V6.1 (Mimosa 清理): SSRF 防护 — 本脚本只允许打回环/内网目标。
+
+    --host 默认 127.0.0.1, 典型用法是 VM 内网 IP (192.168.x.x),
+    因此白名单 = loopback + 私网 + link-local, 拒绝公网目标与非 IP 主机名。
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"blocked scheme: {parsed.scheme!r}")
+    host = parsed.hostname or ""
+    if host.lower() == "localhost":
+        return
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        raise ValueError(f"blocked non-ip host: {host!r}")
+    if not (ip.is_loopback or ip.is_private or ip.is_link_local):
+        raise ValueError(f"blocked non-private target: {host!r}")
 
 
 def get_local_lan_ip() -> str:
@@ -58,6 +80,7 @@ def check_endpoint(name: str, base_url: str, api_key: str = "") -> dict:
     import time
     start = time.time()
     url = f"{base_url.rstrip('/')}/models"
+    assert_safe_target(url)
 
     headers = {"Content-Type": "application/json"}
     if api_key:

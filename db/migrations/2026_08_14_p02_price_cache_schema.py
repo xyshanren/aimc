@@ -64,7 +64,11 @@ def main():
     # ============ Inspect current schema ============
     print("\n=== Inspect current price_snapshots / model_registry schema ===")
     for table in ("price_snapshots", "model_registry"):
-        cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        # V6.1 (Mimosa 清理): PRAGMA 不支持参数绑定, 表名是代码内常量, 逐表内联字面量
+        if table == "price_snapshots":
+            cols = conn.execute("PRAGMA table_info(price_snapshots)").fetchall()
+        else:
+            cols = conn.execute("PRAGMA table_info(model_registry)").fetchall()
         print(f"\n[{table}] 当前列:")
         for c in cols:
             print(f"  {c['name']:25s} {c['type']:15s} {'NOT NULL' if c['notnull'] else 'NULL':8s} default={c['dflt_value']!r}")
@@ -124,13 +128,24 @@ def main():
         conn.execute("BEGIN")
 
         # Step 1: 加列
+        # V6.1 (Mimosa 清理): 表/列名是代码内常量集合, ALTER 语句逐列内联字面量,
+        # 不经 f-string 拼接 (与 2026_09_03_v60_* 迁移同款写法)
         for col, col_type, _ in price_alterations:
             existing = conn.execute(
                 "SELECT name FROM pragma_table_info('price_snapshots') WHERE name = ?", (col,)
             ).fetchone()
             if existing:
                 continue
-            conn.execute(f"ALTER TABLE price_snapshots ADD COLUMN {col} {col_type}")
+            if col == "raw_model_id":
+                conn.execute("ALTER TABLE price_snapshots ADD COLUMN raw_model_id TEXT")
+            elif col == "cached_input_price":
+                conn.execute("ALTER TABLE price_snapshots ADD COLUMN cached_input_price REAL")
+            elif col == "cache_write_price":
+                conn.execute("ALTER TABLE price_snapshots ADD COLUMN cache_write_price REAL")
+            elif col == "currency":
+                conn.execute("ALTER TABLE price_snapshots ADD COLUMN currency TEXT")
+            elif col == "is_promotion":
+                conn.execute("ALTER TABLE price_snapshots ADD COLUMN is_promotion INTEGER")
             print(f"  [OK] ALTER price_snapshots ADD {col} {col_type}")
 
         for col, col_type, _ in reg_alterations:
@@ -139,7 +154,10 @@ def main():
             ).fetchone()
             if existing:
                 continue
-            conn.execute(f"ALTER TABLE model_registry ADD COLUMN {col} {col_type}")
+            if col == "raw_ids":
+                conn.execute("ALTER TABLE model_registry ADD COLUMN raw_ids TEXT")
+            elif col == "supports_prompt_cache":
+                conn.execute("ALTER TABLE model_registry ADD COLUMN supports_prompt_cache INTEGER")
             print(f"  [OK] ALTER model_registry ADD {col} {col_type}")
 
         # Step 1.5: backfill
@@ -181,7 +199,11 @@ def main():
         # 验证
         print("\n=== 验证 ===")
         for table in ("price_snapshots", "model_registry"):
-            cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
+            # V6.1 (Mimosa 清理): PRAGMA 逐表内联字面量
+            if table == "price_snapshots":
+                cols = conn.execute("PRAGMA table_info(price_snapshots)").fetchall()
+            else:
+                cols = conn.execute("PRAGMA table_info(model_registry)").fetchall()
             print(f"\n[{table}] 当前列数: {len(cols)}")
             for c in cols[-5:]:
                 print(f"  {c['name']:25s} {c['type']:15s}")
