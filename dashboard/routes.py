@@ -78,50 +78,34 @@ async def dashboard_page():
 # - 这里只提供 login/status/logout 三个端点 + login.html 静态页
 
 
-def _safe_next_path(next_path: str) -> str:
-    """V6.1 安全修复 (Mimosa medium): 登录页 next 参数白名单校验 — 仅站内绝对路径。
-
-    该值会被拼进 fallback 登录页 JS `location.href = '{next_path}'`：
-    - 未校验时 `?next=';alert(1)//` 可注入 JS（XSS）
-    - `?next=https://evil.com` / `?next=//evil.com` 可做开放跳转
-    规则: 必须以单个 '/' 开头（'//' 协议相对跳外站, 拒），
-    且不含引号/反斜杠/尖括号/控制字符；不合法一律回默认 '/dashboard'。
-    """
-    if not next_path or not next_path.startswith("/"):
-        return "/dashboard"
-    if next_path.startswith("//") or next_path.startswith("/\\"):
-        return "/dashboard"
-    if any(c in next_path for c in "'\"<>\\\r\n\t"):
-        return "/dashboard"
-    return next_path
-
-
 @router.get("/login", response_class=HTMLResponse)
-async def dashboard_login_page(next: str = "/dashboard"):
+async def dashboard_login_page():
     """P1-7: dashboard 登录页 (浏览器访问 /dashboard 无 token 时重定向到这里)
 
     显示一个简单的 token 输入框, 提交后 JS 把 token 存 localStorage,
-    并跳转到 ?next= 指定的路径
-    V6.1: next 经 _safe_next_path 白名单校验后才拼入页面
+    并跳转到 ?next= 指定的路径。
+    V6.1 安全修复 (Mimosa medium): 服务端不再把 ?next= 拼进页面
+    （旧写法 `location.href = '{next_path}'` 构成 服务端污点→JS 注入/开放跳转），
+    改由页面 JS 从 URLSearchParams 自取 + 白名单校验 (见 safeNext)。
     """
-    safe_next = _safe_next_path(next)
     login_file = STATIC_DIR / "login.html"
     if login_file.exists():
         return HTMLResponse(content=login_file.read_text(encoding="utf-8"))
-    # Fallback inline HTML (跟 static/login.html 一致)
-    return HTMLResponse(content=_LOGIN_HTML_FALLBACK.format(next_path=safe_next))
+    # Fallback inline HTML (避免引入独立 static 文件 — 简单优先)
+    return HTMLResponse(content=_LOGIN_HTML_FALLBACK)
 
 
 # Fallback login HTML (避免引入独立 static 文件 — 简单优先)
+# V6.1: 无任何服务端插值; ?next= 由前端 safeNext() 白名单校验后使用
 _LOGIN_HTML_FALLBACK = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>AIMC Dashboard Login</title>
 <style>
-body {{ font-family: system-ui; max-width: 400px; margin: 80px auto; padding: 20px; }}
-input {{ width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; font-size: 14px; }}
-button {{ width: 100%; padding: 10px; background: #1f6feb; color: white; border: none; cursor: pointer; font-size: 14px; }}
-button:hover {{ background: #1858bf; }}
-.err {{ color: #d73a49; margin-top: 10px; font-size: 13px; }}
-.hint {{ color: #6a737d; font-size: 12px; margin-top: 16px; }}
+body { font-family: system-ui; max-width: 400px; margin: 80px auto; padding: 20px; }
+input { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; font-size: 14px; }
+button { width: 100%; padding: 10px; background: #1f6feb; color: white; border: none; cursor: pointer; font-size: 14px; }
+button:hover { background: #1858bf; }
+.err { color: #d73a49; margin-top: 10px; font-size: 13px; }
+.hint { color: #6a737d; font-size: 12px; margin-top: 16px; }
 </style></head>
 <body>
 <h2 style="margin-top:0;">AIMC Dashboard</h2>
@@ -131,24 +115,32 @@ button:hover {{ background: #1858bf; }}
 <div id="err" class="err"></div>
 <div class="hint">Token 来源: AIMC_DASHBOARD_TOKEN 环境变量 / .env</div>
 <script>
-async function submit() {{
+// V6.1 安全修复: next 白名单 — 仅站内绝对路径 (拒 //外链/引号/反斜杠/尖括号),
+// 与后端此前的 _safe_next_path 规则一致; 不合法回默认 /dashboard
+function safeNext() {
+  let n = new URLSearchParams(location.search).get('next') || '/dashboard';
+  if (!n.startsWith('/') || n.startsWith('//') || n.startsWith('/\\\\')) return '/dashboard';
+  if (['"', "'", '<', '>', '\\\\'].some(c => n.includes(c))) return '/dashboard';
+  return n;
+}
+async function submit() {
   const token = document.getElementById('t').value.trim();
-  if (!token) {{ document.getElementById('err').innerText = 'Token required'; return; }}
+  if (!token) { document.getElementById('err').innerText = 'Token required'; return; }
   // 验证 + 存 cookie (HttpOnly)
-  const resp = await fetch('/dashboard/api/auth/login', {{
+  const resp = await fetch('/dashboard/api/auth/login', {
     method: 'POST',
-    headers: {{ 'Content-Type': 'application/json' }},
-    body: JSON.stringify({{ token }})
-  }});
-  if (resp.ok) {{
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token })
+  });
+  if (resp.ok) {
     localStorage.setItem('aimc_dashboard_token', token);
-    location.href = '{next_path}';
-  }} else {{
+    location.href = safeNext();
+  } else {
     document.getElementById('err').innerText = 'Invalid token';
     localStorage.removeItem('aimc_dashboard_token');
-  }}
-}}
-document.getElementById('t').addEventListener('keypress', e => {{ if (e.key === 'Enter') submit(); }});
+  }
+}
+document.getElementById('t').addEventListener('keypress', e => { if (e.key === 'Enter') submit(); });
 </script>
 </body></html>
 """
