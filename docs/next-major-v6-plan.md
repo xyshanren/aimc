@@ -151,7 +151,24 @@ if group.require_vision and not has_mm and registry.modality == "multimodal":
 - Dashboard 只留「关注（看板）」+「需人工判断的写操作」（tier/优惠审批/跨源拍板/加 key）。
 - 操作分三类：纯自动（API/CLI）、半自动（提交 + 人工审批）、纯人工（只看板）。
 
-### 3.3 落地步骤（V6.1）
+### 3.3 V6.1 附带事项：Mimosa 存量风险清理（2026-09-03 用户列入）
+
+commit/pash 时 Mimosa 扫出 11 high + 1 medium，**全部为存量文件**（V6.0 Phase 1 新增代码零命中）。每次 git 操作都会重复告警，清理同时消除 hook 噪音：
+
+| 位置 | 类别 | 定性 | 处置方向 |
+|---|---|---|---|
+| `db/migrations/2026_08_14_p02_price_cache_schema.py` :67/:133/:142/:184 | SQL 注入 (high) | 历史件：SQL 经变量中转（与 V6.0 迁移被拦同因） | 改写为「调用点内联字面量 + ? 参数」同款写法 |
+| `db/migrations/2026_08_14_p01_mgm_fk_unique.py` :118/:131 | SQL 注入 (high) | 同上 | 同上 |
+| `db/migrations/2026_08_14_p03followup_cache_tokens.py` :89 | SQL 注入 (high) | 同上 | 同上 |
+| `dashboard/routes.py` :2348 | 硬编码凭据 (high) | 误报：docstring 示例 `"sk-new-key-xxx"` | 示例改 `<new-api-key>` 占位符 |
+| `scripts/check_env.py` :128 | 硬编码凭据 (high) | 误报：字典键是 env **变量名字面量**（含 "API_KEY" 字样），非凭据 | 调整结构避开凭据规则（如描述映射分离） |
+| `scripts/_verify_models.py` :8 | SSRF (high) | 低危：本地验证脚本固定打 localhost | 加显式 host 白名单/URL 校验 |
+| `scripts/deploy/verify_clients.py` :68 | SSRF (high) | 同上 | 同上 |
+| `dashboard/routes.py` :118 | 跨文件污点 (medium) | **真问题**：fallback 登录页 `next` 参数未校验/未转义，直接拼进 JS `location.href='{next_path}'`（JS 注入/开放跳转） | 校验 next 仅允许站内相对路径 + 转义；同步检查 static/login.html 同款逻辑 |
+
+**优先级建议**：medium 登录页 taint 先修（真实攻击面，公网部署场景 docs/ops/security.md 尤其相关）；其余按表顺序随 V6.1 架构重构顺带清。
+
+### 3.4 落地步骤（V6.1）
 
 1. 统一 CLI：`aimc`（或 `python -m aimc`）子命令封装现有 scripts，统一 `--help`/JSON。
 2. 补齐 REST 变更端点：散装 scripts 关键写操作对齐 REST。
@@ -165,7 +182,7 @@ if group.require_vision and not has_mm and registry.modality == "multimodal":
 | 版本 | 内容 | 风险 |
 |---|---|---|
 | **V6.0** | Phase 1 模型组优化（light/vision + GLM 免费 + vision-light + P0-3 收窄） + Phase 2 Token 审计基础（成本精确化 + 看板/API） | 低~中 |
-| **V6.1** | Phase 4 架构 Agent 友好化（统一 CLI + REST 补齐 + 鉴权统一 + 契约/MCP） | 高、横切 |
+| **V6.1** | Phase 4 架构 Agent 友好化（统一 CLI + REST 补齐 + 鉴权统一 + 契约/MCP）+ **Mimosa 存量清理**（11H+1M，见 §3.3，其中登录页 taint 为真问题建议先修） | 高、横切 |
 | **V6.x 靠后** | 命名规范化（qwen-vl → qwen3-vl，放宽 validate_model_id + 迁移）；**e2e 存量修复**（`test_phase2_e2e` / `test_v46_e2e` teardown 阶段 `DELETE FROM accounts` 外键失败，干净 master 可复现，2026-09-03 用户列入） | 中 |
 | **V7.0** | yield（git 关联收益追踪） + Phase C 其余（project/guard/compare 按需） | 中高 |
 
