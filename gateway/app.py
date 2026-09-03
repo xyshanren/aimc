@@ -91,7 +91,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="AIMC - AI Model Compass",
         description="轻量级 LLM 网关与优惠情报聚合工具",
-        version="0.1.0",
+        version="6.1.0",
         lifespan=lifespan,
     )
 

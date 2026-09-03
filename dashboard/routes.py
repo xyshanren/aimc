@@ -2811,6 +2811,80 @@ async def revoke_api_key(key_id: int, session: AsyncSession = Depends(get_sessio
     return {"status": "revoked", "key": _api_key_to_dict(api_key)}
 
 
+@router.post("/api/keys", status_code=201)
+async def create_user_key(payload: dict, session: AsyncSession = Depends(get_session)):
+    """V6.1 (2026-09-03): 创建/复用 user + 发一把新 api_key (等价 add_user_key.py)。
+
+    V6.1 架构友好化: 此前"发 key"只有 CLI (scripts/add_user_key.py), agent 无法
+    通过 REST 完成 — 现补齐。语义与 CLI 对齐:
+    - username 已存在 → 复用该 user, 只加新 key
+    - username 不存在 → 新建 user (role 默认: admin=true → admin, 否则 user)
+    - key 明文只在响应里出现一次, 库里只存 SHA256 hash
+
+    body: {
+        "username": "zhangsan",              # 必填
+        "display_name": "张三",               # 可选
+        "label": "笔记本",                    # 可选, key 标签
+        "admin": false,                      # 可选, 发 admin key (可访问 dashboard 全数据)
+        "daily_limit": 100000,               # 可选, 每日 token 限额 (NULL=不限)
+        "monthly_limit": 1000000,            # 可选, 每月 token 限额 (NULL=不限)
+        "notes": "产品组"                    # 可选, 用户备注
+    }
+    返回 201: { user_id, key_id, key_prefix, label, key_plain }
+    """
+    import hashlib
+    import secrets
+
+    username = (payload.get("username") or "").strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="username 必填")
+
+    is_admin = bool(payload.get("admin", False))
+    role = payload.get("role") or ("admin" if is_admin else "user")
+
+    # 查或建 user (与 add_user_key.py 语义一致)
+    user = (await session.execute(
+        select(User).where(User.username == username)
+    )).scalars().first()
+    if user is None:
+        user = User(
+            username=username,
+            display_name=payload.get("display_name") or username,
+            role=role,
+            status="active",
+            daily_token_limit=payload.get("daily_limit"),
+            monthly_token_limit=payload.get("monthly_limit"),
+            notes=payload.get("notes"),
+        )
+        session.add(user)
+        await session.flush()
+    elif user.status != "active":
+        raise HTTPException(status_code=400, detail=f"user {username} 状态 {user.status}, 不能发 key")
+
+    # 生成 key: 明文只返回一次, 库里只存 hash
+    key_plain = "aimc-" + secrets.token_urlsafe(32)
+    api_key = ApiKey(
+        user_id=user.id,
+        key_hash=hashlib.sha256(key_plain.encode()).hexdigest(),
+        key_prefix=key_plain[:8],
+        is_admin=1 if is_admin else 0,
+        status="active",
+        label=payload.get("label"),
+    )
+    session.add(api_key)
+    await session.commit()
+    logger.info("V6.1 dashboard create key: user_id=%s username=%s key_id=%s admin=%s",
+                user.id, username, api_key.id, is_admin)
+
+    return {
+        "user_id": user.id,
+        "key_id": api_key.id,
+        "key_prefix": api_key.key_prefix,
+        "label": api_key.label,
+        "key_plain": key_plain,
+    }
+
+
 # ============================================================
 # V4.8.4: 低置信度优惠审查队列
 # ============================================================

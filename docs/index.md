@@ -29,6 +29,7 @@
 |--------|--------|
 | 了解架构 / 数据流 | [dev/architecture.md](dev/architecture.md) |
 | 看 API 端点（OpenAI + Dashboard）| [dev/api.md](dev/api.md) |
+| **Agent 编程接入（REST/CLI 契约, V6.1）** | [agent-api.md](agent-api.md) |
 | 本地搭建开发环境 | [dev/setup.md](dev/setup.md) |
 | commit / 分支 / 测试 规范 | [dev/conventions.md](dev/conventions.md) |
 | 写测试 / 提 PR / 贡献代码 | [dev/contributing.md](dev/contributing.md) |

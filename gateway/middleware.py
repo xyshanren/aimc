@@ -180,8 +180,19 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             )
             if not is_whitelisted:
                 provided_token = _extract_dashboard_token(request)
-                # 用 hmac.compare_digest 防止时序攻击
-                if not hmac.compare_digest(provided_token, settings.dashboard_token):
+                # V6.1 鉴权统一 (2026-09-03): 两种等价凭据
+                # 1. dashboard token (原版; hmac.compare_digest 防时序攻击)
+                # 2. admin api_key — aimc- 前缀且 is_admin=1 的多用户 key。
+                #    agent 用网关 admin key 即可操作全部 dashboard API (查询+变更),
+                #    不必另发 dashboard token (V6.1 架构友好化, 计划 §3.4 步骤 3)
+                auth_ok = False
+                if provided_token and hmac.compare_digest(provided_token, settings.dashboard_token):
+                    auth_ok = True
+                elif provided_token.startswith("aimc-"):
+                    key_info = await _lookup_api_key(provided_token)
+                    if key_info is not None and key_info.is_admin:
+                        auth_ok = True
+                if not auth_ok:
                     # API 路径 -> 401 JSON
                     # HTML 路径 -> 302 重定向到 login
                     if request.url.path.startswith("/dashboard/api/"):
