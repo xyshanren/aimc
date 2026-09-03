@@ -168,12 +168,29 @@ commit/pash 时 Mimosa 扫出 11 high + 1 medium，**全部为存量文件**（V
 
 **优先级建议**：medium 登录页 taint 先修（真实攻击面，公网部署场景 docs/ops/security.md 尤其相关）；其余按表顺序随 V6.1 架构重构顺带清。
 
+**✅ 清理结果（2026-09-03，commits 4fd767c / d8ede62）**：11 个 high 全部消除（3 个旧迁移 SQL 改调用点内联字面量 + ? 绑定——p01 `IN(...)` 改事务内逐行、p02/p03 ALTER 循环改 if/elif、PRAGMA 拆字面量；2 个误报按建议改写；2 个 SSRF 加目标白名单——verify_clients 允许回环/私网以兼容 VM 内网用法）。剩余 1 medium 定性修订：**Mimosa 实际标的是登录表单固有流**（password input 的 token → `fetch` 登录端点，原 :118 即该行，非 next 拼接行）——这是登录页的本质功能，任何登录表单都有"凭据→网络"流，**误报，接受**；顺带真修复：旧实现的 `?next=` 服务端插值进 JS（真实的注入/开放跳转向量，规则未覆盖）已结构性消除（服务端零插值 + 前端 safeNext 白名单）。
+
 ### 3.4 落地步骤（V6.1）
 
 1. 统一 CLI：`aimc`（或 `python -m aimc`）子命令封装现有 scripts，统一 `--help`/JSON。
 2. 补齐 REST 变更端点：散装 scripts 关键写操作对齐 REST。
 3. 鉴权统一：dashboard 变更端点接受网关 admin api_key。
 4. 契约化：聚合 OpenAPI + agent 消费文档 + MCP server。
+
+### 3.5 实施记录（2026-09-03，commit 7d1fe0f，已上产）
+
+盘点结论：REST 变更端点已相当全（账号增删启停轮换/建议审批/设置/采集源/冷却确认），真正的缺口是**发 key 无 REST 等价**、**dashboard 不认网关 admin key**、**无统一 CLI 入口**。据此落地：
+
+| 步骤 | 实现 |
+|---|---|
+| 3. 鉴权统一 | `gateway/middleware.py`：dashboard 鉴权双凭据——dashboard token（原）或 admin api_key（`aimc-` 前缀 + is_admin=1，复用 30s 缓存的 key 校验）；普通 key/错误凭据仍 401 |
+| 2. REST 补缺 | `POST /dashboard/api/keys`（创建/复用 user + 发 key，语义对齐 add_user_key.py，明文只回一次，201）——此前"发 key"仅 CLI 可用 |
+| 1. 统一 CLI | `scripts/aimc.py`：薄 REST 客户端（零依赖 urllib，与 API 天然等价不重实现业务），status/models/accounts/keys/usage(含 V6.0 cost-*)/suggestions/cooldown/cache 八组子命令，输出统一 JSON，SSRF 白名单（回环/私网） |
+| 4. 契约化 | OpenAPI 本就可用（`/openapi.json` + `/docs`，网关+dashboard 同 app 一份 schema，免鉴权）；新增 **`docs/agent-api.md`**（REST+CLI 全目录 + 操作三分类 + 鉴权三方式）；app version → 6.1.0 |
+
+**MCP server 未做**（§3.4 步骤 4 的一半）：当前 REST/CLI 已满足 agent 操作需求，MCP 是封装形态差异不是能力缺口 → 留待 V6.2 按需做。
+
+测试：`tests/test_v61_arch.py` 8 项（鉴权三分支/发 key 新建复用/CLI 参数树+SSRF）；全量 654 过（存量 4 e2e 失败除外）。
 
 ---
 
@@ -182,7 +199,7 @@ commit/pash 时 Mimosa 扫出 11 high + 1 medium，**全部为存量文件**（V
 | 版本 | 内容 | 风险 |
 |---|---|---|
 | **V6.0** | ~~Phase 1 模型组优化 + Phase 2 Token 审计基础~~ → ✅ **全部上产**（Phase 1 见 §6.5，Phase 2 见 §7） | 低~中 |
-| **V6.1** | Phase 4 架构 Agent 友好化（统一 CLI + REST 补齐 + 鉴权统一 + 契约/MCP）+ **Mimosa 存量清理**（11H+1M，见 §3.3，其中登录页 taint 为真问题建议先修） | 高、横切 |
+| **V6.1** | ~~Phase 4 架构 Agent 友好化 + Mimosa 存量清理~~ → ✅ **已上产**（清理见 §3.3，架构见 §3.5；MCP 留 V6.2 按需） | 高、横切 |
 | **V6.x 靠后** | 命名规范化（qwen-vl → qwen3-vl，放宽 validate_model_id + 迁移）；**e2e 存量修复**（`test_phase2_e2e` / `test_v46_e2e` teardown 阶段 `DELETE FROM accounts` 外键失败，干净 master 可复现，2026-09-03 用户列入） | 中 |
 | **V7.0** | yield（git 关联收益追踪） + Phase C 其余（project/guard/compare 按需） | 中高 |
 
