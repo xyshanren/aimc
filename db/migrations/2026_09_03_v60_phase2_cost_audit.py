@@ -11,6 +11,8 @@
 1. model_registry ADD COLUMN list_input_price / list_output_price (已存在则跳过)
 2. usage_logs ADD COLUMN list_cost_estimate (已存在则跳过)
 3. 回填官方标价 (仅写 list_input_price IS NULL 的行 — 不覆盖后续人工修正)
+4. 回填存量 usage_logs.list_cost_estimate (仅 NULL 行, 按 model JOIN registry 标价;
+   标价未知的模型历史行保持 NULL — 与新请求口径一致)
 
 标价来源与口径 (不编造, 未知的留 NULL):
 - GLM 官方价格表 (2026-09, open.bigmodel.cn/pricing, 用户抓取确认, 见计划文档 §1.1)
@@ -142,6 +144,30 @@ def run(apply: bool) -> int:
                 (i, o, m),
             ),
         ))
+
+    # 步骤 4: 存量 usage_logs 标价回填 (仅 NULL 行; 标价未知模型的历史行保持 NULL)
+    if "list_cost_estimate" in usage_cols and "list_input_price" in registry_cols:
+        n_usage = conn.execute(
+            "SELECT COUNT(*) FROM usage_logs "
+            "WHERE list_cost_estimate IS NULL AND model IN ("
+            "  SELECT model_id FROM model_registry "
+            "  WHERE list_input_price IS NOT NULL AND list_output_price IS NOT NULL)"
+        ).fetchone()[0]
+        if n_usage:
+            pending.append((
+                f"回填存量 usage_logs 标价 ({n_usage} 行)",
+                lambda: conn.execute(
+                    "UPDATE usage_logs SET list_cost_estimate = ("
+                    "  SELECT (COALESCE(usage_logs.input_tokens, 0) * r.list_input_price"
+                    "        + COALESCE(usage_logs.output_tokens, 0) * r.list_output_price"
+                    "  ) / 1000000.0 "
+                    "  FROM model_registry r "
+                    "  WHERE r.model_id = usage_logs.model "
+                    "  AND r.list_input_price IS NOT NULL "
+                    "  AND r.list_output_price IS NOT NULL"
+                    ") WHERE usage_logs.list_cost_estimate IS NULL"
+                ),
+            ))
 
     print(f"\n待执行动作 ({len(pending)} 项):")
     for desc, _ in pending:
