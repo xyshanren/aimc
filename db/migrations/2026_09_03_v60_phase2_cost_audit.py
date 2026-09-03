@@ -146,32 +146,35 @@ def run(apply: bool) -> int:
         ))
 
     # 步骤 4: 存量 usage_logs 标价回填 (仅 NULL 行; 标价未知模型的历史行保持 NULL)
-    # 前提: usage_logs 具备 model/input_tokens/output_tokens 列 (极旧库缺列则跳过)
-    if (
-        "list_cost_estimate" in usage_cols and "list_input_price" in registry_cols
-        and all(c in usage_cols for c in ("model", "input_tokens", "output_tokens"))
-    ):
-        n_usage = conn.execute(
-            "SELECT COUNT(*) FROM usage_logs "
-            "WHERE list_cost_estimate IS NULL AND model IN ("
-            "  SELECT model_id FROM model_registry "
-            "  WHERE list_input_price IS NOT NULL AND list_output_price IS NOT NULL)"
-        ).fetchone()[0]
-        if n_usage:
-            pending.append((
-                f"回填存量 usage_logs 标价 ({n_usage} 行)",
-                lambda: conn.execute(
-                    "UPDATE usage_logs SET list_cost_estimate = ("
-                    "  SELECT (COALESCE(usage_logs.input_tokens, 0) * r.list_input_price"
-                    "        + COALESCE(usage_logs.output_tokens, 0) * r.list_output_price"
-                    "  ) / 1000000.0 "
-                    "  FROM model_registry r "
-                    "  WHERE r.model_id = usage_logs.model "
-                    "  AND r.list_input_price IS NOT NULL "
-                    "  AND r.list_output_price IS NOT NULL"
-                    ") WHERE usage_logs.list_cost_estimate IS NULL"
-                ),
-            ))
+    # 注意: 计数/执行都在事务内惰性做 — list_cost_estimate 列和 registry 标价
+    # 可能正是本次迁移创建/回填的, 计划阶段还不能查询 (同事务先列后数据, 顺序天然正确)
+    usage_base_ok = all(c in usage_cols for c in ("model", "input_tokens", "output_tokens"))
+    usage_col_ok = "list_cost_estimate" in usage_cols or any(
+        "usage_logs ADD COLUMN list_cost_estimate" == desc for desc, _ in pending
+    )
+    if usage_base_ok and usage_col_ok:
+
+        def _backfill_usage_list_cost():
+            n = conn.execute(
+                "SELECT COUNT(*) FROM usage_logs "
+                "WHERE list_cost_estimate IS NULL AND model IN ("
+                "  SELECT model_id FROM model_registry "
+                "  WHERE list_input_price IS NOT NULL AND list_output_price IS NOT NULL)"
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE usage_logs SET list_cost_estimate = ("
+                "  SELECT (COALESCE(usage_logs.input_tokens, 0) * r.list_input_price"
+                "        + COALESCE(usage_logs.output_tokens, 0) * r.list_output_price"
+                "  ) / 1000000.0 "
+                "  FROM model_registry r "
+                "  WHERE r.model_id = usage_logs.model "
+                "  AND r.list_input_price IS NOT NULL "
+                "  AND r.list_output_price IS NOT NULL"
+                ") WHERE usage_logs.list_cost_estimate IS NULL"
+            )
+            print(f"  [OK] 回填存量 usage_logs 标价 ({n} 行, 标价未知模型保持 NULL)")
+
+        pending.append(("回填存量 usage_logs 标价", _backfill_usage_list_cost))
 
     print(f"\n待执行动作 ({len(pending)} 项):")
     for desc, _ in pending:
