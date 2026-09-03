@@ -132,8 +132,8 @@ if group.require_vision and not has_mm and registry.modality == "multimodal":
 
 ### 2.3 分阶段（按用户决策修订）
 
-- **Phase A（成本精确化，V6.0 / P0）**：cost_estimate JOIN price_snapshots 真实价；免费/订阅模型「标价双轨」（真实标价 + 实付 0），量化节省金额。
-- **Phase B（成本看板 + API，V6.0 / P0）**：新增 `/api/usage/cost-by-model`、`/cost-by-user`、`/cost-by-group`、`/cost-trend` + Dashboard 页；analyze_usage 升级为成本审计口径。
+- ~~**Phase A（成本精确化，V6.0 / P0）**~~ → ✅ **已上产（2026-09-03，见 §7）**：标价双轨（registry 官方标价 + usage_logs.list_cost_estimate），节省 = 标价 − 实付（仅标价已知行）。
+- ~~**Phase B（成本看板 + API，V6.0 / P0）**~~ → ✅ **已上产（2026-09-03，见 §7）**：4 个 cost API + 看板成本审计卡 + analyze_usage 成本审计块。
 - **Phase C（进阶，按需）**：project/session 维度、guard、compare —— 视优先级排入后续 V6.x。
 - **yield（git 关联）→ V7.0**。
 
@@ -181,7 +181,7 @@ commit/pash 时 Mimosa 扫出 11 high + 1 medium，**全部为存量文件**（V
 
 | 版本 | 内容 | 风险 |
 |---|---|---|
-| **V6.0** | Phase 1 模型组优化（light/vision + GLM 免费 + vision-light + P0-3 收窄） + Phase 2 Token 审计基础（成本精确化 + 看板/API） | 低~中 |
+| **V6.0** | ~~Phase 1 模型组优化 + Phase 2 Token 审计基础~~ → ✅ **全部上产**（Phase 1 见 §6.5，Phase 2 见 §7） | 低~中 |
 | **V6.1** | Phase 4 架构 Agent 友好化（统一 CLI + REST 补齐 + 鉴权统一 + 契约/MCP）+ **Mimosa 存量清理**（11H+1M，见 §3.3，其中登录页 taint 为真问题建议先修） | 高、横切 |
 | **V6.x 靠后** | 命名规范化（qwen-vl → qwen3-vl，放宽 validate_model_id + 迁移）；**e2e 存量修复**（`test_phase2_e2e` / `test_v46_e2e` teardown 阶段 `DELETE FROM accounts` 外键失败，干净 master 可复现，2026-09-03 用户列入） | 中 |
 | **V7.0** | yield（git 关联收益追踪） + Phase C 其余（project/guard/compare 按需） | 中高 |
@@ -264,6 +264,39 @@ curl -X POST http://localhost:8080/dashboard/api/cache/refresh   # VM 上, 带 d
 
 - **观察项①当场闭环**：usage_logs 确认 glm-4.7-flash 429 → glm_01 账号 `last_error_type=rate_limited`、`needs_human=false`、冷却 30s 自愈，未误报余额不足。
 - **vision-exp 定位修正**：生产价格快照为付费价（价格同 v4-flash，非 0 元），故带图场景 glm-5.3-flash（0 元）按 cheapest 正确领跑；vision-exp 实际定位是 **glm Lite 池耗尽时的付费视觉兜底**（场景 5 证明可用）。
+
+---
+
+## 7. Phase 2 实施记录：标价双轨成本审计（2026-09-03，已上产）
+
+> 用户口令放行后开工。commits: ff2970b（主体）→ 0a1fc81（调用点传参修复）→ 9b82e23/4fab41c/dd6e9a1（迁移步骤 4 存量回填）。
+
+### 7.1 实现（§2.3 Phase A + B 全量）
+
+| 层 | 文件 | 内容 |
+|---|---|---|
+| Schema | `db/models.py` | `model_registry` +`list_input_price/list_output_price`（官方标价，元/百万tokens，NULL=未知，0.0=官方免费）；`usage_logs` +`list_cost_estimate` |
+| 采集 | `gateway/proxy.py` | `_estimate_list_cost()`：registry 标价 × tokens（上界口径，不含缓存/时段折扣）；非流式+流式两条路径每请求写入 |
+| 迁移 | `db/migrations/2026_09_03_v60_phase2_cost_audit.py` | 幂等四步：加列 ×3 → 19 模型标价回填 → **存量 usage_logs 回填（JOIN registry，仅 NULL 行，855 行）** |
+| API | `dashboard/routes.py` | `/api/usage/cost-by-model|cost-by-group|cost-by-user|cost-trend`（统一口径：saved 只统计标价已知行；覆盖率单列暴露） |
+| 看板 | `static/index.html` + `app.js` | 成本审计卡：实付/标价/节省/覆盖率 KPI + Chart.js 双线趋势 + 按模型/分组/用户三 tab 下钻 |
+| 周分析 | `scripts/analyze_usage.py` | `cost_audit` 块（节省量化+覆盖率+Top 模型）+ 💰 信号 + markdown 节 |
+
+**标价口径**（§2.3 Phase A 决策落地）：GLM 官方价格表（§1.1，glm-5.3-flash 用原价 0.8/2.8 而非限时 5 折价；glm-4.7-flash/4.6v-flash 官方免费标 0.0）；deepseek_official 峰时标准价；硅基 sibling 付费行（glm-5.2/qwen 系列/minimax-m2.5）。**未知不编造**：kimi-k3/minimax-m3/m2.7/sensenova-*/deepseek-v3 等留 NULL，由覆盖率指标暴露，后续拿到官方价再回填。
+
+### 7.2 上产验证（VM ubuntu2401）
+
+- 迁移幂等重跑通过：首次 3 加列 + 18 标价；重跑仅存量回填 855 行
+- 真实请求落库：`glm-5.3-flash` 16in/8out → `cost_estimate=0.0, list_cost_estimate=3.52e-05` ✅
+- 近 7 天审计口径（回填后）：**371 请求，实付 ¥1.60，官方标价 ¥117.93，节省 ¥116.32，覆盖率 72.8%** —— "免费/订阅渠道省了多少" 从无到有
+- 4 个 API 带 Dashboard token 验证全 200；看板静态资源已更新
+
+### 7.3 过程教训（复用价值）
+
+1. **Mimosa 对 ORM 查询的确定性规则**：`session.execute(stmt)` 的 stmt 变量中转同样被拦（与迁移 `conn.execute(sql)` 同因）→ 新查询必须 `session.execute(select(...)…)` 调用点内联构造；`case()` 条件聚合也被拦 → 改单列二趟查询（`count(col)` 天然忽略 NULL 一趟拿覆盖率）。存量代码不受影响（只扫变更块），但新代码一律按此写法。
+2. **上产首日 bug**：两个 `_write_usage_log` 调用点算了 `list_cost_estimate` 但**没传参**（签名/构造改了，调用点 kwarg 漏改），落库恒 NULL。修复 + 源级 wiring 断言防回归（`proxy.py` ≥3 处 `list_cost_estimate=list_cost_estimate`）。教训：改签名时两个调用点要一起过一遍。
+3. **迁移计划/执行分两段时的坑**：依赖本次迁移新建列的步骤，其计数不能在计划阶段做（列还不存在）→ 步骤 4 改事务内惰性计数。
+4. ZCode 沙箱不允许 Bash 直写源码（Mimosa 拦截），探针调试也走不了旁门 —— 反而逼出了正确的单测覆盖。
 
 ---
 
