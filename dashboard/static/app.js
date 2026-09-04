@@ -1166,7 +1166,7 @@ async function loadUsageChart() {
 let _cacheDonutChart = null;
 
 // 图表多系列调色板 (语义色 + 辅助灰, 循环取用)
-const _CHART_PALETTE = ['--color-info', '--color-success', '--color-warning', '--color-danger', '--color-accent', '--text-muted'];
+const _CHART_PALETTE = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--chart-5', '--chart-6'];
 
 function _paletteColor(i, alpha) {
     return _cssColor(_CHART_PALETTE[i % _CHART_PALETTE.length], alpha);

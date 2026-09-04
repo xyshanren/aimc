@@ -49,6 +49,14 @@
     --radius-md: 10px;
     --radius-lg: 14px;
 
+    /* 图表分类调色板 (6 色互异, 不含重复语义色) */
+    --chart-1: #4d9fff;
+    --chart-2: #3dd68c;
+    --chart-3: #f0b429;
+    --chart-4: #f6685e;
+    --chart-5: #9a6ff0;
+    --chart-6: #2dd4bf;
+
     /* 阴影 (深色模式柔和) */
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
@@ -76,6 +84,13 @@
         --color-danger: #cf222e;
         --color-info: #2f81f7;
         --color-accent: #2f81f7;
+
+        --chart-1: #2f81f7;
+        --chart-2: #1a7f37;
+        --chart-3: #9a6700;
+        --chart-4: #cf222e;
+        --chart-5: #8250df;
+        --chart-6: #0f766e;
 
         --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
         --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
