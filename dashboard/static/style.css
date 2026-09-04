@@ -6,30 +6,30 @@
  * - JetBrains Mono 字体用于 model 名/价格/token
  */
 
-/* ============ CSS 变量 (深色模式默认) ============ */
+/* ============ CSS 变量 (深色模式默认) — Phase 3c 设计 tokens ============ */
 :root {
-    /* 背景色 */
-    --bg-base: #0d1117;
-    --bg-surface: #161b22;
-    --bg-elevated: #21262d;
-    --bg-hover: #1f2937;
+    /* 背景三层: 页面底 < 卡片面 < 悬浮层 (层次靠分层背景, 不靠重边框) */
+    --bg-base: #0b0e14;
+    --bg-surface: #11151d;
+    --bg-elevated: #1a2029;
+    --bg-hover: #161c26;
 
-    /* 边框 */
-    --border-default: #30363d;
-    --border-muted: #21262d;
+    /* 边框发丝线 */
+    --border-default: #232a35;
+    --border-muted: #1a2029;
 
-    /* 文字 */
-    --text-primary: #e6edf3;
-    --text-secondary: #8b949e;
-    --text-muted: #6e7681;
-    --text-link: #58a6ff;
+    /* 文字三级 */
+    --text-primary: #e8edf4;
+    --text-secondary: #9aa7b8;
+    --text-muted: #5d6879;
+    --text-link: #4d9fff;
 
-    /* 状态色 */
-    --color-success: #3fb950;
-    --color-warning: #d29922;
-    --color-danger: #f85149;
-    --color-info: #58a6ff;
-    --color-accent: #d2a8ff;
+    /* 强调色仅 1 个 (品牌蓝), 其余为语义状态色 */
+    --color-success: #3dd68c;
+    --color-warning: #f0b429;
+    --color-danger: #f6685e;
+    --color-info: #4d9fff;
+    --color-accent: #4d9fff;
 
     /* 字体 */
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
@@ -45,40 +45,41 @@
     --space-xl: 24px;
 
     /* 圆角 */
-    --radius-sm: 4px;
-    --radius-md: 8px;
-    --radius-lg: 12px;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
 
     /* 阴影 (深色模式柔和) */
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
-    --shadow-glow: 0 0 0 1px rgba(88, 166, 255, 0.3);
+    --shadow-glow: 0 0 0 1px rgba(77, 159, 255, 0.3);
 }
 
 /* 浅色模式 (跟随系统) */
 @media (prefers-color-scheme: light) {
     :root {
-        --bg-base: #ffffff;
-        --bg-surface: #f6f8fa;
-        --bg-elevated: #ffffff;
-        --bg-hover: #f0f3f6;
+        --bg-base: #f5f7fa;
+        --bg-surface: #ffffff;
+        --bg-elevated: #f0f3f7;
+        --bg-hover: #edf1f6;
 
-        --border-default: #d0d7de;
-        --border-muted: #e6e8eb;
+        --border-default: #dde3ea;
+        --border-muted: #e8ecf1;
 
-        --text-primary: #1f2328;
-        --text-secondary: #59636e;
-        --text-muted: #818b98;
+        --text-primary: #1c2430;
+        --text-secondary: #5a6675;
+        --text-muted: #8a94a3;
+        --text-link: #2f81f7;
 
-        --color-success: #1a7f37;
+        --color-success: #18794e;
         --color-warning: #9a6700;
-        --color-danger: #d1242f;
-        --color-info: #0969da;
-        --color-accent: #8250df;
+        --color-danger: #cf222e;
+        --color-info: #2f81f7;
+        --color-accent: #2f81f7;
 
-        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-        --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
-        --shadow-glow: 0 0 0 1px rgba(9, 105, 218, 0.3);
+        --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+        --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+        --shadow-glow: 0 0 0 1px rgba(47, 129, 247, 0.3);
     }
 }
 
@@ -209,6 +210,7 @@ code, .mono {
 .nav-item.active {
     background: var(--bg-hover);
     color: var(--text-primary);
+    box-shadow: inset 2px 0 0 var(--color-accent);
 }
 
 .nav-item svg {
@@ -335,14 +337,9 @@ code, .mono {
 .card {
     background: var(--bg-surface);
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     padding: var(--space-lg);
     margin-bottom: var(--space-md);
-    transition: border-color 0.15s ease;
-}
-
-.card:hover {
-    border-color: var(--text-muted);
 }
 
 .card-title {
@@ -351,11 +348,8 @@ code, .mono {
     justify-content: space-between;
     font-size: 13px;
     font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    color: var(--text-primary);
     margin-bottom: var(--space-md);
-    cursor: pointer;
     user-select: none;
 }
 
@@ -397,7 +391,7 @@ code, .mono {
 
 .kpi-value {
     font-family: var(--font-mono);
-    font-size: 22px;
+    font-size: 28px;
     font-weight: 600;
     color: var(--text-primary);
     line-height: 1.2;
@@ -593,7 +587,7 @@ tbody tr:hover {
     color: white;
     border-color: var(--color-info);
 }
-.btn-primary:hover { background: #4d8cd9; }
+.btn-primary:hover { background: #3b8bef; }
 
 .btn-success {
     background: var(--color-success);
@@ -619,7 +613,7 @@ tbody tr:hover {
     color: white;
     border-color: var(--color-info);
 }
-.range-switch .btn.active:hover { background: #4d8cd9; }
+.range-switch .btn.active:hover { background: #3b8bef; }
 
 /* ============ 加载 / 空态 ============ */
 .loading {
