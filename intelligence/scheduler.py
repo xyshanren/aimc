@@ -218,6 +218,17 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # Phase 3 体验 (2026-09-05): 优惠情报过期清理 (用户确认保留期 30 天)
+    # 1) end_date 已过的 active/upcoming 刷成 expired; 2) expired 超 30 天物理删除
+    from intelligence.promotion_cleanup import cleanup_expired_promotions_task
+    scheduler.add_job(
+        cleanup_expired_promotions_task,
+        trigger=CronTrigger.from_crontab("20 4 * * *"),
+        id="promotion_cleanup",
+        name="优惠情报过期清理 (保留 30 天)",
+        replace_existing=True,
+    )
+
     # V4.9.3: request_transcripts 表 retention (每 6 小时清理超期转录)
     # 转录日志默认关闭, 只有诊断时才开启; 开启后按 retention_hours 自动清理防膨胀
     from intelligence.channel_health import transcript_log_cleanup_task
