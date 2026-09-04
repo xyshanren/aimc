@@ -1028,8 +1028,8 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
 async function loadOverviewKPIs() {
     try {
         const [cacheResp, usageResp] = await Promise.all([
-            authFetch("/dashboard/api/cache/stats?days=7"),
-            authFetch("/dashboard/api/usage/summary?days=7"),
+            authFetch(`/dashboard/api/cache/stats?days=${fmtDays()}`),
+            authFetch(`/dashboard/api/usage/summary?days=${fmtDays()}`),
         ]);
         const cache = cacheResp.ok ? await cacheResp.json() : {by_channel: [], hit_rate_pct: 0, saved_cost_cny: 0};
         const usage = usageResp.ok ? await usageResp.json() : [];
@@ -1039,11 +1039,11 @@ async function loadOverviewKPIs() {
         set("kpi-tokens", (totalInput || 0).toLocaleString());
         set("kpi-requests", (totalReq || 0).toLocaleString());
         set("kpi-cache-rate", (cache.hit_rate_pct || 0).toFixed(1));
-        set("kpi-saved", "¥" + (cache.saved_cost_cny || 0).toFixed(4));
+        set("kpi-saved", fmtCNY(cache.saved_cost_cny));
         const sr = document.getElementById("status-route");
         if (sr) {
             const ch = (cache.by_channel && cache.by_channel[0]) ? cache.by_channel[0].channel_name : "—";
-            sr.textContent = "cache: " + ch + " · ¥" + (cache.saved_cost_cny || 0).toFixed(4) + " saved · " + (cache.hit_rate_pct || 0) + "% hit";
+            sr.textContent = "cache: " + ch + " · " + fmtCNY(cache.saved_cost_cny) + " saved · " + (cache.hit_rate_pct || 0) + "% hit";
         }
     } catch (e) { console.warn("Overview KPIs failed:", e); }
 }
@@ -1133,6 +1133,8 @@ document.addEventListener("keydown", (e) => {
     else if (e.key === "?") { e.preventDefault(); const el = document.getElementById("shortcut-hint"); if (el) el.style.opacity = (el.style.opacity === "1" ? "0.3" : "1"); }
 });
 
+// P1-1: 先初始化时间范围（URL/localStorage 还原），再触发首次数据加载，保证首次请求就用还原的 days
+document.addEventListener("DOMContentLoaded", initTimeRange);
 document.addEventListener("DOMContentLoaded", loadOverviewKPIs);
 document.addEventListener("DOMContentLoaded", loadDataFreshnessDonut);
 
@@ -1148,7 +1150,7 @@ document.addEventListener("DOMContentLoaded", loadDataFreshnessDonut);
 // (b) 新 loadUsageChart 替代 (渲染 usage-list 表格)
 async function loadUsageChart() {
     try {
-        const resp = await authFetch("/dashboard/api/usage/summary?days=7");
+        const resp = await authFetch(`/dashboard/api/usage/summary?days=${fmtDays()}`);
         if (!resp.ok) return;
         const data = await resp.json();
         const list = document.getElementById("usage-list");
@@ -1169,7 +1171,7 @@ async function loadUsageChart() {
 // (c) 新 loadCacheStatsList 渲染 cache-by-channel 表格 (替代 htmx 自动渲染)
 async function loadCacheStatsList() {
     try {
-        const resp = await authFetch("/dashboard/api/cache/stats?days=7");
+        const resp = await authFetch(`/dashboard/api/cache/stats?days=${fmtDays()}`);
         if (!resp.ok) return;
         const data = await resp.json();
         const container = document.getElementById("cache-by-channel");
@@ -1185,7 +1187,7 @@ async function loadCacheStatsList() {
                 html += `<td class="mono">${(c.input_tokens || 0).toLocaleString()}</td>`;
                 html += `<td class="mono">${(c.cached_tokens || 0).toLocaleString()}</td>`;
                 html += `<td class="mono">${(c.hit_rate_pct || 0).toFixed(1)}%</td>`;
-                html += `<td class="mono">¥${(c.saved_cost_cny || 0).toFixed(4)}</td>`;
+                html += `<td class="mono">${fmtCNY(c.saved_cost_cny)}</td>`;
                 html += '</tr>';
             }
             html += '</tbody></table>';
@@ -1200,7 +1202,7 @@ async function loadCacheStatsList() {
                 html += `<td class="mono">${(m.input_tokens || 0).toLocaleString()}</td>`;
                 html += `<td class="mono">${(m.cached_tokens || 0).toLocaleString()}</td>`;
                 html += `<td class="mono">${(m.hit_rate_pct || 0).toFixed(1)}%</td>`;
-                html += `<td class="mono">¥${(m.saved_cost_cny || 0).toFixed(4)}</td>`;
+                html += `<td class="mono">${fmtCNY(m.saved_cost_cny)}</td>`;
                 html += '</tr>';
             }
             html += '</tbody></table>';
@@ -1293,38 +1295,55 @@ async function loadQuotaWarning() {
             list.innerHTML = '<div class="empty">无账号</div>';
             return;
         }
-        // 4 个 KPI: 总数 / active / expired / cooldown (从 quota_usage 推断)
-        let active = 0, expired = 0, total = accounts.length;
+        // 状态词表见 db/models.py Account.status: active/exhausted/expired/error/manual_disabled
+        const QUOTA_WARN_PCT = 80;
+        const STATUS_COLOR = {
+            active: 'var(--color-success)',
+            exhausted: 'var(--color-warning)',
+            expired: 'var(--color-danger)',
+            error: 'var(--color-danger)',
+            manual_disabled: 'var(--text-muted)',
+        };
+        // 4 个 KPI: 总数 / active / expired / 其他 (exhausted+error+manual_disabled)
+        let active = 0, expired = 0, other = 0;
+        const total = accounts.length;
         for (const a of accounts) {
             const s = a.status || 'active';
             if (s === 'active') active++;
             else if (s === 'expired') expired++;
+            else other++;
         }
-        const inactive = total - active - expired;
 
         let html = '<div class="kpi-grid" style="grid-template-columns: repeat(2, 1fr); margin-bottom: var(--space-sm);">';
         html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;">' + total + '</div><div class="kpi-label">总账号</div></div>';
         html += '<div class="kpi"><div class="kpi-value kpi-value-success" style="font-size:16px;">' + active + '</div><div class="kpi-label">Active</div></div>';
         html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;color:var(--color-danger);">' + expired + '</div><div class="kpi-label">Expired</div></div>';
-        html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;color:var(--text-muted);">' + inactive + '</div><div class="kpi-label">Inactive</div></div>';
+        html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;color:var(--text-muted);">' + other + '</div><div class="kpi-label">其他状态</div></div>';
         html += '</div>';
 
-        // 列表: 只显示 expired/inactive 的 (active 不需要预警)
-        const warned = accounts.filter(a => {
-            const s = a.status || 'active';
-            return s !== 'active';
-        });
+        // 预警列表: 非 active 的真实状态在前 (expired/error → exhausted → manual_disabled),
+        // 其次是配额吃紧 (>=QUOTA_WARN_PCT) 的 active 账号
+        const sev = (s) => (s === 'expired' || s === 'error' ? 0 : s === 'exhausted' ? 1 : 2);
+        const warned = accounts
+            .map((a) => ({ ...a, s: a.status || 'active', q: a.quota_pct }))
+            .filter((a) => a.s !== 'active' || (a.q != null && a.q >= QUOTA_WARN_PCT))
+            .sort((x, y) => sev(x.s) - sev(y.s));
         if (warned.length > 0) {
             html += '<div class="text-muted" style="font-size:11px;margin-top:var(--space-sm);">⚠️ ' + warned.length + ' 个账号需要关注:</div>';
             html += '<div class="flex-col gap-sm" style="margin-top:var(--space-sm);">';
             for (const a of warned.slice(0, 5)) {
-                const status = a.status || 'active';
-                const color = status === 'expired' ? 'var(--color-danger)' : 'var(--text-muted)';
+                const color = STATUS_COLOR[a.s] || 'var(--text-muted)';
                 html += '<div class="flex gap-sm" style="font-size:12px;">';
                 html += '<span class="status-dot-small" style="background:' + color + ';"></span>';
                 html += '<code class="text-mono" style="font-size:11px;">' + esc(a.account_name || '—') + '</code>';
-                html += '<span class="text-muted" style="font-size:11px;">' + esc(status) + '</span>';
+                html += '<span class="text-muted" style="font-size:11px;">' + esc(a.s) + '</span>';
+                if (a.s === 'active') {
+                    html += '<span style="font-size:11px;color:var(--color-warning);">配额 ' + a.q + '%</span>';
+                }
                 html += '</div>';
+            }
+            if (warned.length > 5) {
+                html += '<div class="text-muted" style="font-size:11px;">…还有 ' + (warned.length - 5) + ' 个</div>';
             }
             html += '</div>';
         } else {
@@ -1371,9 +1390,84 @@ function fmtNum(n) {
     return Number(n).toLocaleString();
 }
 
-function fmtCost(n) {
-    if (!n || n === 0) return '-';
-    return '¥' + Number(n).toFixed(4);
+// P1-2: 全看板统一货币格式
+// - null/undefined/NaN → '-'；0 → ¥0.00（原各处不一致: '-' / ¥0.0000）
+// - |n|<0.01 → <¥0.01，避免 toFixed(2) 把微小节省错显成 ¥0.00
+function fmtCNY(n) {
+    if (n === null || n === undefined || Number.isNaN(Number(n))) return '-';
+    const v = Number(n);
+    if (v < 0) return '-' + fmtCNY(-v);
+    if (v === 0) return '¥0.00';
+    if (v < 0.01) return '<¥0.01';
+    return '¥' + v.toFixed(2);
+}
+
+// ============================================================
+// P1-1: 全局时间范围（24h / 7d / 30d）
+// - 持久化：localStorage + URL ?range= 双向（URL 优先，便于分享/刷新还原）
+// - 所有 ?days=N 的 API 调用统一走 fmtDays()
+// ============================================================
+
+let _timeRange = "7"; // "1" | "7" | "30"
+
+function rangeLabel(r) {
+    return { "1": "近 24 小时", "7": "近 7 天", "30": "近 30 天" }[r] || "近 7 天";
+}
+
+// 卡片标题副标签与当前时间范围保持同步（index.html 四处 card-title-sub）
+function syncRangeLabels() {
+    const lbl = rangeLabel(_timeRange);
+    const short = { "1": "24 小时", "7": "7 天", "30": "30 天" }[_timeRange] || "7 天";
+    const map = [
+        ["overview-range-label", short],
+        ["cost-range-label", "标价 vs 实付 · " + lbl],
+        ["cache-range-label", lbl],
+        ["group-routing-range-label", "Agent 视角 · " + lbl],
+    ];
+    for (const [id, text] of map) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    }
+}
+
+function applyTimeRange(r, fromUrl, skipRefresh) {
+    if (!["1", "7", "30"].includes(r)) return;
+    _timeRange = r;
+    try { localStorage.setItem("aimc_time_range", r); } catch (e) { /* ignore */ }
+    if (!fromUrl) {
+        try {
+            const url = new URL(location.href);
+            url.searchParams.set("range", r);
+            history.replaceState(null, "", url.toString());
+        } catch (e) { /* ignore */ }
+    }
+    const btns = document.querySelectorAll(".range-btn");
+    btns.forEach((b) => b.classList.toggle("active", b.dataset.range === r));
+    syncRangeLabels();
+    if (skipRefresh) return; // 初始化时由常规 DOMContentLoaded 加载，避免重复请求
+    // 重新拉所有随时间范围变化的数据
+    loadOverviewKPIs();
+    loadUsageChart();
+    loadCacheStatsList();
+    loadCostAudit();
+}
+
+function initTimeRange() {
+    // URL 优先 → localStorage → 默认 7 天
+    const urlRange = new URLSearchParams(location.search).get("range");
+    let stored = null;
+    try { stored = localStorage.getItem("aimc_time_range"); } catch (e) { /* ignore */ }
+    const r = urlRange && ["1", "7", "30"].includes(urlRange) ? urlRange : stored;
+    // skipRefresh=true: 本次只还原状态，数据由紧随其后的常规 DOMContentLoaded 加载拉取
+    if (r) applyTimeRange(r, !urlRange, true);
+    document.querySelectorAll(".range-btn").forEach((b) => {
+        b.classList.toggle("active", b.dataset.range === _timeRange);
+        b.addEventListener("click", () => applyTimeRange(b.dataset.range, false));
+    });
+}
+
+function fmtDays() {
+    return Number(_timeRange) || 7;
 }
 
 // (V6.1+: 原右栏"按人用量"卡已并入成本审计"按用户" tab — renderCostTable user 分支)
@@ -1744,8 +1838,7 @@ let _costTrendChart = null;
 let _costTab = 'model';
 
 function _costFmt(n) {
-    if (n === null || n === undefined) return '-';
-    return '¥' + Number(n).toFixed(2);
+    return fmtCNY(n);
 }
 
 function _costKeyLabel(key) {
@@ -1758,11 +1851,11 @@ async function loadCostAudit() {
     try {
         // V6.1+: 按用户 tab 并行拉 per-user 数据 (key 下钻明细), 其余 tab 两个请求
         const fetches = [
-            authFetch('/dashboard/api/usage/cost-trend?days=7'),
-            authFetch('/dashboard/api/usage/cost-by-' + _costTab + '?days=7'),
+            authFetch(`/dashboard/api/usage/cost-trend?days=${fmtDays()}`),
+            authFetch(`/dashboard/api/usage/cost-by-${_costTab}?days=${fmtDays()}`),
         ];
         if (_costTab === 'user') {
-            fetches.push(authFetch('/dashboard/api/stats/per-user?days=7'));
+            fetches.push(authFetch(`/dashboard/api/stats/per-user?days=${fmtDays()}`));
         }
         const resps = await Promise.all(fetches);
         const [trendResp, dimResp] = resps;
@@ -1845,7 +1938,7 @@ function renderCostTable(dim, userKeyMap) {
     const items = dim.items || [];
     const key = { model: 'model', group: 'group_id', user: 'username' }[_costTab];
     if (items.length === 0) {
-        table.innerHTML = '<p class="empty">近 ' + (dim.days || 7) + ' 天无用量数据</p>';
+        table.innerHTML = '<p class="empty">近 ' + (dim.days || fmtDays()) + ' 天无用量数据</p>';
         return;
     }
     // V6.1+: 按用户 tab = 原右栏"按人用量"卡并入 (key 下钻 + 双轨成本列)

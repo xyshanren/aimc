@@ -491,6 +491,14 @@ tbody tr:hover {
 
 .btn-sm { padding: 3px 8px; font-size: 11px; }
 
+/* 时间范围切换（.active 表示当前选中范围） */
+.range-switch .btn.active {
+    background: var(--color-info);
+    color: white;
+    border-color: var(--color-info);
+}
+.range-switch .btn.active:hover { background: #4d8cd9; }
+
 /* ============ 加载 / 空态 ============ */
 .loading {
     color: var(--text-muted);

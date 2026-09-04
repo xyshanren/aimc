@@ -98,6 +98,11 @@
                     <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cost-saved">¥--</div><div class="kpi-label">节省</div></div>
                     <div class="kpi"><div class="kpi-value" id="kpi-cost-coverage">--%</div><div class="kpi-label">标价覆盖率</div></div>
                 </div>
+                <div class="range-switch" style="display:flex;gap:4px;margin-bottom:var(--space-sm);">
+                    <button class="btn btn-sm range-btn" data-range="1">24h</button>
+                    <button class="btn btn-sm range-btn" data-range="7">7d</button>
+                    <button class="btn btn-sm range-btn" data-range="30">30d</button>
+                </div>
                 <canvas id="cost-trend-chart" width="600" height="90"></canvas>
                 <div class="toolbar mt-sm" id="cost-tabs">
                     <button class="btn btn-sm" id="cost-tab-model" onclick="switchCostTab('model')">按模型</button>
@@ -120,10 +125,10 @@
                     <div class="loading">加载中…</div>
                 </div>
             </div>
-        </div>
+        </details>
 
         <details class="card-folding">
-            <summary><span class="card-title-main">组路由命中率</span><span class="card-title-sub">Agent 视角 · 近 7 天</span></summary>
+            <summary><span class="card-title-main">组路由命中率</span><span class="card-title-sub" id="group-routing-range-label">Agent 视角 · 近 7 天</span></summary>
             <div class="card-body">
                 <div id="group-routing-list" hx-get="/dashboard/api/stats/group_routing" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
             </div>
