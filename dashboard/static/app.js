@@ -1020,7 +1020,6 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
 
 // 阶段P0-UI (2026-08-16): dashboard redesign JS
 // - loadOverviewKPIs: 顶部 4 KPI 卡片 + status bar
-// - toggleCard: 折叠卡片
 // - filterChannels/filterRegistry: 搜索过滤
 // - loadDataFreshnessDonut: 替换旧表格为 donut + 失败列表
 // - keydown listener: r / a / / / ? 快捷键
@@ -1046,11 +1045,6 @@ async function loadOverviewKPIs() {
             sr.textContent = "cache: " + ch + " · " + fmtCNY(cache.saved_cost_cny) + " saved · " + (cache.hit_rate_pct || 0) + "% hit";
         }
     } catch (e) { console.warn("Overview KPIs failed:", e); }
-}
-
-function toggleCard(t) {
-    const c = t.closest(".card");
-    if (c) c.classList.toggle("card-collapsed");
 }
 
 function filterChannels() {
@@ -1845,6 +1839,20 @@ function _costKeyLabel(key) {
     return { model: '模型', group_id: '分组', username: '用户' }[key] || key;
 }
 
+// UI-3 (2026-09-04): 图表颜色读 CSS 变量 — 浅色主题 (style.css @media prefers-color-scheme: light)
+// 下轴线/网格/数据线自动跟随, 不再硬编码深色配色. fill 需要 alpha 通道, 6 位 hex 变量手动转 rgba.
+function _cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+function _cssColor(name, alpha) {
+    const hex = _cssVar(name);
+    if (/^#[0-9a-fA-F]{6}$/.test(hex)) {
+        const n = parseInt(hex.slice(1), 16);
+        return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+    }
+    return hex || '#71767b';
+}
+
 async function loadCostAudit() {
     const table = document.getElementById('cost-audit-table');
     if (!table) return;
@@ -1901,25 +1909,25 @@ async function loadCostAudit() {
                     datasets: [{
                         label: '官方标价 ¥',
                         data: (trend.items || []).map(d => d.list_cost_yuan),
-                        borderColor: '#1d9bf0',
-                        backgroundColor: 'rgba(29,155,240,0.15)',
+                        borderColor: _cssColor('--color-info', 1),
+                        backgroundColor: _cssColor('--color-info', 0.15),
                         tension: 0.3,
                         fill: true,
                     }, {
                         label: '实付 ¥',
                         data: (trend.items || []).map(d => d.cost_yuan),
-                        borderColor: '#00ba7c',
-                        backgroundColor: 'rgba(0,186,124,0.15)',
+                        borderColor: _cssColor('--color-success', 1),
+                        backgroundColor: _cssColor('--color-success', 0.15),
                         tension: 0.3,
                         fill: true,
                     }]
                 },
                 options: {
                     responsive: true,
-                    plugins: { legend: { labels: { color: '#71767b' } } },
+                    plugins: { legend: { labels: { color: _cssVar('--text-secondary') } } },
                     scales: {
-                        x: { ticks: { color: '#71767b' }, grid: { color: '#2f3336' } },
-                        y: { ticks: { color: '#71767b' }, grid: { color: '#2f3336' }, beginAtZero: true }
+                        x: { ticks: { color: _cssVar('--text-muted') }, grid: { color: _cssVar('--border-muted') } },
+                        y: { ticks: { color: _cssVar('--text-muted') }, grid: { color: _cssVar('--border-muted') }, beginAtZero: true }
                     }
                 }
             });

@@ -28,11 +28,8 @@
 
     <div class="col-left">
 
-        <div class="card">
-            <h2 class="card-title" onclick="toggleCard(this)">
-                <span class="card-title-main">数据新鲜度</span>
-                <span class="card-toggle">v</span>
-            </h2>
+        <details class="card-folding" open>
+            <summary><span class="card-title-main">数据新鲜度</span></summary>
             <div class="card-body">
                 <div class="donut">
                     <div class="donut-bg" id="freshness-donut"></div>
@@ -43,26 +40,20 @@
                 </div>
                 <div id="freshness-failed" class="mt-md"></div>
             </div>
-        </div>
+        </details>
 
-        <div class="card">
-            <h2 class="card-title" onclick="toggleCard(this)">
-                <span class="card-title-main">限额预警</span>
-                <span class="card-toggle">v</span>
-            </h2>
+        <details class="card-folding">
+            <summary><span class="card-title-main">限额预警</span></summary>
             <div class="card-body" id="quota-warning-list">
                 <div class="loading">加载中…</div>
             </div>
-        </div>
+        </details>
     </div>
 
     <div class="col-mid">
 
-        <div class="card">
-            <h2 class="card-title" onclick="toggleCard(this)">
-                <span class="card-title-main">实时状态 <span class="card-title-sub">7 天</span></span>
-                <span class="card-toggle">v</span>
-            </h2>
+        <details class="card-folding" open>
+            <summary><span class="card-title-main">实时状态 <span class="card-title-sub" id="overview-range-label">7 天</span></span></summary>
             <div class="card-body">
                 <div class="kpi-grid" id="overview-kpis">
                     <div class="kpi"><div class="kpi-value" id="kpi-tokens">--</div><div class="kpi-label">总 Token</div></div>
@@ -74,23 +65,17 @@
             </div>
         </div>
 
-        <div class="card">
-            <h2 class="card-title" onclick="toggleCard(this)">
-                <span class="card-title-main">用量统计</span>
-                <span class="card-toggle">v</span>
-            </h2>
+        <details class="card-folding">
+            <summary><span class="card-title-main">用量统计</span></summary>
             <div class="card-body">
                 <div id="usage-list">
                     <div class="loading">加载中…</div>
                 </div>
             </div>
-        </div>
+        </details>
 
-        <div class="card">
-            <h2 class="card-title" onclick="toggleCard(this)">
-                <span class="card-title-main">成本审计 <span class="card-title-sub">标价 vs 实付 · V6.0 · 近 7 天</span></span>
-                <span class="card-toggle">v</span>
-            </h2>
+        <details class="card-folding">
+            <summary><span class="card-title-main">成本审计 <span class="card-title-sub" id="cost-range-label">标价 vs 实付 · 近 7 天</span></span></summary>
             <div class="card-body">
                 <div class="kpi-grid" id="cost-kpis">
                     <div class="kpi"><div class="kpi-value" id="kpi-cost-paid">¥--</div><div class="kpi-label">实付</div></div>
@@ -115,11 +100,8 @@
             </div>
         </div>
 
-        <div class="card">
-            <h2 class="card-title" onclick="toggleCard(this)">
-                <span class="card-title-main">Cache 节省明细 <span class="card-title-sub">P1-8 · 近 7 天</span></span>
-                <span class="card-toggle">v</span>
-            </h2>
+        <details class="card-folding">
+            <summary><span class="card-title-main">Cache 节省明细 <span class="card-title-sub" id="cache-range-label">近 7 天</span></span></summary>
             <div class="card-body">
                 <div id="cache-by-channel">
                     <div class="loading">加载中…</div>
