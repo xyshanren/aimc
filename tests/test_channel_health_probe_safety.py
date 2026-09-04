@@ -9,13 +9,44 @@
     python tests/test_channel_health_probe_safety.py
 """
 import asyncio
+import os
 import sys
+import tempfile
 import time
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _install_mock_env():
+    """V6.x 修复: 本文件原来没有 mock env, init_db 会落到真实 config 的
+    data/aimc.db (本地旧 schema), 导致 create_channel/INSERT FK 随机炸"""
+    tmp_dir = tempfile.mkdtemp(prefix="aimc_probe_safety_")
+    db_path = os.path.join(tmp_dir, "test.db")
+    db_url = "sqlite+aiosqlite:///" + db_path
+
+    sys.modules.setdefault("config", types.ModuleType("config"))
+    sys.modules["config"].settings = types.SimpleNamespace(
+        openai_api_key="sk-test",
+        openai_base_url="https://mock.local/v1",
+        parse_model="gpt-4o-mini",
+        parse_confidence_threshold=0.6,
+        crawl_enabled=True,
+        aimc_master_key="a" * 64,
+        route_refresh_interval=600,
+        db_url=db_url,
+        db_path=db_path,
+        host="0.0.0.0",
+        port=8080,
+        log_level="warning",
+        request_timeout=30,
+    )
+
+
+_install_mock_env()
 
 
 _passed = 0
@@ -193,16 +224,30 @@ def test_cleanup_deletes_old_records():
             await s.execute(delete(AccountHealthLog))
             await s.commit()
 
+        # V6.x 修复: 自建 channel+account — 原来硬编码 account_id=1, 依赖
+        # 其他测试残留的 accounts 行, 单跑/换序时 FK 失败
+        from db.models import Account, Channel
+        async with async_session_factory() as s:
+            channel = Channel(name="cleanup_test_ch", provider="test",
+                              base_url="http://localhost:1/v1", status="active")
+            s.add(channel)
+            await s.flush()
+            acct = Account(channel_id=channel.id, account_name="cleanup_test_01",
+                           api_key="", status="active")
+            s.add(acct)
+            await s.commit()
+            acct_id = acct.id
+
         # 插: 2 条 10 天前 + 3 条 1 天前
         async with async_session_factory() as s:
             for i in range(2):
                 s.add(AccountHealthLog(
-                    account_id=1, triggered_by="test",
+                    account_id=acct_id, triggered_by="test",
                     success=1, probe_at=datetime.now() - timedelta(days=10),
                 ))
             for i in range(3):
                 s.add(AccountHealthLog(
-                    account_id=1, triggered_by="test",
+                    account_id=acct_id, triggered_by="test",
                     success=1, probe_at=datetime.now() - timedelta(days=1),
                 ))
             await s.commit()

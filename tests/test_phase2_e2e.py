@@ -53,6 +53,11 @@ def _install_mock_env():
         log_level="warning",
         request_timeout=30,
         max_fallback_retries=2,
+        # V6.x 修复: V4.8.5+ 新增的 settings 字段 (缺了 proxy 转发直接 500)
+        prompt_cache_inject_enabled=False,
+        transcript_log_enabled=False,
+        transcript_log_max_body=4096,
+        alert_channel="log",
     )
 
 
@@ -127,7 +132,7 @@ async def _seed_db():
     from db.models import (
         Channel, Account, PriceSnapshot,
         ModelRegistry, ModelGroup, ModelGroupMember,
-        AccountQuota, AccountQuotaUsage,
+        AccountQuota, AccountQuotaUsage, AccountHealthLog,
     )
     from security.crypto import encrypt
     from sqlalchemy import delete
@@ -136,7 +141,9 @@ async def _seed_db():
     async with async_session_factory() as session:
         # 清表 (init_db 可能已建表, 清掉残留)
         # 顺序: 先删 FK 引用 accounts 的表, 再删 accounts
+        # (V6.x: AccountHealthLog 是 V4.9 加的 accounts 子表, 漏了会 FK 爆)
         for tbl in (ModelGroupMember, ModelGroup, ModelRegistry,
+                    AccountHealthLog,
                     PriceSnapshot, AccountQuotaUsage, AccountQuota,
                     Account, Channel):
             await session.execute(delete(tbl))
@@ -242,7 +249,7 @@ def test_1_exact_model():
         from db.init_db import init_db
         from db.engine import async_session_factory
         from db import crud
-        from db.models import Channel, Account, PriceSnapshot, AccountQuota, AccountQuotaUsage
+        from db.models import Channel, Account, PriceSnapshot, AccountQuota, AccountQuotaUsage, AccountHealthLog
         from security.crypto import encrypt
         from sqlalchemy import delete
         from starlette.datastructures import Headers
@@ -252,7 +259,7 @@ def test_1_exact_model():
         # 精确模型不在 group 里, 单独 seed 一个 price snapshot
         await init_db()
         async with async_session_factory() as session:
-            for tbl in (PriceSnapshot, AccountQuotaUsage, AccountQuota, Account, Channel):
+            for tbl in (AccountHealthLog, PriceSnapshot, AccountQuotaUsage, AccountQuota, Account, Channel):
                 await session.execute(delete(tbl))
             await session.commit()
 

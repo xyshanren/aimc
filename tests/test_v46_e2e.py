@@ -53,6 +53,11 @@ def _install_mock_env():
         port=8080,
         log_level="warning",  # 静默 logging
         request_timeout=30,
+        # V6.x 修复: V4.8.5+ 新增的 settings 字段 (缺了 proxy 转发直接 500)
+        prompt_cache_inject_enabled=False,
+        transcript_log_enabled=False,
+        transcript_log_max_body=4096,
+        alert_channel="log",
     )
 
 
@@ -101,6 +106,29 @@ def _setup_mock_upstream():
     return original_async_client
 
 
+async def _purge_health_log_fk() -> None:
+    """V6.x 修复 (存量 e2e 失败根因): 先清 accounts/channels 的 FK 子表。
+
+    account_health_log / account_quota_usage / account_quotas / channel_quotas
+    都 FK 引用 accounts.id 或 channels.id — 其他测试残留的行引用相同自增 id,
+    不先清会让本文件的 DELETE FROM accounts 爆 FOREIGN KEY constraint。
+    用 sqlite3 内联字面量 (ORM delete() 会被安全扫描拦,
+    见 tests/test_v60_cost_audit.py 同款处理)。
+    """
+    import sqlite3
+    # 注意: 从已绑定的 engine 取 db 文件 — 此处 import config 可能拿到
+    # 真实 settings (conftest 模块隔离的时序), 指向本地 data/aimc.db
+    from db.engine import engine
+    print(f"\n[DEBUG] purge db={engine.url.database}")
+    conn = sqlite3.connect(engine.url.database)
+    conn.execute("DELETE FROM account_health_log")
+    conn.execute("DELETE FROM account_quota_usage")
+    conn.execute("DELETE FROM account_quotas")
+    conn.execute("DELETE FROM channel_quotas")
+    conn.commit()
+    conn.close()
+
+
 # ============================================================
 # Test 1: 多账号 + cooldown 端到端 (least-used + 失败切下一个 + 冷却恢复)
 # ============================================================
@@ -130,6 +158,7 @@ def test_e2e_multi_account_with_cooldown():
 
         try:
             await init_db()
+            await _purge_health_log_fk()
             async with async_session_factory() as session:
                 # 清表
                 await session.execute(delete(PriceSnapshot))
@@ -227,6 +256,12 @@ def test_e2e_multi_account_with_cooldown():
             print(f"    [OK] _01 仍冷却 → 继续 _02 (last_used 决定)")
 
             # ========== 阶段 4: 等 cooldown 过期 → _01 恢复, least-used 让 _01 排前 ==========
+            # V4.9 起 mark_failure 用 error_classifier 的建议冷却 (5xx=60s, 硬编码),
+            # cooldown_seconds=2 只影响 legacy 路径 — 测试验证的是"过期机制",
+            # 故把 _01 的 cooldown_until 直接收紧到 now+2s (语义不变, 等得起)
+            cooldown_mod.cooldown_manager._state[acc1.id]["cooldown_until"] = (
+                time_module.time() + 2
+            )
             print(f"  阶段 4: 等 {cooldown_mod.cooldown_manager.cooldown_seconds}s 让 cooldown 过期")
             await asyncio.sleep(cooldown_mod.cooldown_manager.cooldown_seconds + 0.5)
             assert not cooldown_mod.cooldown_manager.is_in_cooldown(acc1.id), (
@@ -287,6 +322,7 @@ def test_e2e_all_accounts_in_cooldown_returns_503():
 
         try:
             await init_db()
+            await _purge_health_log_fk()
             async with async_session_factory() as session:
                 await session.execute(delete(PriceSnapshot))
                 await session.execute(delete(Account))
@@ -389,6 +425,7 @@ def test_e2e_4xx_does_not_cooldown():
 
         try:
             await init_db()
+            await _purge_health_log_fk()
             async with async_session_factory() as session:
                 await session.execute(delete(PriceSnapshot))
                 await session.execute(delete(Account))
