@@ -7,7 +7,8 @@
 - tier/capabilities 是路由"硬"字段（决策依据）
 - benchmark_scores 仅 Dashboard 展示用（Phase 2.9 才用），不参与路由
 - capabilities 是 JSON 字符串，应用层 json.loads
-- model_id 规范: {family}-{variant}，如 deepseek-chat / qwen-plus / kimi-k3
+- model_id 规范: {family}-{variant} 或 {family}<版本数字>{-variant}，
+  如 deepseek-chat / qwen-plus / qwen3-vl-32b-instruct / kimi-k3 (V6.x 放宽)
 
 来源（2026-07-29）：
 - 已配 channel 实际支持的 model（直连 + 硅基流动）
@@ -18,7 +19,7 @@
     python scripts/seed_model_registry.py
     重复运行会先清后插 (idempotent, 跟 seed_model_cards.py 风格一致)
 
-规模：30 个 model (P2-A 补充 5 个 vision: glm-4.5v + 4 qwen-vl-*)
+规模：30 个 model (P2-A 补充 5 个 vision: glm-4.5v + 4 qwen3-vl-*)
 覆盖厂商：deepseek / qwen / glm / kimi / doubao / hunyuan / stepfun / MiniMax / llama
 覆盖 tier：T0 / T1 / T2 / T3
 覆盖 capabilities：reasoning / code / math / general / long_context / agent / vision
@@ -128,9 +129,9 @@ MODEL_REGISTRY = [
     ),
 
     # ========== Qwen VL 系列 (4 个, P2-A 补充) ==========
-    # 硅基流动常驻, tier:vision 组成员
-    # 注意: model_id 用 "qwen-vl-" 前缀 (而非 "qwen3-vl-"), family="qwen"
-    # 因为 validate_model_id 要求 model_id 以 "{family}-" 开头
+    # 硅基流动常驻, tier:vision-light 组成员
+    # V6.x: model_id 用规范名 "qwen3-vl-" — validate_model_id 已放宽为接受
+    # "{family}<版本数字>", 不再需要丢版本号的 qwen-vl- workaround
     (
         "qwen3-vl-32b-instruct", "qwen", "Qwen3 VL 32B Instruct", "T1",
         ["vision", "general"], 32768, "vision", 1, "2026-08",

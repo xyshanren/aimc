@@ -200,7 +200,7 @@ commit/pash 时 Mimosa 扫出 11 high + 1 medium，**全部为存量文件**（V
 |---|---|---|
 | **V6.0** | ~~Phase 1 模型组优化 + Phase 2 Token 审计基础~~ → ✅ **全部上产**（Phase 1 见 §6.5，Phase 2 见 §7） | 低~中 |
 | **V6.1** | ~~Phase 4 架构 Agent 友好化 + Mimosa 存量清理~~ → ✅ **已上产**（清理见 §3.3，架构见 §3.5；MCP 留 V6.2 按需） | 高、横切 |
-| **V6.x 靠后** | 命名规范化（qwen-vl → qwen3-vl，放宽 validate_model_id + 迁移）；**e2e 存量修复**（`test_phase2_e2e` / `test_v46_e2e` teardown 阶段 `DELETE FROM accounts` 外键失败，干净 master 可复现，2026-09-03 用户列入） | 中 |
+| **V6.x 靠后** | ~~命名规范化 + e2e 存量修复~~ → ✅ **已完成并上产（2026-09-04）**：①e2e 修复（FK 子表清理 + mock settings 补齐 + V4.9 5xx 冷却语义 + probe_safety 自立），全量 **668 全绿**；②命名规范化（validate_model_id 放宽 + sync 去冗余前缀 + 迁移改名 39/合并 4，规范名 qwen3-vl-32b-instruct / qwen3-8b，usage 历史并轨，双前缀清零） | 中 |
 | **V7.0** | yield（git 关联收益追踪） + Phase C 其余（project/guard/compare 按需） | 中高 |
 
 ---
