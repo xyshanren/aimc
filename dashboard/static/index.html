@@ -119,6 +119,7 @@
             <div class="card">
                 <div class="card-title"><span class="card-title-main">Cache 节省明细 <span class="card-title-sub" id="cache-range-label">近 7 天</span></span></div>
                 <div class="card-body">
+                    <canvas id="cache-donut-chart" width="360" height="160"></canvas>
                     <div id="cache-by-channel">
                         <div class="loading">加载中…</div>
                     </div>
@@ -131,7 +132,8 @@
             <div class="card">
                 <div class="card-title"><span class="card-title-main">用量统计</span></div>
                 <div class="card-body">
-                    <div id="usage-list">
+                    <canvas id="usage-bar-chart" width="600" height="90"></canvas>
+                    <div class="mt-md" id="usage-list">
                         <div class="loading">加载中…</div>
                     </div>
                 </div>

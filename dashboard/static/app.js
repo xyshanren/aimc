@@ -1112,7 +1112,9 @@ document.addEventListener("DOMContentLoaded", () => {
 //   - loadUsageChart (line 587) -> usage-chart canvas 不存在
 // 替代: 我们直接 fetch + 渲染到新 IDs (kpi-* / cache-by-channel / usage-list / suggestions-list / group-routing-list / channels-list)
 
-// (b) 新 loadUsageChart 替代 (渲染 usage-list 表格)
+// (b) 新 loadUsageChart 替代 (渲染 usage-list 表格 + 每日请求柱图)
+let _usageBarChart = null;
+
 async function loadUsageChart() {
     try {
         const resp = await authFetch(`/dashboard/api/usage/summary?days=${fmtDays()}`);
@@ -1122,9 +1124,35 @@ async function loadUsageChart() {
         if (!list) return;
         if (!data || data.length === 0) {
             list.innerHTML = '<div class="empty">暂无用量数据</div>';
+            if (_usageBarChart) { _usageBarChart.destroy(); _usageBarChart = null; }
             return;
         }
-        let html = '<table><thead><tr><th>日期</th><th' + mdTitle('requests') + '>请求数</th><th class="mono">Input</th><th class="mono">Output</th><th class="mono"' + mdTitle('latency') + '>平均延迟</th></tr></thead><tbody>';
+        // 每日请求柱图 (Phase 3 数据表现形式: 时间序列用柱, 明细用表)
+        const barCanvas = document.getElementById("usage-bar-chart");
+        if (barCanvas) {
+            if (_usageBarChart) _usageBarChart.destroy();
+            _usageBarChart = new Chart(barCanvas, {
+                type: 'bar',
+                data: {
+                    labels: data.map(d => (d.date || '').slice(5)),
+                    datasets: [{
+                        label: '请求数',
+                        data: data.map(d => d.request_count || 0),
+                        backgroundColor: _cssColor('--color-info', 0.7),
+                        borderRadius: 3,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { ticks: { color: _cssVar('--text-muted') }, grid: { display: false } },
+                        y: { ticks: { color: _cssVar('--text-muted') }, grid: { color: _cssVar('--border-muted') }, beginAtZero: true }
+                    }
+                }
+            });
+        }
+        let html = '<table><thead><tr><th>日期</th><th>请求数</th><th class="mono">Input</th><th class="mono">Output</th><th class="mono">平均延迟</th></tr></thead><tbody>';
         for (const r of data) {
             html += `<tr><td>${esc(r.date || '—')}</td><td>${r.request_count || 0}</td><td class="mono">${fmtTokens(r.total_input_tokens || 0)}</td><td class="mono">${fmtTokens(r.total_output_tokens || 0)}</td><td class="mono">${r.avg_latency_ms ? fmtLatency(r.avg_latency_ms) : '—'}</td></tr>`;
         }
@@ -1133,7 +1161,16 @@ async function loadUsageChart() {
     } catch (e) { console.warn("usage chart failed:", e); }
 }
 
-// (c) 新 loadCacheStatsList 渲染 cache-by-channel 表格 (替代 htmx 自动渲染)
+// (c) 新 loadCacheStatsList 渲染 cache-by-channel 表格 (替代 htmx 自动渲染) + 节省分布环图
+let _cacheDonutChart = null;
+
+// 图表多系列调色板 (语义色 + 辅助灰, 循环取用)
+const _CHART_PALETTE = ['--color-info', '--color-success', '--color-warning', '--color-danger', '--color-accent', '--text-muted'];
+
+function _paletteColor(i, alpha) {
+    return _cssColor(_CHART_PALETTE[i % _CHART_PALETTE.length], alpha);
+}
+
 async function loadCacheStatsList() {
     try {
         const resp = await authFetch(`/dashboard/api/cache/stats?days=${fmtDays()}`);
@@ -1141,6 +1178,33 @@ async function loadCacheStatsList() {
         const data = await resp.json();
         const container = document.getElementById("cache-by-channel");
         if (!container) return;
+        // 节省分布环图 (Phase 3 数据表现形式: 构成占比用环图)
+        const donutCanvas = document.getElementById("cache-donut-chart");
+        const byChannel = data.by_channel || [];
+        if (donutCanvas && byChannel.length > 0) {
+            if (_cacheDonutChart) _cacheDonutChart.destroy();
+            _cacheDonutChart = new Chart(donutCanvas, {
+                type: 'doughnut',
+                data: {
+                    labels: byChannel.map(c => c.channel_name || '—'),
+                    datasets: [{
+                        data: byChannel.map(c => Math.round((c.saved_cost_cny || 0) * 100) / 100),
+                        backgroundColor: byChannel.map((c, i) => _paletteColor(i, 0.75)),
+                        borderWidth: 0,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { position: 'right', labels: { color: _cssVar('--text-secondary') } },
+                        tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${fmtCNY(ctx.parsed)}` } }
+                    }
+                }
+            });
+        } else if (donutCanvas && _cacheDonutChart) {
+            _cacheDonutChart.destroy();
+            _cacheDonutChart = null;
+        }
         let html = '';
         // 按渠道
         if (data.by_channel && data.by_channel.length > 0) {

@@ -1852,14 +1852,26 @@ async def list_requests(
         )).all()
         ch_name_map = {r.id: r.name for r in ch_rows}
 
-    # 反向 join key label (请求日志按调用 key 区分)
-    key_ids = {r.key_id for r in rows if r.key_id is not None}
-    key_label_map: dict[int, str] = {}
-    if key_ids:
-        key_rows = (await session.execute(
-            select(ApiKey.id, ApiKey.label, ApiKey.key_prefix).where(ApiKey.id.in_(key_ids))
-        )).all()
-        key_label_map = {r.id: (r.label or r.key_prefix or "") for r in key_rows}
+    # key 显示名: label (缺 label 用 prefix); key 身份 = 用户 + label 两层,
+    # 同名 label 归属不同用户时追加 username 消歧 (key 表很小, 全表查一次)
+    key_rows = (await session.execute(
+        select(ApiKey.id, ApiKey.label, ApiKey.key_prefix, User.username)
+        .join(User, ApiKey.user_id == User.id, isouter=True)
+    )).all()
+    label_owners: dict = {}
+    for r in key_rows:
+        base = r.label or r.key_prefix
+        if base and r.username:
+            label_owners.setdefault(base, set()).add(r.username)
+    key_label_map: dict = {}
+    for r in key_rows:
+        base = r.label or r.key_prefix or (r.username or "")
+        if not base:
+            continue
+        if r.username and len(label_owners.get(base, set())) > 1:
+            key_label_map[r.id] = f"{base} ({r.username})"
+        else:
+            key_label_map[r.id] = base
 
     return {
         "total": total,
