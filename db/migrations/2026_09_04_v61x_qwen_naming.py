@@ -71,24 +71,41 @@ def run(apply: bool) -> int:
         )
     }
 
-    renames: list[tuple[str, str]] = []   # (old, new)
-    deletes: list[tuple[str, str]] = []   # (dup_old, kept_new) — 重复条目并入 kept
+    # 先收集候选, 再按顺序解析冲突 (sync 行 qwen-qwen3-vl-* 排序在 seed 行
+    # qwen-vl-* 之前, 两者改后撞同一个规范名 → 保留被组引用的行)
+    candidates = []
     for old in sorted(all_ids):
         new = compute_new_name(old)
-        if new is None:
-            continue
-        if new in all_ids:
-            # 目标名已被占 — 重复条目。保留被组引用的行; 若两行都没被引用,
-            # 保留字典序较小 (稳定)。被保留行照常改名, 本行删除。
-            occupant_has_members = new in member_ids
+        if new is not None:
+            candidates.append((old, new))
+
+    renames: list[tuple[str, str]] = []   # (old, new)
+    deletes: list[tuple[str, str]] = []   # (victim_original_id, winner_new)
+    final_ids = set(all_ids)
+    owner: dict[str, str] = {}            # new 名 → 最终归属的原始 id
+    for old, new in candidates:
+        if new in final_ids and owner.get(new) != old:
+            cur_owner = owner.get(new, new)   # 占位行的原始 id (未改名前)
+            cur_has_members = cur_owner in member_ids
             old_has_members = old in member_ids
-            if old_has_members and not occupant_has_members:
-                deletes.append((new, old))     # 删占位行, old 改名顶上
+            if old_has_members and not cur_has_members:
+                # old (组内成员) 顶替占位行 — 删占位行 (原始 id), old 改名
+                deletes.append((cur_owner, new))
+                final_ids.discard(cur_owner)
+                final_ids.discard(old)
+                final_ids.add(new)
+                owner[new] = old
                 renames.append((old, new))
             else:
-                deletes.append((old, new))     # old 并入占位行
+                # old 并入占位行
+                deletes.append((old, new))
+                final_ids.discard(old)
             continue
+        # 目标名空闲
         renames.append((old, new))
+        final_ids.discard(old)
+        final_ids.add(new)
+        owner[new] = old
 
     print(f"\n待执行动作 ({len(renames)} 改名 + {len(deletes)} 重复合并):")
     for old, new in renames:

@@ -140,9 +140,10 @@ def test_convert_keeps_non_redundant_names():
 def _make_qwen_db(db_path):
     """模拟迁移前的生产数据: 双前缀 + qwen-vl + seed/sync 重复条目"""
     conn = sqlite3.connect(db_path)
+    # model_id UNIQUE 对齐生产 schema — 撞名必须在测试里就炸出来
     conn.execute(
         "CREATE TABLE model_registry ("
-        "id INTEGER PRIMARY KEY, model_id TEXT, tier TEXT, modality TEXT)")
+        "id INTEGER PRIMARY KEY, model_id TEXT UNIQUE, tier TEXT, modality TEXT)")
     conn.execute(
         "CREATE TABLE model_group_members ("
         "id INTEGER PRIMARY KEY, group_id TEXT, model_id TEXT, is_active INTEGER)")
