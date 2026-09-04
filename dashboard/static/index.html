@@ -42,7 +42,7 @@
             </div>
         </details>
 
-        <details class="card-folding">
+        <details class="card-folding" open>
             <summary><span class="card-title-main">限额预警</span></summary>
             <div class="card-body" id="quota-warning-list">
                 <div class="loading">加载中…</div>
@@ -63,9 +63,9 @@
                 </div>
                 <canvas id="overview-trend" width="600" height="100"></canvas>
             </div>
-        </div>
+        </details>
 
-        <details class="card-folding">
+        <details class="card-folding" open>
             <summary><span class="card-title-main">用量统计</span></summary>
             <div class="card-body">
                 <div id="usage-list">
@@ -98,7 +98,7 @@
                     <div class="loading">加载中…</div>
                 </div>
             </div>
-        </div>
+        </details>
 
         <details class="card-folding">
             <summary><span class="card-title-main">Cache 节省明细 <span class="card-title-sub" id="cache-range-label">近 7 天</span></span></summary>
@@ -191,7 +191,7 @@
         <!-- V6.1+: "按人用量"卡已并入中栏成本审计"按用户" tab (key 下钻保留) -->
 
         <details class="card-folding">
-            <summary><span class="card-title-main">Key 管理</span><span class="card-title-sub">多用户 · V4.8</span></summary>
+            <summary><span class="card-title-main">Key 管理</span><span class="card-title-sub">多用户</span></summary>
             <div class="card-body">
                 <div class="accounts-toolbar">
                     <button class="btn btn-sm" onclick="loadUserKeys()">刷新</button>
@@ -245,7 +245,7 @@
         </details>
 
         <details class="card-folding">
-            <summary><span class="card-title-main">采集源管理</span><span class="card-title-sub">V4.8.3 · 调度/频率/状态</span></summary>
+            <summary><span class="card-title-main">采集源管理</span><span class="card-title-sub">调度 / 频率 / 状态</span></summary>
             <div class="card-body">
                 <div class="accounts-toolbar">
                     <button class="btn btn-sm" onclick="loadSources()">刷新</button>
