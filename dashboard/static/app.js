@@ -94,8 +94,6 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
         filterRegistry(); // 同上：重放搜索过滤
     } else if (target.id === 'registry-groups-list') {
         renderRegistryGroups(target);
-    } else if (target.id === 'group-routing-list') {
-        renderGroupRouting(target);
     } else if (target.id === 'pending-review-list') {
         renderPendingReview(target);
     } else if (target.id === 'promotion-review-list') {
@@ -320,7 +318,7 @@ function renderGroupRouting(container) {
         const unmatched = data.unmatched || {};
 
         if (groups.length === 0 && unmatched.request_count === 0) {
-            container.innerHTML = '<p class="loading">近 7 天无组路由请求 · 所有请求都是精确模型名</p>';
+            container.innerHTML = '<p class="loading">近 ' + fmtDays() + ' 天无组路由请求 · 所有请求都是精确模型名</p>';
             return;
         }
 
@@ -332,7 +330,7 @@ function renderGroupRouting(container) {
             const channels = g.channels_used || [];
             html += `<div class="gr-group-card">
                 <h4><code>${esc(g.group_id)}</code>
-                    <span class="meta">${esc(g.request_count)} 次 · 估 ${esc(g.total_cost ?? 0)} 元</span>
+                    <span class="meta">${esc(g.request_count)} 次 · 估 ${fmtCNY(g.total_cost ?? 0)}</span>
                 </h4>`;
             if (dist.length === 0) {
                 html += '<p class="meta">无命中明细</p>';
@@ -377,6 +375,20 @@ function renderGroupRouting(container) {
         console.error('renderGroupRouting failed:', e);
         container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
     }
+}
+
+// 指标统一 Phase 2 (2026-09-05): 组路由从纯 htmx 改为 JS loader
+// - 请求带 ?days=fmtDays()，跟随全局时间范围（24h/7d/30d），原来固定后端默认 7 天
+// - applyTimeRange 切换范围时会重拉；渲染仍复用 renderGroupRouting (JSON→HTML)
+async function loadGroupRouting() {
+    const container = document.getElementById("group-routing-list");
+    if (!container) return;
+    try {
+        const resp = await authFetch(`/dashboard/api/stats/group_routing?days=${fmtDays()}`);
+        if (!resp.ok) return;
+        container.textContent = await resp.text();
+        renderGroupRouting(container);
+    } catch (e) { console.warn("group routing failed:", e); }
 }
 
 // Phase 4 E1: 待确认能力变更队列
@@ -1035,15 +1047,12 @@ async function loadOverviewKPIs() {
         const totalInput = (usage || []).reduce((s, r) => s + (r.total_input_tokens || 0), 0);
         const totalReq = (usage || []).reduce((s, r) => s + (r.request_count || 0), 0);
         const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-        set("kpi-tokens", (totalInput || 0).toLocaleString());
-        set("kpi-requests", (totalReq || 0).toLocaleString());
-        set("kpi-cache-rate", (cache.hit_rate_pct || 0).toFixed(1));
+        set("kpi-tokens", fmtTokens(totalInput));
+        set("kpi-requests", fmtNum(totalReq));
+        set("kpi-cache-rate", fmtPct(cache.hit_rate_pct, totalInput > 0));
         set("kpi-saved", fmtCNY(cache.saved_cost_cny));
-        const sr = document.getElementById("status-route");
-        if (sr) {
-            const ch = (cache.by_channel && cache.by_channel[0]) ? cache.by_channel[0].channel_name : "—";
-            sr.textContent = "cache: " + ch + " · " + fmtCNY(cache.saved_cost_cny) + " saved · " + (cache.hit_rate_pct || 0) + "% hit";
-        }
+        // 指标统一 (2026-09-05): 状态栏不再展示业务金额/比率 — Cache 三指标只在 KPI 卡出现,
+        // 避免与 Cache 节省明细/成本审计同屏双入口歧义; 状态栏文案由 syncRangeLabels 维护
     } catch (e) { console.warn("Overview KPIs failed:", e); }
 }
 
@@ -1153,9 +1162,9 @@ async function loadUsageChart() {
             list.innerHTML = '<div class="empty">暂无用量数据</div>';
             return;
         }
-        let html = '<table><thead><tr><th>日期</th><th>请求数</th><th class="mono">Input</th><th class="mono">Output</th><th class="mono">平均延迟</th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>日期</th><th' + mdTitle('requests') + '>请求数</th><th class="mono">Input</th><th class="mono">Output</th><th class="mono"' + mdTitle('latency') + '>平均延迟</th></tr></thead><tbody>';
         for (const r of data) {
-            html += `<tr><td>${esc(r.date || '—')}</td><td>${r.request_count || 0}</td><td class="mono">${(r.total_input_tokens || 0).toLocaleString()}</td><td class="mono">${(r.total_output_tokens || 0).toLocaleString()}</td><td class="mono">${r.avg_latency_ms ? r.avg_latency_ms.toFixed(0) + ' ms' : '—'}</td></tr>`;
+            html += `<tr><td>${esc(r.date || '—')}</td><td>${r.request_count || 0}</td><td class="mono">${fmtTokens(r.total_input_tokens || 0)}</td><td class="mono">${fmtTokens(r.total_output_tokens || 0)}</td><td class="mono">${r.avg_latency_ms ? fmtLatency(r.avg_latency_ms) : '—'}</td></tr>`;
         }
         html += '</tbody></table>';
         list.innerHTML = html;
@@ -1174,13 +1183,13 @@ async function loadCacheStatsList() {
         // 按渠道
         if (data.by_channel && data.by_channel.length > 0) {
             html += '<h3 style="font-size:11px;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px;">按渠道</h3>';
-            html += '<table><thead><tr><th>渠道</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono">命中率</th><th class="mono">节省</th></tr></thead><tbody>';
+            html += '<table><thead><tr><th>渠道</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono"' + mdTitle('cacheHit') + '>Cache 命中率</th><th class="mono"' + mdTitle('cacheSaved') + '>Cache 节省</th></tr></thead><tbody>';
             for (const c of data.by_channel) {
                 html += '<tr>';
                 html += `<td>${esc(c.channel_name || '—')}</td>`;
-                html += `<td class="mono">${(c.input_tokens || 0).toLocaleString()}</td>`;
-                html += `<td class="mono">${(c.cached_tokens || 0).toLocaleString()}</td>`;
-                html += `<td class="mono">${(c.hit_rate_pct || 0).toFixed(1)}%</td>`;
+                html += `<td class="mono">${fmtTokens(c.input_tokens || 0)}</td>`;
+                html += `<td class="mono">${fmtTokens(c.cached_tokens || 0)}</td>`;
+                html += `<td class="mono">${fmtPct(c.hit_rate_pct, (c.input_tokens || 0) > 0)}</td>`;
                 html += `<td class="mono">${fmtCNY(c.saved_cost_cny)}</td>`;
                 html += '</tr>';
             }
@@ -1189,13 +1198,13 @@ async function loadCacheStatsList() {
         // TOP 10 model
         if (data.by_model && data.by_model.length > 0) {
             html += '<h3 style="font-size:11px;color:var(--text-muted);text-transform:uppercase;margin:16px 0 8px;">TOP 10 Model</h3>';
-            html += '<div class="scroll-y-260"><table><thead><tr><th>Model</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono">命中率</th><th class="mono">节省</th></tr></thead><tbody>';
+            html += '<div class="scroll-y-260"><table><thead><tr><th>Model</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono"' + mdTitle('cacheHit') + '>Cache 命中率</th><th class="mono"' + mdTitle('cacheSaved') + '>Cache 节省</th></tr></thead><tbody>';
             for (const m of data.by_model.slice(0, 10)) {
                 html += '<tr>';
                 html += `<td><code class="text-mono">${esc(m.model || '—')}</code></td>`;
-                html += `<td class="mono">${(m.input_tokens || 0).toLocaleString()}</td>`;
-                html += `<td class="mono">${(m.cached_tokens || 0).toLocaleString()}</td>`;
-                html += `<td class="mono">${(m.hit_rate_pct || 0).toFixed(1)}%</td>`;
+                html += `<td class="mono">${fmtTokens(m.input_tokens || 0)}</td>`;
+                html += `<td class="mono">${fmtTokens(m.cached_tokens || 0)}</td>`;
+                html += `<td class="mono">${fmtPct(m.hit_rate_pct, (m.input_tokens || 0) > 0)}</td>`;
                 html += `<td class="mono">${fmtCNY(m.saved_cost_cny)}</td>`;
                 html += '</tr>';
             }
@@ -1258,6 +1267,7 @@ async function loadSuggestionsList() {
 // 启动钩子
 document.addEventListener("DOMContentLoaded", loadUsageChart);
 document.addEventListener("DOMContentLoaded", loadCacheStatsList);
+document.addEventListener("DOMContentLoaded", loadGroupRouting);
 document.addEventListener("DOMContentLoaded", loadSuggestionsList);
 document.addEventListener("DOMContentLoaded", loadUserKeys);
 
@@ -1266,6 +1276,7 @@ document.addEventListener("DOMContentLoaded", loadUserKeys);
 setInterval(() => {
     loadUsageChart();
     loadCacheStatsList();
+    loadGroupRouting();
     loadSuggestionsList();
     loadUserKeys();
 }, 60000);
@@ -1397,6 +1408,57 @@ function fmtCNY(n) {
 }
 
 // ============================================================
+// 指标体系统一 (docs/dashboard-metrics-plan.md §2.2, 2026-09-05)
+// - 所有 fmt 函数集中于此, 渲染代码禁止手拼 ¥ / % / toFixed
+// - METRIC_DEFS 是指标字典: 显示名 + 口径一句话, 表头 tooltip 从这里取
+// ============================================================
+
+// 比率: 1 位小数; valid=false (分母为 0/无数据) 显 — 而非 0.0%
+function fmtPct(v, valid) {
+    if (valid === false || v === null || v === undefined || Number.isNaN(Number(v))) return '—';
+    return Number(v).toFixed(1) + '%';
+}
+
+// Token: 大数 K/M 缩写 (LLM 领域惯用阶梯), 小数原值; 表格需要精确值时仍可用 fmtNum
+function fmtTokens(n) {
+    if (n === null || n === undefined || Number.isNaN(Number(n))) return '-';
+    const v = Number(n);
+    const neg = v < 0 ? '-' : '';
+    const a = Math.abs(v);
+    if (a >= 1e6) return neg + (a / 1e6).toFixed(1) + 'M';
+    if (a >= 1e3) return neg + (a / 1e3).toFixed(1) + 'K';
+    return String(v);
+}
+
+// 延迟: <1s 显 ms, ≥1s 显 s
+function fmtLatency(ms) {
+    if (ms === null || ms === undefined || Number.isNaN(Number(ms))) return '—';
+    const v = Number(ms);
+    if (v >= 1000) return (v / 1000).toFixed(1) + ' s';
+    return v.toFixed(0) + ' ms';
+}
+
+// 指标字典: key → { label 显示名, desc 口径一句话 (表头 title tooltip) }
+const METRIC_DEFS = {
+    tokens:       { label: 'Token',       desc: '模型输入+输出 token 总量' },
+    requests:     { label: '请求数',      desc: '计入统计的请求次数' },
+    cacheHit:     { label: 'Cache 命中率', desc: 'cached_tokens / input_tokens，按当前统计窗口聚合' },
+    cacheSaved:   { label: 'Cache 节省',  desc: '缓存命中相对未缓存标价省下的金额 (saved_cost_cny)，与成本审计的「标价节省」口径不同' },
+    paid:         { label: '实付',        desc: '实际计费成本 (cost_yuan)' },
+    listPrice:    { label: '官方标价',    desc: '按厂商公开标价估算的成本 (list_cost_yuan)' },
+    listSaved:    { label: '标价节省',    desc: '官方标价 − 实付，只统计标价已知的请求；与 Cache 节省口径不同' },
+    coverage:     { label: '标价覆盖率',  desc: '标价已知请求 / 总请求，覆盖率低时标价节省偏保守' },
+    routeSuccess: { label: '路由成功率',  desc: '按分组路由的匹配情况 (Agent 视角)，非 Cache 命中率' },
+    latency:      { label: '平均延迟',    desc: '请求端到端耗时的日均值' },
+};
+
+// 生成 <th> 的 title tooltip 属性
+function mdTitle(key) {
+    const def = METRIC_DEFS[key];
+    return def ? ` title="${esc(def.desc)}"` : '';
+}
+
+// ============================================================
 // P1-1: 全局时间范围（24h / 7d / 30d）
 // - 持久化：localStorage + URL ?range= 双向（URL 优先，便于分享/刷新还原）
 // - 所有 ?days=N 的 API 调用统一走 fmtDays()
@@ -1408,7 +1470,7 @@ function rangeLabel(r) {
     return { "1": "近 24 小时", "7": "近 7 天", "30": "近 30 天" }[r] || "近 7 天";
 }
 
-// 卡片标题副标签与当前时间范围保持同步（index.html 四处 card-title-sub）
+// 卡片标题副标签与当前时间范围保持同步（index.html 四处 card-title-sub + 状态栏）
 function syncRangeLabels() {
     const lbl = rangeLabel(_timeRange);
     const short = { "1": "24 小时", "7": "7 天", "30": "30 天" }[_timeRange] || "7 天";
@@ -1417,6 +1479,7 @@ function syncRangeLabels() {
         ["cost-range-label", "标价 vs 实付 · " + lbl],
         ["cache-range-label", lbl],
         ["group-routing-range-label", "Agent 视角 · " + lbl],
+        ["status-route", "统计窗口 " + lbl + " · 自动刷新 60s"],
     ];
     for (const [id, text] of map) {
         const el = document.getElementById(id);
@@ -1443,6 +1506,7 @@ function applyTimeRange(r, fromUrl, skipRefresh) {
     loadOverviewKPIs();
     loadUsageChart();
     loadCacheStatsList();
+    loadGroupRouting();
     loadCostAudit();
 }
 
@@ -1454,6 +1518,7 @@ function initTimeRange() {
     const r = urlRange && ["1", "7", "30"].includes(urlRange) ? urlRange : stored;
     // skipRefresh=true: 本次只还原状态，数据由紧随其后的常规 DOMContentLoaded 加载拉取
     if (r) applyTimeRange(r, !urlRange, true);
+    syncRangeLabels(); // 无存储范围时也要初始化状态栏/副标签（默认 7 天）
     document.querySelectorAll(".range-btn").forEach((b) => {
         b.classList.toggle("active", b.dataset.range === _timeRange);
         b.addEventListener("click", () => applyTimeRange(b.dataset.range, false));
@@ -1954,8 +2019,9 @@ function renderCostTable(dim, userKeyMap) {
     let html = '<div class="scroll-y-300"><table><thead><tr>'
         + '<th>' + _costKeyLabel(key) + '</th>'
         + (isUserTab ? '<th>Input</th><th>Output</th>' : '')
-        + '<th>请求</th><th>Token</th>'
-        + '<th>实付</th><th>标价</th><th>节省</th><th>覆盖率</th>'
+        + '<th' + mdTitle('requests') + '>请求</th><th' + mdTitle('tokens') + '>Token</th>'
+        + '<th' + mdTitle('paid') + '>实付</th><th' + mdTitle('listPrice') + '>官方标价</th>'
+        + '<th' + mdTitle('listSaved') + '>标价节省</th><th' + mdTitle('coverage') + '>标价覆盖率</th>'
         + '</tr></thead><tbody>';
     for (const it of items) {
         const name = it.model || it.group_id || it.username || '-';

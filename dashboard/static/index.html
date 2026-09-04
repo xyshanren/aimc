@@ -14,7 +14,7 @@
 <header class="status-bar">
     <div class="status-bar-left">
         <span class="status-bar-brand">AIMC</span>
-        <span class="status-bar-route" id="status-route">加载中…</span>
+        <span class="status-bar-route" id="status-route" title="Cache 节省/命中率等业务指标统一在「实时状态」卡展示">统计窗口加载中…</span>
     </div>
     <div class="status-bar-right">
         <span class="status-bar-status" id="status-bar-status">
@@ -56,10 +56,10 @@
             <summary><span class="card-title-main">实时状态 <span class="card-title-sub" id="overview-range-label">7 天</span></span></summary>
             <div class="card-body">
                 <div class="kpi-grid" id="overview-kpis">
-                    <div class="kpi"><div class="kpi-value" id="kpi-tokens">--</div><div class="kpi-label">总 Token</div></div>
+                    <div class="kpi"><div class="kpi-value" id="kpi-tokens">--</div><div class="kpi-label" title="模型输入+输出 token 总量（大数 K/M 缩写）">总 Token</div></div>
                     <div class="kpi"><div class="kpi-value" id="kpi-requests">--</div><div class="kpi-label">请求数</div></div>
-                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cache-rate">--%</div><div class="kpi-label">Cache 命中率</div></div>
-                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-saved">¥--</div><div class="kpi-label">节省金额</div></div>
+                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cache-rate">--%</div><div class="kpi-label" title="cached_tokens / input_tokens，按当前统计窗口聚合">Cache 命中率</div></div>
+                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-saved">¥--</div><div class="kpi-label" title="缓存命中相对未缓存标价省下的金额；与成本审计的「标价节省」口径不同">Cache 节省</div></div>
                 </div>
                 <canvas id="overview-trend" width="600" height="100"></canvas>
             </div>
@@ -78,10 +78,10 @@
             <summary><span class="card-title-main">成本审计 <span class="card-title-sub" id="cost-range-label">标价 vs 实付 · 近 7 天</span></span></summary>
             <div class="card-body">
                 <div class="kpi-grid" id="cost-kpis">
-                    <div class="kpi"><div class="kpi-value" id="kpi-cost-paid">¥--</div><div class="kpi-label">实付</div></div>
-                    <div class="kpi"><div class="kpi-value" id="kpi-cost-list">¥--</div><div class="kpi-label">官方标价</div></div>
-                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cost-saved">¥--</div><div class="kpi-label">节省</div></div>
-                    <div class="kpi"><div class="kpi-value" id="kpi-cost-coverage">--%</div><div class="kpi-label">标价覆盖率</div></div>
+                    <div class="kpi"><div class="kpi-value" id="kpi-cost-paid">¥--</div><div class="kpi-label" title="实际计费成本 (cost_yuan)">实付</div></div>
+                    <div class="kpi"><div class="kpi-value" id="kpi-cost-list">¥--</div><div class="kpi-label" title="按厂商公开标价估算的成本 (list_cost_yuan)">官方标价</div></div>
+                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cost-saved">¥--</div><div class="kpi-label" title="官方标价 − 实付，只统计标价已知的请求；与 Cache 节省口径不同">标价节省</div></div>
+                    <div class="kpi"><div class="kpi-value" id="kpi-cost-coverage">--%</div><div class="kpi-label" title="标价已知请求 / 总请求，覆盖率低时标价节省偏保守">标价覆盖率</div></div>
                 </div>
                 <div class="range-switch" style="display:flex;gap:4px;margin-bottom:var(--space-sm);">
                     <button class="btn btn-sm range-btn" data-range="1">24h</button>
@@ -110,9 +110,9 @@
         </details>
 
         <details class="card-folding">
-            <summary><span class="card-title-main">组路由命中率</span><span class="card-title-sub" id="group-routing-range-label">Agent 视角 · 近 7 天</span></summary>
+            <summary><span class="card-title-main" title="按分组路由的匹配情况 (Agent 视角)，非 Cache 命中率">路由成功率</span><span class="card-title-sub" id="group-routing-range-label">Agent 视角 · 近 7 天</span></summary>
             <div class="card-body">
-                <div id="group-routing-list" hx-get="/dashboard/api/stats/group_routing" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
+                <div id="group-routing-list"><div class="loading">加载中…</div></div>
             </div>
         </details>
 
