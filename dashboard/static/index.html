@@ -6,17 +6,23 @@
     <meta name="color-scheme" content="dark light">
     <title>AIMC - AI Model Compass</title>
     <link rel="stylesheet" href="/static/style.css">
-    <script src="/static/vendor/htmx.min.js"></script>
     <script src="/static/vendor/chart.umd.min.js"></script>
 </head>
 <body>
 
+<!-- Phase 3a (2026-09-05): 侧边栏 + 6 页哈希路由, 卡片折叠移除, htmx 移除 (docs/dashboard-phase3-design.md) -->
 <header class="status-bar">
     <div class="status-bar-left">
         <span class="status-bar-brand">AIMC</span>
-        <span class="status-bar-route" id="status-route" title="Cache 节省/命中率等业务指标统一在「实时状态」卡展示">统计窗口加载中…</span>
+        <div class="range-switch" id="global-range" style="display:flex;gap:4px;">
+            <button class="btn btn-sm range-btn" data-range="1">24h</button>
+            <button class="btn btn-sm range-btn" data-range="7">7d</button>
+            <button class="btn btn-sm range-btn" data-range="30">30d</button>
+        </div>
     </div>
     <div class="status-bar-right">
+        <span class="badge-pill badge-warn" id="badge-pending" hidden title="待处理积压">待处理 <b>0</b></span>
+        <span class="badge-pill badge-info" id="badge-suggestions" hidden title="待审建议">建议 <b>0</b></span>
         <span class="status-bar-status" id="status-bar-status">
             <span class="status-dot"></span>
             <span id="status-text">运行中</span>
@@ -24,241 +30,273 @@
     </div>
 </header>
 
-<div class="dashboard-grid">
+<div class="layout">
 
-    <div class="col-left">
+    <nav class="sidebar" id="sidebar">
+        <a class="nav-item" data-page="overview" href="#/overview">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></svg>
+            概览
+        </a>
+        <a class="nav-item" data-page="cost" href="#/cost">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6.5"/><path d="M5.5 5.5 8 8l2.5-2.5M8 8v4M6 10h4M6 12h4"/></svg>
+            成本
+        </a>
+        <a class="nav-item" data-page="usage" href="#/usage">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1.5 14.5v-5M6 14.5V6M10.5 14.5V8.5M15 14.5V3"/></svg>
+            用量
+        </a>
+        <a class="nav-item" data-page="channels" href="#/channels">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5 14.5 5 8 8.5 1.5 5z"/><path d="M1.5 8.5 8 12l6.5-3.5M1.5 11.5 8 15l6.5-3.5"/></svg>
+            渠道
+        </a>
+        <a class="nav-item" data-page="intel" href="#/intel">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M12.5 3.5l-1.4 1.4M4.9 11.1l-1.4 1.4"/><circle cx="8" cy="8" r="2.5"/></svg>
+            情报
+        </a>
+        <a class="nav-item" data-page="ops" href="#/ops">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 1.5 6 5a2.8 2.8 0 0 0 3.5 3.5L13 5a4 4 0 0 1-5 5L2.5 14"/></svg>
+            运维
+        </a>
+    </nav>
 
-        <details class="card-folding" open>
-            <summary><span class="card-title-main">数据新鲜度</span></summary>
-            <div class="card-body">
-                <div class="donut">
-                    <div class="donut-bg" id="freshness-donut"></div>
-                    <div class="donut-text">
-                        <div class="donut-value" id="freshness-pct">--%</div>
-                        <div class="donut-label" id="freshness-total">0 / 0 健康</div>
+    <main class="main">
+
+        <!-- ===== 概览 ===== -->
+        <section class="page" id="page-overview">
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">今日摘要 <span class="card-title-sub">过去 24 小时</span></span></div>
+                <div class="card-body" id="today-summary"><div class="loading">加载中…</div></div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">实时状态 <span class="card-title-sub" id="overview-range-label">7 天</span></span></div>
+                <div class="card-body">
+                    <div class="kpi-grid" id="overview-kpis">
+                        <div class="kpi"><div class="kpi-value" id="kpi-tokens">--</div><div class="kpi-label" title="模型输入+输出 token 总量（大数 K/M 缩写）">总 Token</div></div>
+                        <div class="kpi"><div class="kpi-value" id="kpi-requests">--</div><div class="kpi-label">请求数</div></div>
+                        <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cache-rate">--%</div><div class="kpi-label" title="cached_tokens / input_tokens，按当前统计窗口聚合">Cache 命中率</div></div>
+                        <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-saved">¥--</div><div class="kpi-label" title="缓存命中相对未缓存标价省下的金额；与成本审计的「标价节省」口径不同">Cache 节省</div></div>
                     </div>
                 </div>
-                <div id="freshness-failed" class="mt-md"></div>
             </div>
-        </details>
-
-        <details class="card-folding" open>
-            <summary><span class="card-title-main">限额预警</span></summary>
-            <div class="card-body" id="quota-warning-list">
-                <div class="loading">加载中…</div>
-            </div>
-        </details>
-    </div>
-
-    <div class="col-mid">
-
-        <details class="card-folding" open>
-            <summary><span class="card-title-main">实时状态 <span class="card-title-sub" id="overview-range-label">7 天</span></span></summary>
-            <div class="card-body">
-                <div class="kpi-grid" id="overview-kpis">
-                    <div class="kpi"><div class="kpi-value" id="kpi-tokens">--</div><div class="kpi-label" title="模型输入+输出 token 总量（大数 K/M 缩写）">总 Token</div></div>
-                    <div class="kpi"><div class="kpi-value" id="kpi-requests">--</div><div class="kpi-label">请求数</div></div>
-                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cache-rate">--%</div><div class="kpi-label" title="cached_tokens / input_tokens，按当前统计窗口聚合">Cache 命中率</div></div>
-                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-saved">¥--</div><div class="kpi-label" title="缓存命中相对未缓存标价省下的金额；与成本审计的「标价节省」口径不同">Cache 节省</div></div>
-                </div>
-                <canvas id="overview-trend" width="600" height="100"></canvas>
-            </div>
-        </details>
-
-        <details class="card-folding" open>
-            <summary><span class="card-title-main">用量统计</span></summary>
-            <div class="card-body">
-                <div id="usage-list">
-                    <div class="loading">加载中…</div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">标价 vs 实付 <span class="card-title-sub" id="trend-range-label">近 7 天</span></span></div>
+                <div class="card-body">
+                    <canvas id="overview-trend-chart" width="600" height="90"></canvas>
                 </div>
             </div>
-        </details>
-
-        <details class="card-folding">
-            <summary><span class="card-title-main">成本审计 <span class="card-title-sub" id="cost-range-label">标价 vs 实付 · 近 7 天</span></span></summary>
-            <div class="card-body">
-                <div class="kpi-grid" id="cost-kpis">
-                    <div class="kpi"><div class="kpi-value" id="kpi-cost-paid">¥--</div><div class="kpi-label" title="实际计费成本 (cost_yuan)">实付</div></div>
-                    <div class="kpi"><div class="kpi-value" id="kpi-cost-list">¥--</div><div class="kpi-label" title="按厂商公开标价估算的成本 (list_cost_yuan)">官方标价</div></div>
-                    <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cost-saved">¥--</div><div class="kpi-label" title="官方标价 − 实付，只统计标价已知的请求；与 Cache 节省口径不同">标价节省</div></div>
-                    <div class="kpi"><div class="kpi-value" id="kpi-cost-coverage">--%</div><div class="kpi-label" title="标价已知请求 / 总请求，覆盖率低时标价节省偏保守">标价覆盖率</div></div>
-                </div>
-                <div class="range-switch" style="display:flex;gap:4px;margin-bottom:var(--space-sm);">
-                    <button class="btn btn-sm range-btn" data-range="1">24h</button>
-                    <button class="btn btn-sm range-btn" data-range="7">7d</button>
-                    <button class="btn btn-sm range-btn" data-range="30">30d</button>
-                </div>
-                <canvas id="cost-trend-chart" width="600" height="90"></canvas>
-                <div class="toolbar mt-sm" id="cost-tabs">
-                    <button class="btn btn-sm" id="cost-tab-model" onclick="switchCostTab('model')">按模型</button>
-                    <button class="btn btn-sm" id="cost-tab-group" onclick="switchCostTab('group')">按分组</button>
-                    <button class="btn btn-sm" id="cost-tab-user" onclick="switchCostTab('user')">按用户</button>
-                </div>
-                <div id="cost-audit-table">
-                    <div class="loading">加载中…</div>
-                </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">Top 模型 <span class="card-title-sub" id="top-range-label">近 7 天</span></span></div>
+                <div class="card-body" id="usage-top-list"><div class="loading">加载中…</div></div>
             </div>
-        </details>
-
-        <details class="card-folding">
-            <summary><span class="card-title-main">Cache 节省明细 <span class="card-title-sub" id="cache-range-label">近 7 天</span></span></summary>
-            <div class="card-body">
-                <div id="cache-by-channel">
-                    <div class="loading">加载中…</div>
-                </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">分组概览 <span class="card-title-sub" id="group-overview-label">近 7 天</span></span></div>
+                <div class="card-body" id="group-overview-list"><div class="loading">加载中…</div></div>
             </div>
-        </details>
+        </section>
 
-        <details class="card-folding">
-            <summary><span class="card-title-main" title="按分组路由的匹配情况 (Agent 视角)，非 Cache 命中率">路由成功率</span><span class="card-title-sub" id="group-routing-range-label">Agent 视角 · 近 7 天</span></summary>
-            <div class="card-body">
-                <div id="group-routing-list"><div class="loading">加载中…</div></div>
-            </div>
-        </details>
-
-        <details class="card-folding">
-            <summary><span class="card-title-main">渠道 + 价格</span><span class="card-title-sub">配置 / 价格对比</span></summary>
-            <div class="card-body">
-                <div class="toolbar mt-sm">
-                    <input type="text" id="search-channels" class="toolbar-search" placeholder="按 channel / model 搜索…" oninput="filterChannels()">
-                </div>
-                <div id="channels-list" hx-get="/dashboard/api/channels" hx-trigger="load, every 30s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
-                <div id="prices-list" hx-get="/dashboard/api/prices" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
-            </div>
-        </details>
-
-        <details class="card-folding">
-            <summary><span class="card-title-main">Model Registry + Groups</span><span class="card-title-sub">tier / capabilities / ctx</span></summary>
-            <div class="card-body">
-                <div class="toolbar mt-sm">
-                    <input type="text" id="search-registry" class="toolbar-search" placeholder="按 model_id 搜索…" oninput="filterRegistry()">
-                </div>
-                <div id="registry-models-list" hx-get="/dashboard/api/registry/models" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
-                <div id="registry-groups-list" hx-get="/dashboard/api/registry/groups" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
-            </div>
-        </details>
-
-        <details class="card-folding">
-            <summary><span class="card-title-main">周报</span><span class="card-title-sub">每周一 09:00 推送</span></summary>
-            <div class="card-body">
-                <div class="report-toolbar">
-                    <select id="report-select" onchange="loadWeeklyReport(this.value)"><option value="latest">最新</option></select>
-                    <span id="report-meta" class="meta"></span>
-                </div>
-                <div id="weekly-report-content" hx-get="/dashboard/api/reports/latest" hx-trigger="load, every 5m" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
-            </div>
-        </details>
-
-    </div>
-
-    <div class="col-right">
-
-        <!-- V4.9 (2026-08-25): 待处理 tab — 余额不足 / Key 失效 / 探活状态 -->
-        <details class="card-folding" open>
-            <summary>
-                <span class="card-title-main">
-                    🔴 待处理
-                    <span id="pending-total" class="badge badge-danger">0</span>
-                </span>
-                <span class="card-title-sub">余额 / Key / 探活</span>
-            </summary>
-            <div class="card-body">
-                <div class="accounts-toolbar">
-                    <button class="btn btn-sm" onclick="loadPendingSummary()">刷新</button>
-                    <span id="pending-meta" class="meta"></span>
-                </div>
-                <div id="pending-list">
-                    <div class="loading">加载中…</div>
-                </div>
-            </div>
-        </details>
-
-        <div class="card">
-            <h2 class="card-title">
-                <span class="card-title-main">
-                    <span class="status-dot-small status-healthy"></span>
-                    待审建议
-                    <span class="card-title-sub" id="sg-count">0</span>
-                </span>
-                <span class="card-title-sub">路由策略 · 周建议</span>
-                <button class="btn btn-primary btn-sm" onclick="applyAllSuggestions()">一键应用已批准</button>
-            </h2>
-            <div class="card-body" id="suggestions-list">
-                <div class="loading">加载中…</div>
-            </div>
-        </div>
-
-        <!-- V6.1+: "按人用量"卡已并入中栏成本审计"按用户" tab (key 下钻保留) -->
-
-        <details class="card-folding">
-            <summary><span class="card-title-main">Key 管理</span><span class="card-title-sub">多用户</span></summary>
-            <div class="card-body">
-                <div class="accounts-toolbar">
-                    <button class="btn btn-sm" onclick="loadUserKeys()">刷新</button>
-                    <span id="keys-meta" class="meta"></span>
-                </div>
-                <div id="user-keys-list"><div class="loading">加载中…</div></div>
-            </div>
-        </details>
-
-        <details class="card-folding">
-            <summary><span class="card-title-main">账号管理</span><span class="card-title-sub">加账号无需重启</span></summary>
-            <div class="card-body">
-                <div class="accounts-toolbar">
-                    <button class="btn btn-sm" onclick="loadAccounts()">刷新列表</button>
-                    <button class="btn btn-sm" onclick="triggerExpireCheck()">扫描过期</button>
-                    <span id="accounts-meta" class="meta"></span>
-                </div>
-                <details>
-                    <summary style="font-size:12px;color:var(--text-muted);">+ 加新账号</summary>
-                    <div class="accounts-form mt-sm">
-                        <div class="form-row"><label>Provider<select id="acct-provider"><option value="">加载中…</option></select></label><label>账号名<input type="text" id="acct-name" placeholder="e.g. deepseek_02"></label></div>
-                        <div class="form-row"><label>API Key<input type="password" id="acct-api-key" placeholder="sk-xxx"></label></div>
-                        <div class="form-row"><label>总配额 (可选)<input type="number" id="acct-quota-total" placeholder="e.g. 100000"></label><label>过期时间 (可选)<input type="date" id="acct-expires-at"></label></div>
-                        <div class="form-row"><label>备注 (可选)<input type="text" id="acct-notes" placeholder="e.g. 新用户优惠"></label></div>
-                        <div class="form-row"><button class="btn btn-primary" onclick="submitNewAccount()">提交</button><span id="acct-add-feedback" class="feedback"></span></div>
+        <!-- ===== 成本 ===== -->
+        <section class="page" id="page-cost">
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">成本审计 <span class="card-title-sub" id="cost-range-label">标价 vs 实付 · 近 7 天</span></span></div>
+                <div class="card-body">
+                    <div class="kpi-grid" id="cost-kpis">
+                        <div class="kpi"><div class="kpi-value" id="kpi-cost-paid">¥--</div><div class="kpi-label" title="实际计费成本 (cost_yuan)">实付</div></div>
+                        <div class="kpi"><div class="kpi-value" id="kpi-cost-list">¥--</div><div class="kpi-label" title="按厂商公开标价估算的成本 (list_cost_yuan)">官方标价</div></div>
+                        <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cost-saved">¥--</div><div class="kpi-label" title="官方标价 − 实付，只统计标价已知的请求；与 Cache 节省口径不同">标价节省</div></div>
+                        <div class="kpi"><div class="kpi-value" id="kpi-cost-coverage">--%</div><div class="kpi-label" title="标价已知请求 / 总请求，覆盖率低时标价节省偏保守">标价覆盖率</div></div>
                     </div>
-                </details>
-                <div id="accounts-list" hx-get="/dashboard/api/accounts" hx-trigger="load" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
-            </div>
-        </details>
-
-        <details class="card-folding">
-            <summary><span class="card-title-main">待确认能力变更</span><span class="card-title-sub">AI 推断 · 实时数据确认</span></summary>
-            <div class="card-body">
-                <div id="pending-review-list" hx-get="/dashboard/api/pending-review" hx-trigger="load, every 30s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
-            </div>
-        </details>
-
-        <details class="card-folding">
-            <summary><span class="card-title-main">优惠情报</span><span class="card-title-sub">多厂商活动</span></summary>
-            <div class="card-body">
-                <div id="promotions-list" hx-get="/dashboard/api/promotions" hx-trigger="load, every 60s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
-            </div>
-        </details>
-
-        <details class="card-folding">
-            <summary><span class="card-title-main">优惠审查</span><span class="card-title-sub">低置信度 · 人工确认</span></summary>
-            <div class="card-body">
-                <div id="promotion-review-list" hx-get="/dashboard/api/promotion-reviews" hx-trigger="load, every 30s" hx-swap="innerHTML"><div class="loading">加载中…</div></div>
-            </div>
-        </details>
-
-        <details class="card-folding">
-            <summary><span class="card-title-main">采集源管理</span><span class="card-title-sub">调度 / 频率 / 状态</span></summary>
-            <div class="card-body">
-                <div class="accounts-toolbar">
-                    <button class="btn btn-sm" onclick="loadSources()">刷新</button>
-                    <span id="sources-meta" class="meta"></span>
-                </div>
-                <div id="sources-list" class="scroll-y-300">
-                    <p class="loading">点击刷新加载…</p>
+                    <canvas id="cost-trend-chart" width="600" height="90"></canvas>
+                    <div class="toolbar mt-sm" id="cost-tabs">
+                        <button class="btn btn-sm" id="cost-tab-model" onclick="switchCostTab('model')">按模型</button>
+                        <button class="btn btn-sm" id="cost-tab-group" onclick="switchCostTab('group')">按分组</button>
+                        <button class="btn btn-sm" id="cost-tab-user" onclick="switchCostTab('user')">按用户</button>
+                    </div>
+                    <div id="cost-audit-table">
+                        <div class="loading">加载中…</div>
+                    </div>
                 </div>
             </div>
-        </details>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">Cache 节省明细 <span class="card-title-sub" id="cache-range-label">近 7 天</span></span></div>
+                <div class="card-body">
+                    <div id="cache-by-channel">
+                        <div class="loading">加载中…</div>
+                    </div>
+                </div>
+            </div>
+        </section>
 
-    </div>
+        <!-- ===== 用量 ===== -->
+        <section class="page" id="page-usage">
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">用量统计</span></div>
+                <div class="card-body">
+                    <div id="usage-list">
+                        <div class="loading">加载中…</div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main" title="按分组路由的匹配情况 (Agent 视角)，非 Cache 命中率">路由成功率</span><span class="card-title-sub" id="group-routing-range-label">Agent 视角 · 近 7 天</span></div>
+                <div class="card-body">
+                    <div id="group-routing-list"><div class="loading">加载中…</div></div>
+                </div>
+            </div>
+            <!-- 3b: 请求日志页卡在此加入 -->
+        </section>
 
+        <!-- ===== 渠道 ===== -->
+        <section class="page" id="page-channels">
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">渠道 + 价格</span><span class="card-title-sub">配置 / 价格对比</span></div>
+                <div class="card-body">
+                    <div class="toolbar mt-sm">
+                        <input type="text" id="search-channels" class="toolbar-search" placeholder="按 channel / model 搜索…" oninput="filterChannels()">
+                    </div>
+                    <div id="channels-list"><div class="loading">加载中…</div></div>
+                    <div id="prices-list"><div class="loading">加载中…</div></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">Model Registry + Groups</span><span class="card-title-sub">tier / capabilities / ctx</span></div>
+                <div class="card-body">
+                    <div class="toolbar mt-sm">
+                        <input type="text" id="search-registry" class="toolbar-search" placeholder="按 model_id 搜索…" oninput="filterRegistry()">
+                    </div>
+                    <div id="registry-models-list"><div class="loading">加载中…</div></div>
+                    <div id="registry-groups-list"><div class="loading">加载中…</div></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== 情报 ===== -->
+        <section class="page" id="page-intel">
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">优惠情报</span><span class="card-title-sub">多厂商活动</span></div>
+                <div class="card-body">
+                    <div id="promotions-list"><div class="loading">加载中…</div></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">优惠审查</span><span class="card-title-sub">低置信度 · 人工确认</span></div>
+                <div class="card-body">
+                    <div id="promotion-review-list"><div class="loading">加载中…</div></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">待确认能力变更</span><span class="card-title-sub">AI 推断 · 实时数据确认</span></div>
+                <div class="card-body">
+                    <div id="pending-review-list"><div class="loading">加载中…</div></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">周报</span><span class="card-title-sub">每周一 09:00 推送</span></div>
+                <div class="card-body">
+                    <div class="report-toolbar">
+                        <select id="report-select" onchange="loadWeeklyReport(this.value)"><option value="latest">最新</option></select>
+                        <span id="report-meta" class="meta"></span>
+                    </div>
+                    <div id="weekly-report-content"><div class="loading">加载中…</div></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ===== 运维 ===== -->
+        <section class="page" id="page-ops">
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">数据新鲜度</span></div>
+                <div class="card-body">
+                    <div class="donut">
+                        <div class="donut-bg" id="freshness-donut"></div>
+                        <div class="donut-text">
+                            <div class="donut-value" id="freshness-pct">--%</div>
+                            <div class="donut-label" id="freshness-total">0 / 0 健康</div>
+                        </div>
+                    </div>
+                    <div id="freshness-failed" class="mt-md"></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title">
+                    <span class="card-title-main">待处理 <span id="pending-total" class="badge badge-danger">0</span></span>
+                    <span class="card-title-sub">余额 / Key / 探活</span>
+                </div>
+                <div class="card-body">
+                    <div class="accounts-toolbar">
+                        <button class="btn btn-sm" onclick="loadPendingSummary()">刷新</button>
+                        <span id="pending-meta" class="meta"></span>
+                    </div>
+                    <div id="pending-list">
+                        <div class="loading">加载中…</div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title">
+                    <span class="card-title-main">
+                        <span class="status-dot-small status-healthy"></span>
+                        待审建议
+                        <span class="card-title-sub" id="sg-count">0</span>
+                    </span>
+                    <span class="card-title-sub">路由策略 · 周建议</span>
+                    <button class="btn btn-primary btn-sm" onclick="applyAllSuggestions()">一键应用已批准</button>
+                </div>
+                <div class="card-body" id="suggestions-list">
+                    <div class="loading">加载中…</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">限额预警</span></div>
+                <div class="card-body" id="quota-warning-list">
+                    <div class="loading">加载中…</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">账号管理</span><span class="card-title-sub">加账号无需重启</span></div>
+                <div class="card-body">
+                    <div class="accounts-toolbar">
+                        <button class="btn btn-sm" onclick="loadAccounts()">刷新列表</button>
+                        <button class="btn btn-sm" onclick="triggerExpireCheck()">扫描过期</button>
+                        <span id="accounts-meta" class="meta"></span>
+                    </div>
+                    <details>
+                        <summary style="font-size:12px;color:var(--text-muted);">+ 加新账号</summary>
+                        <div class="accounts-form mt-sm">
+                            <div class="form-row"><label>Provider<select id="acct-provider"><option value="">加载中…</option></select></label><label>账号名<input type="text" id="acct-name" placeholder="e.g. deepseek_02"></label></div>
+                            <div class="form-row"><label>API Key<input type="password" id="acct-api-key" placeholder="sk-xxx"></label></div>
+                            <div class="form-row"><label>总配额 (可选)<input type="number" id="acct-quota-total" placeholder="e.g. 100000"></label><label>过期时间 (可选)<input type="date" id="acct-expires-at"></label></div>
+                            <div class="form-row"><label>备注 (可选)<input type="text" id="acct-notes" placeholder="e.g. 新用户优惠"></label></div>
+                            <div class="form-row"><button class="btn btn-primary" onclick="submitNewAccount()">提交</button><span id="acct-add-feedback" class="feedback"></span></div>
+                        </div>
+                    </details>
+                    <div id="accounts-list"><div class="loading">加载中…</div></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">Key 管理</span><span class="card-title-sub">多用户</span></div>
+                <div class="card-body">
+                    <div class="accounts-toolbar">
+                        <button class="btn btn-sm" onclick="loadUserKeys()">刷新</button>
+                        <span id="keys-meta" class="meta"></span>
+                    </div>
+                    <div id="user-keys-list"><div class="loading">加载中…</div></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">采集源管理</span><span class="card-title-sub">调度 / 频率 / 状态</span></div>
+                <div class="card-body">
+                    <div class="accounts-toolbar">
+                        <button class="btn btn-sm" onclick="loadSources()">刷新</button>
+                        <span id="sources-meta" class="meta"></span>
+                    </div>
+                    <div id="sources-list" class="scroll-y-300">
+                        <p class="loading">点击刷新加载…</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
 </div>
 
 <div id="shortcut-hint" class="text-muted" style="text-align:center;font-size:11px;margin-top:24px;">

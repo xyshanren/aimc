@@ -59,49 +59,8 @@ function esc(str) {
     return div.innerHTML;
 }
 
-// P1-7: 给 htmx 全局加 Authorization header (dashboard token)
-document.body.addEventListener('htmx:configRequest', function(event) {
-    const token = localStorage.getItem(DASHBOARD_TOKEN_KEY);
-    if (token) {
-        event.detail.headers['Authorization'] = 'Bearer ' + token;
-    }
-});
-
-// P1-7: htmx 收到 401 时跳 login
-document.body.addEventListener('htmx:responseError', function(event) {
-    if (event.detail.xhr.status === 401) {
-        const path = event.detail.pathInfo?.requestPath || event.detail.path || '';
-        if (!path.includes('/dashboard/login') && !path.includes('/dashboard/api/auth/')) {
-            localStorage.removeItem(DASHBOARD_TOKEN_KEY);
-            location.href = '/dashboard/login?next=' + encodeURIComponent(location.pathname);
-        }
-    }
-});
-
-// htmx 响应渲染：渠道列表
-document.body.addEventListener('htmx:afterSwap', function(event) {
-    const target = event.detail.target;
-
-    if (target.id === 'channels-list') {
-        renderChannels(target);
-        filterChannels(); // 轮询重渲染后重放过滤，避免搜索词还在但筛选被清空
-    } else if (target.id === 'promotions-list') {
-        renderPromotions(target);
-    } else if (target.id === 'prices-list') {
-        renderPrices(target);
-    } else if (target.id === 'registry-models-list') {
-        renderRegistryModels(target);
-        filterRegistry(); // 同上：重放搜索过滤
-    } else if (target.id === 'registry-groups-list') {
-        renderRegistryGroups(target);
-    } else if (target.id === 'pending-review-list') {
-        renderPendingReview(target);
-    } else if (target.id === 'promotion-review-list') {
-        renderPromotionReview(target);
-    } else if (target.id === 'cross-source-list') {
-        renderCrossSource(target);
-    }
-});
+// Phase 3a (2026-09-05): htmx 移除 — 原 htmx:configRequest/responseError/afterSwap 三块删除,
+// 轮询改由页面调度器驱动 (PAGE_ROUTES, 见文件末尾), JSON 卡走 loadJsonCard + 各 renderXxx。
 
 function renderChannels(container) {
     try {
@@ -635,8 +594,6 @@ async function runCrossSourceDetection(btn) {
         const data = await resp.json();
         if (resp.ok) {
             result.textContent = `本次: ${data.total_models} 个 model · ${data.with_discrepancy} 个分歧 · ${data.recorded} 条入库`;
-            // 触发刷新列表
-            htmx.trigger('#cross-source-list', 'load');
         } else {
             result.textContent = '失败: ' + (data.detail || resp.statusText);
         }
@@ -799,7 +756,7 @@ function loadWeeklyReport(value) {
         });
 }
 
-document.addEventListener('DOMContentLoaded', loadReportsList);
+// (loadReportsList 由情报页调度器拉起, 不再挂全局 DOMContentLoaded — Phase 3a)
 
 // ============================================================
 // V4.6: Dashboard 账号管理 (列表 / 加 / 启停 / 轮换 / 过期扫描)
@@ -1010,22 +967,7 @@ async function triggerExpireCheck() {
     }
 }
 
-// htmx 渲染: accounts-list
-document.body.addEventListener('htmx:afterSwap', function(event) {
-    if (event.detail.target.id === 'accounts-list') {
-        try {
-            const data = JSON.parse(event.detail.target.textContent);
-            renderAccounts(data);
-            const meta = document.getElementById('accounts-meta');
-            if (meta) {
-                const active = (data.accounts || []).filter(a => a.status === 'active').length;
-                meta.textContent = `共 ${data.count} 个账号 · ${active} 个 active`;
-            }
-        } catch (e) {
-            // 非 JSON — 忽略
-        }
-    }
-});
+// (htmx accounts-list afterSwap 已随 htmx 移除 — loadAccounts 自带渲染, Phase 3a)
 
 // 页面加载时拉 active channels 填表单
 
@@ -1136,10 +1078,14 @@ document.addEventListener("keydown", (e) => {
     else if (e.key === "?") { e.preventDefault(); const el = document.getElementById("shortcut-hint"); if (el) el.style.opacity = (el.style.opacity === "1" ? "0.3" : "1"); }
 });
 
-// P1-1: 先初始化时间范围（URL/localStorage 还原），再触发首次数据加载，保证首次请求就用还原的 days
-document.addEventListener("DOMContentLoaded", initTimeRange);
-document.addEventListener("DOMContentLoaded", loadOverviewKPIs);
-document.addEventListener("DOMContentLoaded", loadDataFreshnessDonut);
+// Phase 3a: 唯一启动入口 — 时间范围还原 → 页面调度器 → 顶栏 badge 常驻轮询
+// (原 8 处 DOMContentLoaded + 3 处 setInterval 全部收编进 PAGE_ROUTES 调度器, 见文件末尾)
+document.addEventListener("DOMContentLoaded", () => {
+    initTimeRange();
+    initNav();
+    refreshBadges();
+    setInterval(refreshBadges, 30000);
+});
 
 // === 阶段P0-UI v2 (2026-08-16): 修复旧函数死引用 + 接管 htmx 自动渲染 ===
 
@@ -1264,22 +1210,7 @@ async function loadSuggestionsList() {
 // 简单方案: 给 htmx 默认 resp.target 注入 JSON→HTML 转换
 // 由于 htmx 不会自动转 JSON, 我们的 loadCacheStatsList / loadUsageChart 主动接管这些 IDs
 
-// 启动钩子
-document.addEventListener("DOMContentLoaded", loadUsageChart);
-document.addEventListener("DOMContentLoaded", loadCacheStatsList);
-document.addEventListener("DOMContentLoaded", loadGroupRouting);
-document.addEventListener("DOMContentLoaded", loadSuggestionsList);
-document.addEventListener("DOMContentLoaded", loadUserKeys);
-
-// 60s 定时刷新 + 接管 htmx
-// (V6.1+: 按人用量卡已并入成本审计"按用户" tab, 见 loadCostAudit)
-setInterval(() => {
-    loadUsageChart();
-    loadCacheStatsList();
-    loadGroupRouting();
-    loadSuggestionsList();
-    loadUserKeys();
-}, 60000);
+// (启动钩子与 60s 全局轮询已由 PAGE_ROUTES 页面调度器接管 — Phase 3a, 见文件末尾)
 
 
 // === 阶段P0-UI v3 (2026-08-16): 限额预警 + 修复之前漏的 ===
@@ -1362,28 +1293,27 @@ async function loadQuotaWarning() {
     }
 }
 
-document.addEventListener("DOMContentLoaded", loadQuotaWarning);
-setInterval(loadQuotaWarning, 60000);
+// (限额预警由运维页调度器拉起, 不再全局轮询 — Phase 3a)
 // === P0-UI v5: 周报 markdown 渲染 ===
-// 周报 raw markdown → 用 marked.js 渲染成 HTML
-// htmx 自动加载 + 我们需要拦截 raw markdown 转成 HTML
+// (原 htmx:afterSwap 拦截已随 htmx 移除; markdown 渲染并入 loadWeeklyReportLatest — Phase 3a)
 
-document.body.addEventListener('htmx:afterSwap', function(event) {
-    if (event.detail.target.id === 'weekly-report-content') {
-        try {
-            const md = event.detail.target.textContent;
-            // 检查是否含 markdown 标记
-            if (md && (md.includes('# ') || md.includes('## ') || md.includes('### ') || md.includes('**'))) {
-                // marked.js 全局函数
-                if (typeof marked !== 'undefined') {
-                    event.detail.target.innerHTML = marked.parse(md);
-                }
+async function loadWeeklyReportLatest() {
+    const content = document.getElementById('weekly-report-content');
+    if (!content) return;
+    try {
+        const resp = await authFetch('/dashboard/api/reports/latest');
+        if (!resp.ok) return;
+        const md = await resp.text();
+        content.textContent = md;
+        if (md && (md.includes('# ') || md.includes('## ') || md.includes('### ') || md.includes('**'))) {
+            if (typeof marked !== 'undefined') {
+                content.innerHTML = marked.parse(md);
             }
-        } catch (e) {
-            console.warn('weekly report render:', e);
         }
+    } catch (e) {
+        console.warn('weekly report latest failed:', e);
     }
-});// === P0-UI v6: 账号管理 - data-action click 委托 (避免 onclick 嵌套引号) ===
+}// === P0-UI v6: 账号管理 - data-action click 委托 (避免 onclick 嵌套引号) ===
 
 
 // ============================================================
@@ -1470,7 +1400,7 @@ function rangeLabel(r) {
     return { "1": "近 24 小时", "7": "近 7 天", "30": "近 30 天" }[r] || "近 7 天";
 }
 
-// 卡片标题副标签与当前时间范围保持同步（index.html 四处 card-title-sub + 状态栏）
+// 卡片标题副标签与当前时间范围保持同步（index.html 各 card-title-sub）
 function syncRangeLabels() {
     const lbl = rangeLabel(_timeRange);
     const short = { "1": "24 小时", "7": "7 天", "30": "30 天" }[_timeRange] || "7 天";
@@ -1479,7 +1409,9 @@ function syncRangeLabels() {
         ["cost-range-label", "标价 vs 实付 · " + lbl],
         ["cache-range-label", lbl],
         ["group-routing-range-label", "Agent 视角 · " + lbl],
-        ["status-route", "统计窗口 " + lbl + " · 自动刷新 60s"],
+        ["trend-range-label", lbl],
+        ["top-range-label", lbl],
+        ["group-overview-label", lbl],
     ];
     for (const [id, text] of map) {
         const el = document.getElementById(id);
@@ -1502,12 +1434,8 @@ function applyTimeRange(r, fromUrl, skipRefresh) {
     btns.forEach((b) => b.classList.toggle("active", b.dataset.range === r));
     syncRangeLabels();
     if (skipRefresh) return; // 初始化时由常规 DOMContentLoaded 加载，避免重复请求
-    // 重新拉所有随时间范围变化的数据
-    loadOverviewKPIs();
-    loadUsageChart();
-    loadCacheStatsList();
-    loadGroupRouting();
-    loadCostAudit();
+    // 重新拉当前页所有随时间范围变化的数据
+    if (_currentPage) showPage(_currentPage);
 }
 
 function initTimeRange() {
@@ -1881,8 +1809,7 @@ async function manualEnable(accountId, btn) {
     }
 }
 
-document.addEventListener('DOMContentLoaded', loadPendingSummary);
-setInterval(loadPendingSummary, 30000);
+// (待处理卡由运维页调度器拉起; 顶栏 badge 走 refreshBadges 30s — Phase 3a)
 
 // ============================================================
 // V6.0 Phase 2 (2026-09-03): 成本审计 — 标价 vs 实付
@@ -2026,7 +1953,7 @@ function renderCostTable(dim, userKeyMap) {
     for (const it of items) {
         const name = it.model || it.group_id || it.username || '-';
         const label = it.display_name ? esc(name) + ' (' + esc(it.display_name) + ')' : esc(name);
-        const cov = it.request_count ? Math.round(it.list_known_requests / it.request_count * 100) : 0;
+        const cov = it.request_count ? Math.round((it.list_known_requests || 0) / it.request_count * 100) : 0;
         const savedTxt = it.list_known_requests === 0
             ? '<span class="text-muted">标价未知</span>'
             : '<span class="text-success">' + _costFmt(it.saved_yuan) + '</span>';
@@ -2086,5 +2013,224 @@ function switchCostTab(tab) {
     loadCostAudit();
 }
 
-document.addEventListener('DOMContentLoaded', () => switchCostTab('model'));
+// 初始 tab 高亮 (数据加载由成本页调度器负责, 不在此触发请求)
+for (const t of ['model', 'group', 'user']) {
+    const btn = document.getElementById('cost-tab-' + t);
+    if (btn) btn.classList.toggle('btn-primary', t === 'model');
+}
+
+// ============================================================
+// Phase 3a (2026-09-05): 页面调度器 — docs/dashboard-phase3-design.md §2.3
+// - 侧边栏 6 页哈希路由, 只轮询当前页 (切页停旧定时器)
+// - 原 htmx 轮询卡全部转 JS loader (loadJsonCard + 既有 renderXxx)
+// - 顶栏 badge 独立 30s 常驻轮询
+// ============================================================
+
+// 通用 JSON 卡 loader: 拉接口 → textContent 暂存 → 复用既有 renderXxx 解析渲染
+async function loadJsonCard(containerId, url, renderer, after) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    try {
+        const resp = await authFetch(url);
+        if (!resp.ok) return;
+        container.textContent = await resp.text();
+        renderer(container);
+        if (after) after();
+    } catch (e) { console.warn(containerId + ' failed:', e); }
+}
+
+function loadChannelsCard() { return loadJsonCard('channels-list', '/dashboard/api/channels', renderChannels, filterChannels); }
+function loadPricesCard() { return loadJsonCard('prices-list', '/dashboard/api/prices', renderPrices); }
+function loadRegistryModelsCard() { return loadJsonCard('registry-models-list', '/dashboard/api/registry/models', renderRegistryModels, filterRegistry); }
+function loadRegistryGroupsCard() { return loadJsonCard('registry-groups-list', '/dashboard/api/registry/groups', renderRegistryGroups); }
+function loadPromotionsCard() { return loadJsonCard('promotions-list', '/dashboard/api/promotions', renderPromotions); }
+function loadPromotionReviewsCard() { return loadJsonCard('promotion-review-list', '/dashboard/api/promotion-reviews', renderPromotionReview); }
+function loadPendingReviewCard() { return loadJsonCard('pending-review-list', '/dashboard/api/pending-review', renderPendingReview); }
+function loadAccountsCard() { loadAccounts(); loadActiveChannels(); }
+// loadWeeklyReportLatest 定义在周报 markdown 渲染区 (带 marked.parse, 此处不重复)
+
+// ---- 概览新增卡 ----
+
+let _overviewTrendChart = null;
+
+// 标价 vs 实付 趋势 (概览缩略版, 配置与成本审计趋势一致)
+async function loadOverviewTrend() {
+    const canvas = document.getElementById('overview-trend-chart');
+    if (!canvas) return;
+    try {
+        const resp = await authFetch(`/dashboard/api/usage/cost-trend?days=${fmtDays()}`);
+        if (!resp.ok) return;
+        const trend = await resp.json();
+        if (_overviewTrendChart) { _overviewTrendChart.destroy(); _overviewTrendChart = null; }
+        _overviewTrendChart = new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels: (trend.items || []).map(d => d.date),
+                datasets: [{
+                    label: '官方标价 ¥',
+                    data: (trend.items || []).map(d => d.list_cost_yuan),
+                    borderColor: _cssColor('--color-info', 1),
+                    backgroundColor: _cssColor('--color-info', 0.15),
+                    tension: 0.3,
+                    fill: true,
+                }, {
+                    label: '实付 ¥',
+                    data: (trend.items || []).map(d => d.cost_yuan),
+                    borderColor: _cssColor('--color-success', 1),
+                    backgroundColor: _cssColor('--color-success', 0.15),
+                    tension: 0.3,
+                    fill: true,
+                }],
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { labels: { color: _cssVar('--text-secondary') } } },
+                scales: {
+                    x: { ticks: { color: _cssVar('--text-muted') }, grid: { color: _cssVar('--border-muted') } },
+                    y: { ticks: { color: _cssVar('--text-muted') }, grid: { color: _cssVar('--border-muted') }, beginAtZero: true }
+                }
+            }
+        });
+    } catch (e) { console.warn('overview trend failed:', e); }
+}
+
+// Top 模型 (前 5)
+async function loadUsageTop() {
+    const el = document.getElementById('usage-top-list');
+    if (!el) return;
+    try {
+        const resp = await authFetch(`/dashboard/api/usage/cost-by-model?days=${fmtDays()}`);
+        if (!resp.ok) return;
+        const items = (await resp.json()).items || [];
+        if (items.length === 0) {
+            el.innerHTML = '<p class="empty">近 ' + fmtDays() + ' 天无用量数据</p>';
+            return;
+        }
+        let html = '<table><thead><tr><th>模型</th><th' + mdTitle('requests') + '>请求</th><th' + mdTitle('paid') + '>实付</th><th' + mdTitle('listPrice') + '>标价</th></tr></thead><tbody>';
+        for (const it of items.slice(0, 5)) {
+            html += '<tr><td><code class="text-mono">' + esc(it.model || '—') + '</code></td>'
+                + '<td>' + fmtNum(it.request_count) + '</td>'
+                + '<td class="mono">' + _costFmt(it.cost_yuan) + '</td>'
+                + '<td class="mono">' + _costFmt(it.list_cost_yuan) + '</td></tr>';
+        }
+        html += '</tbody></table>';
+        el.innerHTML = html;
+    } catch (e) { console.warn('usage top failed:', e); }
+}
+
+// 分组概览 (前 3 tier)
+async function loadGroupOverview() {
+    const el = document.getElementById('group-overview-list');
+    if (!el) return;
+    try {
+        const resp = await authFetch(`/dashboard/api/usage/cost-by-group?days=${fmtDays()}`);
+        if (!resp.ok) return;
+        const items = (await resp.json()).items || [];
+        if (items.length === 0) {
+            el.innerHTML = '<p class="empty">近 ' + fmtDays() + ' 天无分组用量</p>';
+            return;
+        }
+        const totalReq = items.reduce((s, it) => s + (it.request_count || 0), 0) || 1;
+        let html = '<table><thead><tr><th>分组</th><th' + mdTitle('requests') + '>请求</th><th>占比</th><th' + mdTitle('paid') + '>实付</th></tr></thead><tbody>';
+        for (const it of items.slice(0, 3)) {
+            const pct = Math.round((it.request_count || 0) / totalReq * 100);
+            html += '<tr><td><code class="text-mono">' + esc(it.group_id || '—') + '</code></td>'
+                + '<td>' + fmtNum(it.request_count) + '</td>'
+                + '<td><div class="bar-track"><div class="bar-fill" style="width:' + pct + '%"></div></div></td>'
+                + '<td class="mono">' + _costFmt(it.cost_yuan) + '</td></tr>';
+        }
+        html += '</tbody></table>';
+        el.innerHTML = html;
+    } catch (e) { console.warn('group overview failed:', e); }
+}
+
+// 今日摘要: 过去 24h 请求 + 账号/队列异常一行速览
+async function loadTodaySummary() {
+    const el = document.getElementById('today-summary');
+    if (!el) return;
+    try {
+        const [usageResp, acctResp, pendResp] = await Promise.all([
+            authFetch('/dashboard/api/usage/summary?days=1'),
+            authFetch('/dashboard/api/accounts'),
+            authFetch('/dashboard/api/pending-summary'),
+        ]);
+        const usage = usageResp.ok ? await usageResp.json() : [];
+        const reqs = (usage || []).reduce((s, r) => s + (r.request_count || 0), 0);
+        const accounts = acctResp.ok ? ((await acctResp.json()).accounts || []) : [];
+        const inactive = accounts.filter(a => (a.status || 'active') !== 'active').length;
+        const pending = pendResp.ok ? ((await pendResp.json()).total || 0) : 0;
+        const issues = [];
+        if (inactive > 0) issues.push(inactive + ' 个账号非 active');
+        if (pending > 0) issues.push(pending + ' 项待处理');
+        if (issues.length === 0) {
+            el.innerHTML = '<div class="text-success" style="font-size:13px;padding:4px 0;">✓ 一切正常 — 24h 内 ' + fmtNum(reqs) + ' 个请求 · 全部账号 active · 无待处理积压</div>';
+        } else {
+            el.innerHTML = '<div style="font-size:13px;padding:4px 0;">24h 内 ' + fmtNum(reqs) + ' 个请求 · '
+                + '<span style="color:var(--color-warning);">' + issues.join(' · ') + '</span>'
+                + ' — 详情见 <a href="#/ops">运维</a></div>';
+        }
+    } catch (e) { console.warn('today summary failed:', e); }
+}
+
+// ---- 顶栏 badge (唯一跨页常驻轮询) ----
+
+async function refreshBadges() {
+    try {
+        const [pendResp, suggResp] = await Promise.all([
+            authFetch('/dashboard/api/pending-summary'),
+            authFetch('/dashboard/api/suggestions?status=pending'),
+        ]);
+        let pend = 0;
+        if (pendResp.ok) pend = (await pendResp.json()).total || 0;
+        let sugg = 0;
+        if (suggResp.ok) {
+            const d = await suggResp.json();
+            sugg = (d.model || []).length + (d.group || []).length;
+        }
+        const bp = document.getElementById('badge-pending');
+        if (bp) { bp.hidden = pend === 0; const b = bp.querySelector('b'); if (b) b.textContent = pend; }
+        const bs = document.getElementById('badge-suggestions');
+        if (bs) { bs.hidden = sugg === 0; const b = bs.querySelector('b'); if (b) b.textContent = sugg; }
+    } catch (e) { /* badge 静默失败, 不干扰页面 */ }
+}
+
+// ---- 页面注册表 + 调度器 ----
+
+const PAGE_ROUTES = {
+    overview: { title: '概览', ms: 60000, loaders: [loadOverviewKPIs, loadOverviewTrend, loadUsageTop, loadGroupOverview, loadTodaySummary] },
+    cost:     { title: '成本', ms: 60000, loaders: [loadCostAudit, loadCacheStatsList] },
+    usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting] },
+    channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard, loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
+    intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard, loadReportsList, loadWeeklyReportLatest] },
+    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadSuggestionsList, loadQuotaWarning, loadAccountsCard, loadUserKeys, loadSources] },
+};
+
+let _currentPage = null;
+let _pageTimer = null;
+
+function showPage(name) {
+    if (!PAGE_ROUTES[name]) name = 'overview';
+    _currentPage = name;
+    document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + name));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.page === name));
+    if (location.hash !== '#/' + name) {
+        try { history.replaceState(null, '', '#/' + name); } catch (e) { /* ignore */ }
+    }
+    if (_pageTimer) clearInterval(_pageTimer);
+    const page = PAGE_ROUTES[name];
+    const runAll = () => page.loaders.forEach(fn => { try { fn(); } catch (e) { console.warn(name + ' loader failed:', e); } });
+    runAll();
+    _pageTimer = setInterval(runAll, page.ms);
+}
+
+function initNav() {
+    document.querySelectorAll('.nav-item').forEach(n => {
+        n.addEventListener('click', (e) => { e.preventDefault(); showPage(n.dataset.page); });
+    });
+    window.addEventListener('hashchange', () => {
+        const r = location.hash.replace(/^#\//, '') || 'overview';
+        if (r !== _currentPage) showPage(r);
+    });
+    showPage(location.hash.replace(/^#\//, '') || 'overview');
+}
 

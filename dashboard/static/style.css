@@ -1,8 +1,8 @@
-/* AIMC Dashboard — 2026-08-16 重构
+/* AIMC Dashboard — 2026-08-16 重构 / Phase 3a (2026-09-05) 侧边栏布局
  * 设计参考: DeepSeek Chat / Claude / ChatGPT LLM UI 风格
  * - 深色模式 (默认, 跟随 prefers-color-scheme)
- * - 3 列宽屏布局 (≥1280px), 2 列 (≥768px), 单列 (<768px)
- * - CSS Grid + 实用类, 不引入 Tailwind (保持零依赖)
+ * - 侧边栏 + 6 页哈希路由 (概览/成本/用量/渠道/情报/运维), <900px 侧边栏折叠为顶部 tab
+ * - CSS 变量 + 实用类, 不引入 Tailwind (保持零依赖)
  * - JetBrains Mono 字体用于 model 名/价格/token
  */
 
@@ -172,28 +172,96 @@ code, .mono {
     50% { opacity: 0.5; }
 }
 
-/* ============ 布局: 3 列网格 ============ */
-.dashboard-grid {
-    display: grid;
-    grid-template-columns: 280px 1fr 320px;
-    gap: var(--space-md);
-    max-width: 1600px;
+/* ============ 布局: 侧边栏 + 页面 (Phase 3a) ============ */
+.layout {
+    display: flex;
+    min-height: calc(100vh - 44px);
+}
+
+.sidebar {
+    width: 190px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border-muted);
+    padding: var(--space-md) var(--space-sm);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.nav-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 8px 12px;
+    border-radius: 8px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    text-decoration: none;
+    user-select: none;
+}
+
+.nav-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.nav-item.active {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.nav-item svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+.main {
+    flex: 1;
+    min-width: 0;
+    padding: var(--space-lg) var(--space-xl);
+}
+
+.page {
+    display: none;
+    max-width: 1080px;
     margin: 0 auto;
 }
 
-/* 2 列 (768-1279px): col-right 换行铺满到下方, 不隐藏 */
-@media (max-width: 1279px) {
-    .dashboard-grid {
-        grid-template-columns: 240px 1fr;
-    }
-    .dashboard-grid > .col-right { grid-column: 1 / -1; }
+.page.active {
+    display: block;
 }
 
-/* 单列 (< 768px): 三列依序堆叠, 不隐藏 */
-@media (max-width: 767px) {
-    .dashboard-grid {
-        grid-template-columns: 1fr;
+/* 顶栏 badge: 仅积压 >0 时显示 (hidden 属性控制) */
+.badge-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.badge-pill b { font-weight: 600; }
+.badge-warn { background: rgba(246, 104, 94, 0.15); color: var(--color-danger); }
+.badge-info { background: rgba(77, 159, 255, 0.15); color: var(--color-info); }
+.badge-pill[hidden] { display: none; }
+
+/* 窄屏: 侧边栏折叠为顶部横滚 tab */
+@media (max-width: 900px) {
+    .layout { flex-direction: column; }
+    .sidebar {
+        width: auto;
+        flex-direction: row;
+        overflow-x: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border-muted);
+        padding: var(--space-sm);
     }
+    .nav-item { flex-shrink: 0; }
+    .main { padding: var(--space-md); }
 }
 
 /* ============ 卡片通用样式 ============ */
@@ -238,7 +306,7 @@ code, .mono {
     letter-spacing: 0;
 }
 
-/* V6.x (2026-09-04): 折叠卡片统一为 <details class="card-folding"> (零 JS), 旧 .card-collapsed/.card-toggle 已删 */
+/* Phase 3a (2026-09-05): 卡片折叠随页面化移除 (原 details.card-folding/.card-collapsed/.card-toggle 系列已删) */
 
 /* ============ KPI 大数字 ============ */
 .kpi-grid {
@@ -523,44 +591,8 @@ tbody tr:hover {
     box-shadow: var(--shadow-glow);
 }
 
-/* ============ 折叠 (HTML details, 零 JS) ============ */
-details.card-folding {
-    background: var(--bg-surface);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    margin-bottom: var(--space-md);
-}
-
-details.card-folding[open] {
-    border-color: var(--text-muted);
-}
-
-details.card-folding > summary {
-    padding: var(--space-md) var(--space-lg);
-    cursor: pointer;
-    font-weight: 500;
-    user-select: none;
-    list-style: none;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-}
-
-details.card-folding > summary::after {
-    content: '';
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-right: 2px solid var(--text-muted);
-    border-bottom: 2px solid var(--text-muted);
-    transform: rotate(-45deg);  /* 关闭状态: › 指向右下 */
-    transition: transform 0.2s ease;
-    margin-right: 4px;
-}
-
-details.card-folding[open] > summary::after {
-    transform: rotate(45deg);   /* 打开状态: ‹ 旋转 90° → ↓ 指向下方 */
-}
+/* ============ 卡片折叠 (Phase 3a 移除: details.card-folding 系列) ============ */
+/* (样式块已删; accounts-form-details 表单披露保留) */
 
 details.accounts-form-details > summary {
     list-style: none;
@@ -682,9 +714,7 @@ details.accounts-form-details[open] > summary::before {
     grid-template-columns: 1fr;
 }
 
-details.card-folding > .card-body {
-    padding: 0 var(--space-lg) var(--space-lg);
-}
+/* (details.card-folding > .card-body 随折叠移除) */
 
 /* ============ 响应式 (mobile) ============ */
 @media (max-width: 767px) {
