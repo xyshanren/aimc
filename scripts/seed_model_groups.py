@@ -150,8 +150,8 @@ GROUP_MEMBERS = [
     # m2.5 同步移出 balanced。直连请求不受影响 (price_snapshots 保留)。
     # V6.0: + glm-4.7-flash (bigmodel 文本免费, priority 130) — 补回 V5.1
     # 丢掉的免费车道, 0 元在 cheapest 排序下自然成为 light 默认
-    ("tier:light", "qwen-qwen3-8b",   100, 1.0, None, "manual"),
-    ("tier:light", "qwen-qwen3.5-4b", 110, 1.0, None, "manual"),
+    ("tier:light", "qwen3-8b",   100, 1.0, None, "manual"),
+    ("tier:light", "qwen3.5-4b", 110, 1.0, None, "manual"),
     ("tier:light", "glm-4-flash",     120, 1.0, None, "manual"),
     ("tier:light", "glm-4.7-flash",   130, 1.0, None, "manual"),
 
@@ -171,10 +171,10 @@ GROUP_MEMBERS = [
     # qwen-vl 系列: registry tier 不动 (T1×3 + T3×1), vision-light tier=NULL
     # 全部可入组, 靠 priority 排序
     ("tier:vision-light", "glm-4.6v-flash",           100, 1.0, None, "manual"),
-    ("tier:vision-light", "qwen-vl-32b-instruct",     110, 1.0, None, "manual"),
-    ("tier:vision-light", "qwen-vl-32b-thinking",     120, 1.0, None, "manual"),
-    ("tier:vision-light", "qwen-vl-30b-a3b-thinking", 130, 1.0, None, "manual"),
-    ("tier:vision-light", "qwen-vl-8b-instruct",      140, 1.0, None, "manual"),
+    ("tier:vision-light", "qwen3-vl-32b-instruct",     110, 1.0, None, "manual"),
+    ("tier:vision-light", "qwen3-vl-32b-thinking",     120, 1.0, None, "manual"),
+    ("tier:vision-light", "qwen3-vl-30b-a3b-thinking", 130, 1.0, None, "manual"),
+    ("tier:vision-light", "qwen3-vl-8b-instruct",      140, 1.0, None, "manual"),
 
     # ========== tier:code (T2 代码专用, 替代 scene:code) ==========
     # minimax-m2.7 (T1 代码主力) + deepseek-v4-flash (含 code cap) + deepseek-v3.2

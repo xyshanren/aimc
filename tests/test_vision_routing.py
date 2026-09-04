@@ -32,8 +32,8 @@ def test_infer_modality_glm_45v():
 def test_infer_modality_qwen_vl():
     """qwen-vl-* / qwen3-vl-* 应识别为 vision"""
     from scripts.sync_siliconflow_to_registry import infer_modality
-    assert infer_modality("qwen-vl-32b-instruct") == "vision"
-    assert infer_modality("qwen-vl-8b-instruct") == "vision"
+    assert infer_modality("qwen3-vl-32b-instruct") == "vision"
+    assert infer_modality("qwen3-vl-8b-instruct") == "vision"
     assert infer_modality("qwen-qwen3-vl-32b-instruct") == "vision"
 
 
@@ -74,10 +74,10 @@ def test_seed_registry_has_vision_models():
     assert "glm-4.5v" in model_ids, "seed 缺少 glm-4.5v"
     # 4 个 qwen-vl-*
     expected_qwen_vl = {
-        "qwen-vl-32b-instruct",
-        "qwen-vl-32b-thinking",
-        "qwen-vl-30b-a3b-thinking",
-        "qwen-vl-8b-instruct",
+        "qwen3-vl-32b-instruct",
+        "qwen3-vl-32b-thinking",
+        "qwen3-vl-30b-a3b-thinking",
+        "qwen3-vl-8b-instruct",
     }
     missing = expected_qwen_vl - model_ids
     assert not missing, f"seed 缺少 qwen-vl 模型: {missing}"
@@ -88,8 +88,8 @@ def test_seed_registry_vision_modality():
     from scripts.seed_model_registry import MODEL_REGISTRY
     by_id = {row[0]: row for row in MODEL_REGISTRY}
     assert by_id["glm-4.5v"][6] == "vision", "glm-4.5v modality 应为 vision"
-    assert by_id["qwen-vl-32b-instruct"][6] == "vision"
-    assert by_id["qwen-vl-8b-instruct"][6] == "vision"
+    assert by_id["qwen3-vl-32b-instruct"][6] == "vision"
+    assert by_id["qwen3-vl-8b-instruct"][6] == "vision"
 
 
 def test_seed_registry_vision_validate_namespace():
@@ -150,10 +150,10 @@ def test_seed_groups_vision_light_members():
     vl = sorted(m[1] for m in GROUP_MEMBERS if m[0] == "tier:vision-light")
     assert vl == sorted([
         "glm-4.6v-flash",
-        "qwen-vl-32b-instruct",
-        "qwen-vl-32b-thinking",
-        "qwen-vl-30b-a3b-thinking",
-        "qwen-vl-8b-instruct",
+        "qwen3-vl-32b-instruct",
+        "qwen3-vl-32b-thinking",
+        "qwen3-vl-30b-a3b-thinking",
+        "qwen3-vl-8b-instruct",
     ]), f"vision-light 成员不匹配: {vl}"
 
 
@@ -206,35 +206,37 @@ def test_seed_groups_vision_members_in_registry():
 
 
 # ============================================================
-# P2-B: tier:light 命名对齐 (qwen3-8b → qwen-qwen3-8b)
+# V6.x: tier:light 命名规范化 (qwen-qwen3-8b → qwen3-8b, validator 已放宽)
 # ============================================================
 
 def test_tier_light_members_validate_namespace():
     """tier:light 的每个 member 都通过 validate_model_id namespace 校验
 
-    P2-B 修复: qwen3-8b 无法通过 validate_model_id (family=qwen 要求 qwen- 前缀),
-    改为 qwen-qwen3-8b.
+    V6.x 语义: validator 放宽后接受 "{family}<版本数字>" 形态,
+    规范名是 qwen3-8b / qwen3.5-4b (不再需要 qwen-qwen3-8b 双前缀 workaround)。
+    注意 family 推断: qwen3-8b 的第一个 "-" 之前是 "qwen3", normalize_family
+    归一后仍以 qwen 开头 — 校验按 family="qwen" 语义走 (startswith 前缀匹配)。
     """
     from scripts.seed_model_groups import GROUP_MEMBERS
-    from db.normalizers import validate_model_id, normalize_model_id, normalize_family
-    # tier:light member 的 family 从 model_id 推断 (第一个 - 之前)
+    from db.normalizers import validate_model_id, normalize_model_id
     light_members = [m for m in GROUP_MEMBERS if m[0] == "tier:light"]
     for _, model_id, _, _, _, _ in light_members:
-        family = model_id.split("-")[0]
         mid_n = normalize_model_id(model_id)
-        fam_n = normalize_family(family)
-        assert validate_model_id(mid_n, fam_n), \
-            f"tier:light member {model_id!r} 未通过 namespace 校验 (family={family!r})"
+        # family 从 seed_registry 反查 (qwen3-8b 的 family 是 qwen)
+        from scripts.seed_model_registry import MODEL_REGISTRY
+        fam = next(row[1] for row in MODEL_REGISTRY if row[0] == model_id)
+        assert validate_model_id(mid_n, fam), \
+            f"tier:light member {model_id!r} 未通过 namespace 校验 (family={fam!r})"
 
 
-def test_tier_light_qwen_prefixed():
-    """tier:light 的 qwen 模型必须带 qwen- 前缀 (qwen-qwen3-8b, 不是 qwen3-8b)"""
+def test_tier_light_qwen_canonical_names():
+    """V6.x 反转 P2-B: tier:light 的 qwen 模型用规范名 (qwen3-8b, 无双前缀)"""
     from scripts.seed_model_groups import GROUP_MEMBERS
     light_ids = {m[1] for m in GROUP_MEMBERS if m[0] == "tier:light"}
-    assert "qwen-qwen3-8b" in light_ids, "tier:light 应有 qwen-qwen3-8b (带 family 前缀)"
-    assert "qwen-qwen3.5-4b" in light_ids, "tier:light 应有 qwen-qwen3.5-4b"
-    assert "qwen3-8b" not in light_ids, "tier:light 不应有无前缀 qwen3-8b (P2-B 已修)"
-    assert "qwen3.5-4b" not in light_ids, "tier:light 不应有无前缀 qwen3.5-4b"
+    assert "qwen3-8b" in light_ids, "tier:light 应有 qwen3-8b (V6.x 规范名)"
+    assert "qwen3.5-4b" in light_ids, "tier:light 应有 qwen3.5-4b"
+    assert "qwen-qwen3-8b" not in light_ids, "不应再有 qwen-qwen3-8b 双前缀 (V6.x 已规范化)"
+    assert "qwen-qwen3.5-4b" not in light_ids, "不应再有 qwen-qwen3.5-4b 双前缀"
 
 
 # ============================================================

@@ -61,6 +61,10 @@ def normalize_model_id(s: str) -> str:
 def validate_model_id(model_id: str, family: str) -> bool:
     """model_id 必须以 family 命名空间开头, 且符合字符规范
 
+    V6.x (2026-09-04) 放宽: 除 "{family}-" 外, 也接受 "{family}<版本数字/点>..."
+    — qwen 家族的规范名 (qwen3-vl-32b / qwen3.5-4b) 本身以 "qwen" 开头但带版本号,
+    旧规则强制 "{family}-" 逼出了 qwen-qwen3-8b 这种双前缀 workaround。
+
     Args:
         model_id: 归一化后的 model_id (已 normalize_model_id)
         family: 归一化后的 family (已 normalize_family)
@@ -73,18 +77,28 @@ def validate_model_id(model_id: str, family: str) -> bool:
         True
         >>> validate_model_id("qwen-max", "qwen")
         True
+        >>> validate_model_id("qwen3-vl-32b-instruct", "qwen")   # V6.x 放宽
+        True
+        >>> validate_model_id("qwen3.5-4b", "qwen")              # V6.x 放宽
+        True
         >>> validate_model_id("MiniMax-M3", "minimax")  # 未归一化
         False
         >>> validate_model_id("unknown-model", "deepseek")  # namespace 不匹配
         False
+        >>> validate_model_id("qwenx-weird", "qwen")  # family 后跟字母 = 别的词, 拒
+        False
     """
     if not model_id or not family:
         return False
-    # 必须以 "{family}-" 开头
-    if not model_id.startswith(f"{family}-"):
-        return False
-    # 字符合规
-    return bool(_MODEL_ID_RE.match(model_id))
+    # 完整 "{family}-" 前缀 (原规则)
+    if model_id.startswith(f"{family}-"):
+        return bool(_MODEL_ID_RE.match(model_id))
+    # V6.x 放宽: "{family}" 后紧跟版本数字/点 — family 命名空间仍然编码在名字里
+    if model_id.startswith(family):
+        rest = model_id[len(family):]
+        if rest and (rest[0].isdigit() or rest[0] == "."):
+            return bool(_MODEL_ID_RE.match(model_id))
+    return False
 
 
 def normalize_capabilities(caps: Iterable[str]) -> list[str]:

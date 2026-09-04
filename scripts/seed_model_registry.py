@@ -117,12 +117,12 @@ MODEL_REGISTRY = [
     ),
     # V6.0 回填: tier:light 成员 (V4.6.4 起在组), seed 漏了 — 同 deepseek-v3 注释
     (
-        "qwen-qwen3-8b", "qwen", "Qwen3 8B", "T3",
+        "qwen3-8b", "qwen", "Qwen3 8B", "T3",
         ["general"], 128000, "text", 1, "2026-07",
         "Qwen3 8B 硅基流动常驻, tier:light; 命名带 family 前缀 (validate_model_id 约束)",
     ),
     (
-        "qwen-qwen3.5-4b", "qwen", "Qwen3.5 4B", "T3",
+        "qwen3.5-4b", "qwen", "Qwen3.5 4B", "T3",
         ["general"], 128000, "text", 1, "2026-08",
         "Qwen3.5 4B 硅基流动常驻, tier:light; 命名带 family 前缀 (validate_model_id 约束)",
     ),
@@ -132,22 +132,22 @@ MODEL_REGISTRY = [
     # 注意: model_id 用 "qwen-vl-" 前缀 (而非 "qwen3-vl-"), family="qwen"
     # 因为 validate_model_id 要求 model_id 以 "{family}-" 开头
     (
-        "qwen-vl-32b-instruct", "qwen", "Qwen3 VL 32B Instruct", "T1",
+        "qwen3-vl-32b-instruct", "qwen", "Qwen3 VL 32B Instruct", "T1",
         ["vision", "general"], 32768, "vision", 1, "2026-08",
         "Qwen3 VL 32B 指令版, 硅基流动常驻",
     ),
     (
-        "qwen-vl-32b-thinking", "qwen", "Qwen3 VL 32B Thinking", "T1",
+        "qwen3-vl-32b-thinking", "qwen", "Qwen3 VL 32B Thinking", "T1",
         ["reasoning", "vision"], 32768, "vision", 1, "2026-08",
         "Qwen3 VL 32B 推理版",
     ),
     (
-        "qwen-vl-30b-a3b-thinking", "qwen", "Qwen3 VL 30B A3B Thinking", "T1",
+        "qwen3-vl-30b-a3b-thinking", "qwen", "Qwen3 VL 30B A3B Thinking", "T1",
         ["reasoning", "vision"], 32768, "vision", 1, "2026-08",
         "Qwen3 VL 30B MoE 推理版",
     ),
     (
-        "qwen-vl-8b-instruct", "qwen", "Qwen3 VL 8B Instruct", "T3",
+        "qwen3-vl-8b-instruct", "qwen", "Qwen3 VL 8B Instruct", "T3",
         ["vision", "general"], 32768, "vision", 1, "2026-08",
         "Qwen3 VL 8B 轻量视觉",
     ),

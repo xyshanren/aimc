@@ -72,8 +72,8 @@ BALANCED_MEMBERS = (
 # tier:light member (fallback group)
 LIGHT_MEMBERS = (
     "minimax-m2.7-highspeed",
-    "qwen-qwen3-8b",
-    "qwen-qwen3.5-4b",
+    "qwen3-8b",
+    "qwen3.5-4b",
     "minimax-m2.5-highspeed",
     "glm-4-flash",
 )
@@ -174,8 +174,8 @@ async def _seed_db():
             ("deepseek-v3", "deepseek", "T2"),
             ("minimax-m2.5", "minimax", "T2"),
             ("minimax-m2.7-highspeed", "minimax", "T3"),
-            ("qwen-qwen3-8b", "qwen", "T3"),
-            ("qwen-qwen3.5-4b", "qwen", "T3"),
+            ("qwen3-8b", "qwen", "T3"),
+            ("qwen3.5-4b", "qwen", "T3"),
             ("minimax-m2.5-highspeed", "minimax", "T3"),
             ("glm-4-flash", "glm", "T3"),
         ]

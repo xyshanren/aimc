@@ -140,6 +140,14 @@ def convert_sf_model_id(raw_id: str) -> tuple[str, str]:
     prefix = f"{family}-{family}-"
     if new_id.startswith(prefix):
         new_id = new_id[len(family) + 1:]  # 去掉重复的 "{family}-"
+    # V6.x (2026-09-04): 去冗余 family 前缀 — model_part 已带 "{family}<版本数字>"
+    # 时不再重复 (e.g. qwen + qwen3-8b -> qwen3-8b, 不再是 qwen-qwen3-8b;
+    # qwen + qwen2.5-14b-instruct -> qwen2.5-14b-instruct)。
+    # validate_model_id 已同步放宽接受 "{family}<数字/点>..." 形态。
+    if new_id != model_part and model_part.startswith(family):
+        nxt = model_part[len(family):]
+        if nxt and (nxt[0].isdigit() or nxt[0] == "."):
+            new_id = model_part
     return family, new_id
 
 async def main():
