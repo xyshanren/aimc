@@ -1445,15 +1445,14 @@ async function loadSuggestionsList() {
 document.addEventListener("DOMContentLoaded", loadUsageChart);
 document.addEventListener("DOMContentLoaded", loadCacheStatsList);
 document.addEventListener("DOMContentLoaded", loadSuggestionsList);
-document.addEventListener("DOMContentLoaded", loadPerUserUsage);
 document.addEventListener("DOMContentLoaded", loadUserKeys);
 
 // 60s 定时刷新 + 接管 htmx
+// (V6.1+: 按人用量卡已并入成本审计"按用户" tab, 见 loadCostAudit)
 setInterval(() => {
     loadUsageChart();
     loadCacheStatsList();
     loadSuggestionsList();
-    loadPerUserUsage();
     loadUserKeys();
 }, 60000);
 
@@ -1559,66 +1558,7 @@ function fmtCost(n) {
     return '¥' + Number(n).toFixed(4);
 }
 
-async function loadPerUserUsage() {
-    const container = document.getElementById('per-user-list');
-    const meta = document.getElementById('per-user-meta');
-    if (!container) return;
-    try {
-        const resp = await authFetch('/dashboard/api/stats/per-user?days=7');
-        if (!resp.ok) {
-            container.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
-            return;
-        }
-        const data = await resp.json();
-        const items = data.items || [];
-        if (meta) meta.textContent = items.length + ' 个调用方';
-        if (items.length === 0) {
-            container.innerHTML = '<p class="empty">近 ' + data.days + ' 天无用量数据</p>';
-            return;
-        }
-        let html = '<div class="scroll-y-300"><table><thead><tr>'
-            + '<th>用户</th><th>请求数</th><th>Input</th><th>Output</th><th>总Token</th><th>估算费用</th>'
-            + '</tr></thead><tbody>';
-        for (const item of items) {
-            const name = item.display_name
-                ? esc(item.username) + ' (' + esc(item.display_name) + ')'
-                : esc(item.username);
-            const hasKeys = item.keys && item.keys.length > 0;
-            const expandable = hasKeys && item.keys.some(k => k.key_id);
-            html += '<tr class="' + (expandable ? 'expandable-row' : '') + '"'
-                + (expandable ? ' onclick="toggleKeyDetail(this)"' : '') + '>'
-                + '<td>' + (expandable ? '<span class="expand-icon">▸</span> ' : '') + name + '</td>'
-                + '<td>' + fmtNum(item.request_count) + '</td>'
-                + '<td>' + fmtNum(item.input_tokens) + '</td>'
-                + '<td>' + fmtNum(item.output_tokens) + '</td>'
-                + '<td><strong>' + fmtNum(item.total_tokens) + '</strong></td>'
-                + '<td>' + fmtCost(item.total_cost) + '</td>'
-                + '</tr>';
-            if (expandable) {
-                html += '<tr class="key-detail-row" style="display:none;">'
-                    + '<td colspan="6">'
-                    + '<table class="sub-table"><thead><tr>'
-                    + '<th>Label</th><th>请求数</th><th>Input</th><th>Output</th><th>总Token</th><th>估算费用</th>'
-                    + '</tr></thead><tbody>';
-                for (const k of item.keys.filter(k => k.key_id)) {
-                    html += '<tr>'
-                        + '<td>' + esc(k.label) + '</td>'
-                        + '<td>' + fmtNum(k.request_count) + '</td>'
-                        + '<td>' + fmtNum(k.input_tokens) + '</td>'
-                        + '<td>' + fmtNum(k.output_tokens) + '</td>'
-                        + '<td>' + fmtNum(k.total_tokens) + '</td>'
-                        + '<td>' + fmtCost(k.total_cost) + '</td>'
-                        + '</tr>';
-                }
-                html += '</tbody></table></td></tr>';
-            }
-        }
-        html += '</tbody></table></div>';
-        container.innerHTML = html;
-    } catch (e) {
-        container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
-    }
-}
+// (V6.1+: 原右栏"按人用量"卡已并入成本审计"按用户" tab — renderCostTable user 分支)
 
 function toggleKeyDetail(row) {
     const detail = row.nextElementSibling;
@@ -1998,16 +1938,35 @@ async function loadCostAudit() {
     const table = document.getElementById('cost-audit-table');
     if (!table) return;
     try {
-        const [trendResp, dimResp] = await Promise.all([
+        // V6.1+: 按用户 tab 并行拉 per-user 数据 (key 下钻明细), 其余 tab 两个请求
+        const fetches = [
             authFetch('/dashboard/api/usage/cost-trend?days=7'),
             authFetch('/dashboard/api/usage/cost-by-' + _costTab + '?days=7'),
-        ]);
-        if (!trendResp.ok || !dimResp.ok) {
-            table.innerHTML = '<p class="error">加载失败: HTTP ' + trendResp.status + '/' + dimResp.status + '</p>';
-            return;
+        ];
+        if (_costTab === 'user') {
+            fetches.push(authFetch('/dashboard/api/stats/per-user?days=7'));
+        }
+        const resps = await Promise.all(fetches);
+        const [trendResp, dimResp] = resps;
+        for (const r of resps) {
+            if (!r.ok) {
+                table.innerHTML = '<p class="error">加载失败: HTTP ' + r.status + '</p>';
+                return;
+            }
         }
         const trend = await trendResp.json();
         const dim = await dimResp.json();
+
+        // key 下钻: caller_id -> keys[] (仅 user tab)
+        let userKeyMap = null;
+        if (_costTab === 'user') {
+            const perUser = await resps[2].json();
+            userKeyMap = {};
+            for (const item of (perUser.items || [])) {
+                userKeyMap[item.caller_id === null ? 'null' : String(item.caller_id)] =
+                    (item.keys || []).filter(k => k.key_id);
+            }
+        }
 
         // --- KPI ---
         const t = dim.totals || {};
@@ -2056,13 +2015,13 @@ async function loadCostAudit() {
         }
 
         // --- 下钻表 ---
-        renderCostTable(dim);
+        renderCostTable(dim, userKeyMap);
     } catch (e) {
         if (table) table.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
     }
 }
 
-function renderCostTable(dim) {
+function renderCostTable(dim, userKeyMap) {
     const table = document.getElementById('cost-audit-table');
     if (!table) return;
     const items = dim.items || [];
@@ -2071,8 +2030,12 @@ function renderCostTable(dim) {
         table.innerHTML = '<p class="empty">近 ' + (dim.days || 7) + ' 天无用量数据</p>';
         return;
     }
+    // V6.1+: 按用户 tab = 原右栏"按人用量"卡并入 (key 下钻 + 双轨成本列)
+    const isUserTab = _costTab === 'user';
     let html = '<div class="scroll-y-300"><table><thead><tr>'
-        + '<th>' + _costKeyLabel(key) + '</th><th>请求</th><th>Token</th>'
+        + '<th>' + _costKeyLabel(key) + '</th>'
+        + (isUserTab ? '<th>Input</th><th>Output</th>' : '')
+        + '<th>请求</th><th>Token</th>'
         + '<th>实付</th><th>标价</th><th>节省</th><th>覆盖率</th>'
         + '</tr></thead><tbody>';
     for (const it of items) {
@@ -2082,8 +2045,21 @@ function renderCostTable(dim) {
         const savedTxt = it.list_known_requests === 0
             ? '<span class="text-muted">标价未知</span>'
             : '<span class="text-success">' + _costFmt(it.saved_yuan) + '</span>';
-        html += '<tr>'
-            + '<td><code class="text-mono">' + label + '</code></td>'
+
+        // user tab: key 下钻 (V6.1+ 从按人用量卡并入)
+        const keys = isUserTab && userKeyMap
+            ? (userKeyMap[it.caller_id === null ? 'null' : String(it.caller_id)] || [])
+            : [];
+        const expandable = isUserTab && keys.length > 0;
+
+        html += '<tr class="' + (expandable ? 'expandable-row' : '') + '"'
+            + (expandable ? ' onclick="toggleKeyDetail(this)"' : '') + '>'
+            + '<td>' + (expandable ? '<span class="expand-icon">▸</span> ' : '')
+            + '<code class="text-mono">' + label + '</code></td>'
+            + (isUserTab
+                ? '<td>' + fmtNum(it.input_tokens || 0) + '</td>'
+                  + '<td>' + fmtNum(it.output_tokens || 0) + '</td>'
+                : '')
             + '<td>' + fmtNum(it.request_count) + '</td>'
             + '<td>' + fmtNum((it.input_tokens || 0) + (it.output_tokens || 0)) + '</td>'
             + '<td>' + _costFmt(it.cost_yuan) + '</td>'
@@ -2091,6 +2067,25 @@ function renderCostTable(dim) {
             + '<td>' + savedTxt + '</td>'
             + '<td>' + cov + '%</td>'
             + '</tr>';
+
+        if (expandable) {
+            html += '<tr class="key-detail-row" style="display:none;">'
+                + '<td colspan="' + (isUserTab ? 9 : 7) + '">'
+                + '<table class="sub-table"><thead><tr>'
+                + '<th>Key Label</th><th>请求</th><th>Input</th><th>Output</th><th>Token</th><th>实付</th>'
+                + '</tr></thead><tbody>';
+            for (const k of keys) {
+                html += '<tr>'
+                    + '<td>' + esc(k.label) + '</td>'
+                    + '<td>' + fmtNum(k.request_count) + '</td>'
+                    + '<td>' + fmtNum(k.input_tokens) + '</td>'
+                    + '<td>' + fmtNum(k.output_tokens) + '</td>'
+                    + '<td>' + fmtNum(k.total_tokens) + '</td>'
+                    + '<td>' + _costFmt(k.total_cost) + '</td>'
+                    + '</tr>';
+            }
+            html += '</tbody></table></td></tr>';
+        }
     }
     html += '</tbody></table></div>';
     table.innerHTML = html;

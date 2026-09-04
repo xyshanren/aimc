@@ -13,9 +13,8 @@
 | **Prompt Cache 节省** | cache 命中率 + 节省金额 | §2 |
 | **数据新鲜度** | apscheduler job（按 provider × 轮询间隔分组，约 36 个）的健康状态 | §3 |
 | **用量统计** | 每天请求数 / token / 平均延迟 | §4 |
-| **成本审计**（V6.0） | 实付 vs 官方标价 vs 节省 + 按模型/分组/用户下钻 | §4b |
+| **成本审计**（V6.0） | 实付 vs 官方标价 vs 节省 + 按模型/分组/用户下钻（用户含 key 明细） | §4b |
 | **组路由命中率** | tier:xxx 调用频次 + 跳到 fallback 的次数 | §5 |
-| **按人用量**（V4.8） | 近 7 天各调用方的请求数/token/费用 | §6 |
 | **Key 管理**（V4.8） | 多用户 key 列表 / 吊销 | §6 |
 | **账号管理** | 渠道账号增删 / 过期扫描 | §7 |
 | **待确认能力变更** | AI 推断的模型能力变更，人工批准/拒绝 | §7 |
@@ -96,6 +95,11 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 - 近 7 天趋势双线图（官方标价 vs 实付）
 - 按模型 / 按分组 / 按用户三个 tab 下钻（请求 / token / 实付 / 标价 / 节省 / 单行覆盖率）
 
+**按用户 tab**（V6.1+ 并入原右栏「按人用量」卡）：
+- 每行 = 一个调用方（caller）：Input / Output / 请求 / Token / 实付 / 标价 / 节省 / 覆盖率
+- 走全局 `AIMC_API_KEY` 的请求显示为 `(未鉴权/legacy)`
+- **点用户行展开该用户各 key（label）的明细**：请求 / Input / Output / Token / 实付
+
 **怎么读**：
 - 免费模型（glm-4.7-flash 等）标价为 0 → 节省 0 是真实结论，不是数据缺失
 - 标价未知的模型（如 kimi-k3）节省列显示「标价未知」，不计入节省总额；总覆盖率 < 50% 时 KPI 变黄提醒补数据
@@ -115,20 +119,17 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 
 **调优**：如果某 tier fallback 频繁，调路由 score 权重或加账号。
 
-## §6 按人用量 + Key 管理（V4.8 多用户）
+## §6 Key 管理（V4.8 多用户）
 
-**按人用量**：近 7 天各调用方（caller）的请求数 / input / output / 总 token / 估算费用。
-- 带 `aimc-` 前缀多用户 key 的请求按用户名分组
-- 走全局 `AIMC_API_KEY` 的请求显示为 `(未鉴权/legacy)`
-- 点击行可展开该用户各 key（label）的明细用量（V4.8.1 起）
+> V6.1+：原右栏「按人用量」卡已并入中栏成本审计的「按用户」tab（含 key 下钻），见 §4b。
 
 **Key 管理**：用户列表 + 每人的 key（前缀脱敏）/ admin 标记 / 日月限额 / 最后使用时间。
 - 吊销：点对应 key 的「吊销」按钮，立即失效不可恢复
 
-发 key / 设限额用 CLI（见 [configure.md §4](configure.md#4-多用户-key-管理v48)）。
+发 key / 设限额用 CLI（见 [configure.md §4](configure.md#4-多用户-key-管理v48)）或
+`POST /dashboard/api/keys`（V6.1，见 [agent-api.md](../agent-api.md)）。
 
-**API**：`GET /dashboard/api/stats/per-user?days=7`、`GET /dashboard/api/keys`、
-`POST /dashboard/api/keys/<id>/revoke`。
+**API**：`GET /dashboard/api/keys`、`POST /dashboard/api/keys/<id>/revoke`。
 
 ## §7 账号管理 / 待确认能力变更 / 优惠情报
 
@@ -191,7 +192,7 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 - `GET /dashboard/api/cache/stats?days=7` — cache 节省
 - `GET /dashboard/api/data-freshness` — job 健康度
 - `GET /dashboard/api/suggestions?status=pending` — 待审建议
-- `GET /dashboard/api/stats/per-user?days=7` — 按人用量
+- `GET /dashboard/api/stats/per-user?days=7` — 按调用方用量 + key 明细（成本审计按用户 tab 数据源之一）
 - `GET /dashboard/api/usage/cost-by-model?days=7` — 按模型成本审计（V6.0）
 - `GET /dashboard/api/usage/cost-by-group?days=7` — 按分组成本审计（V6.0）
 - `GET /dashboard/api/usage/cost-by-user?days=7` — 按用户成本审计（V6.0）
