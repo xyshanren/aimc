@@ -1144,6 +1144,7 @@ async function loadUsageChart() {
                 },
                 options: {
                     responsive: true,
+                    maintainAspectRatio: false,
                     plugins: { legend: { display: false } },
                     scales: {
                         x: { ticks: { color: _cssVar('--text-muted') }, grid: { display: false } },
@@ -1195,6 +1196,7 @@ async function loadCacheStatsList() {
                 },
                 options: {
                     responsive: true,
+                    maintainAspectRatio: false,
                     plugins: {
                         legend: { position: 'right', labels: { color: _cssVar('--text-secondary') } },
                         tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${fmtCNY(ctx.parsed)}` } }
@@ -2126,6 +2128,7 @@ async function loadOverviewTrend() {
             },
             options: {
                 responsive: true,
+                    maintainAspectRatio: false,
                 plugins: { legend: { labels: { color: _cssVar('--text-secondary') } } },
                 scales: {
                     x: { ticks: { color: _cssVar('--text-muted') }, grid: { color: _cssVar('--border-muted') } },

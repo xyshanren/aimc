@@ -281,6 +281,16 @@ code, .mono {
 .badge-info { background: rgba(77, 159, 255, 0.15); color: var(--color-info); }
 .badge-pill[hidden] { display: none; }
 
+/* Chart.js 响应式图表容器: 固定高度, 画布填充 (防止 doughnut 撑满整屏) */
+.chart-box {
+    position: relative;
+}
+
+.chart-box canvas {
+    width: 100% !important;
+    height: 100% !important;
+}
+
 /* ============ 请求日志 + 转录抽屉 (Phase 3b) ============ */
 .scroll-y-420 { max-height: 420px; overflow-y: auto; }
 
