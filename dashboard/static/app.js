@@ -1409,6 +1409,7 @@ function syncRangeLabels() {
         ["cost-range-label", "标价 vs 实付 · " + lbl],
         ["cache-range-label", lbl],
         ["group-routing-range-label", "Agent 视角 · " + lbl],
+        ["requests-range-label", lbl],
         ["trend-range-label", lbl],
         ["top-range-label", lbl],
         ["group-overview-label", lbl],
@@ -2199,7 +2200,7 @@ async function refreshBadges() {
 const PAGE_ROUTES = {
     overview: { title: '概览', ms: 60000, loaders: [loadOverviewKPIs, loadOverviewTrend, loadUsageTop, loadGroupOverview, loadTodaySummary] },
     cost:     { title: '成本', ms: 60000, loaders: [loadCostAudit, loadCacheStatsList] },
-    usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting] },
+    usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadRequests] },
     channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard, loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
     intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard, loadReportsList, loadWeeklyReportLatest] },
     ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadSuggestionsList, loadQuotaWarning, loadAccountsCard, loadUserKeys, loadSources] },
@@ -2233,4 +2234,114 @@ function initNav() {
     });
     showPage(location.hash.replace(/^#\//, '') || 'overview');
 }
+
+// ============================================================
+// Phase 3b (2026-09-05): 请求日志 — docs/dashboard-phase3-design.md §3
+// 列表: usage_logs 明细 (状态/模型过滤 + 分页); 转录: 行内按钮开抽屉,
+// 后端按 model+时间窗 best-effort 匹配, 仅 admin key 可见 (中间件保证)。
+// ============================================================
+
+let _reqPage = 1, _reqStatus = 'all', _reqModel = '', _reqDebounce = null;
+
+function requestsFilterChanged() {
+    const s = document.getElementById('req-status');
+    const m = document.getElementById('req-model');
+    _reqStatus = s ? s.value : 'all';
+    _reqModel = m ? m.value.trim() : '';
+    _reqPage = 1;
+    clearTimeout(_reqDebounce);
+    _reqDebounce = setTimeout(loadRequests, 300);
+}
+
+function requestsPage(delta) {
+    _reqPage = Math.max(1, _reqPage + delta);
+    loadRequests();
+}
+
+async function loadRequests() {
+    const list = document.getElementById('requests-list');
+    if (!list) return;
+    try {
+        const params = new URLSearchParams({
+            days: String(fmtDays()), status: _reqStatus,
+            page: String(_reqPage), page_size: '50',
+        });
+        if (_reqModel) params.set('model', _reqModel);
+        const resp = await authFetch(`/dashboard/api/requests?${params}`);
+        if (!resp.ok) {
+            list.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
+            return;
+        }
+        const data = await resp.json();
+        const totalPages = Math.max(1, Math.ceil(data.total / data.page_size));
+        const meta = document.getElementById('req-meta');
+        if (meta) meta.textContent = '共 ' + fmtNum(data.total) + ' 条 · 第 ' + data.page + '/' + totalPages + ' 页';
+        const prev = document.getElementById('req-prev');
+        const next = document.getElementById('req-next');
+        if (prev) prev.disabled = data.page <= 1;
+        if (next) next.disabled = data.page >= totalPages;
+        if (!data.items.length) {
+            list.innerHTML = '<p class="empty">当前过滤条件下无请求记录</p>';
+            return;
+        }
+        let html = '<div class="scroll-y-420"><table><thead><tr><th>时间</th><th>模型</th><th>渠道</th><th>状态</th><th>延迟</th><th>Token</th><th>实付</th><th></th></tr></thead><tbody>';
+        for (const r of data.items) {
+            const cls = r.status_code >= 500 ? 'st-error' : (r.status_code >= 400 ? 'st-warn' : 'st-ok');
+            html += '<tr>'
+                + '<td class="mono" style="font-size:11px;">' + esc((r.created_at || '').replace('T', ' ').slice(5, 19)) + '</td>'
+                + '<td><code class="text-mono">' + esc(r.model || '—') + '</code></td>'
+                + '<td>' + esc(r.channel_name || '—') + '</td>'
+                + '<td><span class="status-pill ' + cls + '">' + esc(String(r.status_code)) + '</span></td>'
+                + '<td class="mono">' + fmtLatency(r.latency_ms) + '</td>'
+                + '<td class="mono">' + fmtTokens((r.input_tokens || 0) + (r.output_tokens || 0)) + '</td>'
+                + '<td class="mono">' + fmtCNY(r.cost_yuan) + '</td>'
+                + '<td><button class="btn-tiny" onclick="openRequestDrawer(' + r.id + ')">转录</button></td>'
+                + '</tr>';
+        }
+        html += '</tbody></table></div>';
+        list.innerHTML = html;
+    } catch (e) {
+        list.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+async function openRequestDrawer(id) {
+    const overlay = document.getElementById('drawer-overlay');
+    const drawer = document.getElementById('req-drawer');
+    if (!drawer) return;
+    if (overlay) overlay.hidden = false;
+    drawer.hidden = false;
+    const meta = document.getElementById('drawer-meta');
+    const reqPre = document.getElementById('drawer-req');
+    const respPre = document.getElementById('drawer-resp');
+    if (meta) meta.textContent = '#' + id + ' 加载中…';
+    if (reqPre) reqPre.textContent = '加载中…';
+    if (respPre) respPre.textContent = '';
+    try {
+        const resp = await authFetch(`/dashboard/api/requests/${id}/transcript`);
+        const data = await resp.json();
+        if (!resp.ok) {
+            if (reqPre) reqPre.textContent = '加载失败: HTTP ' + resp.status + (resp.status === 403 ? ' (仅 admin key 可看转录)' : '');
+            return;
+        }
+        if (meta) meta.textContent = '#' + id
+            + (data.truncated ? ' · 已截断 (超 256KB)' : '')
+            + (data.transcript_created_at ? ' · 转录时间 ' + data.transcript_created_at.replace('T', ' ').slice(0, 19) : '');
+        if (reqPre) reqPre.textContent = data.request_body || '(无)';
+        if (respPre) respPre.textContent = data.response_body || '(无)';
+    } catch (e) {
+        if (reqPre) reqPre.textContent = '加载失败: ' + e.message;
+    }
+}
+
+function closeRequestDrawer() {
+    const o = document.getElementById('drawer-overlay');
+    const d = document.getElementById('req-drawer');
+    if (o) o.hidden = true;
+    if (d) d.hidden = true;
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeRequestDrawer();
+});
 

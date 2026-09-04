@@ -26,6 +26,7 @@ from db.models import (
     ModelRegistry, ModelGroup, ModelGroupMember,
     ModelCapabilitiesLog,
     CrossSourceDiscrepancy,
+    RequestTranscript,
     SettingsRuntime,
     ModelChangeSuggestion, GroupChangeSuggestion,
     User, ApiKey,
@@ -1803,6 +1804,127 @@ async def get_group_routing_stats(days: int = 7, session: AsyncSession = Depends
                 {"model": r.model, "count": r.count} for r in unmatched_rows
             ],
         },
+    }
+
+
+# ============================================================
+# Phase 3b (2026-09-05): 请求日志 — usage_logs 明细 + transcript 查看
+# docs/dashboard-phase3-design.md §3
+# 鉴权: /dashboard/api/* 由 gateway/middleware.py 统一校验
+# (dashboard_token 或 admin key); 转录含完整请求体, 仅 admin 可见的
+# 设计决议由该中间件保证 — 非 admin key 一律 401。
+# ============================================================
+
+@router.get("/api/requests")
+async def list_requests(
+    days: int = Query(7, ge=1, le=30),
+    status: str = Query("all", pattern="^(all|ok|error)$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+):
+    """请求日志明细 (usage_logs), 状态过滤 + 分页, 时间倒序。"""
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    conds = [UsageLog.created_at >= cutoff]
+    if status == "ok":
+        conds.append(UsageLog.status_code < 400)
+    elif status == "error":
+        conds.append(UsageLog.status_code >= 400)
+
+    base = select(UsageLog).where(*conds)
+    total = (await session.execute(
+        select(func.count()).select_from(base.subquery())
+    )).scalar() or 0
+
+    rows = (await session.execute(
+        base.order_by(UsageLog.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )).scalars().all()
+
+    # 反向 join channel name (同 group_routing 惯例)
+    ch_ids = {r.channel_id for r in rows if r.channel_id is not None}
+    ch_name_map: dict[int, str] = {}
+    if ch_ids:
+        ch_rows = (await session.execute(
+            select(Channel.id, Channel.name).where(Channel.id.in_(ch_ids))
+        )).all()
+        ch_name_map = {r.id: r.name for r in ch_rows}
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "days": days,
+        "items": [
+            {
+                "id": r.id,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "model": r.model,
+                "channel_name": ch_name_map.get(r.channel_id),
+                "group_id": r.group_id,
+                "status_code": r.status_code,
+                "latency_ms": r.latency_ms,
+                "input_tokens": r.input_tokens or 0,
+                "output_tokens": r.output_tokens or 0,
+                "cached_tokens": r.cached_input_tokens or 0,
+                "cost_yuan": r.cost_estimate,
+                "list_cost_yuan": r.list_cost_estimate,
+                "error_code": r.error_code,
+            }
+            for r in rows
+        ],
+    }
+
+
+# transcript 单体截断保护 (写入侧已有 transcript_log_max_body, 这是读取侧第二道闸)
+_TRANSCRIPT_CLIP = 256 * 1024
+
+
+@router.get("/api/requests/{req_id}/transcript")
+async def get_request_transcript(req_id: int, session: AsyncSession = Depends(get_session)):
+    """请求转录 (发给上游的 request body + 响应 body), 排障用。
+
+    transcripts 与 usage_logs 无外键关联 (fire-and-forget 写入),
+    按 model + 写入时间窗 [-5s, +10min] 最近匹配, best-effort。
+    """
+    log = (await session.execute(
+        select(UsageLog).where(UsageLog.id == req_id)
+    )).scalar_one_or_none()
+    if log is None:
+        raise HTTPException(status_code=404, detail="usage_log not found")
+    if log.created_at is None or not log.model:
+        return {
+            "usage_log_id": req_id, "matched": False, "truncated": False,
+            "request_body": None, "response_body": None, "transcript_created_at": None,
+        }
+
+    win_start = log.created_at - timedelta(seconds=5)
+    win_end = log.created_at + timedelta(minutes=10)
+    tr = (await session.execute(
+        select(RequestTranscript)
+        .where(RequestTranscript.model == log.model)
+        .where(RequestTranscript.created_at >= win_start)
+        .where(RequestTranscript.created_at <= win_end)
+        .order_by(RequestTranscript.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+
+    req_body = tr.request_body if tr else None
+    resp_body = tr.response_body if tr else None
+    truncated = bool(req_body and len(req_body) > _TRANSCRIPT_CLIP) or bool(
+        resp_body and len(resp_body) > _TRANSCRIPT_CLIP)
+    if req_body and len(req_body) > _TRANSCRIPT_CLIP:
+        req_body = req_body[:_TRANSCRIPT_CLIP]
+    if resp_body and len(resp_body) > _TRANSCRIPT_CLIP:
+        resp_body = resp_body[:_TRANSCRIPT_CLIP]
+    return {
+        "usage_log_id": req_id,
+        "matched": tr is not None,
+        "transcript_created_at": tr.created_at.isoformat() if tr and tr.created_at else None,
+        "request_body": req_body,
+        "response_body": resp_body,
+        "truncated": truncated,
     }
 
 

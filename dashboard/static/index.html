@@ -142,7 +142,40 @@
                     <div id="group-routing-list"><div class="loading">加载中…</div></div>
                 </div>
             </div>
-            <!-- 3b: 请求日志页卡在此加入 -->
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">请求日志</span><span class="card-title-sub" id="requests-range-label">近 7 天</span></div>
+                <div class="card-body">
+                    <div class="toolbar mt-sm" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                        <select id="req-status" class="toolbar-search" style="width:auto;" onchange="requestsFilterChanged()">
+                            <option value="all">全部状态</option>
+                            <option value="ok">成功</option>
+                            <option value="error">失败</option>
+                        </select>
+                        <input type="text" id="req-model" class="toolbar-search" placeholder="按 model 搜索…" oninput="requestsFilterChanged()" style="max-width:220px;">
+                        <button class="btn btn-sm" onclick="loadRequests()">刷新</button>
+                        <span id="req-meta" class="meta"></span>
+                    </div>
+                    <div id="requests-list"><div class="loading">加载中…</div></div>
+                    <div class="accounts-toolbar" style="justify-content:flex-end;">
+                        <button class="btn btn-sm" id="req-prev" onclick="requestsPage(-1)">上一页</button>
+                        <button class="btn btn-sm" id="req-next" onclick="requestsPage(1)">下一页</button>
+                    </div>
+                </div>
+            </div>
+            <!-- 请求转录抽屉 (Phase 3b) -->
+            <div class="drawer-overlay" id="drawer-overlay" hidden onclick="closeRequestDrawer()"></div>
+            <aside class="drawer" id="req-drawer" hidden>
+                <div class="drawer-head">
+                    <span class="card-title-main">转录详情 <span class="card-title-sub" id="drawer-meta"></span></span>
+                    <button class="btn btn-sm" onclick="closeRequestDrawer()">关闭</button>
+                </div>
+                <div class="drawer-body">
+                    <h4>Request Body (发给上游, 注入后)</h4>
+                    <pre id="drawer-req" class="drawer-pre">加载中…</pre>
+                    <h4>Response Body (上游返回)</h4>
+                    <pre id="drawer-resp" class="drawer-pre"></pre>
+                </div>
+            </aside>
         </section>
 
         <!-- ===== 渠道 ===== -->
