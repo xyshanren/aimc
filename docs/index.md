@@ -3,8 +3,8 @@
 > AIMC（AI Model Compass）是一个轻量级 LLM 网关 + 优惠情报聚合工具。
 > 本文档是**所有文档的入口**。按你的角色选择下面任一入口。
 
-**项目状态**：**V6.0 完成（2026-09-03）** — Phase 1 模型组分级（tier:vision 重排 + vision-light 新组 + GLM 免费模型 GLM-4.7-Flash/GLM-4.6V-Flash 接入 + P0-3 收窄）、Phase 2 标价双轨成本审计（registry 官方标价 + usage_logs.list_cost_estimate + 4 个 cost API + Dashboard 成本审计卡）。此前：V5.1 成员优先级激活（2026-09-02）、V4.9.5 SenseNova 接入（2026-08-25）。
-版本路线与实施记录见 [next-major-v6-plan.md](next-major-v6-plan.md)（下一站 V6.1 架构 agent 友好化）。
+**项目状态**：**V6.x 完成（2026-09-04，全量 666 测试全绿）**。已落地：V6.0（模型组分级 vision-light + GLM 免费模型 + P0-3 收窄；标价双轨成本审计 + 4 个 cost API + 看板成本审计卡）、V6.1（鉴权统一 admin key、发 key REST、统一 CLI `scripts/aimc.py`、agent 契约 [agent-api.md](agent-api.md)、Mimosa 存量清零）、V6.x（qwen 命名规范化 qwen3-vl-*/qwen3-8b + 4 个存量 e2e 失败修复）。
+版本路线与实施记录见 [next-major-v6-plan.md](next-major-v6-plan.md)（V7.0 yield / V6.2 MCP 待定）。
 
 ---
 
@@ -33,7 +33,7 @@
 | 本地搭建开发环境 | [dev/setup.md](dev/setup.md) |
 | commit / 分支 / 测试 规范 | [dev/conventions.md](dev/conventions.md) |
 | 写测试 / 提 PR / 贡献代码 | [dev/contributing.md](dev/contributing.md) |
-| 跑 711 个测试 + 加新测试 | [dev/testing.md](dev/testing.md) |
+| 跑 666 个测试 + 加新测试 | [dev/testing.md](dev/testing.md) |
 | 查 post-merge 修复（21 commit 整改）| [dev/post-merge-fixes.md](dev/post-merge-fixes.md) |
 
 ---
@@ -70,7 +70,7 @@
 ## 文档元信息
 
 - **最后更新**：2026-08-25
-- **测试覆盖**：711 tests（pytest，~5 分钟跑通）
+- **测试覆盖**：666 tests（pytest，~5 分钟跑通，V6.x 基线全绿）
 - **观察期关注**：缓存命中率（路径 A）、周报 timer 首次自动触发（周一）、vision 400 率
 - **V4.9 新功能**：Dashboard **🔴 待处理 (N)** tab（余额不足 / Key 失效 / 智能探活状态），见 [user/dashboard.md](user/dashboard.md)
 - **观察期后待办**：操作审计系统（见 [dev/next-step-plan.md](dev/next-step-plan.md) §八）

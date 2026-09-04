@@ -297,3 +297,5 @@ httpx.AsyncClient (上游调用)
 | V5.1 | 成员优先级激活 | sort key = (price, family_bonus, member_priority, -channel.priority) |
 | V6.0 | vision 分级 + P0-3 收窄 | tier:vision（旗舰）→ tier:vision-light（免费兜底）→ tier:light fallback；GLM 免费模型入组 |
 | V6.0 | 标价双轨成本审计 | registry 官方标价 + usage_logs.list_cost_estimate；免费/订阅渠道实付 0 也可量化节省（节省仅统计标价已知行）|
+| V6.1 | 鉴权统一 + agent 契约 | dashboard API 接受 admin api_key（aimc- 前缀 + is_admin=1）；统一 CLI `scripts/aimc.py`（薄 REST 客户端）；OpenAPI/agent-api.md |
+| V6.x | qwen 命名规范化 | validate_model_id 放宽（接受 `{family}<版本数字>`），规范名去双前缀（qwen3-8b / qwen3-vl-*），sync 不再产生 qwen-qwen*，存量迁移 39 改名 + 4 重复合并 |

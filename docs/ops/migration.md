@@ -5,7 +5,7 @@
 
 ## 1. 当前 migration 总览
 
-AIMC 当前有 **19 个 migration 脚本**（`db/migrations/`）：
+AIMC 当前有 **20 个 migration 脚本**（`db/migrations/`）：
 
 ```
 2026_07_xx  P0-P0.1  (历史)
@@ -28,6 +28,7 @@ AIMC 当前有 **19 个 migration 脚本**（`db/migrations/`）：
 2026_09_02_v51_m3_tier_t2.py                # V5.1 minimax-m3 tier T1→T2
 2026_09_03_v60_glm_flash_vision.py          # V6.0 Phase1 vision 分级 + GLM 免费模型 + P0-3 收窄
 2026_09_03_v60_phase2_cost_audit.py         # V6.0 Phase2 标价双轨（registry 标价列 + usage_logs.list_cost_estimate + 回填）
+2026_09_04_v61x_qwen_naming.py              # V6.x qwen 命名规范化（双前缀改名 39 + 重复条目合并 4, 级联 members/usage/prices）
 ```
 
 > 生产环境（ubuntu2401）只跑幂等 migration，**不要**跑 `seed_model_groups.py` /
@@ -106,6 +107,9 @@ python db/migrations/2026_09_03_v60_glm_flash_vision.py --apply
 
 # r. 标价双轨成本审计 (V6.0 Phase 2; 幂等, 可重复跑补新标价)
 python db/migrations/2026_09_03_v60_phase2_cost_audit.py --apply
+
+# s. qwen 命名规范化 (V6.x; 幂等, 双前缀改名 39 + 重复条目合并 4)
+python db/migrations/2026_09_04_v61x_qwen_naming.py --apply
 
 # === 阶段 5: 价格同步 (脚本, 不是 migration) ===
 python scripts/sync_siliconflow_cache_prices.py --apply   # 9 行 cache 价 (兼容)
