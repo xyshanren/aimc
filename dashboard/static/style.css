@@ -187,7 +187,37 @@ code, .mono {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    /* 长页滚动时菜单悬浮跟随 (Phase 3 体验修复) */
+    position: sticky;
+    top: 52px;
+    height: calc(100vh - 60px);
+    overflow-y: auto;
+    align-self: flex-start;
 }
+
+/* 返回顶部悬浮按钮 */
+#back-top {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 30;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-default);
+    font-size: 16px;
+    cursor: pointer;
+    box-shadow: var(--shadow-sm);
+}
+
+#back-top:hover {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+}
+
+#back-top[hidden] { display: none; }
 
 .nav-item {
     display: flex;
@@ -325,6 +355,8 @@ code, .mono {
         width: auto;
         flex-direction: row;
         overflow-x: auto;
+        overflow-y: hidden;
+        height: auto;
         border-right: none;
         border-bottom: 1px solid var(--border-muted);
         padding: var(--space-sm);

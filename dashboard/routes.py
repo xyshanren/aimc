@@ -344,6 +344,7 @@ async def get_promotions(
             "status": p.status,
             "confidence": p.confidence,
             "url": p.url,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
         }
         for p in promotions
     ]
@@ -1851,6 +1852,15 @@ async def list_requests(
         )).all()
         ch_name_map = {r.id: r.name for r in ch_rows}
 
+    # 反向 join key label (请求日志按调用 key 区分)
+    key_ids = {r.key_id for r in rows if r.key_id is not None}
+    key_label_map: dict[int, str] = {}
+    if key_ids:
+        key_rows = (await session.execute(
+            select(ApiKey.id, ApiKey.label, ApiKey.key_prefix).where(ApiKey.id.in_(key_ids))
+        )).all()
+        key_label_map = {r.id: (r.label or r.key_prefix or "") for r in key_rows}
+
     return {
         "total": total,
         "page": page,
@@ -1863,6 +1873,7 @@ async def list_requests(
                 "model": r.model,
                 "channel_name": ch_name_map.get(r.channel_id),
                 "group_id": r.group_id,
+                "key_label": key_label_map.get(r.key_id) if r.key_id else None,
                 "status_code": r.status_code,
                 "latency_ms": r.latency_ms,
                 "input_tokens": r.input_tokens or 0,

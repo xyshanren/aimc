@@ -79,14 +79,40 @@ async def _reset_db():
 
 
 async def _seed_channel(factory, name="glm_bigmodel"):
-    from db.models import Channel
+    """原生 SQL 种子 (参数化绑定): channels 表结构跨版本有列差, 只填四个必有列"""
+    from sqlalchemy import text
 
     async with factory() as session:
-        ch = Channel(name=name, provider="zhipu", base_url="https://mock.local",
-                     status="active")
-        session.add(ch)
+        result = await session.execute(
+            text("INSERT INTO channels (name, provider, base_url, status) "
+                 "VALUES (:n, :p, :b, 'active')"),
+            {"n": name, "p": "zhipu", "b": "https://mock.local"},
+        )
         await session.commit()
-        return ch.id
+        return result.lastrowid
+
+
+async def _seed_api_key(factory, label="rag", key_prefix="aimc-lV2"):
+    from sqlalchemy import text
+    from db.models import ApiKey, User
+
+    async with factory() as session:
+        # api_keys.user_id 有 FK, 先确保测试用户存在 (幂等)
+        row = (await session.execute(
+            text("SELECT id FROM users WHERE username = 'tester'")
+        )).scalar()
+        if row is None:
+            user = User(username="tester", display_name="T", role="user", status="active")
+            session.add(user)
+            await session.commit()
+            user_id = user.id
+        else:
+            user_id = row
+        k = ApiKey(user_id=user_id, key_hash="hash-" + label, key_prefix=key_prefix,
+                   is_admin=0, status="active", label=label)
+        session.add(k)
+        await session.commit()
+        return k.id
 
 
 async def _seed_log(factory, model="glm-5.3-flash", channel_id=None, key_id=None,
@@ -143,10 +169,11 @@ def test_requests_list_filters_and_pagination():
     async def _run():
         await _reset_db()
         ch_id = await _seed_channel(async_session_factory)
+        key_id = await _seed_api_key(async_session_factory, label="rag")
         now = datetime.now()
         # 2 条 7 天内 (1 ok 1 error) + 1 条 10 天前 (应被 days=7 过滤)
         id_ok = await _seed_log(async_session_factory, "glm-5.3-flash",
-                                channel_id=ch_id, key_id=3,
+                                channel_id=ch_id, key_id=key_id,
                                 status_code=200, created_at=now - timedelta(hours=1))
         await _seed_log(async_session_factory, "deepseek-v4-flash",
                         channel_id=ch_id, status_code=500,
@@ -167,6 +194,9 @@ def test_requests_list_filters_and_pagination():
     # 时间倒序: 最新的在前
     assert all_data["items"][0]["id"] == id_ok
     assert all_data["items"][0]["channel_name"] == "glm_bigmodel"
+    assert all_data["items"][0]["key_label"] == "rag"  # key label 反查
+    # 未带 key_id 的行 → key_label None
+    assert all_data["items"][1]["key_label"] is None
     assert all_data["items"][0]["cached_tokens"] == 0
     assert all_data["items"][0]["list_cost_yuan"] == 0.05
 

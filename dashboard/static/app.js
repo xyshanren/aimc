@@ -118,6 +118,21 @@ async function editChannelDropParams(channelId, currentVal) {
     }
 }
 
+// 相对时间: ISO/datetime 字符串 → "x 分钟/小时/天 前"
+function _relTime(iso) {
+    if (!iso) return '';
+    const t = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T'));
+    if (Number.isNaN(t.getTime())) return '';
+    const diffMin = Math.round((Date.now() - t.getTime()) / 60000);
+    if (diffMin < 1) return '刚刚';
+    if (diffMin < 60) return diffMin + ' 分钟前';
+    const h = Math.floor(diffMin / 60);
+    if (h < 24) return h + ' 小时前';
+    const d = Math.floor(h / 24);
+    if (d < 30) return d + ' 天前';
+    return Math.floor(d / 30) + ' 个月前';
+}
+
 function renderPromotions(container) {
     try {
         const data = JSON.parse(container.textContent);
@@ -127,11 +142,12 @@ function renderPromotions(container) {
         }
         let html = '';
         data.forEach(p => {
+            const rel = _relTime(p.created_at);
             html += `<div class="promo-item">
                 <span class="provider">${esc(p.provider)}</span>
                 <span class="discount">${esc(p.discount_desc)}</span>
                 <div class="title">${esc(p.title)}</div>
-                <div class="meta">截止: ${esc(p.end_date) || '未知'} | 置信度: ${esc((p.confidence || 0).toFixed(2))}</div>
+                <div class="meta">采集: ${esc(rel) || '未知'} | 截止: ${esc(p.end_date) || '未知'} | 置信度: ${esc((p.confidence || 0).toFixed(2))}</div>
                 ${p.url ? `<a class="promo-link" href="${esc(p.url)}" target="_blank" rel="noopener">查看原文 ↗</a>` : ''}
             </div>`;
         });
@@ -1821,7 +1837,6 @@ async function manualEnable(accountId, btn) {
 // 节省口径: 只统计标价已知 (list_cost_estimate 非空) 的行, 覆盖率低时数字偏保守
 // ============================================================
 
-let _costTrendChart = null;
 let _costTab = 'model';
 
 function _costFmt(n) {
@@ -1850,29 +1865,27 @@ async function loadCostAudit() {
     const table = document.getElementById('cost-audit-table');
     if (!table) return;
     try {
-        // V6.1+: 按用户 tab 并行拉 per-user 数据 (key 下钻明细), 其余 tab 两个请求
+        // Phase 3 指标重组: 趋势图收敛到概览页, 此处只拉当前 tab 明细 (KPI 取 totals)
         const fetches = [
-            authFetch(`/dashboard/api/usage/cost-trend?days=${fmtDays()}`),
             authFetch(`/dashboard/api/usage/cost-by-${_costTab}?days=${fmtDays()}`),
         ];
         if (_costTab === 'user') {
             fetches.push(authFetch(`/dashboard/api/stats/per-user?days=${fmtDays()}`));
         }
         const resps = await Promise.all(fetches);
-        const [trendResp, dimResp] = resps;
+        const dimResp = resps[0];
         for (const r of resps) {
             if (!r.ok) {
                 table.innerHTML = '<p class="error">加载失败: HTTP ' + r.status + '</p>';
                 return;
             }
         }
-        const trend = await trendResp.json();
         const dim = await dimResp.json();
 
         // key 下钻: caller_id -> keys[] (仅 user tab)
         let userKeyMap = null;
         if (_costTab === 'user') {
-            const perUser = await resps[2].json();
+            const perUser = await resps[1].json();
             userKeyMap = {};
             for (const item of (perUser.items || [])) {
                 userKeyMap[item.caller_id === null ? 'null' : String(item.caller_id)] =
@@ -1889,42 +1902,6 @@ async function loadCostAudit() {
         set('kpi-cost-coverage', (t.list_coverage_pct || 0) + '%');
         const covEl = document.getElementById('kpi-cost-coverage');
         if (covEl) covEl.style.color = (t.list_coverage_pct || 0) < 50 ? 'var(--color-warning, #f0b132)' : '';
-
-        // --- 趋势图 (标价 vs 实付) ---
-        const ctx = document.getElementById('cost-trend-chart');
-        if (ctx) {
-            const labels = (trend.items || []).map(d => d.date);
-            if (_costTrendChart) _costTrendChart.destroy();
-            _costTrendChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: '官方标价 ¥',
-                        data: (trend.items || []).map(d => d.list_cost_yuan),
-                        borderColor: _cssColor('--color-info', 1),
-                        backgroundColor: _cssColor('--color-info', 0.15),
-                        tension: 0.3,
-                        fill: true,
-                    }, {
-                        label: '实付 ¥',
-                        data: (trend.items || []).map(d => d.cost_yuan),
-                        borderColor: _cssColor('--color-success', 1),
-                        backgroundColor: _cssColor('--color-success', 0.15),
-                        tension: 0.3,
-                        fill: true,
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    plugins: { legend: { labels: { color: _cssVar('--text-secondary') } } },
-                    scales: {
-                        x: { ticks: { color: _cssVar('--text-muted') }, grid: { color: _cssVar('--border-muted') } },
-                        y: { ticks: { color: _cssVar('--text-muted') }, grid: { color: _cssVar('--border-muted') }, beginAtZero: true }
-                    }
-                }
-            });
-        }
 
         // --- 下钻表 ---
         renderCostTable(dim, userKeyMap);
@@ -2218,6 +2195,7 @@ function showPage(name) {
         try { history.replaceState(null, '', '#/' + name); } catch (e) { /* ignore */ }
     }
     if (_pageTimer) clearInterval(_pageTimer);
+    window.scrollTo(0, 0); // 切页回到顶部 (长页切换不必来回滚)
     const page = PAGE_ROUTES[name];
     const runAll = () => page.loaders.forEach(fn => { try { fn(); } catch (e) { console.warn(name + ' loader failed:', e); } });
     runAll();
@@ -2232,6 +2210,12 @@ function initNav() {
         const r = location.hash.replace(/^#\//, '') || 'overview';
         if (r !== _currentPage) showPage(r);
     });
+    // 返回顶部按钮: 滚动超 400px 出现
+    const backTop = document.getElementById('back-top');
+    if (backTop) {
+        window.addEventListener('scroll', () => { backTop.hidden = window.scrollY < 400; }, { passive: true });
+        backTop.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+    }
     showPage(location.hash.replace(/^#\//, '') || 'overview');
 }
 
@@ -2284,18 +2268,19 @@ async function loadRequests() {
             list.innerHTML = '<p class="empty">当前过滤条件下无请求记录</p>';
             return;
         }
-        let html = '<div class="scroll-y-420"><table><thead><tr><th>时间</th><th>模型</th><th>渠道</th><th>状态</th><th>延迟</th><th>Token</th><th>实付</th><th></th></tr></thead><tbody>';
+        let html = '<div class="scroll-y-420"><table><thead><tr><th>时间</th><th>模型</th><th>渠道</th><th>Key</th><th>状态</th><th>延迟</th><th>Token</th><th>实付</th><th></th></tr></thead><tbody>';
         for (const r of data.items) {
             const cls = r.status_code >= 500 ? 'st-error' : (r.status_code >= 400 ? 'st-warn' : 'st-ok');
             html += '<tr>'
                 + '<td class="mono" style="font-size:11px;">' + esc((r.created_at || '').replace('T', ' ').slice(5, 19)) + '</td>'
                 + '<td><code class="text-mono">' + esc(r.model || '—') + '</code></td>'
                 + '<td>' + esc(r.channel_name || '—') + '</td>'
+                + '<td>' + esc(r.key_label || '—') + '</td>'
                 + '<td><span class="status-pill ' + cls + '">' + esc(String(r.status_code)) + '</span></td>'
                 + '<td class="mono">' + fmtLatency(r.latency_ms) + '</td>'
                 + '<td class="mono">' + fmtTokens((r.input_tokens || 0) + (r.output_tokens || 0)) + '</td>'
                 + '<td class="mono">' + fmtCNY(r.cost_yuan) + '</td>'
-                + '<td><button class="btn-tiny" onclick="openRequestDrawer(' + r.id + ')">转录</button></td>'
+                + '<td><button class="btn-tiny" onclick="openRequestDrawer(' + r.id + ')">详情</button></td>'
                 + '</tr>';
         }
         html += '</tbody></table></div>';

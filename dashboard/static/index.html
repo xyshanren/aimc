@@ -105,7 +105,7 @@
                         <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cost-saved">¥--</div><div class="kpi-label" title="官方标价 − 实付，只统计标价已知的请求；与 Cache 节省口径不同">标价节省</div></div>
                         <div class="kpi"><div class="kpi-value" id="kpi-cost-coverage">--%</div><div class="kpi-label" title="标价已知请求 / 总请求，覆盖率低时标价节省偏保守">标价覆盖率</div></div>
                     </div>
-                    <canvas id="cost-trend-chart" width="600" height="90"></canvas>
+                    <!-- 趋势图已收敛到概览页 (Phase 3 指标重组), 此处聚焦 KPI + 明细 -->
                     <div class="toolbar mt-sm" id="cost-tabs">
                         <button class="btn btn-sm" id="cost-tab-model" onclick="switchCostTab('model')">按模型</button>
                         <button class="btn btn-sm" id="cost-tab-group" onclick="switchCostTab('group')">按分组</button>
@@ -335,6 +335,8 @@
 <div id="shortcut-hint" class="text-muted" style="text-align:center;font-size:11px;margin-top:24px;">
     快捷键: <kbd>r</kbd> 刷新 · <kbd>a</kbd> 应用建议 · <kbd>/</kbd> 搜索 · <kbd>?</kbd> 帮助
 </div>
+
+<button id="back-top" hidden title="返回顶部">↑</button>
 
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/app.js"></script>
