@@ -1710,7 +1710,8 @@ async def get_group_routing_stats(days: int = 7, session: AsyncSession = Depends
     - summary: 总览数字
     """
     from datetime import datetime, timedelta
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    # usage_logs.created_at 存本地时间 (P3 修复), cutoff 须用本地 now 匹配
+    cutoff = datetime.now() - timedelta(days=days)
 
     # 1) 按 group_id + model 聚合 (只统计 group_id 非 NULL)
     stmt = (
@@ -1837,7 +1838,8 @@ async def list_requests(
 
     V6.3 F2: model 支持模糊匹配 (LIKE %model%), 如 model=glm 收窄到 glm 系。
     """
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    # usage_logs.created_at 存本地时间 (P3 修复), cutoff 须用本地 now 匹配
+    cutoff = datetime.now() - timedelta(days=days)
     conds = [UsageLog.created_at >= cutoff]
     if status == "ok":
         conds.append(UsageLog.status_code < 400)
@@ -2314,7 +2316,11 @@ async def get_auto_join_metrics(
       (parser.py infer_tier 对无法从模型名推断参数规模的返回 None, 这些模型永远
       无法自动入组, 是 AUTO_JOIN 决策的关键盲区)
     """
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    # 本端点查两张表, 时间语义不同:
+    # - model_capabilities_log.created_at = func.now() (UTC)
+    # - usage_logs.created_at = Python 本地时间 (P3 修复)
+    cutoff_utc = datetime.utcnow() - timedelta(days=days)
+    cutoff_local = datetime.now() - timedelta(days=days)
 
     # --- 1) pending_review 积压 (当前 + 每周新增) ---
     pending_total = (
@@ -2364,7 +2370,7 @@ async def get_auto_join_metrics(
             select(func.count(ModelCapabilitiesLog.id))
             .where(ModelCapabilitiesLog.source == "ai_infer")
             .where(ModelCapabilitiesLog.approved == 1)
-            .where(ModelCapabilitiesLog.created_at >= cutoff)
+            .where(ModelCapabilitiesLog.created_at >= cutoff_utc)
         )
     ).scalar() or 0
 
@@ -2372,7 +2378,7 @@ async def get_auto_join_metrics(
     group_rows = (
         await session.execute(
             select(UsageLog.group_id, func.count(UsageLog.id))
-            .where(UsageLog.created_at >= cutoff)
+            .where(UsageLog.created_at >= cutoff_local)
             .group_by(UsageLog.group_id)
         )
     ).all()
