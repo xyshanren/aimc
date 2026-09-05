@@ -863,6 +863,9 @@ function renderAccounts(data) {
         container.innerHTML = '<p class="loading">当前无账号 — 点上方 "+ 加新账号" 添加</p>';
         return;
     }
+    // 限额预警 (原独立卡, 2026-09-05 并入): 非 active 或配额>=80% 计入"需关注"
+    const QUOTA_WARN_PCT = 80;
+    const needsAttention = (a) => (a.status && a.status !== 'active') || (a.quota_pct != null && a.quota_pct >= QUOTA_WARN_PCT);
     const byProvider = {};
     for (const a of items) {
         byProvider[a.provider] = (byProvider[a.provider] || 0) + 1;
@@ -875,11 +878,19 @@ function renderAccounts(data) {
         explanation += ' 用于分散频限 + 故障转移。<br>';
         explanation += '重复的 <code>test_01</code> 是手动测试用的多账号，可在操作列禁用不需要的。</div>';
     }
+    const warnedCount = items.filter(needsAttention).length;
+    if (warnedCount > 0) {
+        explanation += '<div class="mt-sm" style="font-size:12px;color:var(--color-warning);">⚠️ ' + warnedCount + ' 个账号需关注 (非 active 或配额 ≥' + QUOTA_WARN_PCT + '%，已置顶)</div>';
+    }
+    // 非 active 置顶 (expired/error 最前), 其余保持 id 序
+    const sev = (s) => (s === 'expired' || s === 'error' ? 0 : s === 'exhausted' ? 1 : s && s !== 'active' ? 2 : 3);
+    const sorted = items.slice().sort((x, y) => sev(x.status) - sev(y.status));
     let html = explanation + '<div class="scroll-y-300"><table><thead><tr><th>ID</th><th>账号名</th><th>状态</th><th>已用/总额</th><th>过期</th><th>Key</th><th>备注</th><th>操作</th></tr></thead><tbody>';
-    for (const a of items) {
+    for (const a of sorted) {
         const quota = a.quota_total
             ? a.quota_used.toLocaleString() + ' / ' + a.quota_total.toLocaleString() + ' (' + (a.quota_pct || 0) + '%)'
             : '-';
+        const quotaHot = a.quota_pct != null && a.quota_pct >= QUOTA_WARN_PCT;
         const expires = a.expires_at ? a.expires_at.slice(0, 10) : '-';
         const notes = a.notes || '';
         const status = a.status;
@@ -894,7 +905,7 @@ function renderAccounts(data) {
             + '<td>' + a.id + '</td>'
             + '<td><code>' + a.provider + '/' + esc(a.account_name) + '</code></td>'
             + '<td class="status-' + status + '">' + status + '</td>'
-            + '<td>' + quota + '</td>'
+            + '<td' + (quotaHot ? ' style="color:var(--color-warning);font-weight:600;"' : '') + '>' + quota + '</td>'
             + '<td>' + expires + '</td>'
             + '<td><code class="key-display">' + esc(a.key_display) + '</code></td>'
             + '<td class="notes">' + esc(notes) + '</td>'
@@ -1326,87 +1337,8 @@ async function loadSuggestionsList() {
 // (启动钩子与 60s 全局轮询已由 PAGE_ROUTES 页面调度器接管 — Phase 3a, 见文件末尾)
 
 
-// === 阶段P0-UI v3 (2026-08-16): 限额预警 + 修复之前漏的 ===
-// === 阶段P0-UI v4 (2026-08-16): 限额预警 紧凑渲染 ===
-
-async function loadQuotaWarning() {
-    try {
-        const list = document.getElementById("quota-warning-list");
-        if (!list) return;
-        const resp = await authFetch("/dashboard/api/accounts");
-        if (!resp.ok) {
-            list.innerHTML = '<div class="empty">⚠️ 后端 API 暂未提供</div>';
-            return;
-        }
-        const data = await resp.json();
-        const accounts = data.accounts || [];
-        if (accounts.length === 0) {
-            list.innerHTML = '<div class="empty">无账号</div>';
-            return;
-        }
-        // 状态词表见 db/models.py Account.status: active/exhausted/expired/error/manual_disabled
-        const QUOTA_WARN_PCT = 80;
-        const STATUS_COLOR = {
-            active: 'var(--color-success)',
-            exhausted: 'var(--color-warning)',
-            expired: 'var(--color-danger)',
-            error: 'var(--color-danger)',
-            manual_disabled: 'var(--text-muted)',
-        };
-        // 4 个 KPI: 总数 / active / expired / 其他 (exhausted+error+manual_disabled)
-        let active = 0, expired = 0, other = 0;
-        const total = accounts.length;
-        for (const a of accounts) {
-            const s = a.status || 'active';
-            if (s === 'active') active++;
-            else if (s === 'expired') expired++;
-            else other++;
-        }
-
-        let html = '<div class="kpi-grid" style="grid-template-columns: repeat(2, 1fr); margin-bottom: var(--space-sm);">';
-        html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;">' + total + '</div><div class="kpi-label">总账号</div></div>';
-        html += '<div class="kpi"><div class="kpi-value kpi-value-success" style="font-size:16px;">' + active + '</div><div class="kpi-label">Active</div></div>';
-        html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;color:var(--color-danger);">' + expired + '</div><div class="kpi-label">Expired</div></div>';
-        html += '<div class="kpi"><div class="kpi-value" style="font-size:16px;color:var(--text-muted);">' + other + '</div><div class="kpi-label">其他状态</div></div>';
-        html += '</div>';
-
-        // 预警列表: 非 active 的真实状态在前 (expired/error → exhausted → manual_disabled),
-        // 其次是配额吃紧 (>=QUOTA_WARN_PCT) 的 active 账号
-        const sev = (s) => (s === 'expired' || s === 'error' ? 0 : s === 'exhausted' ? 1 : 2);
-        const warned = accounts
-            .map((a) => ({ ...a, s: a.status || 'active', q: a.quota_pct }))
-            .filter((a) => a.s !== 'active' || (a.q != null && a.q >= QUOTA_WARN_PCT))
-            .sort((x, y) => sev(x.s) - sev(y.s));
-        if (warned.length > 0) {
-            html += '<div class="text-muted" style="font-size:11px;margin-top:var(--space-sm);">⚠️ ' + warned.length + ' 个账号需要关注:</div>';
-            html += '<div class="flex-col gap-sm" style="margin-top:var(--space-sm);">';
-            for (const a of warned.slice(0, 5)) {
-                const color = STATUS_COLOR[a.s] || 'var(--text-muted)';
-                html += '<div class="flex gap-sm" style="font-size:12px;">';
-                html += '<span class="status-dot-small" style="background:' + color + ';"></span>';
-                html += '<code class="text-mono" style="font-size:11px;">' + esc(a.account_name || '—') + '</code>';
-                html += '<span class="text-muted" style="font-size:11px;">' + esc(a.s) + '</span>';
-                if (a.s === 'active') {
-                    html += '<span style="font-size:11px;color:var(--color-warning);">配额 ' + a.q + '%</span>';
-                }
-                html += '</div>';
-            }
-            if (warned.length > 5) {
-                html += '<div class="text-muted" style="font-size:11px;">…还有 ' + (warned.length - 5) + ' 个</div>';
-            }
-            html += '</div>';
-        } else {
-            html += '<div class="text-success" style="font-size:12px;margin-top:var(--space-sm);">✓ 所有账号 active</div>';
-        }
-        list.innerHTML = html;
-    } catch (e) {
-        console.warn("quota warning failed:", e);
-        const list = document.getElementById("quota-warning-list");
-        if (list) list.innerHTML = '<div class="empty">⚠️ 加载失败</div>';
-    }
-}
-
-// (限额预警由运维页调度器拉起, 不再全局轮询 — Phase 3a)
+// (限额预警已并入账号管理卡 (2026-09-05): 需关注计数 + 非active置顶 + 配额>=80% 标黄,
+//  见 renderAccounts; 原 loadQuotaWarning 删除, 同源 /api/accounts 不再每分钟重复拉取)
 // === P0-UI v5: 周报 markdown 渲染 ===
 // (原 htmx:afterSwap 拦截已随 htmx 移除; markdown 渲染并入 loadWeeklyReportLatest — Phase 3a)
 
@@ -2279,7 +2211,7 @@ const PAGE_ROUTES = {
     usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadRequests] },
     channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard, loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
     intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard, loadReportsList, loadWeeklyReportLatest] },
-    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadSuggestionsList, loadQuotaWarning, loadAccountsCard, loadUserKeys, loadSources] },
+    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadSuggestionsList, loadAccountsCard, loadUserKeys, loadSources] },
 };
 
 let _currentPage = null;
