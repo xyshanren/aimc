@@ -28,6 +28,7 @@ from db.models import (
     CrossSourceDiscrepancy,
     RequestTranscript,
     SettingsRuntime,
+    CooldownEvent,
     ModelChangeSuggestion, GroupChangeSuggestion,
     User, ApiKey,
 )
@@ -734,10 +735,19 @@ async def get_cooldown_status():
 # === V4.9 (2026-08-25): '🔴 待处理' tab API ===
 
 @router.get("/api/pending-summary")
-async def get_pending_summary(session: AsyncSession = Depends(get_session)):
+async def get_pending_summary(
+    exclude_transient: bool = Query(False, description="V6.3.1: 顶栏 badge 传 true — 不把瞬时冷却计入 total/items (仍落事件流水)"),
+    session: AsyncSession = Depends(get_session),
+):
     """V4.9: 聚合 dashboard '🔴 待处理(N)' tab 所需的项
 
     返回每个 category 的 count + 跳转锚点 + 最新 3 条示例
+
+    V6.3.1 (2026-09-06): 瞬时冷却 (cooldown_degraded) 15~60s 自愈, badge 30s 轮询
+    与 ops 60s 轮询共用本端点导致 "badge 有数、进页已空" 的竞态。方案:
+    - 顶栏 badge 调用时带 exclude_transient=true, 只数持久项 (needs_human/人工禁用)
+    - 无论 exclude 与否, 观察到非零瞬时冷却都会写 cooldown_events 流水 (去重:
+      同账号 cooldown_until 与最近一条流水相同则跳过 — 同 episode 不重复落库)
     """
     from gateway.cooldown import cooldown_manager
     from gateway.router import route_engine
@@ -840,15 +850,18 @@ async def get_pending_summary(session: AsyncSession = Depends(get_session)):
                 "account_name": ch_info.get("account_name", "") if ch_info else "",
                 "error_msg": f"{label} — {msg}" if msg else label,
             })
-        items.append({
-            "category": "cooldown_degraded",
-            "count": len(cooldown_aids),
-            "severity": "warning",
-            "label": "⚠️ 自动冷却中",
-            "anchor": "accounts-meta",
-            "examples": cooldown_examples,
-        })
-        total += len(cooldown_aids)
+        if not exclude_transient:
+            items.append({
+                "category": "cooldown_degraded",
+                "count": len(cooldown_aids),
+                "severity": "warning",
+                "label": "⚠️ 自动冷却中",
+                "anchor": "accounts-meta",
+                "examples": cooldown_examples,
+            })
+            total += len(cooldown_aids)
+        # V6.3.1: 抓现场 — 无论 badge 是否排除瞬时项, 都落事件流水
+        await _record_cooldown_events(session, snap, cooldown_aids)
 
     # === 5. 人工禁用 ===
     manual_aids = [aid for aid, s in snap.items()
@@ -875,6 +888,48 @@ async def get_pending_summary(session: AsyncSession = Depends(get_session)):
         total += len(manual_aids)
 
     return {"total": total, "items": items}
+
+
+async def _record_cooldown_events(session: AsyncSession, snap: dict, cooldown_aids: list) -> None:
+    """V6.3.1: 瞬时冷却抓现场 — 观察 → 去重 → 落 cooldown_events 流水
+
+    去重键: 同账号最近一条流水的 cooldown_until。CooldownManager.mark_failure
+    在同一 episode 内不再失败时 cooldown_until 稳定不变 — badge 30s + ops 60s
+    双观察者重复调用也只插一行; episode 内再次失败会刷新 cooldown_until,
+    产生新行 (可接受: 记录了刷新这个事实)。
+
+    失败安全: 落库出错只打日志, 不影响 pending-summary 主响应。
+    """
+    from gateway.router import route_engine as _route_engine
+    try:
+        for aid in cooldown_aids:
+            s = snap[aid]
+            observed_until = s.get("cooldown_until")
+            if observed_until is None:
+                continue
+            last = (await session.execute(
+                select(CooldownEvent.cooldown_until)
+                .where(CooldownEvent.account_id == aid)
+                .order_by(CooldownEvent.id.desc())
+                .limit(1)
+            )).scalar()
+            if last is not None and abs(last - observed_until) < 0.001:
+                continue  # 同一 episode 已记录过
+            ch_info = _lookup_channel_info(_route_engine, aid)
+            session.add(CooldownEvent(
+                account_id=aid,
+                channel_name=(ch_info or {}).get("name"),
+                account_name=(ch_info or {}).get("account_name"),
+                error_type=s.get("last_error_type"),
+                error_code=s.get("last_error_code"),
+                error_msg=(s.get("last_error_msg") or "")[:200],
+                cooldown_until=observed_until,
+                remaining_seconds=s.get("remaining_seconds"),
+            ))
+        await session.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("cooldown_events 落库失败 (不影响 pending-summary): %s", e)
+        await session.rollback()
 
 
 def _lookup_channel_info(route_engine, account_id: int) -> Optional[dict]:
@@ -3377,3 +3432,51 @@ async def get_transcript(
     if not row:
         raise HTTPException(status_code=404, detail=f"Transcript {transcript_id} not found")
     return row.to_dict(include_body=True)
+
+
+# ============================================================
+# V6.3.1 (2026-09-06): 瞬时冷却事件流水查询 (抓"现场")
+# ============================================================
+
+@router.get("/api/cooldown-events")
+async def list_cooldown_events(
+    hours: int = Query(24, ge=1, le=168, description="最近 N 小时"),
+    limit: int = Query(100, ge=1, le=500, description="最多返回条数"),
+    account_id: Optional[int] = Query(None, description="按账号过滤"),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.3.1: 列出最近观察到的瞬时冷却事件 (运维页历史卡用)
+
+    数据来源: /api/pending-summary 观察到非零瞬时冷却时落库的 cooldown_events
+    (badge 是否 exclude_transient 都会落库)。同一 episode 只有一条 —
+    cooldown_until 是去重键。
+    """
+    cutoff = datetime.now() - timedelta(hours=hours)
+    result = await session.execute(
+        select(CooldownEvent)
+        .where(CooldownEvent.created_at >= cutoff,
+               CooldownEvent.account_id == account_id)
+        .order_by(CooldownEvent.created_at.desc())
+        .limit(limit)
+    ) if account_id is not None else await session.execute(
+        select(CooldownEvent)
+        .where(CooldownEvent.created_at >= cutoff)
+        .order_by(CooldownEvent.created_at.desc())
+        .limit(limit)
+    )
+    rows = result.scalars().all()
+    return {
+        "total": len(rows),
+        "events": [{
+            "id": r.id,
+            "account_id": r.account_id,
+            "channel_name": r.channel_name,
+            "account_name": r.account_name,
+            "error_type": r.error_type,
+            "error_code": r.error_code,
+            "error_msg": r.error_msg,
+            "cooldown_until": r.cooldown_until,
+            "remaining_seconds": r.remaining_seconds,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        } for r in rows],
+    }

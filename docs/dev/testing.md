@@ -22,7 +22,7 @@ python -m pytest tests/ --cov=gateway --cov=intelligence --cov-report=term-missi
 
 pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`），async test 自动运行。
 
-## 2. 现有测试结构（689 个，75 个文件）
+## 2. 现有测试结构（694 个，76 个文件）
 
 > 注：下表为历史版本逐文件明细（数字已甩旧），当前以全量基线为准。
 > V6.x (2026-09-04) 起全量全绿 — 此前 4 个存量 e2e 失败
@@ -70,9 +70,10 @@ pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`）�
 | `test_v487_auto_drop_params.py` | 15 | 上游 400 自动学习 drop_params | V4.8.7 |
 | `test_v487_time_pricing.py` | 72 | 分时段定价（工作日/周末/非高峰） | V4.8.7 |
 | `test_v487_cooldown_429.py` | 54 | 429 失败链 + cooldown API + stream 429 | V4.8.7 |
+| `test_v631_cooldown_events.py` | 5 | pending-summary exclude_transient / cooldown_events 落库去重 / cooldown-events 端点过滤 | V6.3.1 |
 | `test_phase3_5_verification.py` | 4 | 情报采集 → registry/group 闭环验证 | 阶段3-5 |
 
-**总计**：71 个文件 / 682 个 test / ~5 分钟跑通（V6.x 基线 2026-09-05 全绿; 表内逐文件数字为历史版本快照）
+**总计**：76 个文件 / 694 个 test / ~5 分钟跑通（V6.3.1 基线 2026-09-06 全绿; 表内逐文件数字为历史版本快照）
 
 ## 3. 写新测试
 

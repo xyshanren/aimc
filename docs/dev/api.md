@@ -371,6 +371,8 @@ V4.9 在 Dashboard 新增 5 个端点，让用户在「🔴 待处理 (N)」tab 
 
 聚合 `needs_human_quota` / `needs_human_auth` / `needs_human_model` / `cooldown_degraded` / `manual_disabled` 5 类，每类含 `count` / `severity` / `label` / `anchor` / `examples`（前 3 条示例）：
 
+**V6.3.1 起支持 `?exclude_transient=true`**（顶栏 badge 专用）：排除 `cooldown_degraded`（瞬时冷却，15-60s 自动恢复），badge 只计持久待处理项；排除的同时仍会在观察点落 `cooldown_events` 流水（见下）。
+
 ```bash
 curl http://localhost:8080/dashboard/api/pending-summary \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
@@ -394,6 +396,37 @@ curl http://localhost:8080/dashboard/api/pending-summary \
   ]
 }
 ```
+
+#### GET /dashboard/api/cooldown-events（V6.3.1 新增）
+
+瞬时冷却事件流水：`/api/pending-summary` 观察到非零 `cooldown_degraded` 时落库（badge 30s + 运维页 60s 双观察者按 account 最近一条 `cooldown_until` 去重，同 episode 不重复；episode 中途刷新剩余时间则记新行）。查询参数 `hours`（默认 24）/ `limit`（默认 100）/ `account_id`（可选过滤）。
+
+```bash
+curl "http://localhost:8080/dashboard/api/cooldown-events?hours=24&limit=100" \
+  -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
+```
+
+```json
+{
+  "total": 1,
+  "items": [
+    {
+      "id": 12,
+      "account_id": 5,
+      "channel_name": "deepseek_official",
+      "account_name": "ds_01",
+      "error_type": "rate_limited",
+      "error_code": "429",
+      "error_msg": "rate limit exceeded",
+      "cooldown_until": 1757136000.0,
+      "remaining_seconds": 30.0,
+      "created_at": "2026-09-06T10:00:00"
+    }
+  ]
+}
+```
+
+运维页「24h 瞬时冷却记录」卡消费此端点（`app.js` 的 `loadCooldownEvents`）。
 
 #### GET /dashboard/api/cooldown/needs-human
 

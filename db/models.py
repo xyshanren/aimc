@@ -898,6 +898,46 @@ Index("idx_ahl_account_time", AccountHealthLog.account_id, AccountHealthLog.prob
 Index("idx_ahl_probe_at", AccountHealthLog.probe_at)
 
 
+class CooldownEvent(Base):
+    """V6.3.1 (2026-09-06): 瞬时冷却事件流水 (抓"现场")
+
+    背景: 顶栏 badge 30s 轮询 /api/pending-summary, 瞬时冷却 (cooldown_degraded)
+    通常 15~60s 自愈 — 用户点进运维页时往往已恢复, 待处理列表变空, 现场丢失。
+
+    V6.3.1 方案 (选1+3 组合):
+    - badge 传 exclude_transient=true, 不再为自愈错误报警
+    - 每次观察到非零瞬时冷却时落一条流水, 运维页可回看 24h 历史
+
+    去重: cooldown_until 是 CooldownManager.mark_failure 对同一 episode 的
+    稳定锚点 (同 episode 内不变), 30s badge 轮询 + 60s ops 轮询都会触发观察,
+    但只有当某账号的 cooldown_until 与该账号最近一条流水不同 (新 episode)
+    才插行 — 不会 spam。
+
+    设计决策:
+    - 观察点在 dashboard 异步端点 (pending-summary), 不在 proxy 的
+      mark_failure 里 — 后者是同步调用且在请求热路径上, 不能写 DB
+    - created_at 用本地时间 (datetime.now) — 查询窗口是 "最近 24h" 本地窗,
+      与 account_health_log.probe_at / usage_logs.created_at 同一约定
+    - channel_name / account_name 存快照而非只存 id — 渠道删除后历史仍可读
+    """
+    __tablename__ = "cooldown_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
+    channel_name = Column(Text, nullable=True, comment="快照: 渠道名")
+    account_name = Column(Text, nullable=True, comment="快照: 账号名")
+    error_type = Column(Text, nullable=True, comment="ErrorCategory, e.g. rate_limited")
+    error_code = Column(Text, nullable=True)
+    error_msg = Column(Text, nullable=True, comment="截断后的上游错误消息")
+    cooldown_until = Column(Float, nullable=False, comment="epoch 秒, 同 episode 稳定 → 去重键")
+    remaining_seconds = Column(Float, nullable=True, comment="观察时刻的剩余冷却秒数")
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+
+
+Index("idx_cde_account_until", CooldownEvent.account_id, CooldownEvent.cooldown_until)
+Index("idx_cde_created_at", CooldownEvent.created_at)
+
+
 class SettingsRuntime(Base):
     """Runtime settings override (API-Sec-2, 2026-07-29)
 

@@ -1832,6 +1832,53 @@ async function loadPendingSummary() {
     }
 }
 
+// V6.3.1: 24h 瞬时冷却事件历史 (抓 badge 竞态的"现场")
+async function loadCooldownEvents() {
+    const container = document.getElementById('cooldown-events-list');
+    const badge = document.getElementById('cooldown-events-count');
+    if (!container) return;
+    try {
+        const resp = await authFetch('/dashboard/api/cooldown-events?hours=24&limit=100');
+        if (!resp.ok) {
+            container.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
+            return;
+        }
+        const data = await resp.json();
+        const events = data.events || [];
+        if (badge) badge.textContent = events.length;
+        if (events.length === 0) {
+            container.innerHTML = '<div class="text-success" style="padding:8px 0;font-size:12px;">✓ 24h 内无瞬时冷却记录</div>';
+            return;
+        }
+        const ERROR_LABELS = {
+            rate_limited: '429 限流', upstream_5xx: '上游 5xx',
+            network_transient: '网络抖动', unknown: '未知错误',
+        };
+        let html = '';
+        for (const ev of events) {
+            const ch = ev.channel_name || ('#' + ev.account_id);
+            const acct = ev.account_name ? ' · ' + ev.account_name : '';
+            const etype = ERROR_LABELS[ev.error_type] || ev.error_type || '?';
+            const remain = ev.remaining_seconds != null ? Math.round(ev.remaining_seconds) + 's' : '?';
+            const msg = ev.error_msg || '';
+            html += '<div class="pr-card">';
+            html += '<div class="pr-row">';
+            html += '<span class="status-dot-small" style="background:var(--color-warning);"></span>';
+            html += '<strong>' + esc(ch) + esc(acct) + '</strong>';
+            html += '<span style="margin-left:auto;font-size:11px;color:var(--text-muted);">' + esc(ev.created_at || '') + '</span>';
+            html += '</div>';
+            html += '<div style="font-size:11px;margin-top:6px;color:var(--text-secondary);">';
+            html += esc(etype) + ' · 观察时剩余冷却 ' + esc(remain);
+            if (msg) html += ' — ' + esc(msg.length > 120 ? msg.slice(0, 120) + '…' : msg);
+            html += '</div>';
+            html += '</div>';
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
 async function ackRecover(accountId, btn) {
     if (!confirm('确认账号 #' + accountId + ' 问题已解决?将立即触发探活。')) return;
     const note = prompt('备注 (可选, 充值来源/操作人)');
@@ -2223,7 +2270,9 @@ async function loadTodaySummary() {
 async function refreshBadges() {
     try {
         const [pendResp, suggResp] = await Promise.all([
-            authFetch('/dashboard/api/pending-summary'),
+            // V6.3.1: badge 只数持久项 — 瞬时冷却 15~60s 自愈, 30s 轮询撞上
+            // 冷却窗口就会出现 "badge 有数、进运维页已空" 的竞态假警报
+            authFetch('/dashboard/api/pending-summary?exclude_transient=true'),
             authFetch('/dashboard/api/suggestions?status=pending'),
         ]);
         let pend = 0;
@@ -2248,7 +2297,7 @@ const PAGE_ROUTES = {
     usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadRequests] },
     channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard, loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
     intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard, loadReportsList, loadWeeklyReportLatest] },
-    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadSuggestionsList, loadAccountsCard, loadUserKeys, loadSources, loadAutoJoinMetrics] },
+    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadSuggestionsList, loadAccountsCard, loadUserKeys, loadSources, loadAutoJoinMetrics] },
 };
 
 let _currentPage = null;

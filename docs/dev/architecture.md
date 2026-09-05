@@ -303,3 +303,4 @@ httpx.AsyncClient (上游调用)
 | 2026-09-05 (规划) | AUTO_JOIN_NON_T0 数据驱动决策 | 不立即开 T1-T3 自动入组：先埋点积累 ≥2 周 pending 增速/tier 分布/审批负担/组命中率，再按 S1-S4 择一（见 dev/automation-closure-plan.md）；错分风险来自 infer_tier 参数量正则盲区（无参数量 → None → pending_review） |
 | V6.3 | F3 埋点纯只读上产 | GET /dashboard/api/ops/auto-join-metrics 从现有表推导 5 组指标（pending 周桶/tier 分布/审批负担/组路由命中/infer_tier 盲区），不改任何入组行为；审批负担因 approve/reject 行级同值报合并处理量 |
 | V6.3 | F1 首启检测进 gateway startup | 空渠道/无 active 账号时 WARN 引导而非阻断启动（个人项目哲学：服务照起，引导到位）；manual_import.py 从必做降级为可选捷径 |
+| V6.3.1 | 顶栏 badge 不为自愈错误报警 | pending-summary 增 `exclude_transient`（badge 传 true）：瞬时冷却（cooldown_degraded，15-60s 自动恢复）不计入 badge，消除「顶栏有数但运维页为空」的观察时差噪音；同时观察点落 `cooldown_events` 流水（同 episode 按 cooldown_until 去重，badge 30s + ops 60s 双观察者不重复），运维页 24h 瞬时冷却记录卡留痕可回看 |
