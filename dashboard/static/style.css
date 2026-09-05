@@ -320,6 +320,12 @@ code, .mono {
 .st-warn { background: rgba(240, 180, 41, 0.15); color: var(--color-warning); }
 .st-error { background: rgba(246, 104, 94, 0.15); color: var(--color-danger); }
 
+/* V6.3 F7 图-表联动: 表格行高亮 (图表 hover 时 JS 加 tr.hl, 表行 hover 由图侧 setActiveElements 高亮) */
+tbody tr.hl td {
+    background: var(--bg-elevated);
+    box-shadow: inset 2px 0 0 var(--color-info);
+}
+
 .drawer-overlay {
     position: fixed;
     inset: 0;

@@ -277,6 +277,7 @@ httpx.AsyncClient (上游调用)
 3. **先跑通再优化** — 快速验证核心价值
 4. **保持简单** — 单进程部署，零外部依赖
 5. **精细化运营** — 峰谷定价（V4.8.7 已落地：工作日/周末分时段匹配 + DeepSeek 峰谷种子）、频限追踪、多账号兜底
+6. **自动化收口以数据为前提** — 「自用优先，允许半自动」不等于永远半自动：扩大自动化（如 T1-T3 自动入组）前先埋点观察真实代价（错分面/审批负担），数据说话后再定策略（2026-09-05 规划，见 dev/automation-closure-plan.md）
 
 ## 8. 历史架构决策记录
 
@@ -299,3 +300,6 @@ httpx.AsyncClient (上游调用)
 | V6.0 | 标价双轨成本审计 | registry 官方标价 + usage_logs.list_cost_estimate；免费/订阅渠道实付 0 也可量化节省（节省仅统计标价已知行）|
 | V6.1 | 鉴权统一 + agent 契约 | dashboard API 接受 admin api_key（aimc- 前缀 + is_admin=1）；统一 CLI `scripts/aimc.py`（薄 REST 客户端）；OpenAPI/agent-api.md |
 | V6.x | qwen 命名规范化 | validate_model_id 放宽（接受 `{family}<版本数字>`），规范名去双前缀（qwen3-8b / qwen3-vl-*），sync 不再产生 qwen-qwen*，存量迁移 39 改名 + 4 重复合并 |
+| 2026-09-05 (规划) | AUTO_JOIN_NON_T0 数据驱动决策 | 不立即开 T1-T3 自动入组：先埋点积累 ≥2 周 pending 增速/tier 分布/审批负担/组命中率，再按 S1-S4 择一（见 dev/automation-closure-plan.md）；错分风险来自 infer_tier 参数量正则盲区（无参数量 → None → pending_review） |
+| V6.3 | F3 埋点纯只读上产 | GET /dashboard/api/ops/auto-join-metrics 从现有表推导 5 组指标（pending 周桶/tier 分布/审批负担/组路由命中/infer_tier 盲区），不改任何入组行为；审批负担因 approve/reject 行级同值报合并处理量 |
+| V6.3 | F1 首启检测进 gateway startup | 空渠道/无 active 账号时 WARN 引导而非阻断启动（个人项目哲学：服务照起，引导到位）；manual_import.py 从必做降级为可选捷径 |

@@ -6,7 +6,7 @@
 ## 1. 跑测试
 
 ```bash
-# 全部 (682 个 test, V6.x 基线 2026-09-05: 全绿; 含思考 token 解析 8 例)
+# 全部 (689 个 test, V6.3 基线 2026-09-05: 全绿; 含思考 token 解析 8 例 + V6.3 埋点/首启检测 6 例 + model 搜索 1 例)
 python -m pytest tests/ -q
 
 # 单文件
@@ -22,7 +22,7 @@ python -m pytest tests/ --cov=gateway --cov=intelligence --cov-report=term-missi
 
 pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`），async test 自动运行。
 
-## 2. 现有测试结构（682 个，71 个文件）
+## 2. 现有测试结构（689 个，75 个文件）
 
 > 注：下表为历史版本逐文件明细（数字已甩旧），当前以全量基线为准。
 > V6.x (2026-09-04) 起全量全绿 — 此前 4 个存量 e2e 失败

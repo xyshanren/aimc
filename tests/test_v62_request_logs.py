@@ -226,6 +226,41 @@ def test_requests_list_days_window_excludes_old():
     assert data["items"][0]["model"] == "a"
 
 
+def test_requests_list_model_filter_v63():
+    """V6.3 F2: model 模糊匹配 (LIKE %model%) + 与 status 组合"""
+    from db.engine import async_session_factory
+
+    async def _run():
+        await _reset_db()
+        now = datetime.now()
+        await _seed_log(async_session_factory, "glm-5.3-flash", status_code=200,
+                        created_at=now - timedelta(hours=1))
+        await _seed_log(async_session_factory, "glm-5.3", status_code=500,
+                        created_at=now - timedelta(hours=2))
+        await _seed_log(async_session_factory, "deepseek-v4-flash", status_code=200,
+                        created_at=now - timedelta(hours=3))
+        async with _get_client() as client:
+            r_fuzzy = await client.get("/dashboard/api/requests?days=7&model=glm")
+            r_exact = await client.get("/dashboard/api/requests?days=7&model=glm-5.3-flash")
+            r_combo = await client.get("/dashboard/api/requests?days=7&model=glm&status=error")
+            r_none = await client.get("/dashboard/api/requests?days=7&model=qwen")
+        return r_fuzzy.json(), r_exact.json(), r_combo.json(), r_none.json()
+
+    fuzzy, exact, combo, none_ = asyncio.run(_run())
+    # 模糊匹配: glm 命中 2 条
+    assert fuzzy["total"] == 2
+    assert all("glm" in i["model"] for i in fuzzy["items"])
+    # 精确子串只命中 1 条
+    assert exact["total"] == 1
+    assert exact["items"][0]["model"] == "glm-5.3-flash"
+    # 组合过滤: glm + error 只剩 glm-5.3
+    assert combo["total"] == 1
+    assert combo["items"][0]["model"] == "glm-5.3"
+    assert combo["model"] == "glm"  # 回显
+    # 无命中
+    assert none_["total"] == 0
+
+
 # ============================================================
 # Part 2: transcript 详情
 # ============================================================

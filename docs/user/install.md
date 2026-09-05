@@ -51,10 +51,7 @@ DEEPSEEK_API_KEY=sk-xxx                   # DeepSeek 官方 (可选)
 ## 5. 启动
 
 ```bash
-# 5.1 录入渠道账号 (一次性, 之后可加 Dashboard 加)
-python scripts/manual_import.py
-
-# 5.2 启动网关
+# 5.1 启动网关
 python main.py
 # 或 systemd (推荐生产):
 # sudo systemctl --user enable aimc
@@ -67,6 +64,12 @@ python main.py
 curl http://localhost:8080/health
 # 期望: {"status":"ok"}
 ```
+
+> **首次启动没有任何渠道？** 启动日志会提示「首启引导」。两种配置方式任选：
+> 1. 看板「账号管理」页添加渠道 + API Key（推荐，可视化）
+> 2. 命令行批量导入：`python scripts/manual_import.py`（从 .env 读取 key）
+>
+> 配置后重启服务生效。
 
 ## 6. 验证
 
@@ -97,3 +100,4 @@ print(c.chat.completions.create(model='deepseek-v4-pro',
 | 启动报 `database is locked` | 多进程启动 | `pkill -f "python main.py"` 后重启 |
 | `curl /health` 连不上 | 防火墙/端口 | `ufw allow 8080` 或换端口 |
 | `manual_import` 报 `Invalid API key` | .env 没填或错 | 检查 .env 重跑脚本 |
+| 启动日志出现「首启引导」 | 渠道/账号未配置 | 看板加渠道或跑 manual_import.py（见第 5 步） |

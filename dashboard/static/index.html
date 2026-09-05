@@ -159,7 +159,7 @@
                             <option value="ok">成功</option>
                             <option value="error">失败</option>
                         </select>
-                        <input type="text" id="req-model" class="toolbar-search" placeholder="按 model 搜索…" oninput="requestsFilterChanged()" style="max-width:220px;">
+                        <input type="text" id="req-model" class="toolbar-search" placeholder="按 model 搜索 (服务端模糊匹配)…" oninput="requestsFilterChanged()" style="max-width:220px;">
                         <button class="btn btn-sm" onclick="loadRequests()">刷新</button>
                         <span id="req-meta" class="meta"></span>
                     </div>
@@ -326,6 +326,21 @@
                     </div>
                     <div id="sources-list" class="scroll-y-300">
                         <p class="loading">点击刷新加载…</p>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title">
+                    <span class="card-title-main">自动入组观察</span>
+                    <span class="card-title-sub" id="aj-metrics-range">V6.3 埋点 · 纯只读 · 近 14 天</span>
+                </div>
+                <div class="card-body">
+                    <div class="accounts-toolbar">
+                        <button class="btn btn-sm" onclick="loadAutoJoinMetrics()">刷新</button>
+                        <span id="aj-metrics-meta" class="meta"></span>
+                    </div>
+                    <div id="auto-join-metrics-list">
+                        <p class="loading">加载中…</p>
                     </div>
                 </div>
             </div>

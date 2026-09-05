@@ -1828,17 +1828,23 @@ async def get_group_routing_stats(days: int = 7, session: AsyncSession = Depends
 async def list_requests(
     days: int = Query(7, ge=1, le=30),
     status: str = Query("all", pattern="^(all|ok|error)$"),
+    model: str = Query(None, max_length=100),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
 ):
-    """请求日志明细 (usage_logs), 状态过滤 + 分页, 时间倒序。"""
+    """请求日志明细 (usage_logs), 状态/model 过滤 + 分页, 时间倒序。
+
+    V6.3 F2: model 支持模糊匹配 (LIKE %model%), 如 model=glm 收窄到 glm 系。
+    """
     cutoff = datetime.utcnow() - timedelta(days=days)
     conds = [UsageLog.created_at >= cutoff]
     if status == "ok":
         conds.append(UsageLog.status_code < 400)
     elif status == "error":
         conds.append(UsageLog.status_code >= 400)
+    if model:
+        conds.append(UsageLog.model.like(f"%{model}%"))
 
     base = select(UsageLog).where(*conds)
     total = (await session.execute(
@@ -1886,6 +1892,7 @@ async def list_requests(
         "page": page,
         "page_size": page_size,
         "days": days,
+        "model": model,
         "items": [
             {
                 "id": r.id,
@@ -2282,6 +2289,147 @@ async def reject_pending_review(
         "status": "rejected",
         "log_id": log.id,
         "field_changed": log.field_changed,
+    }
+
+
+# ============================================================
+# V6.3 F3 (自动化收口, 2026-09-05): 自动入组数据积累埋点
+# 纯只读观察指标, 为 AUTO_JOIN_NON_T0 决策积累数据 (≥2 周后分析 S1-S4)
+# ============================================================
+
+@router.get("/api/ops/auto-join-metrics")
+async def get_auto_join_metrics(
+    days: int = Query(14, ge=1, le=90),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.3 F3: 自动入组数据积累埋点 (纯只读, 不写任何数据)。
+
+    5 组指标, 服务 AUTO_JOIN_NON_T0 开启决策 (S1-S4):
+    - pending_review 积压: model_capabilities_log approved=0 的当前堆积 + 近 N 天每周新增
+    - tier 分布: ai_infer 推断结果里 T0-T4 各档占比
+    - 审批负担: 近 N 天人工处理量 (approve/reject 均只置 approved=1, 行级不可区分,
+      只报合并处理量; 近似值 = 处理量, 因 pending 行 approve 后不再回流队列)
+    - 组路由命中: usage_logs 按 group_id 计数, tier:xxx = 组路由请求占比, NULL = 精确路由
+    - infer_tier 盲区: metadata log 行 new_value JSON 里 inferred_tier=null 的占比
+      (parser.py infer_tier 对无法从模型名推断参数规模的返回 None, 这些模型永远
+      无法自动入组, 是 AUTO_JOIN 决策的关键盲区)
+    """
+    cutoff = datetime.utcnow() - timedelta(days=days)
+
+    # --- 1) pending_review 积压 (当前 + 每周新增) ---
+    pending_total = (
+        await session.execute(
+            select(func.count(ModelCapabilitiesLog.id))
+            .where(ModelCapabilitiesLog.approved == 0)
+            .where(ModelCapabilitiesLog.source == "ai_infer")
+        )
+    ).scalar() or 0
+
+    now_utc = datetime.utcnow()
+    week_buckets = {
+        "0-7d": (now_utc - timedelta(days=7), now_utc),
+        "7-14d": (now_utc - timedelta(days=14), now_utc - timedelta(days=7)),
+        "14d+": (datetime(2000, 1, 1), now_utc - timedelta(days=14)),
+    }
+    pending_weekly = []
+    if days >= 7:
+        for label, (start, end) in week_buckets.items():
+            if label == "7-14d" and days < 14:
+                continue
+            cnt = (
+                await session.execute(
+                    select(func.count(ModelCapabilitiesLog.id))
+                    .where(ModelCapabilitiesLog.approved == 0)
+                    .where(ModelCapabilitiesLog.source == "ai_infer")
+                    .where(ModelCapabilitiesLog.created_at >= start)
+                    .where(ModelCapabilitiesLog.created_at < end)
+                )
+            ).scalar() or 0
+            pending_weekly.append({"bucket": label, "count": cnt})
+
+    # --- 2) tier 分布 (ai_infer 行, new_value 是 'T0'-'T4' 的 tier 行) ---
+    tier_rows = (
+        await session.execute(
+            select(ModelCapabilitiesLog.new_value, func.count(ModelCapabilitiesLog.id))
+            .where(ModelCapabilitiesLog.source == "ai_infer")
+            .where(ModelCapabilitiesLog.field_changed == "tier")
+            .group_by(ModelCapabilitiesLog.new_value)
+        )
+    ).all()
+    tier_distribution = {row[0] or "(null)": row[1] for row in tier_rows}
+
+    # --- 3) 审批负担 (处理量; approve/reject 行级同值不可拆分) ---
+    reviewed_count = (
+        await session.execute(
+            select(func.count(ModelCapabilitiesLog.id))
+            .where(ModelCapabilitiesLog.source == "ai_infer")
+            .where(ModelCapabilitiesLog.approved == 1)
+            .where(ModelCapabilitiesLog.created_at >= cutoff)
+        )
+    ).scalar() or 0
+
+    # --- 4) 组路由命中 (usage_logs 按 group_id) ---
+    group_rows = (
+        await session.execute(
+            select(UsageLog.group_id, func.count(UsageLog.id))
+            .where(UsageLog.created_at >= cutoff)
+            .group_by(UsageLog.group_id)
+        )
+    ).all()
+    total_requests = sum(row[1] for row in group_rows)
+    group_routing_items = []
+    grouped_requests = 0
+    for group_id, cnt in sorted(group_rows, key=lambda r: -r[1]):
+        label = group_id or "(精确路由)"
+        if group_id and group_id.startswith("tier:"):
+            grouped_requests += cnt
+        pct = (cnt / total_requests * 100) if total_requests else 0.0
+        group_routing_items.append({"group_id": label, "count": cnt, "pct": round(pct, 1)})
+
+    # --- 5) infer_tier 盲区 (metadata 行 new_value JSON inferred_tier=null) ---
+    meta_rows = (
+        await session.execute(
+            select(ModelCapabilitiesLog.new_value)
+            .where(ModelCapabilitiesLog.source == "ai_infer")
+            .where(ModelCapabilitiesLog.field_changed == "metadata")
+        )
+    ).scalars().all()
+    meta_total = 0
+    meta_tier_null = 0
+    for nv in meta_rows:
+        try:
+            obj = json.loads(nv) if nv else {}
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        meta_total += 1
+        if obj.get("inferred_tier") is None:
+            meta_tier_null += 1
+
+    return {
+        "days": days,
+        "auto_join_enabled": False,  # AUTO_JOIN_NON_T0 当前值, 只读快照 (T0 自动入组始终开启)
+        "pending_review": {
+            "total": pending_total,
+            "weekly": pending_weekly,
+        },
+        "tier_distribution": tier_distribution,
+        "review_burden": {
+            "reviewed_count": reviewed_count,
+            "note": "approve/reject 均置 approved=1, 行级不可区分, 此为合并处理量",
+        },
+        "group_routing": {
+            "total_requests": total_requests,
+            "grouped_requests": grouped_requests,
+            "grouped_pct": round(grouped_requests / total_requests * 100, 1) if total_requests else 0.0,
+            "items": group_routing_items,
+        },
+        "tier_blind_spot": {
+            "metadata_total": meta_total,
+            "tier_null": meta_tier_null,
+            "pct": round(meta_tier_null / meta_total * 100, 1) if meta_total else 0.0,
+        },
     }
 
 

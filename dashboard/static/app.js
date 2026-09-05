@@ -1156,6 +1156,38 @@ document.addEventListener("DOMContentLoaded", () => {
 // (b) 新 loadUsageChart 替代 (渲染 usage-list 表格 + 每日请求柱图)
 let _usageBarChart = null;
 
+// V6.3 F7 图-表联动: 双向 hover 高亮 — 图 hover 高亮表行, 表行 hover 高亮图元素。
+// chart.setActiveElements 为 Chart.js 4.4.0 内置, 纯前端 class 切换, 无新请求。
+function _chartTableLink(chart, tableEl) {
+    if (!chart || !tableEl) return;
+    const rows = tableEl.querySelectorAll('tbody tr');
+    const highlightRow = (idx) => {
+        rows.forEach((r, i) => r.classList.toggle('hl', i === idx));
+    };
+    chart.options.onHover = (evt, elements) => {
+        const idx = elements.length ? elements[0].index : -1;
+        highlightRow(idx);
+        // 离开图表区域时清除表高亮 (elements 为空即未命中任何数据元素)
+        if (idx === -1) chart.setActiveElements([]);
+    };
+    rows.forEach((row, i) => {
+        row.addEventListener('mouseenter', () => {
+            if (i >= chart.data.labels.length) return;
+            chart.setActiveElements([{ datasetIndex: 0, index: i }]);
+            chart.tooltip.setActiveElements([{ datasetIndex: 0, index: i }], {
+                x: (row.getBoundingClientRect().left || 0),
+                y: (row.getBoundingClientRect().top || 0),
+            });
+            chart.update('none');
+        });
+        row.addEventListener('mouseleave', () => {
+            chart.setActiveElements([]);
+            chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+            chart.update('none');
+        });
+    });
+}
+
 async function loadUsageChart() {
     try {
         const resp = await authFetch(`/dashboard/api/usage/summary?days=${fmtDays()}`);
@@ -1201,6 +1233,8 @@ async function loadUsageChart() {
         }
         html += '</tbody></table>';
         list.innerHTML = html;
+        // V6.3 F7: 柱图↔日表双向 hover 联动
+        _chartTableLink(_usageBarChart, list);
     } catch (e) { console.warn("usage chart failed:", e); }
 }
 
@@ -1282,6 +1316,9 @@ async function loadCacheStatsList() {
         }
         if (!html) html = '<div class="empty">暂无 Cache 数据</div>';
         container.innerHTML = html;
+        // V6.3 F7: 环图↔渠道表双向 hover 联动 (表 = container 第一个 table)
+        const chTable = container.querySelector('table');
+        if (chTable) _chartTableLink(_cacheDonutChart, chTable);
     } catch (e) { console.warn("cache stats list failed:", e); }
 }
 
@@ -2211,7 +2248,7 @@ const PAGE_ROUTES = {
     usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadRequests] },
     channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard, loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
     intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard, loadReportsList, loadWeeklyReportLatest] },
-    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadSuggestionsList, loadAccountsCard, loadUserKeys, loadSources] },
+    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadSuggestionsList, loadAccountsCard, loadUserKeys, loadSources, loadAutoJoinMetrics] },
 };
 
 let _currentPage = null;
@@ -2360,4 +2397,82 @@ function closeRequestDrawer() {
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeRequestDrawer();
 });
+
+// ============================================================
+// V6.3 F3 (自动化收口, 2026-09-05): 自动入组观察卡
+// 纯只读埋点展示, 为 AUTO_JOIN_NON_T0 决策积累数据; 不含任何操作按钮
+// ============================================================
+
+async function loadAutoJoinMetrics() {
+    const container = document.getElementById('auto-join-metrics-list');
+    const meta = document.getElementById('aj-metrics-meta');
+    if (!container) return;
+    try {
+        const resp = await authFetch('/dashboard/api/ops/auto-join-metrics?days=14');
+        if (!resp.ok) {
+            container.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
+            return;
+        }
+        const data = await resp.json();
+        if (meta) meta.textContent = '近 ' + data.days + ' 天 · AUTO_JOIN_NON_T0=' + (data.auto_join_enabled ? 'True' : 'False');
+
+        const pr = data.pending_review || {};
+        const gr = data.group_routing || {};
+        const bs = data.tier_blind_spot || {};
+        const rb = data.review_burden || {};
+        const td = data.tier_distribution || {};
+
+        // 积压概览行
+        let html = '<div class="flex-col gap-sm">';
+        html += '<div class="pr-card"><div class="pr-row"><strong>待审积压 (approved=0)</strong>'
+            + '<span class="badge ' + (pr.total > 20 ? 'badge-danger' : 'badge') + '" style="margin-left:auto;">' + fmtNum(pr.total) + '</span></div>';
+        if (pr.weekly && pr.weekly.length) {
+            html += '<div style="font-size:11px;margin-top:6px;color:var(--text-secondary);">'
+                + pr.weekly.map(w => esc(w.bucket) + ': ' + fmtNum(w.count)).join(' · ')
+                + ' (新增按 created_at 归桶)</div>';
+        }
+        html += '</div>';
+
+        // 审批负担 + 盲区
+        html += '<div class="pr-card"><div class="pr-row"><strong>审批负担 (近 ' + data.days + ' 天)</strong>'
+            + '<span class="badge" style="margin-left:auto;">' + fmtNum(rb.reviewed_count) + ' 次处理</span></div>'
+            + '<div style="font-size:11px;margin-top:6px;color:var(--text-secondary);">' + esc(rb.note || '') + '</div></div>';
+
+        html += '<div class="pr-card"><div class="pr-row"><strong title="metadata 行中 inferred_tier=null 占比 — 这些模型无法从模型名推断参数规模, 永远无法自动入组">infer_tier 盲区</strong>'
+            + '<span class="badge ' + (bs.pct > 30 ? 'badge-danger' : 'badge') + '" style="margin-left:auto;">' + fmtPct(bs.pct, bs.metadata_total > 0) + '</span></div>'
+            + '<div style="font-size:11px;margin-top:6px;color:var(--text-secondary);">'
+            + fmtNum(bs.tier_null) + ' / ' + fmtNum(bs.metadata_total) + ' 条 AI 推断缺参数规模依据</div></div>';
+
+        // tier 分布
+        const tierOrder = ['T0', 'T1', 'T2', 'T3', 'T4'];
+        const tierTotal = Object.values(td).reduce((a, b) => a + b, 0);
+        let tierParts = [];
+        for (const t of tierOrder) {
+            if (td[t]) tierParts.push(t + ': ' + fmtNum(td[t]));
+        }
+        if (td['(null)']) tierParts.push('null: ' + fmtNum(td['(null)']));
+        html += '<div class="pr-card"><div class="pr-row"><strong>推断 tier 分布 (ai_infer 全量)</strong>'
+            + '<span class="badge" style="margin-left:auto;">' + fmtNum(tierTotal) + ' 条</span></div>'
+            + '<div style="font-size:11px;margin-top:6px;color:var(--text-secondary);">'
+            + (tierParts.length ? esc(tierParts.join(' · ')) : '暂无 tier 推断记录') + '</div></div>';
+
+        // 组路由命中
+        html += '<div class="pr-card"><div class="pr-row"><strong>组路由命中 (近 ' + data.days + ' 天请求)</strong>'
+            + '<span class="badge" style="margin-left:auto;">' + fmtPct(gr.grouped_pct, gr.total_requests > 0) + '</span></div>'
+            + '<div style="font-size:11px;margin-top:6px;color:var(--text-secondary);">tier: 组请求 '
+            + fmtNum(gr.grouped_requests) + ' / 总 ' + fmtNum(gr.total_requests) + ' (其余为精确模型名路由)</div>';
+        if (gr.items && gr.items.length) {
+            html += '<div style="font-size:11px;margin-top:4px;color:var(--text-secondary);">'
+                + gr.items.slice(0, 6).map(g => esc(g.group_id) + ': ' + fmtNum(g.count) + ' (' + g.pct + '%)').join(' · ')
+                + '</div>';
+        }
+        html += '</div>';
+
+        html += '<div style="font-size:11px;color:var(--text-muted);">观察期 ≥2 周后基于本卡数据决策是否开启 AUTO_JOIN_NON_T0 (S1-S4), 详见 docs/dev/automation-closure-plan.md</div>';
+        html += '</div>';
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
 

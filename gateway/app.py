@@ -21,6 +21,47 @@ from db.init_db import init_db
 logger = logging.getLogger(__name__)
 
 
+async def _check_empty_channels() -> None:
+    """V6.3 F1 (自动化收口路径 B): 首启检测
+
+    channels 或 active accounts 为空 → 网关无法路由任何请求，
+    打 WARN 日志引导两条配置路径：看板加渠道 / manual_import.py。
+    只读检测，不写任何数据；配置后下次启动不再提示。
+    """
+    from sqlalchemy import func, select
+
+    from db.engine import async_session_factory
+    from db.models import Account, Channel
+
+    try:
+        async with async_session_factory() as session:
+            ch_count = (await session.execute(
+                select(func.count()).select_from(Channel)
+            )).scalar() or 0
+            if ch_count == 0:
+                logger.warning(
+                    "【首启引导】当前没有任何渠道配置 — 网关暂不可路由。两种方式配置:\n"
+                    "  1. 看板「账号管理」页添加渠道 (推荐): http://localhost:%s/#/accounts\n"
+                    "  2. 命令行批量导入: python scripts/manual_import.py\n"
+                    "    (配置完成后重启本服务生效)",
+                    settings.port,
+                )
+                return
+            acc_count = (await session.execute(
+                select(func.count()).select_from(Account)
+                .where(Account.status == "active")
+            )).scalar() or 0
+            if acc_count == 0:
+                logger.warning(
+                    "【首启引导】已有 %s 个渠道但均无 active 账号 — 网关暂不可路由。\n"
+                    "  请在看板「账号管理」页为渠道添加账号 (API Key)。",
+                    ch_count,
+                )
+    except Exception as e:
+        # 引导检测失败不影响启动 (init_db 失败会在这里之前抛)
+        logger.warning(f"首启检测跳过: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
@@ -33,6 +74,9 @@ async def lifespan(app: FastAPI):
 
     # 初始化数据库
     await init_db()
+
+    # V6.3 F1: 首启检测 — 渠道/账号全空时给出部署引导 (路径 B, 自动化收口)
+    await _check_empty_channels()
 
     # 加载路由缓存
     from gateway.router import route_engine
