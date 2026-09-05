@@ -6,7 +6,7 @@
 ## 1. 跑测试
 
 ```bash
-# 全部 (666 个 test, V6.x 基线 2026-09-04: 全绿)
+# 全部 (682 个 test, V6.x 基线 2026-09-05: 全绿; 含思考 token 解析 8 例)
 python -m pytest tests/ -q
 
 # 单文件
@@ -22,7 +22,7 @@ python -m pytest tests/ --cov=gateway --cov=intelligence --cov-report=term-missi
 
 pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`），async test 自动运行。
 
-## 2. 现有测试结构（666 个，70 个文件）
+## 2. 现有测试结构（682 个，71 个文件）
 
 > 注：下表为历史版本逐文件明细（数字已甩旧），当前以全量基线为准。
 > V6.x (2026-09-04) 起全量全绿 — 此前 4 个存量 e2e 失败
@@ -72,7 +72,7 @@ pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`）�
 | `test_v487_cooldown_429.py` | 54 | 429 失败链 + cooldown API + stream 429 | V4.8.7 |
 | `test_phase3_5_verification.py` | 4 | 情报采集 → registry/group 闭环验证 | 阶段3-5 |
 
-**总计**：70 个文件 / 666 个 test / ~4 分钟跑通（V6.x 基线全绿; 表内逐文件数字为历史版本快照）
+**总计**：71 个文件 / 682 个 test / ~5 分钟跑通（V6.x 基线 2026-09-05 全绿; 表内逐文件数字为历史版本快照）
 
 ## 3. 写新测试
 

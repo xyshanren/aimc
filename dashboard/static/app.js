@@ -69,25 +69,55 @@ function renderChannels(container) {
             container.innerHTML = '<p class="loading">暂无渠道数据</p>';
             return;
         }
-        let html = '<table><thead><tr><th>渠道</th><th>厂商</th><th>状态</th><th>账号</th><th>优先级</th><th>drop_params</th><th>操作</th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>渠道</th><th>厂商</th><th>状态</th><th>账号</th><th>优先级</th><th>思考剥离</th><th>drop_params</th><th>操作</th></tr></thead><tbody>';
         data.forEach(ch => {
             const statusClass = `status-${esc(ch.status)}`;
             const dp = ch.drop_params ? esc(ch.drop_params) : '<span class="text-muted">—</span>';
+            // V6.x: disable_thinking_pass_through — 1=请求侧剥离 thinking 字段 (默认开)
+            const thinkingOn = ch.disable_thinking_pass_through !== 0 && ch.disable_thinking_pass_through !== false;
+            const thinkingCell = `<button class="btn-tiny ${thinkingOn ? '' : 'btn-ghost'}" onclick="toggleChannelThinking(${esc(ch.id)}, ${thinkingOn ? 0 : 1})">${thinkingOn ? '开' : '关'}</button>`;
             html += `<tr data-channel-id="${esc(ch.id)}">
                 <td>${esc(ch.name)}</td>
                 <td>${esc(ch.provider)}</td>
                 <td class="${statusClass}">${esc(ch.status)}</td>
                 <td>${esc(ch.active_accounts)}/${esc(ch.accounts)}</td>
                 <td>${esc(ch.priority)}</td>
+                <td>${thinkingCell}</td>
                 <td class="mono" style="font-size:11px;">${dp}</td>
                 <td><button class="btn-tiny" onclick="editChannelDropParams(${esc(ch.id)}, ${JSON.stringify(ch.drop_params || '').replace(/"/g, '&quot;')})">编辑</button></td>
             </tr>`;
         });
         html += '</tbody></table>';
-        html += '<div class="text-muted" style="margin-top:var(--space-xs);font-size:11px;">drop_params: 逗号分隔的需剥离参数 (如 reasoning_effort,max_tokens); 留空=全透传; messages/model/stream 永远保留</div>';
+        html += '<div class="text-muted" style="margin-top:var(--space-xs);font-size:11px;">思考剥离: 关=透传客户端 thinking 参数给上游; drop_params: 逗号分隔的需剥离参数 (如 reasoning_effort,max_tokens); 留空=全透传; messages/model/stream 永远保留</div>';
         container.innerHTML = html;
     } catch (e) {
         // 非 JSON 响应，保持原样
+    }
+}
+
+// V6.x: 思考参数剥离开关 (disable_thinking_pass_through 0/1 切换)
+async function toggleChannelThinking(channelId, newVal) {
+    try {
+        const resp = await authFetch(`/dashboard/api/channels/${channelId}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({disable_thinking_pass_through: newVal}),
+        });
+        const result = await resp.json();
+        if (result.ok) {
+            // 刷新渠道列表
+            const list = document.getElementById('channels-list');
+            if (list) {
+                authFetch('/dashboard/api/channels').then(r => r.text()).then(t => {
+                    list.textContent = t;
+                    renderChannels(list);
+                });
+            }
+        } else {
+            alert('保存失败: ' + (result.detail || JSON.stringify(result)));
+        }
+    } catch (e) {
+        alert('保存失败: ' + e.message);
     }
 }
 
@@ -1153,9 +1183,10 @@ async function loadUsageChart() {
                 }
             });
         }
-        let html = '<table><thead><tr><th>日期</th><th>请求数</th><th class="mono">Input</th><th class="mono">Output</th><th class="mono">平均延迟</th></tr></thead><tbody>';
+        // V6.x: 思考列 = reasoning_tokens 合计 (NULL 行不参与 SUM, 0=上游未返回)
+        let html = '<table><thead><tr><th>日期</th><th>请求数</th><th class="mono">Input</th><th class="mono">Output</th><th class="mono">思考</th><th class="mono">平均延迟</th></tr></thead><tbody>';
         for (const r of data) {
-            html += `<tr><td>${esc(r.date || '—')}</td><td>${r.request_count || 0}</td><td class="mono">${fmtTokens(r.total_input_tokens || 0)}</td><td class="mono">${fmtTokens(r.total_output_tokens || 0)}</td><td class="mono">${r.avg_latency_ms ? fmtLatency(r.avg_latency_ms) : '—'}</td></tr>`;
+            html += `<tr><td>${esc(r.date || '—')}</td><td>${r.request_count || 0}</td><td class="mono">${fmtTokens(r.total_input_tokens || 0)}</td><td class="mono">${fmtTokens(r.total_output_tokens || 0)}</td><td class="mono">${r.total_reasoning_tokens ? fmtTokens(r.total_reasoning_tokens) : '—'}</td><td class="mono">${r.avg_latency_ms ? fmtLatency(r.avg_latency_ms) : '—'}</td></tr>`;
         }
         html += '</tbody></table>';
         list.innerHTML = html;
@@ -1989,7 +2020,7 @@ function renderCostTable(dim, userKeyMap) {
     const isUserTab = _costTab === 'user';
     let html = '<div class="scroll-y-300"><table><thead><tr>'
         + '<th>' + _costKeyLabel(key) + '</th>'
-        + (isUserTab ? '<th>Input</th><th>Output</th>' : '')
+        + (isUserTab ? '<th>Input</th><th>Output</th><th' + mdTitle('reasoning') + '>思考</th>' : '')
         + '<th' + mdTitle('requests') + '>请求</th><th' + mdTitle('tokens') + '>Token</th>'
         + '<th' + mdTitle('paid') + '>实付</th><th' + mdTitle('listPrice') + '>官方标价</th>'
         + '<th' + mdTitle('listSaved') + '>标价节省</th><th' + mdTitle('coverage') + '>标价覆盖率</th>'
@@ -2015,6 +2046,7 @@ function renderCostTable(dim, userKeyMap) {
             + (isUserTab
                 ? '<td>' + fmtNum(it.input_tokens || 0) + '</td>'
                   + '<td>' + fmtNum(it.output_tokens || 0) + '</td>'
+                  + '<td class="mono">' + (it.reasoning_tokens ? fmtNum(it.reasoning_tokens) : '<span class="text-muted">—</span>') + '</td>'
                 : '')
             + '<td>' + fmtNum(it.request_count) + '</td>'
             + '<td>' + fmtNum((it.input_tokens || 0) + (it.output_tokens || 0)) + '</td>'
@@ -2026,7 +2058,7 @@ function renderCostTable(dim, userKeyMap) {
 
         if (expandable) {
             html += '<tr class="key-detail-row" style="display:none;">'
-                + '<td colspan="' + (isUserTab ? 9 : 7) + '">'
+                + '<td colspan="' + (isUserTab ? 10 : 7) + '">'
                 + '<table class="sub-table"><thead><tr>'
                 + '<th>Key Label</th><th>请求</th><th>Input</th><th>Output</th><th>Token</th><th>实付</th>'
                 + '</tr></thead><tbody>';
@@ -2036,7 +2068,7 @@ function renderCostTable(dim, userKeyMap) {
                     + '<td>' + fmtNum(k.request_count) + '</td>'
                     + '<td>' + fmtNum(k.input_tokens) + '</td>'
                     + '<td>' + fmtNum(k.output_tokens) + '</td>'
-                    + '<td>' + fmtNum(k.total_tokens) + '</td>'
+                    + '<td>' + fmtNum(k.total_tokens) + (k.reasoning_tokens ? ' <span class="text-muted">🧠' + fmtNum(k.reasoning_tokens) + '</span>' : '') + '</td>'
                     + '<td>' + _costFmt(k.total_cost) + '</td>'
                     + '</tr>';
             }
@@ -2345,7 +2377,7 @@ async function loadRequests() {
                 + '<td>' + esc(r.key_label || '—') + '</td>'
                 + '<td><span class="status-pill ' + cls + '">' + esc(String(r.status_code)) + '</span></td>'
                 + '<td class="mono">' + fmtLatency(r.latency_ms) + '</td>'
-                + '<td class="mono">' + fmtTokens((r.input_tokens || 0) + (r.output_tokens || 0)) + '</td>'
+                + '<td class="mono">' + fmtTokens((r.input_tokens || 0) + (r.output_tokens || 0)) + (r.reasoning_tokens ? ' <span class="text-muted" title="其中思考 token (上游返回)">🧠' + fmtTokens(r.reasoning_tokens) + '</span>' : '') + '</td>'
                 + '<td class="mono">' + fmtCNY(r.cost_yuan) + '</td>'
                 + '<td><button class="btn-tiny" onclick="openRequestDrawer(' + r.id + ')">详情</button></td>'
                 + '</tr>';

@@ -228,6 +228,8 @@ async def get_channels_status(session: AsyncSession = Depends(get_session)):
             "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: 0/1
             "drop_params": ch.drop_params,  # P2-B: 需剥离的顶层参数 (JSON list / 逗号分隔)
             "auto_drop_params": ch.auto_drop_params,  # V4.8.7: 上游 400 自动学习
+            # V6.x: 思考参数剥离开关 (1=请求侧剥离 thinking 字段, 默认开)
+            "disable_thinking_pass_through": ch.disable_thinking_pass_through,
             "accounts": len(ch.accounts),
             "active_accounts": len([a for a in ch.accounts if a.status == "active"]),
         }
@@ -273,11 +275,13 @@ async def update_channel(channel_id: int, request: Request,
         "priority": ch.priority,
         "drop_params": ch.drop_params,
         "auto_drop_params": ch.auto_drop_params,
+        "disable_thinking_pass_through": ch.disable_thinking_pass_through,
     }
 
     # 更新字段
     allowed_fields = {"base_url", "api_base", "api_style", "supports_prompt_cache",
-                      "status", "priority", "drop_params", "auto_drop_params"}
+                      "status", "priority", "drop_params", "auto_drop_params",
+                      "disable_thinking_pass_through"}
     for field, value in body.items():
         if field in allowed_fields:
             setattr(ch, field, value)
@@ -299,6 +303,7 @@ async def update_channel(channel_id: int, request: Request,
         "priority": ch.priority,
         "drop_params": ch.drop_params,
         "auto_drop_params": ch.auto_drop_params,
+        "disable_thinking_pass_through": ch.disable_thinking_pass_through,
     }
     return {"ok": True, "before": before, "after": after}
 
@@ -359,6 +364,7 @@ async def get_usage_summary(days: int = 7, session: AsyncSession = Depends(get_s
             func.count(UsageLog.id).label("request_count"),
             func.sum(UsageLog.input_tokens).label("total_input_tokens"),
             func.sum(UsageLog.output_tokens).label("total_output_tokens"),
+            func.sum(UsageLog.reasoning_tokens).label("total_reasoning_tokens"),
             func.avg(UsageLog.latency_ms).label("avg_latency_ms"),
         )
         .group_by(func.date(UsageLog.created_at))
@@ -374,6 +380,8 @@ async def get_usage_summary(days: int = 7, session: AsyncSession = Depends(get_s
             "request_count": row.request_count,
             "total_input_tokens": row.total_input_tokens or 0,
             "total_output_tokens": row.total_output_tokens or 0,
+            # V6.x: 思考 token (关思考评估观察期指标, NULL 行不参与 SUM)
+            "total_reasoning_tokens": row.total_reasoning_tokens or 0,
             "avg_latency_ms": round(row.avg_latency_ms or 0, 1),
         }
         for row in rows
@@ -1891,6 +1899,7 @@ async def list_requests(
                 "input_tokens": r.input_tokens or 0,
                 "output_tokens": r.output_tokens or 0,
                 "cached_tokens": r.cached_input_tokens or 0,
+                "reasoning_tokens": r.reasoning_tokens,  # V6.x: None=上游未返回
                 "cost_yuan": r.cost_estimate,
                 "list_cost_yuan": r.list_cost_estimate,
                 "error_code": r.error_code,
@@ -2829,6 +2838,7 @@ async def get_per_user_usage(
             func.coalesce(func.count(UsageLog.id), 0).label("request_count"),
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(UsageLog.reasoning_tokens), 0).label("reasoning_tokens"),
             func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("total_cost"),
         )
         .outerjoin(User, UsageLog.caller_id == User.id)
@@ -2849,6 +2859,7 @@ async def get_per_user_usage(
             func.coalesce(func.count(UsageLog.id), 0).label("request_count"),
             func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(UsageLog.reasoning_tokens), 0).label("reasoning_tokens"),
             func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("total_cost"),
         )
         .outerjoin(ApiKey, UsageLog.key_id == ApiKey.id)
@@ -2870,6 +2881,7 @@ async def get_per_user_usage(
             "request_count": row.request_count,
             "input_tokens": int(row.input_tokens or 0),
             "output_tokens": int(row.output_tokens or 0),
+            "reasoning_tokens": int(row.reasoning_tokens or 0),  # V6.x 观察期指标
             "total_tokens": int((row.input_tokens or 0) + (row.output_tokens or 0)),
             "total_cost": round(float(row.total_cost or 0), 4),
         })
@@ -2883,6 +2895,7 @@ async def get_per_user_usage(
             "request_count": row.request_count,
             "input_tokens": int(row.input_tokens or 0),
             "output_tokens": int(row.output_tokens or 0),
+            "reasoning_tokens": int(row.reasoning_tokens or 0),  # V6.x 观察期指标
             "total_tokens": int((row.input_tokens or 0) + (row.output_tokens or 0)),
             "total_cost": round(float(row.total_cost or 0), 4),
             "keys": key_map.get(row.caller_id, []),

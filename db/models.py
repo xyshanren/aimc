@@ -371,6 +371,13 @@ class UsageLog(Base):
         Integer, nullable=True,
         comment="Anthropic-style: 缓存写入 token 数 (usage.cache_creation_input_tokens)",
     )
+    # V6.x (2026-09-05): 思考 token 计量 — 关思考评估观察期数据源
+    # OpenAI 风格 usage.completion_tokens_details.reasoning_tokens
+    # NULL = 上游未返回 (非思考模型 / Anthropic 风格 / stream 无 usage)
+    reasoning_tokens = Column(
+        Integer, nullable=True,
+        comment="思考 token 数 (usage.completion_tokens_details.reasoning_tokens), NULL=上游未返回",
+    )
     # P3 fix (2026-08-21): default 从 func.now() (SQLite CURRENT_TIMESTAMP=UTC) 改为
     # Python 侧本地时间 — 跟所有读取方一致 (quota.py / dashboard/routes.py / 周报
     # 脚本全用本地 datetime.now() 做窗口过滤)。之前 UTC 存储 + 本地读取导致

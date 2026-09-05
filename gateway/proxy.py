@@ -916,6 +916,23 @@ def _resolve_actual_model(channel: dict, requested_model: str, fallback_model: s
     return channel.get("_channel_model") or requested_model or fallback_model or ""
 
 
+def _parse_reasoning_tokens(usage: dict):
+    """V6.x: 从 usage dict 解析思考 token (OpenAI 风格)
+
+    来源: usage.completion_tokens_details.reasoning_tokens
+    (kimi/glm/deepseek 等思考型模型按此风格返回; Anthropic 风格无此字段)
+    Returns: int 或 None (上游未返回)
+    """
+    if not isinstance(usage, dict):
+        return None
+    completion_details = usage.get("completion_tokens_details")
+    if isinstance(completion_details, dict):
+        v = completion_details.get("reasoning_tokens")
+        if isinstance(v, int):
+            return v
+    return None
+
+
 def _parse_cache_tokens(usage: dict):
     """从 usage dict 解析 cache token (OpenAI + Anthropic 风格)
 
@@ -971,6 +988,9 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
             _parse_cache_tokens(usage)
         )
 
+        # V6.x: 解析思考 token (观察关思考评估, 见 docs/thinking-control-plan.md)
+        reasoning_tokens = _parse_reasoning_tokens(usage)
+
         # V4.8.5: 估算单次请求费用 (激活成本告警 / 周报 / 看板省钱量化)
         cost_estimate = _estimate_cost(
             channel, actual_model,
@@ -1003,6 +1023,7 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
                     cached_input_tokens=cached_input_tokens,
                     cache_read_input_tokens=cache_read_input_tokens,
                     cache_creation_input_tokens=cache_creation_input_tokens,
+                    reasoning_tokens=reasoning_tokens,
                     caller_id=caller_id,
                     caller_key_id=caller_key_id,
                     cost_estimate=cost_estimate,
@@ -1041,6 +1062,7 @@ async def _write_usage_log(
     cached_input_tokens=None,
     cache_read_input_tokens=None,
     cache_creation_input_tokens=None,
+    reasoning_tokens: Optional[int] = None,
     caller_id: int | None = None,
     caller_key_id: int | None = None,
     cost_estimate: Optional[float] = None,
@@ -1089,6 +1111,8 @@ async def _write_usage_log(
                 cached_input_tokens=cached_input_tokens,
                 cache_read_input_tokens=cache_read_input_tokens,
                 cache_creation_input_tokens=cache_creation_input_tokens,
+                # V6.x: 思考 token (观察关思考评估)
+                reasoning_tokens=reasoning_tokens,
                 # V4.8.5: 估算费用 (激活成本告警 / 周报 / 看板省钱量化)
                 cost_estimate=cost_estimate,
                 # V6.0 Phase 2: 官方标价口径 (成本审计, 节省 = 标价 - 实付)
@@ -1243,6 +1267,9 @@ def _schedule_stream_usage_log(
             _parse_cache_tokens(usage)
         )
 
+        # V6.x: 解析思考 token (观察关思考评估, 见 docs/thinking-control-plan.md)
+        reasoning_tokens = _parse_reasoning_tokens(usage)
+
         # OpenAI: prompt_tokens / completion_tokens
         # Anthropic (message_delta): input_tokens / output_tokens (注: 流式可能只有 output_tokens)
         input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
@@ -1275,6 +1302,7 @@ def _schedule_stream_usage_log(
                     cached_input_tokens=cached_input_tokens,
                     cache_read_input_tokens=cache_read_input_tokens,
                     cache_creation_input_tokens=cache_creation_input_tokens,
+                    reasoning_tokens=reasoning_tokens,
                     caller_id=caller_id,
                     caller_key_id=caller_key_id,
                     cost_estimate=cost_estimate,

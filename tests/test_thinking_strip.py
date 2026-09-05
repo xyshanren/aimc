@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 import json
 
-from gateway.proxy import _strip_thinking_fields
+from gateway.proxy import _parse_reasoning_tokens, _strip_thinking_fields
 
 
 class TestStripThinking:
@@ -88,3 +88,43 @@ class TestStripThinking:
         assert "thinking" not in out
         # messages 内部的 thinking 保留 (有些 agent 把 reasoning 放在 message)
         assert out["messages"][0]["thinking"] == "old"
+
+
+class TestParseReasoningTokens:
+    """V6.x: 思考 token 解析 — usage.completion_tokens_details.reasoning_tokens"""
+
+    def test_openai_style(self):
+        usage = {"completion_tokens_details": {"reasoning_tokens": 123}}
+        assert _parse_reasoning_tokens(usage) == 123
+
+    def test_openai_style_zero(self):
+        usage = {"completion_tokens_details": {"reasoning_tokens": 0}}
+        assert _parse_reasoning_tokens(usage) == 0
+
+    def test_no_details(self):
+        assert _parse_reasoning_tokens({"completion_tokens": 50}) is None
+
+    def test_none_usage(self):
+        assert _parse_reasoning_tokens(None) is None
+
+    def test_empty_usage(self):
+        assert _parse_reasoning_tokens({}) is None
+
+    def test_non_int_value(self):
+        # 上游返回异常类型 (str/None) → 不计
+        assert _parse_reasoning_tokens(
+            {"completion_tokens_details": {"reasoning_tokens": "abc"}}
+        ) is None
+        assert _parse_reasoning_tokens(
+            {"completion_tokens_details": {"reasoning_tokens": None}}
+        ) is None
+
+    def test_string_value_rejected(self):
+        # 严格解析: 非 int 类型 (含数字字符串) 不计, 与 cache token 解析风格一致
+        assert _parse_reasoning_tokens(
+            {"completion_tokens_details": {"reasoning_tokens": "42"}}
+        ) is None
+
+    def test_non_dict_usage(self):
+        assert _parse_reasoning_tokens("not-a-dict") is None
+        assert _parse_reasoning_tokens(123) is None

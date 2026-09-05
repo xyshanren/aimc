@@ -935,6 +935,13 @@ details.accounts-form-details[open] > summary::before {
 }
 .btn-tiny:hover { border-color: var(--text-muted); }
 
+/* V6.x: 幽灵按钮 — 关态开关 (如渠道思考剥离=关), 与开态 btn-tiny 形成视觉对比 */
+.btn-ghost {
+    background: transparent;
+    color: var(--text-muted);
+    border-color: var(--border-muted, var(--border-default));
+}
+
 .btn-approve {
     padding: 3px 10px;
     font-size: 11px;
