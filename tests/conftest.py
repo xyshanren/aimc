@@ -77,7 +77,13 @@ def _is_project_module(mod) -> bool:
     if not f:
         return False
     try:
-        return Path(f).resolve().is_relative_to(ROOT)
+        p = Path(f).resolve()
+        # VM 的 .venv 建在项目根内 — site-packages 里的第三方库 (_pytest/
+        # pytest_asyncio 等) 会被误判为项目模块而在 test 后被删, 导致第二个
+        # test 起 Session scope fixture 解析失败。site-packages 一律不算。
+        if "site-packages" in p.parts:
+            return False
+        return p.is_relative_to(ROOT)
     except (OSError, ValueError):
         return False
 
