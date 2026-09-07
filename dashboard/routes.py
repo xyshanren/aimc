@@ -1923,6 +1923,15 @@ async def list_requests(
         )).all()
         ch_name_map = {r.id: r.name for r in ch_rows}
 
+    # 反向 join account name (一渠道多账号: 该请求走了哪个上游账号)
+    acc_ids = {r.account_id for r in rows if r.account_id is not None}
+    acc_name_map: dict[int, str] = {}
+    if acc_ids:
+        acc_rows = (await session.execute(
+            select(Account.id, Account.account_name).where(Account.id.in_(acc_ids))
+        )).all()
+        acc_name_map = {r.id: r.account_name for r in acc_rows}
+
     # key 显示名: label (缺 label 用 prefix); key 身份 = 用户 + label 两层,
     # 同名 label 归属不同用户时追加 username 消歧 (key 表很小, 全表查一次)
     key_rows = (await session.execute(
@@ -1956,6 +1965,7 @@ async def list_requests(
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "model": r.model,
                 "channel_name": ch_name_map.get(r.channel_id),
+                "account_name": acc_name_map.get(r.account_id),  # 一渠道多账号: 上游服务账号
                 "group_id": r.group_id,
                 "key_label": key_label_map.get(r.key_id) if r.key_id else None,
                 "status_code": r.status_code,
@@ -1989,10 +1999,19 @@ async def get_request_transcript(req_id: int, session: AsyncSession = Depends(ge
     )).scalar_one_or_none()
     if log is None:
         raise HTTPException(status_code=404, detail="usage_log not found")
+
+    # 上游服务账号 (一渠道多账号; legacy 行 account_id 为 NULL)
+    account_name = None
+    if log.account_id is not None:
+        account_name = (await session.execute(
+            select(Account.account_name).where(Account.id == log.account_id)
+        )).scalar_one_or_none()
+
     if log.created_at is None or not log.model:
         return {
             "usage_log_id": req_id, "matched": False, "truncated": False,
             "request_body": None, "response_body": None, "transcript_created_at": None,
+            "account_name": account_name,
         }
 
     win_start = log.created_at - timedelta(seconds=5)
@@ -2021,6 +2040,7 @@ async def get_request_transcript(req_id: int, session: AsyncSession = Depends(ge
         "request_body": req_body,
         "response_body": resp_body,
         "truncated": truncated,
+        "account_name": account_name,
     }
 
 

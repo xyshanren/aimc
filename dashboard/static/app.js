@@ -2391,7 +2391,9 @@ async function loadRequests() {
             html += '<tr>'
                 + '<td class="mono" style="font-size:11px;">' + esc((r.created_at || '').replace('T', ' ').slice(5, 19)) + '</td>'
                 + '<td><code class="text-mono">' + esc(r.model || '—') + '</code></td>'
-                + '<td>' + esc(r.channel_name || '—') + '</td>'
+                + '<td>' + esc(r.channel_name || '—')
+                + (r.account_name ? ' <span class="text-muted" style="font-size:11px;" title="上游服务账号">· ' + esc(r.account_name) + '</span>' : '')
+                + '</td>'
                 + '<td>' + esc(r.key_label || '—') + '</td>'
                 + '<td><span class="status-pill ' + cls + '">' + esc(String(r.status_code)) + '</span></td>'
                 + '<td class="mono">' + fmtLatency(r.latency_ms) + '</td>'
@@ -2427,6 +2429,7 @@ async function openRequestDrawer(id) {
             return;
         }
         if (meta) meta.textContent = '#' + id
+            + (data.account_name ? ' · 账号 ' + data.account_name : '')
             + (data.truncated ? ' · 已截断 (超 256KB)' : '')
             + (data.transcript_created_at ? ' · 转录时间 ' + data.transcript_created_at.replace('T', ' ').slice(0, 19) : '');
         if (reqPre) reqPre.textContent = data.request_body || '(无)';

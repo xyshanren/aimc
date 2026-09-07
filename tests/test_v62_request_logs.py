@@ -73,9 +73,24 @@ async def _reset_db():
     conn = sqlite3.connect(config.settings.db_path)
     conn.execute("DELETE FROM usage_logs")
     conn.execute("DELETE FROM request_transcripts")
+    conn.execute("DELETE FROM accounts")
     conn.execute("DELETE FROM channels")
     conn.commit()
     conn.close()
+
+
+async def _seed_account(factory, channel_id, name="sensenova_01"):
+    """原生 SQL 种子: accounts 表只需 channel_id + account_name + api_key (NOT NULL)"""
+    from sqlalchemy import text
+
+    async with factory() as session:
+        result = await session.execute(
+            text("INSERT INTO accounts (channel_id, account_name, api_key) "
+                 "VALUES (:c, :n, '')"),
+            {"c": channel_id, "n": name},
+        )
+        await session.commit()
+        return result.lastrowid
 
 
 async def _seed_channel(factory, name="glm_bigmodel"):
@@ -116,13 +131,14 @@ async def _seed_api_key(factory, label="rag", key_prefix="aimc-lV2"):
 
 
 async def _seed_log(factory, model="glm-5.3-flash", channel_id=None, key_id=None,
-                    status_code=200, created_at=None, cached=0):
+                    status_code=200, created_at=None, cached=0, account_id=None):
     from db.models import UsageLog
 
     async with factory() as session:
         log = UsageLog(
             model=model,
             channel_id=channel_id,
+            account_id=account_id,
             key_id=key_id,
             input_tokens=1000,
             output_tokens=500,
@@ -170,11 +186,13 @@ def test_requests_list_filters_and_pagination():
         await _reset_db()
         ch_id = await _seed_channel(async_session_factory)
         key_id = await _seed_api_key(async_session_factory, label="rag")
+        acc_id = await _seed_account(async_session_factory, ch_id, name="sensenova_01")
         now = datetime.now()
         # 2 条 7 天内 (1 ok 1 error) + 1 条 10 天前 (应被 days=7 过滤)
         id_ok = await _seed_log(async_session_factory, "glm-5.3-flash",
                                 channel_id=ch_id, key_id=key_id,
-                                status_code=200, created_at=now - timedelta(hours=1))
+                                status_code=200, created_at=now - timedelta(hours=1),
+                                account_id=acc_id)
         await _seed_log(async_session_factory, "deepseek-v4-flash",
                         channel_id=ch_id, status_code=500,
                         created_at=now - timedelta(hours=2))
@@ -194,6 +212,9 @@ def test_requests_list_filters_and_pagination():
     # 时间倒序: 最新的在前
     assert all_data["items"][0]["id"] == id_ok
     assert all_data["items"][0]["channel_name"] == "glm_bigmodel"
+    # 一渠道多账号: account_id 反查 account_name; NULL 行显示 None (前端渲染 '—')
+    assert all_data["items"][0]["account_name"] == "sensenova_01"
+    assert all_data["items"][1]["account_name"] is None
     assert all_data["items"][0]["key_label"] == "rag"  # key label 反查
     # 未带 key_id 的行 → key_label None
     assert all_data["items"][1]["key_label"] is None
@@ -271,9 +292,11 @@ def test_transcript_matched_by_model_and_window():
 
     async def _run():
         await _reset_db()
+        ch_id = await _seed_channel(async_session_factory)
+        acc_id = await _seed_account(async_session_factory, ch_id, name="sensenova_02")
         now = datetime.now()
         log_id = await _seed_log(async_session_factory, "glm-5.3-flash", key_id=3,
-                                 created_at=now)
+                                 created_at=now, channel_id=ch_id, account_id=acc_id)
         # 干扰项: 同 model 但 30 分钟前 (窗外)
         await _seed_transcript(async_session_factory, "glm-5.3-flash", key_id=3,
                                request_body="OLD", response_body="OLD",
@@ -293,6 +316,8 @@ def test_transcript_matched_by_model_and_window():
     assert data["request_body"] == '{"prompt":"hi"}'
     assert data["response_body"] == '{"answer":"yo"}'
     assert data["truncated"] is False
+    # 详情抽屉同源: transcript 端点也回 account_name
+    assert data["account_name"] == "sensenova_02"
 
 
 def test_transcript_no_match_returns_matched_false():
@@ -313,6 +338,8 @@ def test_transcript_no_match_returns_matched_false():
     data = asyncio.run(_run())
     assert data["matched"] is False
     assert data["request_body"] is None
+    # legacy 行 account_id 为 NULL → account_name 也是 None
+    assert data["account_name"] is None
 
 
 def test_transcript_truncates_oversize_body():
