@@ -41,7 +41,7 @@ cp .env.example .env
 # 编辑 .env 填入 API Key
 
 # 3. 启动
-python scripts/manual_import.py    # 录入渠道
+python scripts/manual_import.py    # 录入渠道 (可选, V6.3 起空渠道仅 WARN 引导, 也可启动后 Dashboard 加)
 python main.py                       # 启动网关 (默认 :8080)
 
 # 4. 使用（OpenAI SDK）
@@ -64,10 +64,10 @@ response = client.chat.completions.create(
 aimc/
 ├── gateway/                # 网关核心 (router / proxy / quota / cooldown)
 ├── intelligence/           # 情报采集 (scheduler / sources / analytics)
-├── db/                     # 数据库层 (含 12 个 migration)
-├── dashboard/              # Dashboard 后端 (FastAPI routes) + 前端 (htmx + chart.js)
+├── db/                     # 数据库层 (含 21 个 migration)
+├── dashboard/              # Dashboard 后端 (FastAPI routes) + 前端 (原生 JS + Chart.js)
 ├── scripts/                # 运维脚本 (sync_prices / apply_suggestions / weekly_report)
-├── tests/                  # 666 个测试 (pytest, ~5min, 全绿)
+├── tests/                  # 694 个测试 (pytest, ~5min, 全绿)
 └── docs/                   # 完整文档 (见 docs/index.md)
 ```
 
@@ -79,7 +79,7 @@ aimc/
 | 数据库 | SQLite (WAL) + SQLAlchemy 2.0 |
 | 调度 | APScheduler |
 | 爬虫 | Playwright (async) |
-| Dashboard | htmx + Chart.js |
+| Dashboard | 原生 JS + Chart.js |
 | 测试 | pytest + pytest-asyncio |
 
 ## 最近变更（2026-08-16~25）
@@ -102,6 +102,10 @@ aimc/
 
 更早的 21 commit 架构整改（2026-08-14~15）见 [docs/dev/post-merge-fixes.md](docs/dev/post-merge-fixes.md)，
 路线图见 [docs/dev/next-step-plan.md](docs/dev/next-step-plan.md)。
+
+**V5.0 ~ V6.3.1 之后的变更**（2026-08-27 起：模型组分级 vision-light、标价双轨成本审计、
+V6.1 agent 契约 + 统一 CLI、qwen 命名规范化、思考 token 计量、看板 Phase3 重排 + 指标统一、
+V6.3 自动化收口、V6.3.1 冷却 badge）逐项见 [docs/index.md](docs/index.md) 项目状态区。
 
 ## 许可证
 

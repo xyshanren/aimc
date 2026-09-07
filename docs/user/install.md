@@ -53,9 +53,9 @@ DEEPSEEK_API_KEY=sk-xxx                   # DeepSeek 官方 (可选)
 ```bash
 # 5.1 启动网关
 python main.py
-# 或 systemd (推荐生产):
-# sudo systemctl --user enable aimc
-# sudo systemctl --user start aimc
+# 或 systemd (推荐生产, 不加 sudo; 见 ops/deploy.md):
+# systemctl --user enable aimc
+# systemctl --user start aimc
 ```
 
 启动后默认监听 `0.0.0.0:8080`。健康检查：

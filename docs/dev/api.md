@@ -33,7 +33,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 **Model 名**：
 - 具体 model：`deepseek-v4-pro` / `qwen3-32b` / `glm-5.2` 等
 - 模型组：`tier:flagship` / `tier:balanced` / `tier:vision` / `scene:code` 等
-- 本地 model：见 [user/setup.md](../user/setup.md) 的本地模型接入
+- 本地 model：本地服务（Ollama / vLLM / LM Studio / llama.cpp）接入见 `.env.example`
+  的「本地模型服务」段（base_url 覆盖 + `scripts/seed_local_channel.py`）
 
 **响应头**（AIMC 加）：
 - `X-AIMC-Actual-Model`: 实际命中的 model
@@ -111,7 +112,7 @@ curl http://localhost:8080/dashboard/api/data-freshness \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
-返回 ~36 个 APScheduler job 的健康状态（`last_success_at` / `health`: healthy/warning/stale/unknown）。
+返回 ~41 个 APScheduler job 的健康状态（`last_success_at` / `health`: healthy/warning/stale/unknown）。
 
 ### GET /dashboard/api/suggestions?status=pending
 

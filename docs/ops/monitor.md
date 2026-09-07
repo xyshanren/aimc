@@ -5,7 +5,7 @@
 
 ## 1. 数据新鲜度（job_health）
 
-Dashboard "数据新鲜度" 卡片显示 ~36 个 APScheduler job 的健康度。
+Dashboard "数据新鲜度" 卡片显示 ~41 个 APScheduler job 的健康度。
 
 ### 健康度等级
 
@@ -122,7 +122,7 @@ AIMC_SERVERCHAN_KEY=...             # Server酱
 | 症状 | 检查 |
 |------|------|
 | 某个 source 一直 🔴 | 看 `intelligence/sources/<source>.py` + 手动跑 |
-| 限额接近 100% | 加账号 或 在 Dashboard 限额管理调 |
+| 限额接近 100% | 加账号 或 在 Dashboard 运维页「账号管理」卡（限额预警）查看后调 `account_quotas` |
 | 上游 429 频繁 | `journalctl \| grep 429 \| tail -50` 看是哪个渠道 |
 | 数据新鲜度全 🟡 | 看 `intelligence/scheduler.py` 是否启动 + db 可写 |
 | 周报没收到 Bark | `.env AIMC_BARK_KEY` 对吗 / journal 看 `alerter` 模块 |

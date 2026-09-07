@@ -5,7 +5,7 @@
 
 ## 1. 当前 migration 总览
 
-AIMC 当前有 **20 个 migration 脚本**（`db/migrations/`）：
+AIMC 当前有 **21 个 migration 脚本**（`db/migrations/`）：
 
 ```
 2026_07_xx  P0-P0.1  (历史)
@@ -161,7 +161,7 @@ sqlite3 data/aimc.db "SELECT dimension, COUNT(*) FROM account_quotas GROUP BY di
 
 # 5. 测试套件
 python -m pytest tests/ -v | tail -3
-# 期望: 547 passed
+# 期望: 694 passed
 
 # 6. e2e
 KEY=$(grep ^AIMC_API_KEY= .env | cut -d= -f2)
@@ -279,4 +279,4 @@ if __name__ == "__main__":
 | 迁移报错 "duplicate column" | 列已存在, 检查 `pragma_table_info` |
 | 迁移后 test 挂 | `pytest tests/ -v` 看具体哪个; migration 没写完 |
 | 迁移后服务启动报错 | `journalctl --user -u aimc -n 30` 看 traceback (可能是 ORM 列对不上) |
-| 旧 db 升级 | 跑 12 个 migration; 备份必须先做 |
+| 旧 db 升级 | 跑 21 个 migration; 备份必须先做 |

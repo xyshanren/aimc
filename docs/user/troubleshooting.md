@@ -79,7 +79,7 @@ sqlite3 data/aimc.db "
 
 # 3. 等 cooldown (60s) 或加账号 / 调限额
 python scripts/seed_account_quotas.py  # 重设
-# 或: dashboard "限额管理"
+# 或: dashboard 运维页「账号管理」卡（限额预警展示）
 ```
 
 ### 症状：429 "已达到 Token Plan 用量上限"（上游）
@@ -113,7 +113,7 @@ V4.9 起，**余额不足类 429 会被标 `needs_human=true`**，路由**不再
 
 **处理流程**：
 
-1. **先看 Dashboard「🔴 待处理 (N)」tab**（右栏顶部，红 badge）
+1. **先看 Dashboard「🔴 待处理 (N)」**（运维页卡片，顶栏红 badge）
 2. 找到「💰 余额不足」类，看具体 channel + 账号 + 错误消息
 3. 充值后点 **「确认恢复」** → 立即触发一次探活 → 移除此条
 4. 如果账号作废（key 撤销），点 **「禁用」** → 路由永久排除

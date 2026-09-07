@@ -8,37 +8,36 @@
 
 ### 1.1 信息层级
 
-- **3 列宽屏布局**（≥1280px）：左 = 健康度 / 中 = 数据 / 右 = 操作
-- **2 列**（≥768px）：隐藏右栏
-- **单列**（<768px）：隐藏左栏，垂直堆叠
-- 卡片用 `border-radius: 8px` + `border: 1px solid var(--border-default)`
+- **侧边栏 + 主区布局**（Phase 3a 起）：左侧固定侧边栏 6 页（概览 / 成本 / 用量 / 渠道 / 情报 / 运维，哈希路由 `#/overview` 等），右侧主区为当前页卡片纵排
+- 只轮询当前页数据（切页即换数据源，减无效请求）
+- 卡片 `border-radius: 14px`（`--radius-lg`）/ KPI 卡 `28px`，`border: 1px solid var(--border-default)`
 
 ### 1.2 配色
 
 - **深色优先**（LLM 工程师多夜间使用）+ 跟随 `prefers-color-scheme` 自动浅色
-- 状态色：`success (#3fb950) / warning (#d29922) / danger (#f85149) / info (#58a6ff)`
+- 状态色：`success (--color-success) / warning (--color-warning) / danger (--color-danger) / info / accent (--color-accent, 品牌蓝)`
+- 图表专用调色板 `--chart-1..6`（深浅主题各一套，语义色与图表色分离，Phase 3c 起）
 - 字体：sans 主体 + monospace 用于 model 名/价格/token（JetBrains Mono 优先）
 
 ### 1.3 交互
 
-- **零依赖**：不引入 Tailwind/React/Vue/Chart.js 之外的库
-- htmx 自动加载 + JS 函数接管渲染（避免 htmx 默认 innerHTML 渲染 JSON）
+- **零依赖**：不引入 Tailwind/React/Vue/Chart.js 之外的库（htmx 已在 Phase 3a 移除，全量转 JS loader）
 - 快捷键：`r` 刷新 / `a` 应用建议 / `/` 搜索 / `?` 切换提示
-- 60s 定时刷新 dashboard 数据（不要实时推送，个人项目无需 WebSocket）
+- 60s 定时刷新**当前页**数据；顶栏待处理 badge 30s（不要实时推送，个人项目无需 WebSocket）
 
 ## 2. CSS 变量（`dashboard/static/style.css`）
 
 ```css
 /* 背景 (深色) */
---bg-base: #0d1117;
---bg-surface: #161b22;
---bg-elevated: #21262d;
---bg-hover: #1f2937;
+--bg-base: #0b0e14;
+--bg-surface: #11151d;
+--bg-elevated: #1a2029;
+--bg-hover: #161c26;
 
 /* 文字 */
---text-primary: #e6edf3;
---text-secondary: #8b949e;
---text-muted: #6e7681;
+--text-primary: #e8edf4;
+--text-secondary: #9aa7b8;
+--text-muted: #5d6879;
 
 /* 间距 */
 --space-xs: 4px;
@@ -48,9 +47,12 @@
 --space-xl: 24px;
 
 /* 圆角 */
---radius-sm: 4px;
---radius-md: 8px;
---radius-lg: 12px;
+--radius-sm: 6px;
+--radius-md: 10px;
+--radius-lg: 14px;
+
+/* 图表调色板 (Phase 3c) */
+--chart-1: #4d9fff;   /* …至 --chart-6: #2dd4bf */
 ```
 
 浅色模式自动覆盖（`@media (prefers-color-scheme: light)`）。
@@ -83,16 +85,18 @@
 
 通过 CSS 变量 `--healthy-deg` / `--warning-deg` 控制 conic-gradient 比例。
 
-### 3.3 折叠 details
+### 3.3 折叠 details（Phase 3a 大部分移除）
 
 ```html
-<details class="card-folding">
+<details>
     <summary>折叠标题</summary>
     <div class="card-body">内容</div>
 </details>
 ```
 
-CSS 用 `border-right + border-bottom` 画三角（避免 Unicode 字符渲染问题），关闭 → 旋转 90°。
+卡片级折叠交互已在 Phase 3a 移除（信息按侧边栏页分流）；现仅存零星表单折叠
+（如运维页「+ 加新账号」）。CSS 用 `border-right + border-bottom` 画三角（避免
+Unicode 字符渲染问题），关闭 → 旋转 90°。
 
 ### 3.4 长表格限高
 
@@ -168,15 +172,15 @@ const modelName = m.model || "(未知)";
 // 或更严格: modelName = m.model ? m.model : "(未知)";
 ```
 
-### 4.4 ❌ 假设 htmx 默认渲染 HTML
+### 4.4 ❌ 假设后端返回 HTML 片段
 
 ```html
-<!-- htmx 默认 innerHTML 写回响应, JSON 会显示原始字符串 -->
-<div id="cache-by-channel" hx-get="/dashboard/api/cache/stats"></div>
+<!-- ❌ 错 - API 返回 JSON, 直接塞 innerHTML 会显示原始字符串 -->
+<div id="cache-by-channel" data-src="/dashboard/api/cache/stats"></div>
 ```
 
 ```html
-<!-- ✅ 对 - JS 接管渲染, 或后端返回 HTML 片段 -->
+<!-- ✅ 对 - JS loader 拉取 + 渲染 (htmx 已移除, Phase 3a) -->
 <div id="cache-by-channel"></div>
 ```
 
@@ -207,15 +211,12 @@ document.getElementById('df-total') && document.getElementById('df-total').textC
 ### 5.1 启动钩子
 
 ```js
-// DOMContentLoaded: 一次加载
-document.addEventListener('DOMContentLoaded', loadOverviewKPIs);
-document.addEventListener('DOMContentLoaded', loadCacheStatsList);
+// Phase 3a: PAGE_ROUTES 页面调度器接管全部启动/轮询 (app.js 末尾)
+// hashchange -> showPage(name) -> 跑该页 loaders + 按页 setInterval
+window.addEventListener('hashchange', () => { /* showPage(路由名) */ });
 
-// 定时刷新: 60s
-setInterval(() => {
-    loadCacheStatsList();
-    loadSuggestionsList();
-}, 60000);
+// 定时刷新: 当前页 loaders 按页配置轮询; 顶栏 badge 30s
+setInterval(refreshBadges, 30000);
 ```
 
 ### 5.2 authFetch (统一鉴权)
@@ -223,7 +224,7 @@ setInterval(() => {
 ```js
 async function authFetch(url, opts = {}) {
     const headers = { ...(opts.headers || {}) };
-    const token = readCookie('aimc_dashboard_token');
+    const token = localStorage.getItem(DASHBOARD_TOKEN_KEY);
     if (token) headers['Authorization'] = 'Bearer ' + token;
     return fetch(url, { ...opts, headers });
 }
@@ -233,24 +234,25 @@ async function authFetch(url, opts = {}) {
 
 改 dashboard 前端前必查：
 
-- [ ] **CSS 变量**：新颜色用 `var(--color-xxx)`，不用硬编码 `#xxx`
+- [ ] **CSS 变量**：新颜色用 `var(--color-xxx)` / `var(--chart-N)`，不用硬编码 `#xxx`
 - [ ] **class 名语义化**：用 `.cache-row` / `.account-form` 而不是 `.box1` / `.row-2`
 - [ ] **JS 错误处理**：所有 `await` 必须 `try/catch` 或显式 `.catch()`
 - [ ] **数据字段兜底**：`data.field || "(未知)"` 而不是 `data.field`
-- [ ] **响应式**：新增卡片在 3 列 / 2 列 / 单列 都测试
+- [ ] **响应式**：新增卡片在窄屏（≤900px 侧边栏转横向顶条）下测试
 - [ ] **快捷键冲突**：新快捷键不要跟 `r/a// /?` 重叠
 - [ ] **不要修改后端**：纯前端改动不应改 `dashboard/routes.py`
-- [ ] **测试仍跑通**：前端改完 `python -m pytest tests/` 验证后端没坏（547 tests）
+- [ ] **测试仍跑通**：前端改完 `python -m pytest tests/` 验证后端没坏（694 tests）
 
 ## 7. 已知 UI 模式（参考 DeepSeek/Claude）
 
 | 元素 | 模式 |
 |------|------|
-| 状态栏 (sticky) | 顶部 + 实时路由信息 + 状态点 ● |
-| 主区卡片 | 网格 4 列 KPI + sparkline + 折线图 |
-| 折叠 details | 折叠次要卡片（不抢占屏幕）|
-| 快捷键 | 顶部 footer 显示 + 实际生效 |
+| 顶栏 (sticky) | 待处理 badge + 全局时间范围切换 + 搜索 |
+| 侧边栏 | 6 页导航（sticky，当前页强调条） |
+| 主区卡片 | KPI 网格 + Chart.js 图表（柱图/折线/环图, 固定高度容器） |
+| 快捷键 | 页脚显示 + 实际生效 |
 | 表格 | alternating rows + monospace 数字 + sticky header |
+| 抽屉 | 请求日志「详情」转录抽屉（overlay + aside, Phase 3b） |
 
 ## 8. 调试
 
@@ -270,11 +272,11 @@ python -m pytest tests/test_quota_check.py -v
 
 ## 9. 相关文件
 
-- `dashboard/static/index.html` — 主入口
+- `dashboard/static/index.html` — 主入口（侧边栏 6 页骨架）
 - `dashboard/static/style.css` — 全部样式 (CSS 变量 + 组件)
 - `dashboard/static/app.js` — 全部前端逻辑
-- `dashboard/static/vendor/` — htmx + chart.js + marked.min.js (本地化)
-- `dashboard/routes.py` — 后端 API (Django/FastAPI 风格 FastAPI)
+- `dashboard/static/vendor/` — chart.js + marked.min.js (本地化; htmx.min.js 为残留未加载)
+- `dashboard/routes.py` — 后端 API (FastAPI)
 
 ## 10. 改动记录
 
@@ -286,4 +288,5 @@ python -m pytest tests/test_quota_check.py -v
 | v4 | KPI 4 列 + 限额预警紧凑 | 1d30544 |
 | v5 | 表格样式 + 周报 markdown | e65eb0a |
 | v6 | 折叠图标 + 空 model + 加账号表单 | c871e7b |
-| v7 | 限高 + 按钮反馈 + 文档 | (本次) |
+| v7 | 限高 + 按钮反馈 + 文档 | (历史) |
+| v8 | Phase 3 对齐：侧边栏 6 页 / htmx 移除 / tokens+chart 调色板 / localStorage token | (本次) |

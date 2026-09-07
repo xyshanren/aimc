@@ -201,7 +201,7 @@ git pull
 source .venv/bin/activate
 pip install -r requirements.txt
 # 如果 schema 变了, 跑 migration
-for m in db/migrations/2026_08_*.py; do python $m --apply; done
+for m in db/migrations/*.py; do python $m --apply; done
 systemctl --user restart aimc
 # 跑测试确认
 python -m pytest tests/ -v

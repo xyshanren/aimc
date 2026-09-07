@@ -47,7 +47,7 @@
 |--------|--------|
 | 部署 / systemd / LXC / 周报 timer | [ops/deploy.md](ops/deploy.md) |
 | 数据新鲜度 / shadow log / 限额监控 | [ops/monitor.md](ops/monitor.md) |
-| 跑 12 个 migration 升级数据库 | [ops/migration.md](ops/migration.md) |
+| 跑 21 个 migration 升级数据库 | [ops/migration.md](ops/migration.md) |
 | 出错回滚（自动 tier 调整等）| [ops/rollback.md](ops/rollback.md) |
 | **公网部署安全（VPN / Cloudflare Tunnel / nginx）** | **[ops/security.md](ops/security.md)** |
 | **应急响应（master_key 泄露 / API key 泄露 / SSH 入侵）** | **[ops/incidents.md](ops/incidents.md)** |
@@ -72,8 +72,8 @@
 
 ## 文档元信息
 
-- **最后更新**：2026-09-05
-- **测试覆盖**：682 tests（pytest，~5 分钟跑通，V6.x 基线全绿）
+- **最后更新**：2026-09-07
+- **测试覆盖**：694 tests（pytest，~5 分钟跑通，V6.3.1 基线全绿）
 - **观察期关注**：缓存命中率（路径 A）、周报 timer 首次自动触发（周一）、vision 400 率、**思考 token 占 output 比例（触发条件见 [thinking-control-plan.md](thinking-control-plan.md) §3）**、**自动入组 4 项指标（pending 增速/tier 分布/审批负担/组命中率，见 [dev/automation-closure-plan.md](dev/automation-closure-plan.md) F3，积累 ≥2 周后决策 AUTO_JOIN_NON_T0）**
 - **V4.9 新功能**：Dashboard **🔴 待处理 (N)** tab（余额不足 / Key 失效 / 智能探活状态），见 [user/dashboard.md](user/dashboard.md)
 - **观察期后待办**：操作审计系统（内网自用继续观察，公网/多用户前必修；见 [dev/automation-closure-plan.md](dev/automation-closure-plan.md) §2.4）

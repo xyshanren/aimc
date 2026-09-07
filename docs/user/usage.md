@@ -170,4 +170,4 @@ Dashboard「缓存节省」栏（OpenAI `cached_tokens` 与 Anthropic `cache_rea
 | 503 No available channel | 所有 channel 不可用 | [troubleshooting.md](troubleshooting.md) |
 | 429 Quota exceeded | 上游账号限额耗尽 | 等 cooldown (60s) 或加账号 |
 | 上游 429 透传 | TokenPlan 耗尽 (如 minimax) | P1-15 自动 failover，但单 channel model（如 m3）会透传 |
-| 流式断流 | 网关 timeout | 调 `REQUEST_TIMEOUT` env |
+| 流式断流 | 网关 timeout | 调 `AIMC_REQUEST_TIMEOUT` env |

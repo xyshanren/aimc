@@ -72,7 +72,7 @@ AIMC 的多维限额（P0-6）是**保护账号不过快消耗**，不是给客�
 **A:** 启 systemd `Restart=on-failure`（已配）。`journalctl --user -u aimc -n 50` 看错误。
 
 ### Q: 升级 AIMC 后 db schema 不兼容？
-**A:** 跑 12 个 migration 脚本（按顺序）。见 [ops/migration.md](../ops/migration.md)。
+**A:** 跑 21 个 migration 脚本（按顺序）。见 [ops/migration.md](../ops/migration.md)。
 
 ## 路线类
 

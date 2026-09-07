@@ -38,7 +38,7 @@ python main.py
 ## 4. 跑测试
 
 ```bash
-# 全跑 (502 个 test)
+# 全跑 (694 个 test)
 python -m pytest tests/ -v
 
 # 单文件
@@ -77,7 +77,7 @@ aimc/
 │   ├── fallback.py         # fallback 链
 │   └── middleware.py       # 请求日志 + 鉴权 + P1-7 dashboard token
 ├── intelligence/           # 情报采集层
-│   ├── scheduler.py        # APScheduler (V4.8.3: provider×interval 分组 ~36 jobs + listener)
+│   ├── scheduler.py        # APScheduler (provider×interval 分组 + 探活/清理, ~41 jobs + listener)
 │   ├── sources/            # 厂商采集源
 │   │   ├── deepseek.py / glm.py / qwen.py / minimax.py / ...
 │   ├── pricing_sync.py     # 价格拉取
@@ -95,14 +95,14 @@ aimc/
 │   ├── models.py           # ORM (含 P0-1~P0-6 列)
 │   ├── crud.py             # CRUD helpers
 │   ├── init_db.py          # create_all + ensure_migrations
-│   └── migrations/         # 12 个迁移脚本
-├── dashboard/              # Dashboard (后端 routes + 前端 htmx)
+│   └── migrations/         # 21 个迁移脚本
+├── dashboard/              # Dashboard (后端 routes + 前端原生 JS)
 │   ├── routes.py           # 30+ endpoints
-│   └── static/             # index.html / app.js / login.html
+│   └── static/             # index.html / app.js / style.css
 ├── schemas/                # Pydantic 模型 (API 序列化)
 ├── security/               # API-Sec-1 XOR 加密 (历史, P0-5 改 Fernet)
 ├── scripts/                # 运维 + seed + sync 脚本
-├── tests/                  # 547 tests (pytest)
+├── tests/                  # 694 tests (pytest)
 ├── docs/                   # 文档
 ├── main.py                 # 入口
 ├── config.py               # Pydantic settings

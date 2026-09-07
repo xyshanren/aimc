@@ -143,7 +143,7 @@ echo "AIMC_DASHBOARD_TOKEN=$DASHBOARD_TOKEN" >> .env
 systemctl --user restart aimc
 ```
 
-访问 `http://localhost:8080/dashboard/`，粘贴 token 登录。Cookie 保留 7 天。
+访问 `http://localhost:8080/dashboard/`，粘贴 token 登录（token 存浏览器 localStorage）。
 
 **留空 = legacy 行为**（LAN 内裸开），适合开发环境。
 
@@ -210,7 +210,7 @@ AIMC 默认不限（除非你手动加）。限额配置在 db 里：
 # 方式 A: 通过脚本配置 (推荐)
 python scripts/seed_account_quotas.py
 
-# 方式 B: 通过 Dashboard "限额管理" 页面 (后续 P1-14)
+# 方式 B: 通过 Dashboard 运维页「账号管理」卡（限额预警已并入该卡, 仅展示; 配置仍走方式 A 或 SQL）
 ```
 
 **支持的 7 个维度**：

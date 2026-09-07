@@ -40,7 +40,7 @@
 │  │  建议生成 (analytics/suggest_changes.py)            │ │
 │  │  报警 (alerter.py - Bark/飞书/Server酱)            │ │
 │  └─────────────────────────────────────────────────────┘ │
-│           ~36 个 APScheduler job (provider×间隔分组, V4.8.3)│
+│           ~41 个 APScheduler job (provider×间隔分组 + 探活/清理)│
 │           + listener 写 job_health (P0-8)               │
 └────────────────┬───────────────────────────────────────────┘
                  │
@@ -151,7 +151,7 @@ check_account_quota(account_id, estimated_tokens) [P0-6]
 ### `intelligence/scheduler.py` — 定时任务（阶段 2）
 
 ```
-36 个 APScheduler job (V4.8.3 起):
+41 个 APScheduler job (30 个 batch_crawl + 11 个固定 job):
 ├── batch_crawl_<provider>_<interval> (30 个): 按 provider × poll_interval 分组
 │   (V4.8.3 修复旧 min(interval) 批量导致 model_list 源被拉高频;
 │    默认间隔: web_page 30min / announcement 1h / price_aggregator 12h /
@@ -161,7 +161,12 @@ check_account_quota(account_id, estimated_tokens) [P0-6]
 ├── cross_source_detection (1): 每天跨源交叉验证
 ├── monthly_official_audit (1): 每月 1 号官方源审查
 ├── weekly_suggest_changes (1): 周一 09:00 跑 suggest_changes [方案A]
-└── v44_alerts_check (1): 每 6 小时跑 V4.4 告警 (配额/账号/成本)
+├── v44_alerts_check (1): 每 6 小时跑 V4.4 告警 (配额/账号/成本)
+├── channel_health_probe (1): 每 60s 智能探活 [V4.9]
+├── cooldown_cleanup (1): 每 5min 清理过期 cooldown entry [V4.9]
+├── account_health_log_cleanup (1): 每天凌晨 3 点删 N 天前探活日志 [V4.9.1]
+├── promotion_cleanup (1): 每天 04:20 优惠情报过期清理 (expired 保留 30 天) [2026-09-05]
+└── transcript_log_cleanup (1): 每 6 小时清理超期请求转录 [V4.9.3]
 
 每个 job 完成后:
 ├── EVENT_JOB_EXECUTED / EVENT_JOB_ERROR 事件

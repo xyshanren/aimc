@@ -52,7 +52,7 @@ tail -50 /home/lxc/aimc/intelligence/auto_apply_shadow.log
 AIMC 告警走 **Bark / 飞书 / Server酱**（`.env` 配置）。
 
 **告警触发场景**：
-- 价格波动 > 30%（`PRICE_ALERT_THRESHOLD` 控制）
+- 价格波动 > 30%（`AIMC_PRICE_ALERT_THRESHOLD_PCT` 控制）
 - NoActiveAccount（无可用 account）
 - 4 类告警（v44_alerts）：80% / 100% 配额、cost rising 等
 - 上游错误 5xx / 401/403（持续）
@@ -111,7 +111,7 @@ sqlite3 data/aimc.db "
 
 ## 数据新鲜度
 
-[Dashboard §数据新鲜度](dashboard.md#3-数据新鲜度) 卡片显示约 36 个 apscheduler job 的健康状态。
+[Dashboard §数据新鲜度](dashboard.md#3-数据新鲜度) 卡片显示约 41 个 apscheduler job 的健康状态。
 
 **怎么看**：
 - 🟢 = job 正常
@@ -173,8 +173,8 @@ git pull
 source .venv/bin/activate
 pip install -r requirements.txt
 # V4.9 后: schema 变更走 ensure_migrations 自动跑, 不需要手动 migration
-# 只有 db/migrations/2026_08_*.py 这些独立脚本才需要手动跑
-for m in db/migrations/2026_08_*.py; do python $m --apply; done 2>/dev/null || true
+# 只有 db/migrations/ 下的独立脚本 (2026_08_* / 2026_09_* ...) 才需要手动跑
+for m in db/migrations/*.py; do python $m --apply; done 2>/dev/null || true
 systemctl --user restart aimc
 # 跑测试确认
 python -m pytest tests/ -v
@@ -187,10 +187,6 @@ grep 'Added job' /tmp/aimc.log | grep -E 'Channel 智能探活|Cooldown 过期�
 # 2. scheduler 没因 pickle 失败 (lambda 回调) 静默挂掉
 grep -i 'ValueError\|cannot be serialized' /tmp/aimc.log
 # 期望空
-```ne
-systemctl --user restart aimc
-# 跑测试确认
-python -m pytest tests/ -v
 ```
 
 ### 升级账号加密（API-Sec-1）
