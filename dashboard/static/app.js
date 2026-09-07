@@ -170,7 +170,9 @@ function renderPromotions(container) {
             container.innerHTML = '<p class="loading">暂无优惠情报</p>';
             return;
         }
-        let html = '';
+        // 限高滚动: 最多 50 条卡片 (~90px/条) 会把页面顶得很长; 条数标注防"下面还有"的错觉
+        let html = '<div class="text-muted" style="margin-bottom:var(--space-xs);font-size:11px;">共 ' + esc(data.length) + ' 条优惠 (按采集时间倒序, 滚动查看)</div>';
+        html += '<div class="scroll-y-420">';
         data.forEach(p => {
             const rel = _relTime(p.created_at);
             html += `<div class="promo-item">
@@ -181,6 +183,7 @@ function renderPromotions(container) {
                 ${p.url ? `<a class="promo-link" href="${esc(p.url)}" target="_blank" rel="noopener">查看原文 ↗</a>` : ''}
             </div>`;
         });
+        html += '</div>';
         container.innerHTML = html;
     } catch (e) {
         // 非 JSON 响应
