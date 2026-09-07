@@ -309,6 +309,15 @@ code, .mono {
 /* ============ 请求日志 + 转录抽屉 (Phase 3b) ============ */
 .scroll-y-420 { max-height: 420px; overflow-y: auto; }
 
+/* 长表格滚动容器 (渠道+价格卡): sticky 表头 — border-collapse 下 th 边框不随 sticky 保留, 分隔线用 box-shadow 画 */
+.scroll-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg-surface);
+    box-shadow: 0 1px 0 var(--border-muted);
+}
+
 .status-pill {
     display: inline-block;
     padding: 1px 8px;

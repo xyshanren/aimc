@@ -194,7 +194,9 @@ function renderPrices(container) {
             container.innerHTML = '<p class="loading">暂无价格数据</p>';
             return;
         }
-        let html = '<table><thead><tr><th>模型</th><th>渠道</th><th>类型</th><th>时段</th><th>输入价</th><th>输出价</th></tr></thead><tbody>';
+        // 长表限高滚动 (不做翻页: 对比场景翻页打断视线), 行数标注防"下面还有"的错觉
+        let html = '<div class="text-muted" style="margin-bottom:var(--space-xs);font-size:11px;">共 ' + esc(data.length) + ' 条价格记录 (滚动查看)</div>';
+        html += '<div class="scroll-y-420 scroll-table"><table><thead><tr><th>模型</th><th>渠道</th><th>类型</th><th>时段</th><th>输入价</th><th>输出价</th></tr></thead><tbody>';
         data.forEach(p => {
             html += `<tr>
                 <td>${esc(p.model)}</td>
@@ -205,7 +207,7 @@ function renderPrices(container) {
                 <td>${esc(p.output_price ?? '-')}</td>
             </tr>`;
         });
-        html += '</tbody></table>';
+        html += '</tbody></table></div>';
         container.innerHTML = html;
     } catch (e) {
         // 非 JSON 响应
@@ -1058,7 +1060,8 @@ async function loadOverviewKPIs() {
 function filterChannels() {
     const input = document.getElementById("search-channels");
     const q = input ? input.value : "";
-    document.querySelectorAll("#channels-list tr").forEach(tr => {
+    // 只过滤 tbody: thead 行不含查询词, 一并过滤会把表头藏掉; 价格表同卡, 搜索一并覆盖
+    document.querySelectorAll("#channels-list tbody tr, #prices-list tbody tr").forEach(tr => {
         tr.style.display = (!q || tr.textContent.toLowerCase().includes(q.toLowerCase())) ? "" : "none";
     });
 }
@@ -2132,7 +2135,7 @@ async function loadJsonCard(containerId, url, renderer, after) {
 }
 
 function loadChannelsCard() { return loadJsonCard('channels-list', '/dashboard/api/channels', renderChannels, filterChannels); }
-function loadPricesCard() { return loadJsonCard('prices-list', '/dashboard/api/prices', renderPrices); }
+function loadPricesCard() { return loadJsonCard('prices-list', '/dashboard/api/prices', renderPrices, filterChannels); }
 function loadRegistryModelsCard() { return loadJsonCard('registry-models-list', '/dashboard/api/registry/models', renderRegistryModels, filterRegistry); }
 function loadRegistryGroupsCard() { return loadJsonCard('registry-groups-list', '/dashboard/api/registry/groups', renderRegistryGroups); }
 function loadPromotionsCard() { return loadJsonCard('promotions-list', '/dashboard/api/promotions', renderPromotions); }
