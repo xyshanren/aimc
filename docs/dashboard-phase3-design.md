@@ -100,7 +100,11 @@ const PAGE_ROUTES = {
 // 顶栏 badge: 独立 30s 轮询, 跨页常驻
 ```
 
-- **静态卡不轮询 (`once` 语义, 2026-09-08 实装)**: registry 模型/分组卡是静态配置 (仅后台编辑才变), 不应跟随页面轮询。`PAGE_ROUTES` 支持 `once: [...]` 数组 — 进页时加载一次, 不进 interval 循环。当前仅 channels 页使用: `loaders: [loadChannelsCard, loadPricesCard]` (渠道状态/价格会随冷却自愈与上下架变动, 保留 30s) + `once: [loadRegistryModelsCard, loadRegistryGroupsCard]`。
+- **静态卡不轮询 (`once` 语义, 2026-09-08 实装)**: 配置类/低频数据不跟随页面轮询, `PAGE_ROUTES` 支持 `once: [...]` 数组 — 进页时加载一次, 不进 interval 循环 (切页再回即重新加载)。当前覆盖:
+  - channels 页 `once: [loadRegistryModelsCard, loadRegistryGroupsCard]` — registry 模型/分组是静态配置; `loaders: [loadChannelsCard, loadPricesCard]` 保留 30s (渠道状态/价格随冷却自愈与上下架变动)。
+  - ops 页 `once: [loadUserKeys, loadSources]` — Key/采集源仅人为操作才变, 操作后已有显式刷新 (`revokeKey`→`loadUserKeys`, `toggleSource`→`loadSources`) + 卡片自带"刷新"按钮; `runSourceNow` 触发采集后 2s 补 `loadSources()` 重拉。
+  - intel 页 `once: [loadReportsList, loadWeeklyReportLatest]` — 周报周级生成, 周报卡加"刷新"按钮兜底。
+  - ⚠️ intel 三张审批卡 (promotions/promotion-reviews/pending-review) 必须留在轮询: 批准/拒绝只做本地 `card.remove()`, 卡间联动全靠轮询。
 
 - **剩余 htmx 轮询卡全部转为 JS loader** (渠道/价格/registry×2/优惠/待确认/周报): 渲染器已存在 (afterSwap 里的 renderXxx), loader 沿用 `loadGroupRouting` 模式 (textContent 写入 + renderXxx 解析)。转完后 **htmx 无使用点, 移除 `vendor/htmx.min.js` 引用** (少一个全局依赖; afterSwap 分支同步删除)。
 - 删除: `details.card-folding` 折叠结构与 chevron CSS、`overview-trend` 死 canvas、旧 suggestions 死代码残留。

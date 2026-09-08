@@ -234,6 +234,7 @@
                 <div class="card-title"><span class="card-title-main">周报</span><span class="card-title-sub">每周一 09:00 推送</span></div>
                 <div class="card-body">
                     <div class="report-toolbar">
+                        <button class="btn btn-sm" onclick="loadReportsList(); loadWeeklyReportLatest()">刷新</button>
                         <select id="report-select" onchange="loadWeeklyReport(this.value)"><option value="latest">最新</option></select>
                         <span id="report-meta" class="meta"></span>
                     </div>

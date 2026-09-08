@@ -1760,7 +1760,8 @@ async function runSourceNow(provider, btn) {
         if (resp.ok) {
             if (btn) {
                 btn.textContent = '已触发';
-                setTimeout(() => { btn.textContent = '采集'; btn.disabled = false; }, 2000);
+                // sources 卡已是 once 语义, 触发后 2s 手动重拉展示采集状态 (采集为异步, last_run 可能仍滞后)
+                setTimeout(() => { btn.textContent = '采集'; btn.disabled = false; loadSources(); }, 2000);
             }
         } else {
             alert('触发失败: ' + (data.detail || resp.status));
@@ -2315,10 +2316,12 @@ const PAGE_ROUTES = {
     cost:     { title: '成本', ms: 60000, loaders: [loadCostAudit, loadCacheStatsList] },
     usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadRequests] },
     // channels: 渠道状态/价格会随冷却自愈与上下架变动, 保留 30s 轮询;
-    // registry 模型/分组是静态配置 (仅后台编辑才变), 只在进页时加载一次 (once).
+    // registry 模型/分组/用户 Key/采集源是配置类数据 (仅人为操作才变, 操作后已有显式刷新),
+    // 周报周级生成 — 以上均只在进页时加载一次 (once).
+    // 注意: 情报页三张审批卡必须留在轮询 — 批准/拒绝只做本地 card.remove(), 卡间联动全靠轮询.
     channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard, loadPricesCard], once: [loadRegistryModelsCard, loadRegistryGroupsCard] },
-    intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard, loadReportsList, loadWeeklyReportLatest] },
-    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadSuggestionsList, loadAccountsCard, loadUserKeys, loadSources, loadAutoJoinMetrics] },
+    intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard], once: [loadReportsList, loadWeeklyReportLatest] },
+    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadSuggestionsList, loadAccountsCard, loadAutoJoinMetrics], once: [loadUserKeys, loadSources] },
 };
 
 let _currentPage = null;
