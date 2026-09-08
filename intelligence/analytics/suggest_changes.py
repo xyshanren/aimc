@@ -56,6 +56,10 @@ WEIGHT_CACHE_HIT_RATE = 0.1     # usage_logs.cached_input_tokens 命中率
 MIN_USAGE_LOGS = 30
 MIN_DISTINCT_MODELS = 3
 
+# V4.8.6: 评分新鲜度门槛 — model_cards.score 超过 N 天未更新视为冻结样本,
+# 不可与当前 tier 平均对比 (minimax-m3 误升级 T1 教训: 评分冻结在 2026-08-13 仍触发建议)
+MAX_SCORE_AGE_DAYS = 7
+
 
 def compute_confidence(
     score_similarity: float,
@@ -142,9 +146,9 @@ async def rule_tier_change(session: AsyncSession) -> list[ModelChangeSuggestion]
     tier_avg_rows = (await session.execute(tier_avg_stmt)).all()
     tier_avg = {r.tier: float(r.avg_score or 0) for r in tier_avg_rows}
 
-    # 所有 active model + score
+    # 所有 active model + score + 评分更新时间 (V4.8.6 新鲜度门槛用)
     model_stmt = (
-        select(ModelRegistry.model_id, ModelRegistry.tier, ModelCard.score)
+        select(ModelRegistry.model_id, ModelRegistry.tier, ModelCard.score, ModelCard.updated_at)
         .join(ModelCard, ModelRegistry.model_id == ModelCard.model, isouter=True)
         .where(ModelRegistry.status == "active")
     )
@@ -152,18 +156,52 @@ async def rule_tier_change(session: AsyncSession) -> list[ModelChangeSuggestion]
 
     tier_order = ["T0", "T1", "T2", "T3", "T4"]
 
+    # V4.8.6: 分组准入兼容性 — 先取有 tier 限制的 groups 快照
+    group_tier_rows = (await session.execute(
+        select(ModelGroup.group_id, ModelGroup.tier)
+        .where(ModelGroup.tier.isnot(None))
+    )).all()
+    group_tier_by_id = {r.group_id: r.tier for r in group_tier_rows}
+
+    # V4.8.6: 再取 active 成员关系, Python 侧按 group_id 字符串合并 —
+    # 提议 tier 必须满足模型所在每个 group 的 tier 过滤, 否则路由层
+    # tier 精确匹配会把该成员当死成员跳过 (gateway/router.py)
+    member_rows = (await session.execute(
+        select(ModelGroupMember.model_id, ModelGroupMember.group_id)
+        .where(ModelGroupMember.is_active == 1)
+    )).all()
+    model_group_tiers: dict[str, list] = {}
+    for r in member_rows:
+        gtier = group_tier_by_id.get(r.group_id)
+        if gtier:
+            model_group_tiers.setdefault(r.model_id, []).append((r.group_id, gtier))
+
     for row in model_rows:
         model_id = row.model_id
         current_tier = row.tier
         score = float(row.score or 0)
         if not current_tier or score <= 0:
             continue
+        # V4.8.6: 评分新鲜度门槛 — score 超过 N 天未更新视为冻结样本,
+        # 不可与当前 tier 平均对比 (minimax-m3 误升级 T1 教训)
+        if row.updated_at is not None and (datetime.now() - row.updated_at).days > MAX_SCORE_AGE_DAYS:
+            logger.info("tier建议跳过(评分冻结>=%dd): %s score=%s updated_at=%s",
+                        MAX_SCORE_AGE_DAYS, model_id, score, row.updated_at)
+            continue
         cur_avg = tier_avg.get(current_tier, 0)
         if cur_avg <= 0:
             continue
 
+        proposed_tier = None
+        reason = None
+        rule = None
+        based_on = None
+
         # 检查降
         if score < cur_avg * 0.7:
+            lower_tier = _suggest_lower_tier(score, tier_order, tier_avg)
+            if lower_tier == current_tier:
+                continue
             sim = score_similarity(current_tier, score, cur_avg)
             # usage stability (简化: 当前 tier 用得越多越稳)
             n_use = (await session.execute(
@@ -175,27 +213,22 @@ async def rule_tier_change(session: AsyncSession) -> list[ModelChangeSuggestion]
             max_use = 100  # 简化兜底
             us = usage_stability(n_use, max_use)
             conf = compute_confidence(sim, us, 0.5, 0.0)
-            suggestions.append(ModelChangeSuggestion(
-                model_id=model_id,
-                change_type="tier_change",
-                suggested_value=_suggest_lower_tier(score, tier_order, tier_avg),
-                current_value=current_tier,
-                reason=f"评分 {score:.0f} 远低于当前 tier 平均 {cur_avg:.0f} (<70%), 建议降级",
-                confidence=conf,
-                based_on=json.dumps({
-                    "score": score, "current_tier": current_tier,
-                    "current_tier_avg": cur_avg, "rule": "tier_down",
-                }),
-            ))
-            continue
-
-        # 检查升 (找下一个更高 tier)
-        idx = tier_order.index(current_tier) if current_tier in tier_order else -1
-        if idx < 0 or idx == 0:
-            continue
-        higher_tier = tier_order[idx - 1]  # tier_order 越靠前越高
-        higher_avg = tier_avg.get(higher_tier, 0)
-        if higher_avg > 0 and score >= higher_avg * 0.95:
+            proposed_tier = lower_tier
+            reason = f"评分 {score:.0f} 远低于当前 tier 平均 {cur_avg:.0f} (<70%), 建议降级"
+            rule = "tier_down"
+            based_on = json.dumps({
+                "score": score, "current_tier": current_tier,
+                "current_tier_avg": cur_avg, "rule": "tier_down",
+            })
+        else:
+            # 检查升 (找下一个更高 tier)
+            idx = tier_order.index(current_tier) if current_tier in tier_order else -1
+            if idx < 0 or idx == 0:
+                continue
+            higher_tier = tier_order[idx - 1]  # tier_order 越靠前越高
+            higher_avg = tier_avg.get(higher_tier, 0)
+            if higher_avg <= 0 or score < higher_avg * 0.95:
+                continue
             sim = score_similarity(higher_tier, score, higher_avg)
             n_use = (await session.execute(
                 select(func.count(UsageLog.id)).where(
@@ -205,19 +238,35 @@ async def rule_tier_change(session: AsyncSession) -> list[ModelChangeSuggestion]
             )).scalar() or 0
             us = usage_stability(n_use, 100)
             conf = compute_confidence(sim, us, 0.5, 0.0)
-            suggestions.append(ModelChangeSuggestion(
-                model_id=model_id,
-                change_type="tier_change",
-                suggested_value=higher_tier,
-                current_value=current_tier,
-                reason=f"评分 {score:.0f} 已达到 {higher_tier} 平均 {higher_avg:.0f} (>=95%), 建议升级",
-                confidence=conf,
-                based_on=json.dumps({
-                    "score": score, "current_tier": current_tier,
-                    "higher_tier": higher_tier, "higher_tier_avg": higher_avg,
-                    "rule": "tier_up",
-                }),
-            ))
+            proposed_tier = higher_tier
+            reason = f"评分 {score:.0f} 已达到 {higher_tier} 平均 {higher_avg:.0f} (>=95%), 建议升级"
+            rule = "tier_up"
+            based_on = json.dumps({
+                "score": score, "current_tier": current_tier,
+                "higher_tier": higher_tier, "higher_tier_avg": higher_avg,
+                "rule": "tier_up",
+            })
+
+        # V4.8.6: 分组准入兼容性 — 提议 tier 必须满足模型所在每个 group 的
+        # tier 过滤, 否则路由层 tier 精确匹配会把该 group 的成员变死成员
+        conflicting_groups = [
+            gid for gid, gt in model_group_tiers.get(model_id, [])
+            if gt != proposed_tier
+        ]
+        if conflicting_groups:
+            logger.info("tier建议跳过(分组准入冲突): %s %s->%s 冲突组=%s",
+                        model_id, current_tier, proposed_tier, conflicting_groups)
+            continue
+
+        suggestions.append(ModelChangeSuggestion(
+            model_id=model_id,
+            change_type="tier_change",
+            suggested_value=proposed_tier,
+            current_value=current_tier,
+            reason=reason,
+            confidence=conf,
+            based_on=based_on,
+        ))
     return suggestions
 
 

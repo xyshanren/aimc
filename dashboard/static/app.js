@@ -786,6 +786,22 @@ async function loadReportsList() {
     }
 }
 
+function renderReportHTML(content, html) {
+    // V4.8.6: 服务端返回 <pre class='report-md'> 包裹的原始 markdown,
+    // 剥离包裹后统一走 marked.parse (loadWeeklyReport / loadWeeklyReportLatest 共用)
+    let md = html;
+    if (html.includes("<pre class='report-md'>")) {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        md = (doc.querySelector('pre.report-md') || {}).textContent || html;
+    }
+    if (typeof marked !== 'undefined' && md &&
+        (md.includes('# ') || md.includes('## ') || md.includes('### ') || md.includes('**'))) {
+        content.innerHTML = marked.parse(md);
+    } else {
+        content.innerHTML = md ? `<pre class="report-md">${esc(md)}</pre>` : '<p class="error">报告内容为空</p>';
+    }
+}
+
 function loadWeeklyReport(value) {
     // select 切换时调 — value="latest" 拿 latest, 否则拿指定日期
     const url = value === 'latest' || !value
@@ -800,19 +816,7 @@ function loadWeeklyReport(value) {
             return r.text();
         })
         .then(html => {
-            // V4.8.6: 服务端返回 <pre class='report-md'> 包裹的原始 markdown,
-            // 与 loadWeeklyReportLatest 统一走 marked.parse 渲染
-            let md = html;
-            if (html.includes("<pre class='report-md'>")) {
-                const doc = new DOMParser().parseFromString(html, 'text/html');
-                md = (doc.querySelector('pre.report-md') || {}).textContent || html;
-            }
-            if (typeof marked !== 'undefined' && md &&
-                (md.includes('# ') || md.includes('## ') || md.includes('### ') || md.includes('**'))) {
-                content.innerHTML = marked.parse(md);
-            } else {
-                content.innerHTML = md ? `<pre class="report-md">${esc(md)}</pre>` : '<p class="error">报告内容为空</p>';
-            }
+            renderReportHTML(content, html);
         })
         .catch(e => {
             content.innerHTML = `<p class="error">加载周报失败: ${esc(e.message)}</p>`;
@@ -1404,12 +1408,9 @@ async function loadWeeklyReportLatest() {
         const resp = await authFetch('/dashboard/api/reports/latest');
         if (!resp.ok) return;
         const md = await resp.text();
-        content.textContent = md;
-        if (md && (md.includes('# ') || md.includes('## ') || md.includes('### ') || md.includes('**'))) {
-            if (typeof marked !== 'undefined') {
-                content.innerHTML = marked.parse(md);
-            }
-        }
+        // V4.8.6 fix: 默认首载路径此前未剥离 <pre class='report-md'> 包裹,
+        // marked.parse 收到整段 HTML 后 pre 块原样透出 → markdown 不渲染
+        renderReportHTML(content, md);
     } catch (e) {
         console.warn('weekly report latest failed:', e);
     }
