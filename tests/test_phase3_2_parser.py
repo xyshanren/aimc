@@ -311,6 +311,52 @@ def test_parse_content_legacy(monkeypatch):
 
 
 # ============================================================
+# Test 11: V6.3.2 — AI 返回自由文本 provider 不覆盖采集源规范值
+# 背景: AI 曾返回 "Kimi (Moonshot AI)" / "SenseNova 商汤" 等变体并入库,
+#       导致看板按厂商聚合出现 17 种写法
+# ============================================================
+def test_parse_content_provider_canonical(monkeypatch):
+    print("\n=== Test 11: provider 一律取采集源规范值 ===")
+    import asyncio
+
+    from intelligence import parser
+
+    # AI 无视规范, 返回自由文本 provider (历史上真实出现的变体)
+    rogue = (
+        '{"is_promotion": true, "confidence": 0.9, "title": "限时5折", '
+        '"provider": "Kimi (Moonshot AI)", "discount_desc": "5折"}'
+    )
+
+    class _MockChoice:
+        message = type("M", (), {"content": rogue})()
+
+    class _MockResponse:
+        choices = [_MockChoice()]
+
+    class _MockCompletions:
+        async def create(self, **kwargs):
+            return _MockResponse()
+
+    class _MockChat:
+        completions = _MockCompletions()
+
+    class _MockClient:
+        chat = _MockChat()
+
+    parser._client = _MockClient()
+
+    result = asyncio.run(
+        parser.parse_content("<html/>", "kimi", "https://x", "web_page")
+    )
+    assert result.provider == "kimi", (
+        f"AI 自由文本 provider 不应覆盖采集源规范值, got {result.provider!r}"
+    )
+    # AI 也不再被要求返回 provider 字段 (schema 中已移除)
+    assert "provider" not in parser.SYSTEM_PROMPT.split("规则")[0]
+    print(f"  [OK] AI 返回 'Kimi (Moonshot AI)' → 入库 provider={result.provider!r}")
+
+
+# ============================================================
 # Main
 # ============================================================
 def main():
@@ -328,9 +374,10 @@ def main():
     test_normalize_model_item_missing_id()
     test_parse_content_with_models(monkeypatch=None)
     test_parse_content_legacy(monkeypatch=None)
+    test_parse_content_provider_canonical(monkeypatch=None)
 
     print("\n" + "=" * 60)
-    print("ALL 10 TESTS PASSED")
+    print("ALL 11 TESTS PASSED")
     print("=" * 60)
 
 

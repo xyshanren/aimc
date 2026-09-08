@@ -44,7 +44,6 @@ SYSTEM_PROMPT = """你是一个 AI 大模型情报分析助手。
   "is_promotion": false,
   "confidence": 0.0,
   "title": null,
-  "provider": "厂商标识",
   "discount_desc": null,
   "content": "摘要",
   "start_date": null,
@@ -91,6 +90,7 @@ SYSTEM_PROMPT = """你是一个 AI 大模型情报分析助手。
 - 不确定的 tier 设 null，禁止无依据猜测；每个模型 confidence 独立评分。
 - capabilities 只能使用给定标签；无法确定的字段设为 null 或空数组。
 - confidence 必须在 0.0-1.0；日期统一 YYYY-MM-DD。
+- 不要返回 provider 字段；厂商标识由采集源配置提供，与页面内容无关。
 """
 
 _ALLOWED_TIERS = {"T0", "T1", "T2", "T3", "T4"}
@@ -415,7 +415,10 @@ async def parse_content(
         is_promotion=data.get("is_promotion", False),
         confidence=data.get("confidence", 0.0),
         title=data.get("title"),
-        provider=data.get("provider", provider),
+        # V6.3.2: provider 一律取采集源配置的规范值, 不信 AI 自由文本
+        # 背景: AI 会返回 "Kimi (Moonshot AI)" / "SenseNova 商汤" 等变体,
+        # 覆盖 source.provider 后入库, 导致看板按厂商聚合出现 17 种写法
+        provider=provider,
         discount_desc=data.get("discount_desc"),
         content=data.get("content"),
         start_date=data.get("start_date"),
