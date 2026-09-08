@@ -100,6 +100,8 @@ const PAGE_ROUTES = {
 // 顶栏 badge: 独立 30s 轮询, 跨页常驻
 ```
 
+- **静态卡不轮询 (`once` 语义, 2026-09-08 实装)**: registry 模型/分组卡是静态配置 (仅后台编辑才变), 不应跟随页面轮询。`PAGE_ROUTES` 支持 `once: [...]` 数组 — 进页时加载一次, 不进 interval 循环。当前仅 channels 页使用: `loaders: [loadChannelsCard, loadPricesCard]` (渠道状态/价格会随冷却自愈与上下架变动, 保留 30s) + `once: [loadRegistryModelsCard, loadRegistryGroupsCard]`。
+
 - **剩余 htmx 轮询卡全部转为 JS loader** (渠道/价格/registry×2/优惠/待确认/周报): 渲染器已存在 (afterSwap 里的 renderXxx), loader 沿用 `loadGroupRouting` 模式 (textContent 写入 + renderXxx 解析)。转完后 **htmx 无使用点, 移除 `vendor/htmx.min.js` 引用** (少一个全局依赖; afterSwap 分支同步删除)。
 - 删除: `details.card-folding` 折叠结构与 chevron CSS、`overview-trend` 死 canvas、旧 suggestions 死代码残留。
 - 时间范围选择器提升后, `applyTimeRange` 重拉清单改为「当前页 loaders」。

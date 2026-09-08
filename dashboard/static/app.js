@@ -2314,7 +2314,9 @@ const PAGE_ROUTES = {
     overview: { title: '概览', ms: 60000, loaders: [loadOverviewKPIs, loadOverviewTrend, loadUsageTop, loadGroupOverview, loadTodaySummary] },
     cost:     { title: '成本', ms: 60000, loaders: [loadCostAudit, loadCacheStatsList] },
     usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadRequests] },
-    channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard, loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
+    // channels: 渠道状态/价格会随冷却自愈与上下架变动, 保留 30s 轮询;
+    // registry 模型/分组是静态配置 (仅后台编辑才变), 只在进页时加载一次 (once).
+    channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard, loadPricesCard], once: [loadRegistryModelsCard, loadRegistryGroupsCard] },
     intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard, loadReportsList, loadWeeklyReportLatest] },
     ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadSuggestionsList, loadAccountsCard, loadUserKeys, loadSources, loadAutoJoinMetrics] },
 };
@@ -2334,6 +2336,7 @@ function showPage(name) {
     window.scrollTo(0, 0); // 切页回到顶部 (长页切换不必来回滚)
     const page = PAGE_ROUTES[name];
     const runAll = () => page.loaders.forEach(fn => { try { fn(); } catch (e) { console.warn(name + ' loader failed:', e); } });
+    (page.once || []).forEach(fn => { try { fn(); } catch (e) { console.warn(name + ' once-loader failed:', e); } });
     runAll();
     _pageTimer = setInterval(runAll, page.ms);
 }
