@@ -800,7 +800,19 @@ function loadWeeklyReport(value) {
             return r.text();
         })
         .then(html => {
-            content.innerHTML = html;
+            // V4.8.6: 服务端返回 <pre class='report-md'> 包裹的原始 markdown,
+            // 与 loadWeeklyReportLatest 统一走 marked.parse 渲染
+            let md = html;
+            if (html.includes("<pre class='report-md'>")) {
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                md = (doc.querySelector('pre.report-md') || {}).textContent || html;
+            }
+            if (typeof marked !== 'undefined' && md &&
+                (md.includes('# ') || md.includes('## ') || md.includes('### ') || md.includes('**'))) {
+                content.innerHTML = marked.parse(md);
+            } else {
+                content.innerHTML = md ? `<pre class="report-md">${esc(md)}</pre>` : '<p class="error">报告内容为空</p>';
+            }
         })
         .catch(e => {
             content.innerHTML = `<p class="error">加载周报失败: ${esc(e.message)}</p>`;
