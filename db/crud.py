@@ -1023,7 +1023,8 @@ async def reject_capability_change(
 ) -> Optional["ModelCapabilitiesLog"]:
     """人工拒绝能力变更 (Phase 4 E1)。
 
-    - 把 log 行 approved 置 1 (拒绝 = 不再待确认)
+    - 把 log 行 approved 置 -1 (三态: 0=待审, 1=已批准, -1=已拒绝;
+      2026-09-09 前拒绝与批准同置 1, 行级不可区分)
     - 不动 model_registry (保留当前值)
     """
     from db.models import ModelCapabilitiesLog
@@ -1031,9 +1032,9 @@ async def reject_capability_change(
     log = await session.get(ModelCapabilitiesLog, log_id)
     if not log:
         return None
-    if log.approved == 1:
-        return log  # 已处理
-    log.approved = 1
+    if log.approved != 0:
+        return log  # 已处理 (1=已批准 / -1=已拒绝), 幂等
+    log.approved = -1
     await session.flush()
     return log
 

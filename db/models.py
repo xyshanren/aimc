@@ -698,7 +698,7 @@ class ModelCapabilitiesLog(Base):
     new_value = Column(Text, nullable=True)
     source = Column(Text, nullable=False, comment="manual / intel_crawler / ai_infer")
     confidence = Column(Float, nullable=True, comment="AI 推断时的置信度 (manual 时为 NULL)")
-    approved = Column(Integer, default=0, comment="是否已人工确认 (0/1)")
+    approved = Column(Integer, default=0, comment="三态: 0=待审, 1=已批准, -1=已拒绝")
     # V4.8.6: 采集来源渠道 (moonshot/deepseek/siliconflow/...), NULL=legacy 数据
     provider = Column(Text, nullable=True, comment="采集来源渠道 (moonshot/deepseek/siliconflow/...)")
     created_at = Column(DateTime, default=func.now())

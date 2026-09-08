@@ -2392,8 +2392,8 @@ async def get_auto_join_metrics(
     5 组指标, 服务 AUTO_JOIN_NON_T0 开启决策 (S1-S4):
     - pending_review 积压: model_capabilities_log approved=0 的当前堆积 + 近 N 天每周新增
     - tier 分布: ai_infer 推断结果里 T0-T4 各档占比
-    - 审批负担: 近 N 天人工处理量 (approve/reject 均只置 approved=1, 行级不可区分,
-      只报合并处理量; 近似值 = 处理量, 因 pending 行 approve 后不再回流队列)
+    - 审批负担: 近 N 天人工处理量 (2026-09-09 起三态可拆分: 1=批准 / -1=拒绝;
+      此前历史行均为 1, 无法回溯拆分, 计入批准数)
     - 组路由命中: usage_logs 按 group_id 计数, tier:xxx = 组路由请求占比, NULL = 精确路由
     - infer_tier 盲区: metadata log 行 new_value JSON 里 inferred_tier=null 的占比
       (parser.py infer_tier 对无法从模型名推断参数规模的返回 None, 这些模型永远
@@ -2447,8 +2447,16 @@ async def get_auto_join_metrics(
     ).all()
     tier_distribution = {row[0] or "(null)": row[1] for row in tier_rows}
 
-    # --- 3) 审批负担 (处理量; approve/reject 行级同值不可拆分) ---
+    # --- 3) 审批负担 (处理量; 2026-09-09 起三态可拆分: 1=批准 / -1=拒绝) ---
     reviewed_count = (
+        await session.execute(
+            select(func.count(ModelCapabilitiesLog.id))
+            .where(ModelCapabilitiesLog.source == "ai_infer")
+            .where(ModelCapabilitiesLog.approved != 0)
+            .where(ModelCapabilitiesLog.created_at >= cutoff_utc)
+        )
+    ).scalar() or 0
+    approved_count = (
         await session.execute(
             select(func.count(ModelCapabilitiesLog.id))
             .where(ModelCapabilitiesLog.source == "ai_infer")
@@ -2456,6 +2464,7 @@ async def get_auto_join_metrics(
             .where(ModelCapabilitiesLog.created_at >= cutoff_utc)
         )
     ).scalar() or 0
+    rejected_count = max(reviewed_count - approved_count, 0)
 
     # --- 4) 组路由命中 (usage_logs 按 group_id) ---
     group_rows = (
@@ -2506,7 +2515,10 @@ async def get_auto_join_metrics(
         "tier_distribution": tier_distribution,
         "review_burden": {
             "reviewed_count": reviewed_count,
-            "note": "approve/reject 均置 approved=1, 行级不可区分, 此为合并处理量",
+            "approved_count": approved_count,
+            "rejected_count": rejected_count,
+            "note": "批准/拒绝自 2026-09-09 起可区分 (approved: 1=批准/-1=拒绝); "
+                    "此前处理的行均存为 1, 计入批准数",
         },
         "group_routing": {
             "total_requests": total_requests,

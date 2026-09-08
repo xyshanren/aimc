@@ -2562,7 +2562,9 @@ async function loadAutoJoinMetrics() {
         // 审批负担 + 盲区
         html += '<div class="pr-card"><div class="pr-row"><strong>审批负担 (近 ' + data.days + ' 天)</strong>'
             + '<span class="badge" style="margin-left:auto;">' + fmtNum(rb.reviewed_count) + ' 次处理</span></div>'
-            + '<div style="font-size:11px;margin-top:6px;color:var(--text-secondary);">' + esc(rb.note || '') + '</div></div>';
+            + '<div style="font-size:11px;margin-top:6px;color:var(--text-secondary);">'
+            + '批准 ' + fmtNum(rb.approved_count || 0) + ' / 拒绝 ' + fmtNum(rb.rejected_count || 0)
+            + (rb.note ? ' · ' + esc(rb.note) : '') + '</div></div>';
 
         html += '<div class="pr-card"><div class="pr-row"><strong title="metadata 行中 inferred_tier=null 占比 — 这些模型无法从模型名推断参数规模, 永远无法自动入组">infer_tier 盲区</strong>'
             + '<span class="badge ' + (bs.pct > 30 ? 'badge-danger' : 'badge') + '" style="margin-left:auto;">' + fmtPct(bs.pct, bs.metadata_total > 0) + '</span></div>'

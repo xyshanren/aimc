@@ -3,7 +3,7 @@
 覆盖 crud 三个函数:
 1. list_pending_review 默认 approved=0 + source='ai_infer'
 2. approve_capability_change 把 log.approved=1, 若 field_changed='tier' 则同步 registry.tier
-3. reject_capability_change 把 log.approved=1, 不动 registry
+3. reject_capability_change 把 log.approved=-1 (2026-09-09 三态: 0=待审/1=批准/-1=拒绝), 不动 registry
 
 跑法: python tests/test_phase4_e1_pending_review.py
 """
@@ -153,9 +153,9 @@ def _patch_crud_with_in_memory_db():
         log = _state["logs"].get(log_id)
         if not log:
             return None
-        if log["approved"] == 1:
+        if log["approved"] != 0:
             return _LogShim(log)
-        log["approved"] = 1
+        log["approved"] = -1
         # 拒绝: 不动 registry
         return _LogShim(log)
 
@@ -357,7 +357,7 @@ def test_reject_keeps_registry():
         return await crud.reject_capability_change(_S(), 2)
 
     log = asyncio.run(_run())
-    assert log.approved == 1
+    assert log.approved == -1
     # tier 保持 T3
     assert state["registry"]["test-model-2"]["tier"] == "T3"
     print(f"  [OK] reject 保持 tier={state['registry']['test-model-2']['tier']}")
@@ -379,8 +379,8 @@ def test_reject_idempotent():
 
     log = asyncio.run(_run(2))
     log_again = asyncio.run(_run(2))
-    assert log.approved == 1
-    assert log_again.approved == 1
+    assert log.approved == -1
+    assert log_again.approved == -1
     print("  [OK] reject 重复幂等")
 
 
