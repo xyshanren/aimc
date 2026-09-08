@@ -4,8 +4,12 @@ import argparse
 import asyncio
 import json
 import logging
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from db.crud import upsert_feedback_summary
 from db.engine import async_session_factory
