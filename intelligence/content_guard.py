@@ -26,7 +26,7 @@ _MIN_HEALTHY_LEN = 500
 # 只查前 4KB — 这些特征都出现在页面头部区域
 _ERROR_SIGNATURES = (
     "__next_error__",                          # Next.js SSR 失败 (siliconflow 实证)
-    "doesn't work properly with javascript",   # Vue CLI 未渲染 SPA (glm 实证)
+    "doesn't work properly without javascript",  # Vue CLI 未渲染 SPA (glm 9/8 实证; 注意是 without, with 匹配不到真实文案)
     "this site can’t be reached",              # Chromium 网络错误页标题
     "this site can't be reached",              # 同上 (直引号变体)
     "this site cannot be reached",

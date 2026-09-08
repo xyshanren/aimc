@@ -60,10 +60,13 @@ def test_guard_next_error():
 
 def test_guard_js_required():
     from intelligence.content_guard import classify_content
-    page = "<html><body>We're sorry but 智谱 BigModel 平台 doesn't work properly with JavaScript." + "x" * 600
+    # 9/8 生产实证 glm JS 壳原文 (promotions id 1083): Vue CLI 标准文案是 "without",
+    # 旧签名误写 "with" 导致漏过第一道防线, 靠 sanity check 标黄兜底
+    page = ("<html><body>We're sorry but 智谱丨BigModel 平台 doesn't work properly "
+            "without JavaScript enabled. Please enable it to continue." + "x" * 600)
     ok, reason = classify_content(page)
     assert not ok
-    assert "doesn't work properly with javascript" in reason
+    assert "doesn't work properly without javascript" in reason
 
 
 def test_guard_404_title():
