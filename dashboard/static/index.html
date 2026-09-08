@@ -159,6 +159,12 @@
                             <option value="ok">成功</option>
                             <option value="error">失败</option>
                         </select>
+                        <select id="req-channel" class="toolbar-search" style="width:auto;max-width:160px;" onchange="requestsFilterChanged()">
+                            <option value="">全部渠道</option>
+                        </select>
+                        <select id="req-key" class="toolbar-search" style="width:auto;max-width:180px;" onchange="requestsFilterChanged()">
+                            <option value="">全部 Key</option>
+                        </select>
                         <input type="text" id="req-model" class="toolbar-search" placeholder="按 model 搜索 (服务端模糊匹配)…" oninput="requestsFilterChanged()" style="max-width:220px;">
                         <button class="btn btn-sm" onclick="loadRequests()">刷新</button>
                         <span id="req-meta" class="meta"></span>

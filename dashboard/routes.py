@@ -1885,11 +1885,13 @@ async def list_requests(
     days: int = Query(7, ge=1, le=30),
     status: str = Query("all", pattern="^(all|ok|error)$"),
     model: str = Query(None, max_length=100),
+    channel_id: int = Query(None, ge=1),
+    key_id: int = Query(None, ge=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
 ):
-    """请求日志明细 (usage_logs), 状态/model 过滤 + 分页, 时间倒序。
+    """请求日志明细 (usage_logs), 状态/model/渠道/key 过滤 + 分页, 时间倒序。
 
     V6.3 F2: model 支持模糊匹配 (LIKE %model%), 如 model=glm 收窄到 glm 系。
     """
@@ -1902,6 +1904,10 @@ async def list_requests(
         conds.append(UsageLog.status_code >= 400)
     if model:
         conds.append(UsageLog.model.like(f"%{model}%"))
+    if channel_id:
+        conds.append(UsageLog.channel_id == channel_id)
+    if key_id:
+        conds.append(UsageLog.key_id == key_id)
 
     base = select(UsageLog).where(*conds)
     total = (await session.execute(
@@ -1959,6 +1965,8 @@ async def list_requests(
         "page_size": page_size,
         "days": days,
         "model": model,
+        "channel_id": channel_id,
+        "key_id": key_id,
         "items": [
             {
                 "id": r.id,

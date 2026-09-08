@@ -2314,7 +2314,7 @@ async function refreshBadges() {
 const PAGE_ROUTES = {
     overview: { title: '概览', ms: 60000, loaders: [loadOverviewKPIs, loadOverviewTrend, loadUsageTop, loadGroupOverview, loadTodaySummary] },
     cost:     { title: '成本', ms: 60000, loaders: [loadCostAudit, loadCacheStatsList] },
-    usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadRequests] },
+    usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadRequests], once: [loadRequestFilterOptions] },
     // channels: 渠道状态/价格会随冷却自愈与上下架变动, 保留 30s 轮询;
     // registry 模型/分组/用户 Key/采集源是配置类数据 (仅人为操作才变, 操作后已有显式刷新),
     // 周报周级生成 — 以上均只在进页时加载一次 (once).
@@ -2363,20 +2363,67 @@ function initNav() {
 
 // ============================================================
 // Phase 3b (2026-09-05): 请求日志 — docs/dashboard-phase3-design.md §3
-// 列表: usage_logs 明细 (状态/模型过滤 + 分页); 转录: 行内按钮开抽屉,
+// 列表: usage_logs 明细 (状态/模型/渠道/Key 过滤 + 分页); 转录: 行内按钮开抽屉,
 // 后端按 model+时间窗 best-effort 匹配, 仅 admin key 可见 (中间件保证)。
 // ============================================================
 
-let _reqPage = 1, _reqStatus = 'all', _reqModel = '', _reqDebounce = null;
+let _reqPage = 1, _reqStatus = 'all', _reqModel = '', _reqChannel = '', _reqKey = '', _reqDebounce = null;
 
 function requestsFilterChanged() {
     const s = document.getElementById('req-status');
     const m = document.getElementById('req-model');
+    const c = document.getElementById('req-channel');
+    const k = document.getElementById('req-key');
     _reqStatus = s ? s.value : 'all';
     _reqModel = m ? m.value.trim() : '';
+    _reqChannel = c ? c.value : '';
+    _reqKey = k ? k.value : '';
     _reqPage = 1;
     clearTimeout(_reqDebounce);
     _reqDebounce = setTimeout(loadRequests, 300);
+}
+
+// 渠道/Key 筛选选项 — 配置类数据, 进用量页时刷一次 (PAGE_ROUTES once), 不进 60s 轮询。
+// Key 显示名与后端 key_label_map 同规则: label||prefix, 同名 label 跨用户时追加 (username);
+// 已吊销 key 保留在选项里 (历史请求仍可按它过滤), 标注区分。
+async function loadRequestFilterOptions() {
+    const cSel = document.getElementById('req-channel');
+    const kSel = document.getElementById('req-key');
+    if (!cSel || !kSel) return;
+    try {
+        const [chResp, keyResp] = await Promise.all([
+            authFetch('/dashboard/api/channels'),
+            authFetch('/dashboard/api/keys'),
+        ]);
+        if (chResp.ok) {
+            const channels = await chResp.json();
+            const cur = cSel.value;
+            cSel.innerHTML = '<option value="">全部渠道</option>' + channels.map(ch =>
+                '<option value="' + ch.id + '">' + esc(ch.name) + (ch.status !== 'active' ? ' (停用)' : '') + '</option>'
+            ).join('');
+            if ([...cSel.options].some(o => o.value === cur)) cSel.value = cur;
+        }
+        if (keyResp.ok) {
+            const data = await keyResp.json();
+            const entries = [];
+            for (const u of (data.users || [])) {
+                for (const k of (u.keys || [])) {
+                    const base = k.label || k.key_prefix;
+                    if (base) entries.push({ id: k.id, base, username: u.username, status: k.status });
+                }
+            }
+            const owners = {};
+            for (const e of entries) (owners[e.base] = owners[e.base] || new Set()).add(e.username);
+            const cur = kSel.value;
+            kSel.innerHTML = '<option value="">全部 Key</option>' + entries.map(e => {
+                let text = e.base;
+                if (e.username && owners[e.base].size > 1) text += ' (' + e.username + ')';
+                if (e.status === 'revoked') text += ' (已吊销)';
+                return '<option value="' + e.id + '">' + esc(text) + '</option>';
+            }).join('');
+            if ([...kSel.options].some(o => o.value === cur)) kSel.value = cur;
+        }
+    } catch (e) { /* 选项加载失败不阻塞日志主列表, 下拉退化为只有"全部" */ }
 }
 
 function requestsPage(delta) {
@@ -2393,6 +2440,8 @@ async function loadRequests() {
             page: String(_reqPage), page_size: '50',
         });
         if (_reqModel) params.set('model', _reqModel);
+        if (_reqChannel) params.set('channel_id', _reqChannel);
+        if (_reqKey) params.set('key_id', _reqKey);
         const resp = await authFetch(`/dashboard/api/requests?${params}`);
         if (!resp.ok) {
             list.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';

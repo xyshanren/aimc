@@ -282,6 +282,51 @@ def test_requests_list_model_filter_v63():
     assert none_["total"] == 0
 
 
+def test_requests_list_channel_key_filter():
+    """渠道/Key 精确过滤 (V6.3.3): 单独用 + 与 status 组合 + 交叉无命中 + 回显"""
+    from db.engine import async_session_factory
+
+    async def _run():
+        await _reset_db()
+        ch_a = await _seed_channel(async_session_factory, name="glm_bigmodel")
+        ch_b = await _seed_channel(async_session_factory, name="deepseek_official")
+        key1 = await _seed_api_key(async_session_factory, label="ragf", key_prefix="aimc-kf1")
+        key2 = await _seed_api_key(async_session_factory, label="agentf", key_prefix="aimc-kf2")
+        now = datetime.now()
+        await _seed_log(async_session_factory, "glm-5.3-flash", channel_id=ch_a, key_id=key1,
+                        status_code=200, created_at=now - timedelta(hours=1))
+        await _seed_log(async_session_factory, "deepseek-v4-flash", channel_id=ch_b, key_id=key2,
+                        status_code=500, created_at=now - timedelta(hours=2))
+        await _seed_log(async_session_factory, "glm-5.3", status_code=200,
+                        created_at=now - timedelta(hours=3))  # 无渠道无 key 的 legacy 行
+
+        async with _get_client() as client:
+            r_ch = await client.get(f"/dashboard/api/requests?days=7&channel_id={ch_a}")
+            r_key = await client.get(f"/dashboard/api/requests?days=7&key_id={key1}")
+            r_combo = await client.get(f"/dashboard/api/requests?days=7&channel_id={ch_b}&status=error")
+            r_cross = await client.get(f"/dashboard/api/requests?days=7&channel_id={ch_a}&key_id={key2}")
+            r_none = await client.get("/dashboard/api/requests?days=7&channel_id=999999")
+        return (r_ch.json(), r_key.json(), r_combo.json(), r_cross.json(), r_none.json(), ch_a, key1, ch_b)
+
+    ch_data, key_data, combo, cross, none_, ch_a, key1, ch_b = asyncio.run(_run())
+
+    assert ch_data["total"] == 1
+    assert ch_data["items"][0]["channel_name"] == "glm_bigmodel"
+    assert ch_data["channel_id"] == ch_a  # 回显
+    assert key_data["total"] == 1
+    assert key_data["items"][0]["key_label"] == "ragf"
+    assert key_data["key_id"] == key1
+    # 渠道 + status 组合: ch_b 只有一条且是 500
+    assert combo["total"] == 1
+    assert combo["items"][0]["status_code"] == 500
+    # 交叉 (渠道 A + key B) 无命中
+    assert cross["total"] == 0
+    # 不存在的渠道 id 无命中
+    assert none_["total"] == 0
+
+
+
+
 # ============================================================
 # Part 2: transcript 详情
 # ============================================================

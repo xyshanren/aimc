@@ -176,6 +176,7 @@ V7.0 (远期, 拍板后立项)
 **F2 请求日志 model 搜索后端（R2）**
 - `dashboard/routes.py GET /api/requests` 新增 `model` 参数（`UsageLog.model LIKE %model%`），与 days/status 组合，total 同步收窄；前端请求日志筛选区已改为传参。
 - 测试：`test_v62_request_logs.py::test_requests_list_model_filter_v63`（glm 收窄 / 精确匹配 / 与 status 组合 / 回显 / 无命中）。
+- V6.3.3 扩展（2026-09-09）：同一端点再加 `channel_id` / `key_id` 精确过滤 + 前端两个下拉（选项复用 /api/channels 与 /api/keys，once 加载；Key 消歧规则与列表 key_label_map 同源，已吊销 key 标注保留）；用户维度不加独立筛选（key 唯一归属用户，按人下钻走按用户 tab）。测试：`test_requests_list_channel_key_filter`。
 
 **F3 自动入组数据积累埋点（R3，纯只读）**
 - `dashboard/routes.py GET /api/ops/auto-join-metrics?days=14`：5 组指标 —— ① pending 积压（当前 + 0-7d/7-14d 周桶）② tier 分布（ai_infer tier 行 GROUP BY new_value）③ 审批负担（近 N 天 approved=1 处理量；approve/reject 行级同值不可拆分，报合并量并注明）④ 组路由命中（usage_logs GROUP BY group_id，tier:* 占比 vs NULL 精确路由）⑤ infer_tier 盲区（metadata 行 new_value JSON 里 inferred_tier=null 占比）。
