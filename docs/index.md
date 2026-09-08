@@ -7,6 +7,8 @@
 **V6.3 自动化收口（2026-09-05）**：F1 首启检测（空渠道 WARN 引导，manual_import 降级可选）+ F2 请求日志 model 搜索后端（`?model=` 模糊过滤）+ F3 自动入组埋点（运维页「自动入组观察」卡，纯只读 5 组指标）+ F7 图-表双向 hover 联动（Cache 环图↔渠道表、柱图↔日表），见 [dev/automation-closure-plan.md](dev/automation-closure-plan.md) §6。
 **V6.3.1 瞬时冷却 badge 修复（2026-09-06）**：顶栏待处理 badge 不再为自愈型瞬时冷却（15-60s 自动恢复）报警（`/api/pending-summary?exclude_transient=true`），消除「顶栏有数但运维页为空」的观察时差；同时观察点落 `cooldown_events` 流水（同 episode 按 cooldown_until 去重），运维页新增「24h 瞬时冷却记录」卡留痕可回看。
 **请求日志并显上游账号（2026-09-07）**：一渠道多账号落地后的用量可观测补齐——请求日志「渠道」列以 muted 后缀并显服务账号（`sensenova_official · sensenova_01`），详情抽屉 meta 同步显示；list/transcript 端点新增 `account_name` 字段（`usage_logs.account_id` 反查，legacy NULL 行显示 —），零迁移（dcab606）。
+**V6.3.2 优惠情报 provider 规范化（2026-09-08）**：修复 AI 解析自由文本 provider（"Kimi (Moonshot AI)"/"SenseNova 商汤" 等 17 种变体）覆盖采集源规范值入库的根因——SYSTEM_PROMPT 移除 provider 字段 + parse_content 固定返回 source.provider；生产库 29 行存量脏数据一次性归一（06c63b3）。
+
 版本路线见 [next-major-v6-plan.md](next-major-v6-plan.md)（V6.0/V6.1/V6.x 已完成）；**后续规划见 [dev/automation-closure-plan.md](dev/automation-closure-plan.md)（F3 埋点 ≥2 周观察 → AUTO_JOIN_NON_T0 数据驱动决策（S1-S4）→ V7.0 含看板自定义采集源；V7.0/V6.2 待拍板）**。
 
 ---
@@ -73,7 +75,7 @@
 ## 文档元信息
 
 - **最后更新**：2026-09-07
-- **测试覆盖**：694 tests（pytest，~5 分钟跑通，V6.3.1 基线全绿）
+- **测试覆盖**：711 tests（pytest，~6 分钟跑通，V6.3.2 基线全绿）
 - **观察期关注**：缓存命中率（路径 A）、周报 timer 首次自动触发（周一）、vision 400 率、**思考 token 占 output 比例（触发条件见 [thinking-control-plan.md](thinking-control-plan.md) §3）**、**自动入组 4 项指标（pending 增速/tier 分布/审批负担/组命中率，见 [dev/automation-closure-plan.md](dev/automation-closure-plan.md) F3，积累 ≥2 周后决策 AUTO_JOIN_NON_T0）**
 - **V4.9 新功能**：Dashboard **🔴 待处理 (N)** tab（余额不足 / Key 失效 / 智能探活状态），见 [user/dashboard.md](user/dashboard.md)
 - **观察期后待办**：操作审计系统（内网自用继续观察，公网/多用户前必修；见 [dev/automation-closure-plan.md](dev/automation-closure-plan.md) §2.4）
