@@ -7,32 +7,38 @@ from intelligence.sources.base import IntelSourceBase
 
 
 class DeepSeekSource(IntelSourceBase):
-    """DeepSeek 官方文档站/定价页采集"""
+    """DeepSeek 官方文档站/定价页采集
+
+    2026-09-09: api.deepseek.com/pricing 已转鉴权制 (401 Authentication Fails, 84B),
+    公开镜像迁至 api-docs.deepseek.com (docusaurus, SSR, main 1.2K 字符)。
+    """
 
     def __init__(self):
         super().__init__(
             provider="deepseek",
-            url="https://api.deepseek.com/pricing",
+            url="https://api-docs.deepseek.com/zh-cn/quick_start/pricing",
             source_type="web_page",
             poll_interval=1800,  # 30分钟 (V4.8.3: 原 15min→30min)
             css_selector="main",
-            # Phase 2B-3: pricing 页是静态 HTML，DOM 解析完即可
             wait_until="domcontentloaded",
             wait_for=None,
         )
 
 
 class DeepSeekAnnouncementSource(IntelSourceBase):
-    """DeepSeek 公告页采集"""
+    """DeepSeek 公告页采集
+
+    2026-09-09: api.deepseek.com/news 已转鉴权制 (401), 迁至 api-docs 镜像
+    (news 列表页 SSR, main 约 3.3K 字符含新闻标题)。
+    """
 
     def __init__(self):
         super().__init__(
             provider="deepseek",
-            url="https://api.deepseek.com/news",
+            url="https://api-docs.deepseek.com/zh-cn/news",
             source_type="announcement",
             poll_interval=3600,  # 1小时 (V4.8.3: 原 30min→1h)
             css_selector="main",
-            # Phase 2B-3: 公告页可能 JS 加载，等主内容容器出现
             wait_until="domcontentloaded",
             wait_for="main",
         )

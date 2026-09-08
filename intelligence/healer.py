@@ -435,6 +435,48 @@ async def _save_promotion(result: ParseResult, source):
                 )
                 return
 
+            # 去重第二道 (2026-09-09): URL + 内容相似度组合。
+            # 背景: AI 对同一页面每次生成措辞不同的标题和摘要 (9/8 stepfun 同一事件
+            # 重复入库 11 条; 同事件文本相似度实测仅 0.23~0.87, 纯文本阈值不可靠),
+            # 精确 title 匹配打不中。同一页面每个轮询周期都会重抓, 真实新优惠即使
+            # 被误拦也会在下个周期重新入库, 因此同 URL 短窗可以激进:
+            #   - (provider, url) 24h 内                     → 无条件跳过 (同页重解析)
+            #   - (provider, url) 7d 内 且相似度 >= 0.50     → 跳过 (跨日同事件)
+            #   - 任意 url       7d 内 且相似度 >= 0.70     → 跳过 (同事件多页分发)
+            from intelligence.differ import compute_similarity
+            recent = await session.execute(
+                select(
+                    Promotion.id, Promotion.title, Promotion.url,
+                    Promotion.content, Promotion.created_at,
+                ).where(
+                    Promotion.provider == (result.provider or source.provider),
+                    Promotion.created_at >= datetime.now() - timedelta(days=7),
+                ).order_by(Promotion.created_at.desc()).limit(50)
+            )
+            now = datetime.now()
+            candidate_url = result.url or ""
+            for old_id, old_title, old_url, old_content, old_created in recent.fetchall():
+                same_url = bool(candidate_url) and old_url == candidate_url
+                if same_url and old_created and (now - old_created) < timedelta(hours=24):
+                    logger.info(
+                        f"优惠去重(同url 24h, promo_id={old_id}): "
+                        f"[{result.provider or source.provider}] {result.title}"
+                    )
+                    return
+                sim = compute_similarity(result.content or "", old_content or "")
+                if same_url and sim >= 0.50:
+                    logger.info(
+                        f"优惠去重(同url相似 {sim:.2f}, promo_id={old_id} {old_title!r}): "
+                        f"[{result.provider or source.provider}] {result.title}"
+                    )
+                    return
+                if sim >= 0.70:
+                    logger.info(
+                        f"优惠去重(内容相似 {sim:.2f}, promo_id={old_id} {old_title!r}): "
+                        f"[{result.provider or source.provider}] {result.title}"
+                    )
+                    return
+
             promo = await crud.create_promotion(
                 session,
                 provider=result.provider or source.provider,

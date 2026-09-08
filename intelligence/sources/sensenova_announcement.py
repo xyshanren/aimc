@@ -9,24 +9,26 @@ from intelligence.sources.base import IntelSourceBase
 
 
 class SenseNovaAnnouncementSource(IntelSourceBase):
-    """商汤日日新公告页采集
+    """商汤日日新 Token Plan 套餐页采集
 
-    URL: https://platform.sensenova.cn/news
-    抓取策略: domcontentloaded
-    频率: 30 分钟
+    2026-09-09 调查: 旧 platform.sensenova.cn/news 已 404 下线; sensecore console
+    文档站为登录墙内 SPA (Playwright 渲染后仍 0 字符)。官网公开的 Token Plan 页
+    (www.sensenova.cn/token-plan) 是商汤套餐/折扣情报的官方落点 ("不止折扣，
+    更是办公生产力能力包"), Playwright networkidle 渲染后全文 769 字符, 健康可采。
+    css_selector 用 None 取全文 (页面包含套餐档位/权益文案)。
 
-    Phase 4 v4.3.1: 补齐 7 家未接厂商
-    注: SenseNova token-plan 页 (pricing source) 已在 price_aggregator.py,
-        本 source 单独抓 news 页 (优惠/活动信息)
+    注: SenseNovaModelListSource (API) 在 model_lists_extra.py,
+        SenseNovaPricingSource (token-plan 定价) 在 price_aggregator.py
     """
 
     def __init__(self):
         super().__init__(
             provider="sensenova",
-            url="https://platform.sensenova.cn/news",
+            url="https://www.sensenova.cn/token-plan",
             source_type="announcement",
             poll_interval=3600,  # 1小时 (V4.8.3: 原 30min→1h)
-            css_selector="main",
-            wait_until="domcontentloaded",
-            wait_for="main",
+            css_selector=None,
+            wait_until="networkidle",
+            wait_for=None,
+            wait_for_timeout=12000,
         )

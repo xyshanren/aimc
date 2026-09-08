@@ -7,24 +7,25 @@ from intelligence.sources.base import IntelSourceBase
 
 
 class HunyuanAnnouncementSource(IntelSourceBase):
-    """腾讯混元公告页采集
+    """腾讯混元情报页采集
 
-    URL: https://cloud.tencent.com/announce/product/AI
-    抓取策略: domcontentloaded (官方公告站 SSR)
-    频率: 30 分钟
+    2026-09-09 调查结论: 原公告页 cloud.tencent.com/announce/product/AI 已 404 下线;
+    且混元大模型平台 (docs product 1729) 将于 2026-09-30 全面停服, 迁往
+    大模型服务平台 TokenHub (docs product 1823)。故采集源直接挂 TokenHub
+    模型价格页 (含套餐/计费调整, 即优惠情报落点):
+    https://cloud.tencent.com/document/product/1823/130055
+    实测: SSR 健康, #docArticleContent 约 1.7 万字符 (2026-09-08 更新的计费规则)。
 
-    Phase 4 v4.3.1: 补齐 7 家未接厂商
-    注: Hunyuan 没有免费, 靠充值. 公告主要为 "新模型上线" / "活动开放",
-        不一定有强优惠, 但用跟其他厂商同一 source_type 统一管理.
+    频率: 1 小时
     """
 
     def __init__(self):
         super().__init__(
             provider="hunyuan",
-            url="https://cloud.tencent.com/announce/product/AI",
+            url="https://cloud.tencent.com/document/product/1823/130055",
             source_type="announcement",
             poll_interval=3600,  # 1小时 (V4.8.3: 原 30min→1h)
-            css_selector="main",
+            css_selector="#docArticleContent",
             wait_until="domcontentloaded",
-            wait_for="main",
+            wait_for="#docArticleContent",
         )
