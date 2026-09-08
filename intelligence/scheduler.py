@@ -592,18 +592,23 @@ async def _run_source_task(source):
 
 
 async def _resolve_api_key(source) -> Optional[str]:
-    """从 channels 表读 api_key (解密), 给 api_endpoint 鉴权用
+    """从渠道/账号读 api_key (解密), 给 api_endpoint 鉴权用
 
     Phase 3.6: 优先用 source.api_key_from 对应 provider 的 active channel 的 api_key
     - 如果 provider 没 channel → 返回 None (按公开 endpoint 走)
-    - API-Sec-1: api_key 在 DB 是 XOR+Base64 加密的, 通过 decrypt_api_key 拿明文
+    - API-Sec-1: api_key 在 DB 加密存储, 通过 try_decrypt 拿明文
+
+    2026-09-09: V4.8 多账号迁移后 key 实际存 accounts 表 (生产 channels 表无
+    key 列, 渠道级读取恒空 → 7 个 API 型 model_list 源恒静默跳过, 24h ~342 次)。
+    渠道无 key 时回退该渠道第一个 active 账号, 解密路径与
+    gateway.router._resolve_account_key 一致。
     """
     if not getattr(source, "api_key_from", None):
         return None
 
     try:
         from db.engine import async_session_factory
-        from db.crud import list_active_channels_by_provider
+        from db.crud import list_active_channels_by_provider, get_accounts_by_channel
         from security.crypto import try_decrypt
 
         provider = source.api_key_from
@@ -614,19 +619,30 @@ async def _resolve_api_key(source) -> Optional[str]:
             logger.debug(f"{provider} 无 active channel, 走公开 endpoint")
             return None
 
-        # 取第一个 active channel 的 key (通常个人用只有 1 个)
+        # 取第一个 active channel (通常个人用只有 1 个)
         ch = channels[0]
-        if isinstance(ch, dict):
-            api_key_ciphertext = ch.get("api_key_ciphertext")
-        else:
-            api_key_ciphertext = getattr(ch, "api_key_ciphertext", None)
+        ciphertext = getattr(ch, "api_key_ciphertext", None)
+        if ciphertext:
+            plaintext = try_decrypt(ciphertext, settings.aimc_master_key)
+            if plaintext:
+                return plaintext
 
-        if not api_key_ciphertext:
-            return None
+        # 渠道级无 key → 回退该渠道第一个 active 账号 (key 实际存放处)
+        async with async_session_factory() as session:
+            accounts = await get_accounts_by_channel(session, ch.id)
+        for acc in accounts:
+            if getattr(acc, "status", None) != "active":
+                continue
+            if acc.api_key_ciphertext is not None:
+                plaintext = try_decrypt(acc.api_key_ciphertext, settings.aimc_master_key)
+                if plaintext:
+                    return plaintext
+            if acc.api_key:
+                # 明文 (deprecated, 仅迁移期老库)
+                return acc.api_key
 
-        # API-Sec-1: XOR+Base64 解密 (master_key 从 settings.aimc_master_key 读)
-        plaintext = try_decrypt(api_key_ciphertext, settings.aimc_master_key)
-        return plaintext
+        logger.debug(f"{provider} 渠道与账号均无可用 key, 走公开 endpoint")
+        return None
     except Exception as e:
         logger.warning(f"读取 {source.api_key_from} api_key 失败: {e}, 走公开 endpoint")
         return None

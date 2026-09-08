@@ -10,6 +10,8 @@
 7. URL 末尾 / 自动去掉
 8. _resolve_api_key happy path (mock channels + decrypt)
 9. _resolve_api_key 无 channel → None
+9b. _resolve_api_key 渠道无 key → 回退 active 账号密文 (2026-09-09)
+9c. _resolve_api_key disabled 账号不回退 → None
 
 跑法: python tests/test_phase3_6_api_models.py
 """
@@ -373,6 +375,84 @@ def test_resolve_api_key_no_channel():
 
 
 # ============================================================
+# Test 9b: _resolve_api_key 渠道无 key → 回退 active 账号 (2026-09-09)
+# ============================================================
+def test_resolve_api_key_fallback_to_account():
+    print("\n=== Test 9b: 渠道无 key, 回退 active 账号 ===")
+    from intelligence.scheduler import _resolve_api_key
+    from security.crypto import encrypt
+
+    fake_channel = MagicMock()
+    fake_channel.id = 1
+    fake_channel.api_key_ciphertext = None  # 渠道级无 key (V4.8 多账号迁移后常态)
+
+    fake_account = MagicMock()
+    fake_account.status = "active"
+    fake_account.api_key_ciphertext = encrypt("sk-" + "account-key-67890", "0" * 64)
+    fake_account.api_key = ""  # 迁移期明文占位为空
+
+    fake_session = MagicMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+
+    async def _fake_list_active(session, provider):
+        return [fake_channel]
+
+    async def _fake_accounts(session, channel_id):
+        return [fake_account]
+
+    fake_source = MagicMock()
+    fake_source.api_key_from = "deepseek"
+
+    with patch("db.engine.async_session_factory", return_value=fake_session), \
+         patch("db.crud.list_active_channels_by_provider", _fake_list_active), \
+         patch("db.crud.get_accounts_by_channel", _fake_accounts):
+        result = asyncio.run(_resolve_api_key(fake_source))
+
+    assert result == "sk-" + "account-key-67890", f"应回退账号 key, 实际 {result}"
+    print(f"  [OK] 账号回退解密成功: {result[:8]}...")
+
+
+# ============================================================
+# Test 9c: 账号非 active (disabled/exhausted) → 跳过该账号
+# ============================================================
+def test_resolve_api_key_skips_disabled_account():
+    print("\n=== Test 9c: disabled 账号不回退 ===")
+    from intelligence.scheduler import _resolve_api_key
+    from security.crypto import encrypt
+
+    fake_channel = MagicMock()
+    fake_channel.id = 4
+    fake_channel.api_key_ciphertext = None
+
+    disabled_acc = MagicMock()
+    disabled_acc.status = "disabled"
+    disabled_acc.api_key_ciphertext = encrypt("sk-" + "disabled-key", "0" * 64)
+    disabled_acc.api_key = ""
+
+    fake_session = MagicMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=False)
+
+    async def _fake_list_active(session, provider):
+        return [fake_channel]
+
+    async def _fake_accounts(session, channel_id):
+        return [disabled_acc]
+
+    fake_source = MagicMock()
+    fake_source.api_key_from = "stepfun"
+
+    with patch("db.engine.async_session_factory", return_value=fake_session), \
+         patch("db.crud.list_active_channels_by_provider", _fake_list_active), \
+         patch("db.crud.get_accounts_by_channel", _fake_accounts):
+        result = asyncio.run(_resolve_api_key(fake_source))
+
+    assert result is None, f"disabled 账号 key 不应使用, 实际 {result}"
+    print("  [OK] disabled 账号被跳过, 返 None")
+
+
+# ============================================================
 # Test 10: _resolve_api_key api_key_from=None → None (短路)
 # ============================================================
 def test_resolve_api_key_no_provider():
@@ -435,11 +515,13 @@ def main():
     test_fetch_api_url_trailing_slash()
     test_resolve_api_key_happy()
     test_resolve_api_key_no_channel()
+    test_resolve_api_key_fallback_to_account()
+    test_resolve_api_key_skips_disabled_account()
     test_resolve_api_key_no_provider()
     test_intel_source_base_new_fields()
 
     print("\n" + "=" * 60)
-    print("ALL 11 TESTS PASSED")
+    print("ALL 13 TESTS PASSED")
     print("=" * 60)
 
 
