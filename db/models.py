@@ -499,6 +499,9 @@ class IntelSource(Base):
     last_content = Column(Text, nullable=True, comment="上次完整内容（截断 50KB，用于相似度计算）")
     error_count = Column(Integer, default=0)
     consecutive_no_change = Column(Integer, default=0, comment="连续无变化次数（自适应降频用）")
+    # A-2 (2026-09-08): 最后一次检测到内容变化的时间（含相似度噪声跳过）。
+    # 系统级盲区审计判据: 全部 active 源 last_changed_at 距今 > N 天 → 情报系统失明
+    last_changed_at = Column(DateTime, nullable=True, comment="最后变化检测时间 (A-2 盲区审计)")
     created_at = Column(DateTime, default=func.now())
 
 

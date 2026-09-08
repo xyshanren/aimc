@@ -11,6 +11,7 @@
 
 import asyncio
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -237,6 +238,16 @@ async def start_scheduler():
         trigger=IntervalTrigger(hours=6),
         id="transcript_log_cleanup",
         name="转录日志清理 (保留 N 小时)",
+        replace_existing=True,
+    )
+
+    # A-2 (2026-09-08): 系统级盲区审计 — 全部在采源 7 天零变化检测 → 告警
+    # 9/8 实证: 错误页被当内容 → 14 天零变化检测无任何告警; 本任务是最后防线
+    scheduler.add_job(
+        intel_blindspot_audit_task,
+        trigger=IntervalTrigger(hours=6),
+        id="intel_blindspot_audit",
+        name="情报系统盲区审计 (A-2)",
         replace_existing=True,
     )
 
@@ -537,6 +548,22 @@ async def _run_source_task(source):
                 # 调 handle_fetch_error：累加 error_count + 按规则告警
                 await handle_fetch_error(source, error or "未知错误")
                 return
+
+            # A-2 (2026-09-08): 内容健康检查 — 错误页不进 differ
+            # 错误页字节级稳定 → 入库 last_content 后会永久"无变化"
+            # (9/8 实证: 多源错误页导致全系统 14 天零变化检测且无告警)。
+            # 走 handle_fetch_error 复用既有 error_count/禁用/恢复机制;
+            # API 结构化内容 (JSON) 不检查, 避免误伤小模型列表
+            from intelligence.content_guard import classify_content
+            healthy, guard_reason = classify_content(content)
+            if not healthy:
+                logger.warning(
+                    f"内容健康检查不通过: {source.provider} - {guard_reason}"
+                )
+                await handle_fetch_error(
+                    source, f"{guard_reason} (head={content[:150]!r})"
+                )
+                return
         elif content is None:
             # api_endpoint 失败且没配 HTML url (新厂商 source 常见)
             logger.warning(
@@ -730,3 +757,93 @@ async def _weekly_suggest_changes_task():
         logger.error("方案A: 周建议生成超时 (>120s)")
     except Exception as e:
         logger.error(f"方案A: 周建议生成异常: {e}", exc_info=True)
+
+
+# A-2 (2026-09-08): 盲区判定阈值 — 全部在采HTML源距最后变化检测超过此天数 → 失明
+# 依据: 官网优惠月级变化是常态, 单源 7 天无变化不告警 (进周报);
+#       但全部源 7 天零变化 = 系统级失明 (9/8 实证: 14 天零变化无人知晓)
+BLINDSPOT_DAYS = 7
+# 参与盲区判定的最小在采源数 (避免样本过小时误报)
+BLINDSPOT_MIN_SOURCES = 3
+# "在采" 判定: 距上次检查在此窗口内 (说明爬虫还活着, 而不是停摆)
+BLINDSPOT_ACTIVE_WINDOW_HOURS = 48
+
+
+async def intel_blindspot_audit_task():
+    """A-2 (2026-09-08): 系统级盲区审计 — 每 6h 检查"情报系统是否失明"
+
+    故障模式: 每个源局部都"正常" (采集成功 + 无变化), 但全局已失明 —
+    9/8 实证: 错误页字节级稳定 → differ 判无变化 → 14 天全系统零变化检测,
+    全程无告警。本任务是最后一道防线: 站在全局视角看"系统多久没产出过变化了"。
+
+    判据 (三者同时满足才告警, throttle 3 天):
+    1. 参与 HTML 采集的 active 源 (web_page/announcement/price_aggregator) 数量
+       >= BLINDSPOT_MIN_SOURCES — 排除 model_list (缺 key 空转) / benchmark (周级) /
+       从未检查过的源
+    2. 全部参与源 last_check_at 距今 < 48h — 爬虫还在正常跑
+    3. 全部参与源 last_changed_at 距今 > BLINDSPOT_DAYS 天 — 但很久没见到任何变化
+    """
+    try:
+        from datetime import timedelta
+
+        from sqlalchemy import select
+
+        from db.engine import async_session_factory
+        from db.models import IntelSource
+
+        now = datetime.now()
+        participating_types = ("web_page", "announcement", "price_aggregator")
+        async with async_session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(IntelSource).where(
+                        IntelSource.status == "active",
+                        IntelSource.source_type.in_(participating_types),
+                    )
+                )
+            ).scalars().all()
+
+        running = []
+        for r in rows:
+            if r.last_check_at is None:
+                continue  # 从未检查过 (新源/空转源), 不参与判定
+            age_hours = (now - r.last_check_at).total_seconds() / 3600
+            if age_hours > BLINDSPOT_ACTIVE_WINDOW_HOURS:
+                continue  # 长期未检查 (爬虫没跑它), 不参与判定
+            running.append(r)
+
+        if len(running) < BLINDSPOT_MIN_SOURCES:
+            logger.debug(
+                f"盲区审计: 在采源不足 {BLINDSPOT_MIN_SOURCES} 个"
+                f" (实际 {len(running)}), 跳过判定"
+            )
+            return
+
+        changed_since = now - timedelta(days=BLINDSPOT_DAYS)
+        stale = [r for r in running if not r.last_changed_at or r.last_changed_at < changed_since]
+        if len(stale) < len(running):
+            logger.debug(
+                f"盲区审计: {len(running)} 个在采源中 {len(running) - len(stale)} 个"
+                f"近 {BLINDSPOT_DAYS} 天有变化, 系统健康"
+            )
+            return
+
+        lines = [f"⚠️ 情报系统疑似失明: {len(running)} 个在采源已 {BLINDSPOT_DAYS} 天零变化检测"]
+        for r in running:
+            days_stale = (
+                (now - r.last_changed_at).days if r.last_changed_at else "从未"
+            )
+            lines.append(
+                f"- {r.provider}/{r.source_type}: 连续无变化 {r.consecutive_no_change} 次, "
+                f"最后变化 {days_stale} 天前, url={r.url}"
+            )
+        lines.append("建议: 检查采集源是否抓到错误页 (content_guard 告警) / 页面改版 / 反爬")
+        from intelligence.alerter import send_alert
+        await send_alert(
+            "\n".join(lines),
+            key="blindspot_audit:intel_blind",
+            silence_seconds=3 * 86400,
+        )
+        logger.warning(lines[0])
+    except Exception as e:
+        logger.error(f"盲区审计失败: {e}", exc_info=True)

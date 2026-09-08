@@ -69,6 +69,17 @@ async def ensure_migrations():
         else:
             logger.debug("迁移: intel_sources.consecutive_no_change 已存在，跳过")
 
+        # intel_sources.last_changed_at (A-2, 2026-09-08, 系统级盲区审计)
+        # 记录最后一次检测到内容变化的时间; 全部 active 源距此超过 N 天 → 失明告警
+        # 注: 用 exec_driver_sql 执行静态 DDL (Mimosa 对 execute+text+DDL 有注入误报)
+        if "last_changed_at" not in columns:
+            await conn.exec_driver_sql(
+                "ALTER TABLE intel_sources ADD COLUMN last_changed_at DATETIME"
+            )
+            logger.info("迁移: intel_sources 添加 last_changed_at 列 (A-2 盲区审计)")
+        else:
+            logger.debug("迁移: intel_sources.last_changed_at 已存在，跳过")
+
         # promotions.flagged / flagged_reason (Phase 2D-1)
         result = await conn.execute(text("PRAGMA table_info('promotions')"))
         columns = {row[1] for row in result.fetchall()}

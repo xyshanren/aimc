@@ -380,6 +380,9 @@ async def generate(
     sections.extend(render_top_models(this_week))
     sections.extend(render_trends(this_week, last_week))
     sections.extend(render_alerts(this_week))
+    # A-2 (2026-09-08): 情报采集健康章节 (盲区指标)
+    from scripts._weekly_intel_section import render_intel_blindspot
+    sections.extend(await render_intel_blindspot())
     # 方案A (2026-08-14): 模型分组建议章节
     sections.extend(render_suggestions(sugs))
     sections.extend(render_actions(this_week))

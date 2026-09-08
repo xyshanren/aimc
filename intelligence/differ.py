@@ -126,6 +126,10 @@ async def _update_source_hash(source, new_hash: str, new_content: Optional[str] 
                 "last_check_at": datetime.now(),
                 "error_count": 0,
                 "consecutive_no_change": 0,  # V4.8.3: 有变化时归零
+                # A-2 (2026-09-08): 记录变化检测时间, 供系统级盲区审计判"失明"
+                # 本函数覆盖所有"看到过新内容"的路径 (首次/真变化/相似度噪声跳过),
+                # 只有 hash 完全相同的无变化路径不经过这里
+                "last_changed_at": datetime.now(),
             }
             if new_content is not None:
                 update_kwargs["last_content"] = new_content[:_LAST_CONTENT_MAX_LEN]

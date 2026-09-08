@@ -84,6 +84,8 @@ aimc/
 
 ## 最近变更（2026-08-16~25）
 
+- **A-2 采集健康盲区告警（2026-09-08）**：修复情报系统"失明两周无人知晓"（错误页字节级稳定 → differ 判无变化 → 14 天零变化检测零告警）。新增 `intelligence/content_guard.py` 内容健康检查（错误页特征库：`__next_error__`/404 title/Chromium 网络错误/未渲染 SPA + 500B 最短长度，只查前 4KB 防误报），fetch 后 differ 前挂钩——不健康内容不写 last_content（不污染 hash 基线），走既有 handle_fetch_error 通道（error_count+1，连续 3 次禁用+告警，恢复自动通知）；新增 `intel_blindspot_audit_task`（每 6h，全部在采 HTML 源 `last_changed_at` 距今 >7 天 → "系统疑似失明"告警，throttle 3 天）；intel_sources 加 `last_changed_at` 列（ensure_migrations 幂等 ALTER）；周报新增「情报采集健康」章节（error 态源/缺 key 空转/距上次变化天数）
+
 - **V4.9.5 SenseNova 模型接入**：sensenova-6.8-flash-lite 加入 model_registry + tier:balanced（modality=text，公测免费 price=0.0）；glm-5.2 加入 sensenova_official 渠道 price_snapshots 作为免费第二渠道（cheapest 策略下 0.0 胜过 siliconflow 8.0）；VM 迁移脚本 `db/migrations/2026_08_25_add_sensenova_models.py` 幂等 INSERT
 
 - **V4.8 多用户**：users/api_keys 表、`aimc-` key 按人记账 + 日/月限额、CLI（add_user_key）、Dashboard 按人用量 + Key 管理

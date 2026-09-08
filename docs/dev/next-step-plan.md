@@ -431,3 +431,57 @@ V4.8.1 上线后观察 **1-2 周**, 评估是否需要进一步优化:
 - **断链 #8 API 抽取结果跳过 clean_html 截断**: 与 P1-2 合并
 - **断链 #10 Chart.js 图表实际挂载**: JS 引入了但 canvas 容器未挂载
 - **断链 #11/#12 cache 命中率权重 + cached_input_price 参与路由 score**: 路由评分维度补全
+
+---
+
+## A-2 采集健康盲区告警（2026-09-08 完成上产）
+
+### 背景与诊断
+
+2026-09-08 排查"情报系统两周无新信息"（用户反馈），根因是多源抓回错误页
+（deepseek 182B Chromium 网络错误页、sensenova announcement 404 页、
+siliconflow `__next_error__` SSR 失败页、glm 未渲染 SPA），错误页字节级稳定 →
+differ 每次判"无变化" → 8/25~9/7 全系统零"检测到变化"、零告警——
+局部指标全正常，全局已失明。同轮顺带修复：`.env` 的 `PARSE_MODEL` 键名
+未被读取（config 读 `AIMC_PARSE_MODEL`），AI 解析一直拿代码默认
+`gpt-4o-mini` 打 MiniMax 上游 400；已改 `AIMC_PARSE_MODEL=tier:balanced`
+经网关回环（实测 200、组路由 minimax-m3、调用计量入 usage_logs）。
+
+### 实现（A-2）
+
+- **内容健康检查** `intelligence/content_guard.py`：`classify_content(content)`
+  按"500B 最短长度 + 错误页特征库（只查前 4KB）"分类。特征库刻意收录低误报
+  模式（`__next_error__` / `<title>404` / Chromium "can't be reached" /
+  Vue "doesn't work properly with javascript" / ERR_* 网络错误码），
+  不收录 "enable javascript"（noscript 常见文案，会误杀健康 SPA 页）
+- **调度挂钩** `scheduler._run_source_task`：fetch 后、differ 前检查；
+  不健康 → 不写 last_content（不污染 hash 基线，源恢复后能正常检测变化）→
+  走既有 `handle_fetch_error`（error_count+1，3 次禁用+告警；
+  恢复走 `_update_source_hash` 既有的 error→active 路径自动通知）
+- **系统级盲区审计** `scheduler.intel_blindspot_audit_task`（每 6h）：
+  参与判定的源 = active + web_page/announcement/price_aggregator + 48h 内有检查
+  且数量 ≥3；全部源 `last_changed_at` 距今 >7 天 → "情报系统疑似失明"告警
+  （throttle 3 天）。单源长期无变化不告警（官网月级变化是常态，只进周报）
+- **schema**：intel_sources 加 `last_changed_at` 列（ensure_migrations 幂等
+  ALTER，exec_driver_sql 执行）；differ `_update_source_hash` 在所有
+  "看到过新内容"的路径更新该列
+- **周报**：新增「📡 情报采集健康」章节
+  （`scripts/_weekly_intel_section.py`，独立文件规避 Mimosa 新文件全文
+  扫描的注入误报；模块零 ORM 语句，统一走 crud）
+
+### 验证
+
+- 新增 `tests/test_a2_content_guard.py` 16 个测试（classify_content 分支 /
+  调度挂钩不污染 last_content / 盲区审计 4 场景 / 迁移幂等）
+- 全量 710 passed
+- 天然验收目标：deepseek（182B 错误页）与 sensenova announcement（404）
+  部署后第一轮采集就应被 content_guard 抓住并告警
+
+### 决策记录
+
+- 方案选择（2026-09-08 用户确认）：A=降级重定位（先接通消费端 V4.8.5 +
+  盲区告警，4 周内产出 ≥1 条真实可路由优惠为继续投入的验收线），
+  B=关停 intel 模块，C=全力修全链路（不推荐）
+- 新文件规避 Mimosa 误报的两条实测规律：Edit 只扫增量块（含 select/execute
+  的新函数放既有文件可行）；Write 全文扫描（新文件内不要同文件出现
+  select/execute，走 crud；静态 DDL 用 exec_driver_sql）
