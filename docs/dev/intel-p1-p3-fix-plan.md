@@ -1,9 +1,33 @@
 # 情报系统遗留问题设计方案：P1 重复入库去重 + P3 七个 error 源修复
 
-> 2026-09-09 起草。背景：9/8 A-2 采集健康盲区告警上产后，排查确认两项遗留：
+> 2026-09-09 起草，同日实施完毕（3e6f435）。背景：9/8 A-2 采集健康盲区告警上产后，排查确认两项遗留：
 > 问题 1 = stepfun 同一事件重复入库（AI 措辞标题绕过去重）；问题 3 = 7 个 error 源 URL/形态失效。
-> 本文档只做方案设计，未实施。问题 2（content_guard 签名）与问题 4（_resolve_api_key accounts 回退）
-> 已于 9/9 修复上产（d1bbe08 / e69c2cb）。
+> 问题 2（content_guard 签名）与问题 4（_resolve_api_key accounts 回退）同日早些时候修复上产（d1bbe08 / e69c2cb）。
+
+---
+
+## 实施记录 (2026-09-09, 3e6f435)
+
+- **P1 层 1 已上线，阈值规则经生产数据校准后修改**：对 9/8 stepfun 11 条重复实测，
+  同事件 AI 摘要文本相似度仅 0.23~0.87，纯 0.70 文本阈值拦不住一半 → 最终规则为
+  URL+相似度组合：同 (provider,url) 24h 内无条件跳过 / 7d 内相似度≥0.50 跳过 /
+  任意 url 7d 内相似度≥0.70 跳过。理由：同页每周期重抓，真实新优惠误拦后下周期自然重进。
+  测试 test_intel_promo_dedup 6 个夹具（714→720 全绿）。
+- **存量清理已完成**：非链式 24h 窗聚类（初版滑窗链式误删 121/133 已废弃），删 106 条重复
+  （stepfun 38 / sensenova 39 / kimi 19 / deepseek 9 / openrouter 1），133→27；
+  全字段备份 `~/aimc/data/promo_dedup_backup_20260909.json` (312KB)。
+- **P3 全部 7 源已修复上线（无暂停项）**：
+  - qwen×3、deepseek×2 按 A 组方案换 URL（selector 校正：阿里云新页 article 仅 55 字符噪声 → main）；
+  - hunyuan 按 C 组升级指示完成官方地址调查：**混元 1729 平台 2026-09-30 停服下线，迁 TokenHub
+    (docs product 1823)**，源改挂 TokenHub 模型价格页 130055（SSR 健康，#docArticleContent 1.7 万字符）；
+  - sensenova B1 渲染试探**意外成功**：sensecore console 文档站确系登录墙（渲染后 0 字符），
+    但官网公开 www.sensenova.cn/token-plan 渲染健康（769 字符，套餐/折扣官方落点），直接挂上；
+  - intel_sources 7 行原地 UPDATE url+复位。
+- **端到端验证**：_run_source_task 实跑 qwen/sensenova/hunyuan 三源——qwen/hunyuan 抓取 51KB、
+  AI 解析触发、低置信度正确标黄；发现并修复迁移时序瑕疵（启动注册先于迁移 SQL 产生
+  sensenova 重复行，已按旧 id 保留原则去重，全表 36 行无重复）。
+- **观察项**：qwen AI 解析首查偶发 `<think>` 泄漏致 JSON 解析失败重试（上游推理模型行为，重试即成功，
+  非本轮范围）；deepseek/qwen 剩余 4 源待小时级周期首采确认。
 
 ---
 
