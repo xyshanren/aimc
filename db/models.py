@@ -459,6 +459,7 @@ class ModelFeedbackSummary(Base):
     p95_latency_ms = Column(Integer, nullable=True)
     avg_output_tokens = Column(Integer, nullable=True)
     feedback_score = Column(Float, nullable=True)
+    feedback_score_no_retry = Column(Float, nullable=True, comment="对照分数: 不含重试项 (100 - 50*fail_rate - 延迟分档扣分), 与 feedback_score 并存供对比取舍")
     client_breakdown = Column(Text, nullable=True, comment="JSON: 按 account_id 统计请求数")
     created_at = Column(DateTime, default=func.now())
 

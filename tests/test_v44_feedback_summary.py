@@ -259,14 +259,19 @@ def test_aggregate_upsert_idempotent():
         assert n1 == 1, f"应聚合 1 个 model, 实际 {n1}"
 
         # 5) 验证 feedback_score: fail_rate=0.2, retry_rate=0.0, p95=1000
-        #    score = max(0, min(100, 100 - 30*0 - 50*0.2 - 0.01*1000)) = max(0, min(100, 100 - 10 - 10)) = 80
+        #    V6.x 分档延迟扣分: p95=1000 ≤ 2000 → 扣 0; 小时间隔 > RETRY_GAP_SECONDS(60s) → retry=0
+        #    score = max(0, min(100, 100 - 30*0 - 50*0.2 - 0)) = 90
         async with async_session_factory() as session:
             row = (await session.execute(
                 select(ModelFeedbackSummary)
             )).scalar_one()
             assert row.model_id == "deepseek-chat"
-            assert abs(row.feedback_score - 80.0) < 0.01, (
-                f"score 应 80.0, 实际 {row.feedback_score}"
+            assert abs(row.feedback_score - 90.0) < 0.01, (
+                f"score 应 90.0, 实际 {row.feedback_score}"
+            )
+            assert row.feedback_score_no_retry is not None, "对照分数 feedback_score_no_retry 应落库"
+            assert abs(row.feedback_score_no_retry - 90.0) < 0.01, (
+                f"no_retry 分应 90.0 (retry=0 时与主分一致), 实际 {row.feedback_score_no_retry}"
             )
             assert row.request_count == 5
             assert row.success_count == 4

@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 
 REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
 
+# 最小样本门槛: 低于该调用次数的模型不参与排行/趋势排名, 标注"样本不足"
+# (2 次干净请求拿 94.6 分压过旗舰模型属于噪声, 反馈分是服务质量分不是能力分)
+MIN_SAMPLES = 20
+
+
+def format_latency(ms: int | None) -> str:
+    if ms is None:
+        return "—"
+    return f"{ms / 1000:.1f}s" if ms >= 1000 else f"{ms}ms"
+
 
 @dataclass
 class WeekStats:
@@ -118,25 +128,41 @@ def render_overview(this_week: WeekStats, last_week: WeekStats) -> list[str]:
 
 def render_top_models(this_week: WeekStats) -> list[str]:
     scored = sorted(
-        [r for r in this_week.rows if r.feedback_score is not None],
+        [r for r in this_week.rows if r.feedback_score is not None and r.request_count >= MIN_SAMPLES],
         key=lambda r: r.feedback_score,
         reverse=True,
     )[:5]
-    if not scored:
+    low_sample = sorted(
+        [r for r in this_week.rows if r.feedback_score is not None and r.request_count < MIN_SAMPLES],
+        key=lambda r: r.feedback_score,
+        reverse=True,
+    )
+    if not scored and not low_sample:
         return ["## 🏆 反馈分排行 Top 5", "", "本周暂无反馈数据", ""]
     lines = [
         "## 🏆 反馈分排行 Top 5",
         "",
-        "| 排名 | 模型 | 反馈分 | 调用次数 | 成本 (¥) | 失败率 |",
-        "|---|---|---|---|---|---|",
+        f"_仅统计调用次数 ≥ {MIN_SAMPLES} 的模型；延迟为 p95，按分档轻扣分（思考类模型豁免）_",
+        "",
+        "| 排名 | 模型 | 反馈分 | 调用次数 | 成本 (¥) | 失败率 | p95 延迟 |",
+        "|---|---|---|---|---|---|---|",
     ]
-    for idx, row in enumerate(scored, 1):
-        cost = row.cost_total or 0.0
-        fail = row.fail_rate or 0.0
-        lines.append(
-            f"| {idx} | `{row.model_id}` | {row.feedback_score:.1f} | "
-            f"{row.request_count:,} | {cost:.2f} | {format_pct(fail)} |"
+    if scored:
+        for idx, row in enumerate(scored, 1):
+            cost = row.cost_total or 0.0
+            fail = row.fail_rate or 0.0
+            lines.append(
+                f"| {idx} | `{row.model_id}` | {row.feedback_score:.1f} | "
+                f"{row.request_count:,} | {cost:.2f} | {format_pct(fail)} | "
+                f"{format_latency(row.p95_latency_ms)} |"
+            )
+    else:
+        lines.append("| — | — | — | — | — | — | — |")
+    if low_sample:
+        names = ", ".join(
+            f"`{r.model_id}`({r.request_count}次,{r.feedback_score:.1f}分)" for r in low_sample
         )
+        lines.append(f"| — | 样本不足: {names} | — | — | — | — | — |")
     lines.append("")
     return lines
 
@@ -146,12 +172,14 @@ def render_trends(this_week: WeekStats, last_week: WeekStats) -> list[str]:
     lines = [
         "## 📈 趋势对比",
         "",
+        f"_仅统计调用次数 ≥ {MIN_SAMPLES} 的模型（与排行一致）_",
+        "",
         "| 模型 | 本周分 | 上周分 | 变化 |",
         "|---|---|---|---|",
     ]
     has_any = False
     for row in this_week.rows:
-        if row.feedback_score is None:
+        if row.feedback_score is None or row.request_count < MIN_SAMPLES:
             continue
         has_any = True
         prev = last_by_model.get(row.model_id)
@@ -200,13 +228,17 @@ def render_actions(this_week: WeekStats) -> list[str]:
         lines.append("- 暂无足够数据生成建议")
         lines.append("")
         return lines
-    scored.sort(key=lambda r: r.feedback_score, reverse=True)
-    best = scored[0]
-    worst = scored[-1]
-    lines.append(
-        f"- 🥇 主路由候选: `{best.model_id}`（反馈分 {best.feedback_score:.1f}）"
-    )
-    if len(scored) > 1 and worst.feedback_score < 70:
+    # 主路由候选须过最小样本门槛: 低样本高分推荐进路由是拿生产流量赌噪声
+    qualified = [r for r in scored if r.request_count >= MIN_SAMPLES]
+    if qualified:
+        best = max(qualified, key=lambda r: r.feedback_score)
+        lines.append(
+            f"- 🥇 主路由候选: `{best.model_id}`（反馈分 {best.feedback_score:.1f}）"
+        )
+    else:
+        lines.append(f"- 🥇 主路由候选: 暂无（所有模型调用次数 < {MIN_SAMPLES}, 样本不足）")
+    worst = min(scored, key=lambda r: r.feedback_score)
+    if len(scored) > 1 and worst.feedback_score < 70 and worst.request_count >= MIN_SAMPLES:
         lines.append(
             f"- 👀 观察期: `{worst.model_id}`（反馈分 {worst.feedback_score:.1f}, "
             "低于 70, 建议下周持续监控）"

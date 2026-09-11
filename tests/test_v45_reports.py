@@ -52,14 +52,18 @@ def _install_mock_env():
 _install_mock_env()
 
 
-def _make_row(model: str, *, score: float | None, req: int = 10, success: int = 10,
+def _make_row(model: str, *, score: float | None, req: int = 100, success: int = 100,
               retry: int = 0, cost: float = 1.0, fail_rate: float = 0.0,
-              retry_rate: float = 0.0):
-    """构造 ModelFeedbackSummary 的 duck type (用 SimpleNamespace)"""
+              retry_rate: float = 0.0, p95_latency_ms: int | None = None):
+    """构造 ModelFeedbackSummary 的 duck type (用 SimpleNamespace)
+
+    req 默认 100: MIN_SAMPLES=20 门槛之下默认样本充足, 门槛行为用 req<20 显式构造.
+    """
     return SimpleNamespace(
         model_id=model, feedback_score=score,
         request_count=req, success_count=success, retry_count=retry,
         cost_total=cost, fail_rate=fail_rate, retry_rate=retry_rate,
+        p95_latency_ms=p95_latency_ms,
     )
 
 
@@ -139,10 +143,10 @@ def test_render_overview():
 # Test 4: render_top_models 排序 + Top 5 截断
 # ============================================================
 def test_render_top_models():
-    print("\n=== Test 4: render_top_models 排序 + Top 5 截断 ===")
+    print("\n=== Test 4: render_top_models 排序 + Top 5 截断 + 样本门槛 ===")
     from scripts.generate_weekly_report import WeekStats, render_top_models
 
-    # 7 行, 应只取 Top 5
+    # 7 行 (req 默认 100 ≥ MIN_SAMPLES), 应只取 Top 5
     rows = [
         _make_row(f"m{i}", score=float(100 - i*10))
         for i in range(7)
@@ -165,7 +169,43 @@ def test_render_top_models():
     m0_pos = text.find("`m0`")
     m4_pos = text.find("`m4`")
     assert m0_pos < m4_pos, f"m0 (100) 应排在 m4 (60) 之前"
-    print(f"  [OK] Top 5 排序正确 (100 > 90 > 80 > 70 > 60)")
+    # p95 延迟列存在
+    assert "p95 延迟" in text
+    print(f"  [OK] Top 5 排序正确 (100 > 90 > 80 > 70 > 60), p95 列在表头")
+
+    # 子测试: req < MIN_SAMPLES 的模型进 "样本不足" 行, 不进排名
+    rows_low = [
+        _make_row("big", score=99.0, req=200),
+        _make_row("tiny_a", score=94.6, req=2),
+        _make_row("tiny_b", score=88.0, req=5),
+    ]
+    stats_low = WeekStats(
+        period_start=datetime(2026, 8, 10), period_end=datetime(2026, 8, 17),
+        rows=rows_low,
+    )
+    lines_low = render_top_models(stats_low)
+    text_low = "\n".join(lines_low)
+    assert "`big`" in text_low and "94.6" not in text_low.split("样本不足")[0].split("`tiny_a`")[0]
+    assert "样本不足" in text_low
+    assert "`tiny_a`(2次,94.6分)" in text_low
+    assert "`tiny_b`(5次,88.0分)" in text_low
+    # 样本不足行在表格尾部, 不占排名
+    assert text_low.find("样本不足") > text_low.find("`big`")
+    # p95 格式: ≥1s 显示秒, <1s 显示 ms
+    rows_lat = [
+        _make_row("fast", score=90.0, req=100, p95_latency_ms=800),
+        _make_row("slow", score=90.0, req=100, p95_latency_ms=104_000),
+        _make_row("nolat", score=90.0, req=100, p95_latency_ms=None),
+    ]
+    stats_lat = WeekStats(
+        period_start=datetime(2026, 8, 10), period_end=datetime(2026, 8, 17),
+        rows=rows_lat,
+    )
+    text_lat = "\n".join(render_top_models(stats_lat))
+    assert "800ms" in text_lat
+    assert "104.0s" in text_lat
+    assert "—" in text_lat
+    print(f"  [OK] 样本不足行 + p95 格式 (800ms / 104.0s / —)")
 
 
 # ============================================================
