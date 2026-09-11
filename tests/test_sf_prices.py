@@ -71,10 +71,10 @@ def test_bge():
 
 
 def test_minimax():
-    """Pro/MiniMaxAI/MiniMax-M2.5 -> (2, 1.2)"""
+    """Pro/MiniMaxAI/MiniMax-M2.5 -> (2.1, 8.4) — 2026-09 校准: 输出价 1.2 实为 8.4"""
     ip, op = find_sf_prices("Pro/MiniMaxAI/MiniMax-M2.5")
-    assert ip == 2.0
-    assert op == 1.2
+    assert ip == 2.1
+    assert op == 8.4
 
 
 def test_free_model():
