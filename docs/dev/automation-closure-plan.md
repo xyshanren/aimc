@@ -162,7 +162,11 @@ V7.0 (远期, 拍板后立项)
 | 2026-09-05 | 路径 C 并入 V7.0（与 yield/Phase C 同批），不单独提前 | 待拍板 |
 | 2026-09-05 | 操作审计：内网自用继续观察，公网/多用户前必修 | 待拍板 |
 | 2026-09-05 | 看板图-表联动（F7）纳入 V6.3 体验项：环图↔渠道表、柱图↔日表做双向 hover 联动；趋势线图无对应表格不做 | **生效（V6.3 上产）** |
-| （待补） | AUTO_JOIN_NON_T0 最终策略（S1-S4 择一） | 观察 ≥2 周后 |
+| 2026-09-11 | **S3 生效**：AUTO_JOIN_NON_T0=True + 新增 `AUTO_JOIN_MIN_CONFIDENCE=0.9`（非 T0 自动入组门槛；T0 恒免人工不受约束）。决策依据（观察期收口，提前于 9/19）：pending 恒 0 无审批负担、组命中 96.5%、盲区 33.3%→18.2% 良性（2 个低流量 SenseNova 模型）、kimi-k2.6 两次推断 T1→T2 不一致支持置信门控。不达标走既有 pending 人工路径 | **用户拍板，生效（V6.4 上产）** |
+| 2026-09-11 | R9 采集失败恢复 Phase 1-3 **不做**：告警频率观察达标（9/9 全天仅已知坏源告警，无新退化）；8 个持续 error 死源改为运维禁用处置（qwen/aliyun ×3、deepseek api ×2、hunyuan、sensenova news、SF pricing 旧 URL） | **用户拍板，生效** |
+| 2026-09-11 | #11/#12 cache 权重 + cached_input_price 进路由：合并为一步落地 — `_get_input_price` 按渠道 7d 实测命中率折算有效输入价（hit=0 退化原价，行为不变） | **用户拍板，生效（V6.4 上产）** |
+| 2026-09-11 | 反馈公式 retry 项：**保留双分现状**（feedback_score + feedback_score_no_retry 并存），观察满 2~4 周（~2026-09-23~10-07）后再取舍 | **用户拍板** |
+| （待补） | 思考注入各渠道开谁（Phase B 已上产默认全关） | 看一周数据后用户定 |
 
 ## 6. 实施记录
 
@@ -180,9 +184,10 @@ V7.0 (远期, 拍板后立项)
 
 **F3 自动入组数据积累埋点（R3，纯只读）**
 - `dashboard/routes.py GET /api/ops/auto-join-metrics?days=14`：5 组指标 —— ① pending 积压（当前 + 0-7d/7-14d 周桶）② tier 分布（ai_infer tier 行 GROUP BY new_value）③ 审批负担（近 N 天 approved=1 处理量；approve/reject 行级同值不可拆分，报合并量并注明）④ 组路由命中（usage_logs GROUP BY group_id，tier:* 占比 vs NULL 精确路由）⑤ infer_tier 盲区（metadata 行 new_value JSON 里 inferred_tier=null 占比）。
+- 扩展（2026-09-11）：新增顶层键 `rag_embedding_rerank` {count, pct, note} —— rag_demo 的 /v1/embeddings、/v1/rerank 流量自 2026-09-09 起直连 aimc，usage_logs.model 存上游 raw 名（`BAAI/bge-m3`、`BAAI/bge-reranker-v2-m3`），按 raw 名单列标注；属非 LLM 计量面，对比 LLM 调量曲线（如 R6-1 检索前改写上线前后）时请扣除，total 口径不变。周报总览同步加"其中 rag_demo embedding/rerank"行（`scripts/generate_weekly_report.py`，可选参数不破坏 2 参调用）。
 - 看板「运维」页新增「自动入组观察」卡（60s 轮询 + 手动刷新），每指标带阈值 badge（积压 >20 红 / 盲区 >30% 红），脚注指向本文档。
 - 行为零变更：AUTO_JOIN_NON_T0 保持 False，响应里 `auto_join_enabled: false` 快照。
-- 测试：`test_v63_auto_join_metrics.py` 3 例（全量种子 / 空库 / 非法 JSON 跳过）。
+- 测试：`test_v63_auto_join_metrics.py` 3 例（全量种子 / 空库 / 非法 JSON 跳过）；扩展后断言 rag count==2 / pct==33.3（全量种子）与 count==0（空库）。
 
 **F7 看板图-表联动（R11）**
 - `app.js _chartTableLink(chart, tableEl)`：图 onHover → 表行 `tr.hl`；表行 mouseenter → `setActiveElements` + tooltip 定位，mouseleave 复位。接入两处：Cache 环图↔按渠道表、每日请求柱图↔用量日表（概览趋势线图无对应表格，按设计不做）。

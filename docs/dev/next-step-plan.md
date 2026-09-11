@@ -270,7 +270,16 @@ embedding + 相似度命中。
 
 ---
 
-## 十一、采集失败恢复策略 (待定, 观察后决策)
+## 十一、采集失败恢复策略 (**已决策 2026-09-11: Phase 1-3 不做**, 死源改运维禁用)
+
+> **决策记录**（用户拍板，提前于 9/19 批次）：观察期结论 = 告警频率达标（≤12 条/天，
+> 9/9 全天告警全部对应 8 个已知坏源，无新退化、无间歇性恢复→再失败循环），
+> **Phase 1-3 不立项**。8 个持续 error 死源（qwen/aliyun ×3、deepseek api ×2、
+> hunyuan、sensenova news、SF pricing 旧 URL，err 7~82 次）已于 2026-09-12 生产库
+> `status='disabled'` 运维处置（32 active / 8 disabled）。
+> Phase 2C-1 自愈机制（连 3 失败自动 error + 成功自动恢复）继续覆盖坏 URL 修复后
+> 重启的场景：修好 URL 后 re-enable 即自动恢复采集。
+> 本节以下方案设计**保留原貌**供将来公网化/多源扩容时参考。
 
 ### 背景
 
@@ -430,7 +439,7 @@ V4.8.1 上线后观察 **1-2 周**, 评估是否需要进一步优化:
 - **断链 #5 跨源分歧 UI 挂载容器**: index.html 缺 cross-source-list 容器，app.js 渲染器已写好
 - **断链 #8 API 抽取结果跳过 clean_html 截断**: 与 P1-2 合并
 - **断链 #10 Chart.js 图表实际挂载**: JS 引入了但 canvas 容器未挂载
-- **断链 #11/#12 cache 命中率权重 + cached_input_price 参与路由 score**: 路由评分维度补全
+- **断链 #11/#12 cache 命中率权重 + cached_input_price 参与路由 score**: ✅ **2026-09-11 完成**（V6.4）— `_get_input_price` 按渠道 7d 实测 cache 命中率折算有效输入价（hit=0 退化原价），commit 7698aa4
 
 ---
 

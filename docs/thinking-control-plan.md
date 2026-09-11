@@ -1,7 +1,7 @@
 # 思考控制方案（观察期决策记录）
 
 > 受众：评估"是否要对思考型模型做服务端关思考/注入"的人；以及观察期结束后的决策执行者。
-> 状态：**观察期**（2026-09-05 起）。Phase A（看板暴露 + token 计量）已上产，注入模式未实现。
+> 状态：**Phase B 已上产（2026-09-11）**。Phase A（看板暴露 + token 计量）+ Phase B（渠道级注入开关，默认全关）均已上产；各渠道开谁由用户看数据决定。
 
 ## 1. 背景与结论摘要
 
@@ -62,6 +62,32 @@
 
 **不触发则维持现状**：请求侧剥离（客户端显式传参场景）+ 计量即可，不做注入。
 
+### 决策记录（2026-09-11，提前于 9/19 批次，用户拍板）
+
+**触发条件成立，Phase B 立项上产**：
+
+- 条件 1 成立：思考/输出比 W35（8/24~8/30）47.5% + W36（8/31~9/6）48.8%，连续两个完整自然周 >30%。
+- 条件 2 方向成立：kimi-k3 131.5s / glm-5.3 31.9s / dsv4-pro 21.4s，显著高于 minimax-m3 7.2s。
+- 数据（7d 分渠道，上产当日采集，供逐渠道开关决策）：
+
+| 渠道 | 请求量 | 计量填充率 | 思考/输出比 | 均延迟 |
+|------|--------|-----------|------------|--------|
+| deepseek_official | 1398 | 95.9% | 43.1% | 5.4s |
+| sensenova_official | 1179 | 83.8% | 59.1% | 20.9s |
+| glm_bigmodel | 774 | 60.1% | 43.5% | 26.3s |
+| minimax_compat | 708 | 73.3% | 47.9% | 7.2s |
+| siliconflow_aggregator | 26 | 0% | — | — |
+
+- 分模型 7d：dsv4-pro 59.0%（21.4s）、6.8-flash-lite 53.1%、glm-5.3-flash 53.6%、minimax-m3 47.9%、dsv4-flash 46.0%、kimi-k3 80.5%（131.5s，n=6）。
+
+### Phase B 已落地内容（2026-09-11）
+
+- `channels.disable_thinking_inject` 列（迁移 `db/migrations/2026_09_11_v6x_thinking_inject.py`，幂等，默认 0）。
+- `gateway/proxy.py::_inject_thinking_off`：与 `_strip_thinking_fields` 同位置注入 `enable_thinking: false`（OpenAI 风格）；**客户端显式传 enable_thinking 不覆盖**；上游不认参数靠既有 drop_params/auto_drop_params 防 400。
+- 渠道页"思考注入"开关列（与"思考剥离"并排）；channels GET/PUT 暴露。
+- 测试 `tests/test_v64_decision_batch.py`（注入 5 例 + S3 门槛 9 例 + cache 折算 8 例）。
+- **各渠道开关默认全关**，生产冒烟确认 6 渠道 inject=0 行为不变；开谁由用户看上表数据决定（建议先开 sensenova/glm_bigmodel 这类"思考比高 + 延迟高"渠道，逐渠道观察 reasoning_tokens 下降量）。
+
 ### Phase B 预案（届时再细化，此处只记方向）
 
 - 注入点：`gateway/proxy.py` 与 `_strip_thinking_fields` 同位置，按渠道/模型粒度
@@ -72,9 +98,10 @@
 
 ## 4. 相关文件
 
-- `gateway/proxy.py` — `_strip_thinking_fields`（V4.6.4 请求侧剥离）、`_parse_reasoning_tokens`（V6.x 计量）
+- `gateway/proxy.py` — `_strip_thinking_fields`（V4.6.4 请求侧剥离）、`_parse_reasoning_tokens`（V6.x 计量）、`_inject_thinking_off`（Phase B 注入）
 - `db/migrations/2026_09_05_v6x_reasoning_tokens.py` — `usage_logs.reasoning_tokens` 列
-- `db/models.py` — `UsageLog.reasoning_tokens`
+- `db/migrations/2026_09_11_v6x_thinking_inject.py` — `channels.disable_thinking_inject` 列
+- `db/models.py` — `UsageLog.reasoning_tokens`、`Channel.disable_thinking_inject`
 - `dashboard/routes.py` — usage/summary、requests、stats/per-user、channels GET/PUT
-- `dashboard/static/app.js` — 用量表思考列、请求日志 🧠、成本审计思考列、渠道剥离开关
-- `tests/test_thinking_strip.py` — 剥离 + 解析测试
+- `dashboard/static/app.js` — 用量表思考列、请求日志 🧠、成本审计思考列、渠道剥离/注入开关
+- `tests/test_thinking_strip.py` — 剥离 + 解析测试；`tests/test_v64_decision_batch.py` — 注入 + S3 门槛 + cache 折算

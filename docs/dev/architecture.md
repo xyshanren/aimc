@@ -310,4 +310,7 @@ httpx.AsyncClient (上游调用)
 | V6.3 | F1 首启检测进 gateway startup | 空渠道/无 active 账号时 WARN 引导而非阻断启动（个人项目哲学：服务照起，引导到位）；manual_import.py 从必做降级为可选捷径 |
 | V6.3.1 | 顶栏 badge 不为自愈错误报警 | pending-summary 增 `exclude_transient`（badge 传 true）：瞬时冷却（cooldown_degraded，15-60s 自动恢复）不计入 badge，消除「顶栏有数但运维页为空」的观察时差噪音；同时观察点落 `cooldown_events` 流水（同 episode 按 cooldown_until 去重，badge 30s + ops 60s 双观察者不重复），运维页 24h 瞬时冷却记录卡留痕可回看 |
 | 2026-09-10 | CONTEXT_WINDOW 分类行为中性 | error_classifier 新增 `context_window` 分类（deepseek `CONTEXT_WINDOW_EXCEEDED` 等），但不冷却/不探测/不 needs_human——与 CLIENT_ERROR 同为客户端侧错误，避免上游拒收超大上下文被当成渠道故障；价值在可观测（流式 400 失败补落 usage_logs）+ 为「上下文超限路由更大窗口渠道」留分类基础 |
+| V6.4 | S3：AUTO_JOIN 开启 + 置信门槛 | `AUTO_JOIN_NON_T0=True` + `AUTO_JOIN_MIN_CONFIDENCE=0.9`（仅约束非 T0，T0 恒免人工）：观察期数据（pending 恒 0/组命中 96.5%/盲区良性）支持开启，kimi-k2.6 两次推断不一致支持置信门控；不达标走既有 pending 人工路径 |
+| V6.4 | Phase B 渠道级注入默认关 | 思考注入（`enable_thinking:false`）做成渠道开关且默认 0：强关思考可能降回答质量，先零行为上产，逐渠道看数据再开（思考比高+延迟高的渠道优先） |
+| V6.4 | cache-aware 有效输入价折算不落库 | 路由 sort_key 用滚动 7d 实测命中率折算 `eff = hit*cached_price + (1-hit)*input_price`，内存 5min TTL 不写价格表：命中率是渠道行为非模型属性，落库会引入陈旧性；hit=0 退化为原价保证零数据时行为不变 |
 | 2026-09-11 | 流式错误体走缓冲直通 | `_forward_stream` status≥400 时 aread() 已消费流，stream_generator 的 aiter_raw() 必抛 StreamConsumed（生产 326 例/5 天）；修复为 `is_stream_consumed` 时 generator 直接 yield 缓冲字节，tail/full 缓冲语义与正常路径一致——错误体不丢（usage_logs/转录可见），正常流路径零改动 |
