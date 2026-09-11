@@ -231,6 +231,8 @@ async def get_channels_status(session: AsyncSession = Depends(get_session)):
             "auto_drop_params": ch.auto_drop_params,  # V4.8.7: 上游 400 自动学习
             # V6.x: 思考参数剥离开关 (1=请求侧剥离 thinking 字段, 默认开)
             "disable_thinking_pass_through": ch.disable_thinking_pass_through,
+            # Phase B (2026-09-11): 思考注入开关 (1=proxy 注入 enable_thinking:false, 默认关)
+            "disable_thinking_inject": ch.disable_thinking_inject,
             "accounts": len(ch.accounts),
             "active_accounts": len([a for a in ch.accounts if a.status == "active"]),
         }
@@ -277,12 +279,13 @@ async def update_channel(channel_id: int, request: Request,
         "drop_params": ch.drop_params,
         "auto_drop_params": ch.auto_drop_params,
         "disable_thinking_pass_through": ch.disable_thinking_pass_through,
+        "disable_thinking_inject": ch.disable_thinking_inject,
     }
 
     # 更新字段
     allowed_fields = {"base_url", "api_base", "api_style", "supports_prompt_cache",
                       "status", "priority", "drop_params", "auto_drop_params",
-                      "disable_thinking_pass_through"}
+                      "disable_thinking_pass_through", "disable_thinking_inject"}
     for field, value in body.items():
         if field in allowed_fields:
             setattr(ch, field, value)
@@ -305,6 +308,7 @@ async def update_channel(channel_id: int, request: Request,
         "drop_params": ch.drop_params,
         "auto_drop_params": ch.auto_drop_params,
         "disable_thinking_pass_through": ch.disable_thinking_pass_through,
+        "disable_thinking_inject": ch.disable_thinking_inject,
     }
     return {"ok": True, "before": before, "after": after}
 
@@ -2382,6 +2386,17 @@ async def reject_pending_review(
 # 纯只读观察指标, 为 AUTO_JOIN_NON_T0 决策积累数据 (≥2 周后分析 S1-S4)
 # ============================================================
 
+def _auto_join_non_t0() -> bool:
+    """运行时读取 AUTO_JOIN_NON_T0 (延迟 import 避免循环依赖, 测试可 monkeypatch)"""
+    from intelligence.model_sync import AUTO_JOIN_NON_T0
+    return AUTO_JOIN_NON_T0
+
+
+def _auto_join_min_confidence() -> float:
+    """运行时读取 AUTO_JOIN_MIN_CONFIDENCE (V6.4 S3, 2026-09-11)"""
+    from intelligence.model_sync import AUTO_JOIN_MIN_CONFIDENCE
+    return AUTO_JOIN_MIN_CONFIDENCE
+
 @router.get("/api/ops/auto-join-metrics")
 async def get_auto_join_metrics(
     days: int = Query(14, ge=1, le=90),
@@ -2484,6 +2499,17 @@ async def get_auto_join_metrics(
         pct = (cnt / total_requests * 100) if total_requests else 0.0
         group_routing_items.append({"group_id": label, "count": cnt, "pct": round(pct, 1)})
 
+    # rag_demo embedding/rerank 流量单列 (2026-09-09 起 rag_demo 直连 aimc):
+    # usage_logs.model 存上游 raw 名, 非 LLM 计量面, 单列避免混入 LLM 调量曲线
+    rag_bge_names = ["BAAI/bge-m3", "BAAI/bge-reranker-v2-m3"]
+    rag_bge_count = (
+        await session.execute(
+            select(func.count(UsageLog.id))
+            .where(UsageLog.created_at >= cutoff_local)
+            .where(UsageLog.model.in_(rag_bge_names))
+        )
+    ).scalar() or 0
+
     # --- 5) infer_tier 盲区 (metadata 行 new_value JSON inferred_tier=null) ---
     meta_rows = (
         await session.execute(
@@ -2507,7 +2533,9 @@ async def get_auto_join_metrics(
 
     return {
         "days": days,
-        "auto_join_enabled": False,  # AUTO_JOIN_NON_T0 当前值, 只读快照 (T0 自动入组始终开启)
+        # V6.4 S3 (2026-09-11): AUTO_JOIN_NON_T0=True 已生效 + confidence 门槛, 只读快照
+        "auto_join_enabled": _auto_join_non_t0(),
+        "auto_join_min_confidence": _auto_join_min_confidence(),
         "pending_review": {
             "total": pending_total,
             "weekly": pending_weekly,
@@ -2525,6 +2553,13 @@ async def get_auto_join_metrics(
             "grouped_requests": grouped_requests,
             "grouped_pct": round(grouped_requests / total_requests * 100, 1) if total_requests else 0.0,
             "items": group_routing_items,
+        },
+        "rag_embedding_rerank": {
+            "count": rag_bge_count,
+            "pct": round(rag_bge_count / total_requests * 100, 1) if total_requests else 0.0,
+            "note": "rag_demo 的 /v1/embeddings、/v1/rerank 流量 (2026-09-09 起直连 aimc), "
+                    "按上游 raw 名 BAAI/bge-m3、BAAI/bge-reranker-v2-m3 统计; "
+                    "非 LLM 计量面, 对比 LLM 调量曲线时请扣除",
         },
         "tier_blind_spot": {
             "metadata_total": meta_total,

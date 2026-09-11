@@ -69,13 +69,16 @@ function renderChannels(container) {
             container.innerHTML = '<p class="loading">暂无渠道数据</p>';
             return;
         }
-        let html = '<table><thead><tr><th>渠道</th><th>厂商</th><th>状态</th><th>账号</th><th>优先级</th><th>思考剥离</th><th>drop_params</th><th>操作</th></tr></thead><tbody>';
+        let html = '<table><thead><tr><th>渠道</th><th>厂商</th><th>状态</th><th>账号</th><th>优先级</th><th>思考剥离</th><th>思考注入</th><th>drop_params</th><th>操作</th></tr></thead><tbody>';
         data.forEach(ch => {
             const statusClass = `status-${esc(ch.status)}`;
             const dp = ch.drop_params ? esc(ch.drop_params) : '<span class="text-muted">—</span>';
             // V6.x: disable_thinking_pass_through — 1=请求侧剥离 thinking 字段 (默认开)
             const thinkingOn = ch.disable_thinking_pass_through !== 0 && ch.disable_thinking_pass_through !== false;
             const thinkingCell = `<button class="btn-tiny ${thinkingOn ? '' : 'btn-ghost'}" onclick="toggleChannelThinking(${esc(ch.id)}, ${thinkingOn ? 0 : 1})">${thinkingOn ? '开' : '关'}</button>`;
+            // Phase B: disable_thinking_inject — 1=proxy 注入 enable_thinking:false (默认关)
+            const injectOn = ch.disable_thinking_inject === 1 || ch.disable_thinking_inject === true;
+            const injectCell = `<button class="btn-tiny ${injectOn ? '' : 'btn-ghost'}" onclick="toggleChannelThinkingInject(${esc(ch.id)}, ${injectOn ? 0 : 1})">${injectOn ? '开' : '关'}</button>`;
             html += `<tr data-channel-id="${esc(ch.id)}">
                 <td>${esc(ch.name)}</td>
                 <td>${esc(ch.provider)}</td>
@@ -83,12 +86,13 @@ function renderChannels(container) {
                 <td>${esc(ch.active_accounts)}/${esc(ch.accounts)}</td>
                 <td>${esc(ch.priority)}</td>
                 <td>${thinkingCell}</td>
+                <td>${injectCell}</td>
                 <td class="mono" style="font-size:11px;">${dp}</td>
                 <td><button class="btn-tiny" onclick="editChannelDropParams(${esc(ch.id)}, ${JSON.stringify(ch.drop_params || '').replace(/"/g, '&quot;')})">编辑</button></td>
             </tr>`;
         });
         html += '</tbody></table>';
-        html += '<div class="text-muted" style="margin-top:var(--space-xs);font-size:11px;">思考剥离: 关=透传客户端 thinking 参数给上游; drop_params: 逗号分隔的需剥离参数 (如 reasoning_effort,max_tokens); 留空=全透传; messages/model/stream 永远保留</div>';
+        html += '<div class="text-muted" style="margin-top:var(--space-xs);font-size:11px;">思考剥离: 关=透传客户端 thinking 参数给上游; 思考注入 (Phase B): 开=代理主动注入 enable_thinking:false 压制模型原生思考 (客户端显式传参不覆盖); drop_params: 逗号分隔的需剥离参数 (如 reasoning_effort,max_tokens); 留空=全透传; messages/model/stream 永远保留</div>';
         container.innerHTML = html;
     } catch (e) {
         // 非 JSON 响应，保持原样
@@ -102,6 +106,32 @@ async function toggleChannelThinking(channelId, newVal) {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({disable_thinking_pass_through: newVal}),
+        });
+        const result = await resp.json();
+        if (result.ok) {
+            // 刷新渠道列表
+            const list = document.getElementById('channels-list');
+            if (list) {
+                authFetch('/dashboard/api/channels').then(r => r.text()).then(t => {
+                    list.textContent = t;
+                    renderChannels(list);
+                });
+            }
+        } else {
+            alert('保存失败: ' + (result.detail || JSON.stringify(result)));
+        }
+    } catch (e) {
+        alert('保存失败: ' + e.message);
+    }
+}
+
+// Phase B (2026-09-11): 思考注入开关 (disable_thinking_inject 0/1 切换)
+async function toggleChannelThinkingInject(channelId, newVal) {
+    try {
+        const resp = await authFetch(`/dashboard/api/channels/${channelId}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({disable_thinking_inject: newVal}),
         });
         const result = await resp.json();
         if (result.ok) {
