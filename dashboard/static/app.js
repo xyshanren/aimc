@@ -2315,11 +2315,11 @@ const PAGE_ROUTES = {
     overview: { title: '概览', ms: 60000, loaders: [loadOverviewKPIs, loadOverviewTrend, loadUsageTop, loadGroupOverview, loadTodaySummary] },
     cost:     { title: '成本', ms: 60000, loaders: [loadCostAudit, loadCacheStatsList] },
     usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadRequests], once: [loadRequestFilterOptions] },
-    // channels: 渠道状态/价格会随冷却自愈与上下架变动, 保留 30s 轮询;
-    // registry 模型/分组/用户 Key/采集源是配置类数据 (仅人为操作才变, 操作后已有显式刷新),
+    // channels: 渠道状态会随冷却自愈与上下架变动, 保留 30s 轮询;
+    // 价格表 / registry 模型/分组/用户 Key/采集源是配置类数据 (仅人为或脚本操作才变, 进页即新),
     // 周报周级生成 — 以上均只在进页时加载一次 (once).
     // 注意: 情报页三张审批卡必须留在轮询 — 批准/拒绝只做本地 card.remove(), 卡间联动全靠轮询.
-    channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard, loadPricesCard], once: [loadRegistryModelsCard, loadRegistryGroupsCard] },
+    channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard], once: [loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
     intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard], once: [loadReportsList, loadWeeklyReportLatest] },
     ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadSuggestionsList, loadAccountsCard, loadAutoJoinMetrics], once: [loadUserKeys, loadSources] },
 };
