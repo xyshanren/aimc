@@ -104,12 +104,12 @@ async def _seed_cap_log(factory, model_id, field_changed="metadata", old_value=N
         return row.id
 
 
-async def _seed_usage_log(factory, group_id=None, created_at=None):
+async def _seed_usage_log(factory, group_id=None, created_at=None, model="mock-model"):
     from db.models import UsageLog
 
     async with factory() as session:
         row = UsageLog(
-            model="mock-model",
+            model=model,
             group_id=group_id,
             input_tokens=100,
             output_tokens=50,
@@ -148,6 +148,10 @@ def test_auto_join_metrics_full_seed():
         await _seed_usage_log(async_session_factory, "tier:strong", created_at=now)
         await _seed_usage_log(async_session_factory, "tier:strong", created_at=now)
         await _seed_usage_log(async_session_factory, None, created_at=now)
+        # rag_demo embedding/rerank: 2 条 raw 名 (group_id NULL, 非 LLM 计量面)
+        await _seed_usage_log(async_session_factory, None, created_at=now, model="BAAI/bge-m3")
+        await _seed_usage_log(async_session_factory, None, created_at=now,
+                              model="BAAI/bge-reranker-v2-m3")
         async with _get_client() as client:
             resp = await client.get("/dashboard/api/ops/auto-join-metrics?days=14")
         assert resp.status_code == 200
@@ -156,7 +160,9 @@ def test_auto_join_metrics_full_seed():
     data = asyncio.run(_run())
 
     assert data["days"] == 14
-    assert data["auto_join_enabled"] is False  # AUTO_JOIN_NON_T0 默认 False
+    # V6.4 S3 (2026-09-11): AUTO_JOIN_NON_T0 已开启 + 门槛快照
+    assert data["auto_join_enabled"] is True
+    assert data["auto_join_min_confidence"] == 0.9
     # 1) 积压: 2 条, 本周桶 1 + 7-14d 桶 1
     pr = data["pending_review"]
     assert pr["total"] == 2
@@ -167,14 +173,19 @@ def test_auto_join_metrics_full_seed():
     assert data["tier_distribution"] == {"T2": 1, "T1": 1}
     # 3) 审批负担: 1 次处理 (近 14 天 approved=1)
     assert data["review_burden"]["reviewed_count"] == 1
-    # 4) 组路由: 3/4 = 75.0%
+    # 4) 组路由: 3/6 = 50.0% (bge 2 条计入 total 但不属 tier 组)
     gr = data["group_routing"]
-    assert gr["total_requests"] == 4
+    assert gr["total_requests"] == 6
     assert gr["grouped_requests"] == 3
-    assert gr["grouped_pct"] == 75.0
+    assert gr["grouped_pct"] == 50.0
     by_label = {g["group_id"]: g for g in gr["items"]}
     assert by_label["tier:strong"]["count"] == 3
-    assert by_label["(精确路由)"]["count"] == 1
+    assert by_label["(精确路由)"]["count"] == 3
+    # 4b) rag_demo embedding/rerank 单列: 2/6 = 33.3%
+    rag = data["rag_embedding_rerank"]
+    assert rag["count"] == 2
+    assert rag["pct"] == 33.3
+    assert "非 LLM 计量面" in rag["note"]
     # 5) 盲区: 1 条 metadata 里 inferred_tier=null → 100%
     bs = data["tier_blind_spot"]
     assert bs["metadata_total"] == 1
@@ -199,6 +210,8 @@ def test_auto_join_metrics_empty_db():
     assert data["review_burden"]["reviewed_count"] == 0
     assert data["group_routing"]["total_requests"] == 0
     assert data["group_routing"]["grouped_pct"] == 0.0
+    assert data["rag_embedding_rerank"]["count"] == 0
+    assert data["rag_embedding_rerank"]["pct"] == 0.0
     assert data["tier_blind_spot"]["metadata_total"] == 0
 
 

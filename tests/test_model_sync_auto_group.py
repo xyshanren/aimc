@@ -97,20 +97,32 @@ def test_find_target_group_extended():
 
 
 def test_should_auto_join_unchanged():
-    """验证 should_auto_join 阈值逻辑未变"""
+    """验证 should_auto_join 阈值逻辑 (V6.4 S3 起非 T0 另受 0.9 门槛约束)"""
     from schemas.intel import ModelIntelItem
-    from intelligence.model_sync import should_auto_join, JOIN_THRESHOLD
+    from intelligence.model_sync import (
+        should_auto_join, JOIN_THRESHOLD, AUTO_JOIN_MIN_CONFIDENCE,
+    )
 
-    # confidence >= 0.8 + tier + family → True
+    # confidence >= AUTO_JOIN_MIN_CONFIDENCE (0.9) + tier + family → True
+    # (V6.4 S3: 非 T0 的有效门槛从 JOIN_THRESHOLD 0.8 收紧到 0.9)
     item = ModelIntelItem(
         model_id="test-model", family="deepseek",
-        inferred_tier="T1", confidence=0.85,
+        inferred_tier="T1", confidence=AUTO_JOIN_MIN_CONFIDENCE,
     )
     assert should_auto_join(item) is True
+
+    # JOIN_THRESHOLD <= confidence < AUTO_JOIN_MIN_CONFIDENCE → False (S3 门槛拦下)
+    item.confidence = 0.85
+    assert should_auto_join(item) is False
 
     # confidence < threshold → False
     item.confidence = 0.7
     assert should_auto_join(item) is False
+
+    # T0 不受 S3 门槛约束 (恒免人工): conf=0.8 即可入组
+    item.confidence = JOIN_THRESHOLD
+    item.inferred_tier = "T0"
+    assert should_auto_join(item) is True
 
     # 没 tier → False
     item.confidence = 0.95
@@ -121,7 +133,7 @@ def test_should_auto_join_unchanged():
     item.inferred_tier = "T1"
     item.family = None
     assert should_auto_join(item) is False
-    print("  [OK] should_auto_join 阈值逻辑不变")
+    print("  [OK] should_auto_join 阈值逻辑 (含 V6.4 S3 门槛)")
 
 
 def test_should_auto_leave_unchanged():
