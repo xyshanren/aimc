@@ -69,6 +69,14 @@ class Channel(Base):
         Integer, nullable=False, server_default="1",
         comment="0=不剥离, 1=剥离 body 里的 thinking/enable_thinking/reasoning_effort (proxy 层)",
     )
+    # 思考控制 Phase B (2026-09-11): 主动注入 enable_thinking=false 压制模型原生思考
+    # 与请求侧剥离 (disable_thinking_pass_through) 互补: 剥离管客户端显式传参,
+    # 注入管 agent 不传参时模型默认思考照跑的开销. 渠道级开关默认关 (0) —
+    # 客户端显式传 enable_thinking 时不覆盖; 上游不认参数靠 drop_params 兜底
+    disable_thinking_inject = Column(
+        Integer, nullable=False, server_default="0",
+        comment="0=不注入 (默认), 1=proxy 注入 enable_thinking:false (Phase B, 渠道级)",
+    )
     # P2-B (2026-08-20): 按 channel 剥离不支持的上游参数 (deny-list)
     # JSON-as-text 存 list[str], e.g. '["reasoning_effort","max_tokens"]'
     # proxy 层在 thinking strip 之后过滤 body 顶层字段, messages/model/stream 永远保留
