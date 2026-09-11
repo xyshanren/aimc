@@ -85,6 +85,9 @@ FAMILY_HINTS = {
     "deepseek-ai": "deepseek",
     "moonshotai": "kimi",
     "zai-org": "glm",  # P2-A: zai-org/GLM-4.5V -> glm-glm-4.5v
+    # V6.4 (2026-09-12): org 名与模型行名不同的厂商 — family 取模型行系,
+    # 否则 org 段会被塞进 model_id (paddlepaddle-paddleocr-vl-1.5 实证)
+    "paddlepaddle": "paddleocr",
 }
 
 def infer_modality(model_id: str) -> str:
@@ -148,6 +151,11 @@ def convert_sf_model_id(raw_id: str) -> tuple[str, str]:
         nxt = model_part[len(family):]
         if nxt and (nxt[0].isdigit() or nxt[0] == "."):
             new_id = model_part
+    # V6.4 (2026-09-12): model_part 本身以 "{family}-" 开头时直接采用
+    # (e.g. family paddleocr + PaddleOCR-VL-1.5 -> paddleocr-vl-1.5,
+    # 不再拼成 paddleocr-paddleocr-vl-1.5)
+    if new_id != model_part and model_part.startswith(f"{family}-"):
+        new_id = model_part
     return family, new_id
 
 async def main():

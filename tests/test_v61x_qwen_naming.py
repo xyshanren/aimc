@@ -133,6 +133,17 @@ def test_convert_keeps_non_redundant_names():
     assert mid.startswith("qwen-")
 
 
+def test_convert_paddle_org_not_stuffed():
+    """V6.4 (2026-09-12): org 段不得塞进 model_id —
+    PaddlePaddle/PaddleOCR-VL-1.5 曾产出 paddlepaddle-paddleocr-vl-1.5"""
+    from scripts.sync_siliconflow_to_registry import convert_sf_model_id
+    from db.normalizers import validate_model_id
+
+    fam, mid = convert_sf_model_id("PaddlePaddle/PaddleOCR-VL-1.5")
+    assert (fam, mid) == ("paddleocr", "paddleocr-vl-1.5")
+    assert validate_model_id(mid, fam) is True
+
+
 # ============================================================
 # Part 3: 迁移 (改名 + 级联 + 重复合并 + 幂等)
 # ============================================================
