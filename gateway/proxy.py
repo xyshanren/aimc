@@ -157,6 +157,26 @@ def _strip_thinking_fields(body_dict: dict) -> dict:
     return out
 
 
+def _inject_thinking_off(body_dict: dict) -> dict:
+    """思考控制 Phase B (2026-09-11): 注入 enable_thinking=false 压制模型原生思考
+
+    与 _strip_thinking_fields 互补: 剥离只管客户端显式传参场景, 注入管
+    agent 不传参时上游默认思考照跑的开销 (计量观察 W35/W36 思考比连续 >30%).
+
+    规则:
+    - 客户端已显式传 enable_thinking → 尊重客户端, 不注入 (返回原 dict)
+    - 其余情况顶层注入 enable_thinking=False (OpenAI 风格)
+    - 上游不认该参数报 400 时由既有 drop_params/auto_drop_params 机制兜底
+
+    immutable: 不修改输入 dict.
+    """
+    if "enable_thinking" in body_dict:
+        return body_dict  # 客户端显式传参, 不覆盖
+    out = dict(body_dict)
+    out["enable_thinking"] = False
+    return out
+
+
 def _parse_drop_params(raw) -> list:
     """P2-B: 解析 channel.drop_params 为 list[str]
 
@@ -556,6 +576,23 @@ async def forward_request(
         except (json.JSONDecodeError, UnicodeDecodeError):
             pass  # 非 JSON body, 跳过
 
+    # 思考控制 Phase B (2026-09-11): 渠道开 disable_thinking_inject=1 时
+    # 注入 enable_thinking=false 压制模型原生思考 (agent 不传参场景).
+    # 客户端显式传参不覆盖; 上游不认参数靠 drop_params 兜底.
+    if channel.get("disable_thinking_inject", 0):
+        try:
+            import json as _tjson
+            _body_dict = _tjson.loads(body)
+            _injected_body = _inject_thinking_off(_body_dict)
+            if _injected_body is not _body_dict:  # 实际注入了
+                body = _tjson.dumps(_injected_body, ensure_ascii=False).encode("utf-8")
+                logger.info(
+                    f"[Phase B thinking 注入] channel={channel.get('name')} "
+                    f"enable_thinking=false"
+                )
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass  # 非 JSON body, 跳过
+
     # P2-B (2026-08-20): 按 channel.drop_params 剥离不支持的上游参数
     # 在 thinking strip 之后, model rewrite 之前, 只过滤 body 顶层 key
     new_body, dropped = _drop_params(body, channel)
@@ -902,8 +939,19 @@ def _update_cooldown(channel: dict, status_code_or_response) -> None:
 
         # V4.9: needs_human=True 的错误触发专门告警 (quota/auth/model_unsupported)
         # 之前的 _schedule_alert 只覆盖 5xx+401/403, 漏了 420/余额不足等
+        # V6.4 fix (2026-09-11): _update_cooldown 是同步函数, 直接调用协程只会
+        # 创建未 await 的 coroutine (生产日志 RuntimeWarning 实证, 9/10).
+        # _update_cooldown 总在 async 请求处理路径内被调, running loop 必在;
+        # 兜底 log 防御性保留.
         if info.needs_human:
-            _schedule_alert_with_info(channel, info)
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_schedule_alert_with_info(channel, info))
+            except RuntimeError:
+                logger.warning(
+                    f"[needs_human 无 running loop, 告警丢失] "
+                    f"channel={channel.get('name')} {info.category.value}"
+                )
     except Exception as e:
         logger.debug(f"_update_cooldown 非致命: {e}")
 
