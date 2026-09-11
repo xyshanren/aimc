@@ -36,7 +36,7 @@ curl -i -X POST http://localhost:8080/v1/chat/completions \
 **A:** 当前**不支持**。AIMC 只支持 OpenAI Chat Completions 协议。Anthropic Messages API 端点（P2-20）待 0.5d 实现。当前用 Claude Code 需要自己写适配器，或换用 OpenAI 协议 SDK。
 
 ### Q: 支持哪些 model？
-**A:** AIMC 支持任何在 `model_registry` 表里的 model + 任一 channel 有价格的。SF 渠道（默认启用）支持 91 个 model（Qwen / DeepSeek / GLM / MiniMax / Kimi / Hunyuan 等）。sensenova_official 渠道（公测免费）提供 sensenova-6.8-flash-lite 及跨渠道免费 glm-5.2 / deepseek-v4-flash。
+**A:** AIMC 支持任何在 `model_registry` 表里的 model + 任一 channel 有价格的。SF 渠道（默认启用）支持 91 个 model（Qwen / DeepSeek / GLM / MiniMax / Kimi / Hunyuan 等）。sensenova_official 渠道（公测免费）提供 sensenova-6.8-flash-lite 及跨渠道免费 glm-5.2 / deepseek-v4-flash（旧名，DeepSeek 官方 2026-09 起已由 deepseek-flash 接管该 id；**新请求请用 `deepseek-flash`**（多模态，走 deepseek_official 官方渠道））。
 
 `sqlite3 data/aimc.db "SELECT model_id, tier FROM model_registry ORDER BY tier, model_id LIMIT 20"` 看完整列表。
 
