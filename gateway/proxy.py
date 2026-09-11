@@ -701,6 +701,17 @@ async def _forward_stream(
             except RuntimeError:
                 pass
 
+    # V6.x 修复: 上方 aread() 已消费流时, stream_generator 里的 aiter_raw()
+    # 会抛 httpx.StreamConsumed — 客户端只收到错误 status 而 body 为空,
+    # tail/full 缓冲也是空的 (错误体完全丢失)。此处捕获已缓冲的错误体,
+    # generator 改为直接 yield 缓冲字节, tail/full 缓冲语义与正常路径一致。
+    prebuffered: bytes | None = None
+    if response.is_stream_consumed:
+        try:
+            prebuffered = response.content
+        except Exception:
+            prebuffered = None
+
     async def stream_generator():
         # P0-1: 滑动缓冲, 只保留末尾 N 字节用于扫描 usage chunk
         # usage 出现在流的最后 (OpenAI: [DONE] 前一个 chunk; Anthropic: message_delta 事件)
@@ -710,17 +721,27 @@ async def _forward_stream(
         # V4.9.3: 转录用全量缓冲 (不做滑动窗口, 但受 transcript_log_max_body 截断)
         full_buffer = bytearray() if settings.transcript_log_enabled else None
         try:
-            async for chunk in response.aiter_raw():
-                # 透传给客户端 (原样, 不修改)
-                yield chunk
-                # 累积到尾部缓冲用于事后提取 usage
-                tail_buffer.extend(chunk)
+            if prebuffered is not None:
+                # V6.x: 流已被 aread() 消费, 直接 yield 缓冲的错误体
+                # (缓冲可能超过 TAIL_LIMIT, tail_buffer 与正常路径一样只留末尾)
+                yield prebuffered
+                tail_buffer.extend(prebuffered)
                 if len(tail_buffer) > TAIL_LIMIT:
-                    # 只保留末尾 TAIL_LIMIT 字节 (滑动窗口)
                     del tail_buffer[: len(tail_buffer) - TAIL_LIMIT]
-                # V4.9.3: 转录全量累积 (截断上限内)
                 if full_buffer is not None:
-                    full_buffer.extend(chunk)
+                    full_buffer.extend(prebuffered)
+            else:
+                async for chunk in response.aiter_raw():
+                    # 透传给客户端 (原样, 不修改)
+                    yield chunk
+                    # 累积到尾部缓冲用于事后提取 usage
+                    tail_buffer.extend(chunk)
+                    if len(tail_buffer) > TAIL_LIMIT:
+                        # 只保留末尾 TAIL_LIMIT 字节 (滑动窗口)
+                        del tail_buffer[: len(tail_buffer) - TAIL_LIMIT]
+                    # V4.9.3: 转录全量累积 (截断上限内)
+                    if full_buffer is not None:
+                        full_buffer.extend(chunk)
         finally:
             await response.aclose()
             await client.aclose()
