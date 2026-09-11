@@ -1514,18 +1514,74 @@ class RouteEngine:
         return None
 
     def _get_input_price(self, channel: dict, model: str) -> float:
-        """取 channel 当前时段对 model 的 input_price
+        """取 channel 当前时段对 model 的 cache-aware 有效输入价
 
-        复用 _get_current_price + _get_fuzzy_price 逻辑, 返回 float (None → 999 兜底)
+        V6.4 #11/#12 (2026-09-11): 有效价按渠道滚动 7d 实测 cache 命中率折算
+        eff = hit_pct*cached_input_price + (1-hit_pct)*input_price.
+        - 无 cache 数据 (hit=0) 或无 cached_input_price → 退化为原 input_price (行为不变)
+        - 折算仅当 cached_input_price < input_price 时有意义, 价格行无 cache 价则原价
+        - 复用 _get_current_price + _get_fuzzy_price 逻辑, 返回 float (None → 999 兜底)
         跟 select_best_channel 一致: 先精确, 再模糊 (e.g. glm-5.2 → zai-org/GLM-5.2)
         """
         now = datetime.now()
         price_info = self._get_current_price(channel, model, now)
         if price_info is None:
             price_info = self._get_fuzzy_price(channel, model, now)
-        if price_info and price_info.get("input_price") is not None:
-            return float(price_info["input_price"])
-        return 999.0  # 未知价格排到最后
+        if not price_info or price_info.get("input_price") is None:
+            return 999.0  # 未知价格排到最后
+        input_price = float(price_info["input_price"])
+        cached_price = price_info.get("cached_input_price")
+        if cached_price is None or float(cached_price) >= input_price:
+            return input_price
+        hit_pct = self._cache_hit_pct(channel.get("name", ""))
+        if hit_pct <= 0:
+            return input_price
+        eff = hit_pct * float(cached_price) + (1 - hit_pct) * input_price
+        return min(eff, input_price)  # 折算只降不升 (防御浮点边界)
+
+    # V6.4 #11/#12: 渠道 7d cache 命中率缓存 {channel_name: (fetched_at_monotonic, pct)}
+    _cache_hit_cache: dict = {}
+    _CACHE_HIT_TTL = 300.0  # 5 分钟
+
+    def _cache_hit_pct(self, channel_name: str) -> float:
+        """渠道滚动 7d cache 命中率 (cached+cache_read tokens / input tokens), 0~1.
+
+        每 5min 刷一次 (跨请求共享, 组路由每请求可能调多次);
+        查询失败 / 无数据 → 0.0 (sort_key 退化为原价, 行为不变).
+        """
+        if not channel_name:
+            return 0.0
+        import time as _time
+        now_m = _time.monotonic()
+        cached = self._cache_hit_cache.get(channel_name)
+        if cached and now_m - cached[0] < self._CACHE_HIT_TTL:
+            return cached[1]
+        pct = 0.0
+        try:
+            import sqlite3 as _sqlite3
+            from config import settings as _settings
+            db_path = _settings.db_path
+            if db_path and db_path != ":memory:":
+                conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                try:
+                    row = conn.execute(
+                        "SELECT SUM(COALESCE(cache_read_input_tokens,0)+COALESCE(cached_input_tokens,0)), "
+                        "SUM(input_tokens) FROM usage_logs "
+                        "WHERE created_at >= datetime('now','-7 days') AND channel_id = "
+                        "(SELECT id FROM channels WHERE name = ?)",
+                        (channel_name,),
+                    ).fetchone()
+                    hit_t = int(row[0] or 0)
+                    in_t = int(row[1] or 0)
+                    if in_t > 0:
+                        pct = max(0.0, min(1.0, hit_t / in_t))
+                finally:
+                    conn.close()
+        except Exception as e:
+            logger.debug(f"_cache_hit_pct 查询失败 (用 0): channel={channel_name} err={e}")
+            pct = 0.0
+        self._cache_hit_cache[channel_name] = (now_m, pct)
+        return pct
 
 
 # 全局单例
