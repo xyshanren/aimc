@@ -28,7 +28,11 @@ JOIN_THRESHOLD = 0.8
 LEAVE_THRESHOLD = 0.9
 
 # Phase 4 v4.3.1 (2026-08-13): T1/T2/T3 也可自动入组 (默认关闭, 跟现有 T0-only 默认行为兼容)
-AUTO_JOIN_NON_T0 = False  # 跟现有 P0-3 docstring 设计一致: 只有 T0 免人工确认
+# V6.4 S3 (2026-09-11): F3 观察期收口, 用户拍板 S3 — 开启 T1-T3 自动入组但加置信门槛.
+# 依据: pending 恒 0 无审批负担 / 组命中 96.5% / 盲区 18.2% 良性 / kimi-k2.6 两次
+# 推断不一致 (T1→T2) 支持 confidence 门槛方向. 门槛不满足 → 走 pending 人工路径.
+AUTO_JOIN_NON_T0 = True
+AUTO_JOIN_MIN_CONFIDENCE = 0.9  # 仅约束非 T0 自动入组; T0 恒免人工不受影响
 
 
 # Phase 4 v4.3.1 (2026-08-13): tier -> target_group 映射
@@ -52,9 +56,16 @@ class SyncResult:
 
 
 def should_auto_join(item: ModelIntelItem) -> bool:
-    """高置信度 + tier 明确 → 可入组"""
+    """高置信度 + tier 明确 → 可入组
+
+    V6.4 S3 (2026-09-11): 非 T0 自动入组额外要求 confidence >= AUTO_JOIN_MIN_CONFIDENCE
+    (0.9); T0 恒免人工不受门槛约束.
+    """
+    meets_join = item.confidence >= JOIN_THRESHOLD
+    if item.inferred_tier != "T0":
+        meets_join = meets_join and item.confidence >= AUTO_JOIN_MIN_CONFIDENCE
     return (
-        item.confidence >= JOIN_THRESHOLD
+        meets_join
         and item.inferred_tier is not None
         and item.family is not None
     )
@@ -82,6 +93,10 @@ async def _find_target_group(session, inferred_tier: str) -> Optional[str]:
     Phase 4 v4.3.1 (2026-08-13): 当 AUTO_JOIN_NON_T0=True 时,
     T1/T2/T3 也会自动入组 (跟 _TIER_TO_GROUP 映射).
     T4 仍不入组 (需人工).
+
+    V6.4 S3 (2026-09-11): AUTO_JOIN_NON_T0=True 已生效 + confidence 门槛.
+    注意: confidence 门槛在 should_auto_join 处判定 (process_model_item 的
+    入组前置), 本函数只做 tier→group 映射, 不重复判置信度.
     """
     if inferred_tier == "T0":
         # flagship 组的 group_id 是定义里的硬编码 (scripts/seed_model_groups.py),
