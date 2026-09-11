@@ -143,6 +143,10 @@ def create_app() -> FastAPI:
     from gateway.routes import router as gateway_router
     app.include_router(gateway_router)
 
+    # V6.x: embeddings/rerank 直通端点 (siliconflow 专用模型)
+    from gateway.embeddings import router as embeddings_router
+    app.include_router(embeddings_router)
+
     # 注册 Dashboard 路由
     from dashboard.routes import router as dashboard_router
     app.include_router(dashboard_router)
