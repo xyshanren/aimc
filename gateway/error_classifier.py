@@ -1,6 +1,6 @@
 """V4.9 (2026-08-25): 上游错误分类器
 
-把上游失败分类成 8 种 ErrorCategory, 每种带:
+把上游失败分类成 9 种 ErrorCategory, 每种带:
 - needs_human: 是否需要人工干预 (quota / auth / model_unsupported 需人工)
 - suggested_cooldown_seconds: 建议冷却时长
 - suggested_probe_after_seconds: 多久后主动探活 (None = 不主动探)
@@ -25,6 +25,7 @@ class ErrorCategory(str, Enum):
     AUTH_FAILED = "auth_failed"               # key 失效/过期 (需人工)
     RATE_LIMITED = "rate_limited"              # 临时限流 (自愈)
     MODEL_UNSUPPORTED = "model_unsupported"    # model 不支持 (可能自愈)
+    CONTEXT_WINDOW = "context_window"          # 上下文超限 (客户端侧, 行为中性)
     NETWORK_TRANSIENT = "network_transient"    # 网络层错误 (自愈)
     UPSTREAM_5XX = "upstream_5xx"              # 上游 5xx (自愈但慢)
     CLIENT_ERROR = "client_error"              # 业务 4xx (不动 cooldown)
@@ -58,6 +59,14 @@ _AUTH_KEYWORDS = re.compile(
 _MODEL_KEYWORDS = re.compile(
     r"(model_not_found|model.+?does.+?not.+?exist|model.+?not.+?available|"
     r"unsupported.model|invalid.model|model.+?decommissioned|模型不存在|模型不支持|模型已下线)",
+    re.IGNORECASE,
+)
+# V6.x: 上下文超限 (deepseek CONTEXT_WINDOW_EXCEEDED / OpenAI context_length_exceeded 等)
+# 用 haystack (code+message) 匹配 — deepseek 把标记放在 error.code 字段
+_CONTEXT_WINDOW_KEYWORDS = re.compile(
+    r"(context_window_exceeded|context_length_exceeded|context.?window|"
+    r"context.?length|prompt.+?(too long|is too long|exceeds)|"
+    r"上下文.+?(超限|过长|超出)|输入.+?(超限|过长))",
     re.IGNORECASE,
 )
 
@@ -183,6 +192,20 @@ def classify(
                 suggested_cooldown_seconds=1800,
                 suggested_probe_after_seconds=600,
             )
+
+    # === 3.5 上下文超限 (code+message 联合匹配) ===
+    # V6.x: deepseek 把 "CONTEXT_WINDOW_EXCEEDED" 放在 error.code, OpenAI 等放在 message,
+    # 所以对 haystack (code+msg) 整体匹配, 放在 code 精确匹配之后、message 关键字之前。
+    # 行为中性: 不冷却 / 不探活 / 不需人工 — 仅为将来 "超限时路由到更大窗口渠道" 留分类基础。
+    if _CONTEXT_WINDOW_KEYWORDS.search(haystack):
+        return ErrorInfo(
+            category=ErrorCategory.CONTEXT_WINDOW,
+            error_code=code,
+            error_msg=msg,
+            needs_human=False,
+            suggested_cooldown_seconds=0,
+            suggested_probe_after_seconds=None,
+        )
 
     # === 4. message 关键字匹配 (兜底) ===
     if msg:

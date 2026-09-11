@@ -5,7 +5,7 @@
 
 ## 1. 当前 migration 总览
 
-AIMC 当前有 **21 个 migration 脚本**（`db/migrations/`）：
+AIMC 当前有 **22 个 migration 脚本**（`db/migrations/`）：
 
 ```
 2026_07_xx  P0-P0.1  (历史)
@@ -30,6 +30,7 @@ AIMC 当前有 **21 个 migration 脚本**（`db/migrations/`）：
 2026_09_03_v60_phase2_cost_audit.py         # V6.0 Phase2 标价双轨（registry 标价列 + usage_logs.list_cost_estimate + 回填）
 2026_09_04_v61x_qwen_naming.py              # V6.x qwen 命名规范化（双前缀改名 39 + 重复条目合并 4, 级联 members/usage/prices）
 2026_09_05_v6x_reasoning_tokens.py          # V6.x 思考 token 计量（usage_logs.reasoning_tokens 列, NULL=上游未返回）
+2026_09_09_v6x_feedback_score_no_retry.py   # V6.x 反馈分四项修复（usage_logs.feedback_score_no_retry 列 + 聚合口径）
 ```
 
 > 生产环境（ubuntu2401）只跑幂等 migration，**不要**跑 `seed_model_groups.py` /
@@ -279,4 +280,4 @@ if __name__ == "__main__":
 | 迁移报错 "duplicate column" | 列已存在, 检查 `pragma_table_info` |
 | 迁移后 test 挂 | `pytest tests/ -v` 看具体哪个; migration 没写完 |
 | 迁移后服务启动报错 | `journalctl --user -u aimc -n 30` 看 traceback (可能是 ORM 列对不上) |
-| 旧 db 升级 | 跑 21 个 migration; 备份必须先做 |
+| 旧 db 升级 | 跑 22 个 migration; 备份必须先做 |

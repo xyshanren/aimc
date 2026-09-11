@@ -81,6 +81,30 @@ def make_network_error():
 
 
 # ===== 1. healthy → failing =====
+def make_context_window_error():
+    return ErrorInfo(
+        category=ErrorCategory.CONTEXT_WINDOW,
+        error_code="CONTEXT_WINDOW_EXCEEDED",
+        error_msg="CONTEXT_WINDOW_EXCEEDED",
+        needs_human=False,
+        suggested_cooldown_seconds=0,
+        suggested_probe_after_seconds=None,
+    )
+
+
+def test_context_window_no_cooldown():
+    """V6.x: context_window 行为中性 — 不进 cooldown / 不探活 / 不 needs_human"""
+    cm = CooldownManager()
+    for _ in range(5):  # 超过 failure_threshold 也不该冷却
+        cm.mark_failure(1, error_info=make_context_window_error())
+    s = cm.snapshot()[1]
+    check("in_cooldown=False", s["in_cooldown"], False)
+    check("cooldown_until 未设置", s.get("cooldown_until"), None)
+    check("needs_human=False", s["needs_human"], False)
+    check("next_probe_at=None", s["next_probe_at"], None)
+    check("last_error_type 记录", s["last_error_type"], "context_window")
+
+
 def test_healthy_to_failing():
     """无 state → mark_failure → failing (cooldown_until 未来)"""
     cm = CooldownManager()
@@ -347,6 +371,7 @@ def test_cleanup_removes_expired_normal():
 
 def main():
     tests = [
+        test_context_window_no_cooldown,
         test_healthy_to_failing,
         test_mark_success_resets_to_healthy,
         test_failing_to_degraded,

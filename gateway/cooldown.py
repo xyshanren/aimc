@@ -190,7 +190,8 @@ class CooldownManager:
             s["last_error_msg"] = error_info.error_msg
 
             # client_error 不进 cooldown (直接 return)
-            if error_info.category == ErrorCategory.CLIENT_ERROR:
+            # V6.x: context_window 同为客户端侧错误, 行为中性不冷却
+            if error_info.category in (ErrorCategory.CLIENT_ERROR, ErrorCategory.CONTEXT_WINDOW):
                 return
 
             # 冷却时长: 用 ErrorInfo 建议值

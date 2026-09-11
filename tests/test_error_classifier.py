@@ -154,6 +154,30 @@ def test_unknown_generic_exception():
     check("category", info.category, ErrorCategory.UNKNOWN)
 
 
+# ===== 9. context_window (V6.x) =====
+def test_context_window_deepseek_code():
+    """deepseek 把标记放在 error.code 字段 → 必须走 haystack (code+msg) 匹配"""
+    info = classify(400, '{"error":{"code":"CONTEXT_WINDOW_EXCEEDED"}}')
+    check("category", info.category, ErrorCategory.CONTEXT_WINDOW)
+    check("needs_human", info.needs_human, False)
+    check("cooldown 0 (不进)", info.suggested_cooldown_seconds, 0)
+    check("probe_after (None)", info.suggested_probe_after_seconds, None)
+    check("error_code", info.error_code, "CONTEXT_WINDOW_EXCEEDED")
+
+
+def test_context_window_openai_message():
+    """OpenAI 风格 message 关键字"""
+    info = classify(400, '{"error":{"message":"This models maximum context length is 32768 tokens"}}')
+    check("category", info.category, ErrorCategory.CONTEXT_WINDOW)
+    check("needs_human", info.needs_human, False)
+
+
+def test_client_400_without_context_keywords():
+    """普通 400 无上下文关键字 → 仍归 client_error (行为不变)"""
+    info = classify(400, '{"error":{"message":"Invalid request: missing field"}}')
+    check("category", info.category, ErrorCategory.CLIENT_ERROR)
+
+
 # ===== 边界 case =====
 def test_empty_body_429():
     """429 但没 body → rate_limited"""
@@ -221,6 +245,9 @@ def main():
         test_client_400_no_model_keyword,
         test_client_422,
         test_unknown_generic_exception,
+        test_context_window_deepseek_code,
+        test_context_window_openai_message,
+        test_client_400_without_context_keywords,
         test_empty_body_429,
         test_malformed_body_500,
         test_chinese_keyword_500,

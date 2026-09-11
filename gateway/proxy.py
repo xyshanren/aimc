@@ -872,7 +872,8 @@ def _update_cooldown(channel: dict, status_code_or_response) -> None:
         info = classify(status_code, response_body, None)
 
         # client_error 不进 cooldown (跟旧规则一致)
-        if info.category == ErrorCategory.CLIENT_ERROR:
+        # V6.x: context_window 同为客户端侧错误, 行为中性不冷却
+        if info.category in (ErrorCategory.CLIENT_ERROR, ErrorCategory.CONTEXT_WINDOW):
             return
 
         # 走 mark_failure(error_info=...) 新签名 (由 Commit 2 实现)
@@ -1067,6 +1068,10 @@ async def _write_usage_log(
     caller_key_id: int | None = None,
     cost_estimate: Optional[float] = None,
     list_cost_estimate: Optional[float] = None,
+    error_msg: Optional[str] = None,
+    error_type: Optional[str] = None,
+    error_code: Optional[str] = None,
+    needs_human: Optional[bool] = None,
 ):
     """写入用量日志到数据库
 
@@ -1090,6 +1095,10 @@ async def _write_usage_log(
     V6.0 Phase 2: list_cost_estimate 参数 (官方标价口径, 元)
     - NULL = 该模型标价未知 (registry list_*_price 为空)
     - 非 NULL = 按 _estimate_list_cost 算出的标价费用, 与 cost_estimate 配对算节省
+
+    V6.x: error_msg/error_type/error_code/needs_human 参数 (上游失败落库)
+    - NULL = 成功请求 (历史行为不变)
+    - 非 NULL = 流式失败时从 classify 结果填入, 激活 usage_logs V4.9 错误列
     """
     try:
         from db.engine import async_session_factory
@@ -1117,6 +1126,11 @@ async def _write_usage_log(
                 cost_estimate=cost_estimate,
                 # V6.0 Phase 2: 官方标价口径 (成本审计, 节省 = 标价 - 实付)
                 list_cost_estimate=list_cost_estimate,
+                # V6.x: 上游失败落库 (流式 4xx/5xx 无 usage 时补一行错误记录)
+                error_msg=error_msg,
+                error_type=error_type,
+                error_code=error_code,
+                needs_human=bool(needs_human) if needs_human is not None else False,
             )
             session.add(log)
             await session.commit()
@@ -1249,6 +1263,41 @@ def _schedule_stream_usage_log(
     try:
         usage = _extract_stream_usage(tail_bytes)
         if usage is None:
+            # V6.x: 失败请求落库 — 上游 4xx/5xx 无 usage 时 (如 deepseek 400
+            # CONTEXT_WINDOW_EXCEEDED), tail 缓冲里是错误体而非 SSE, 补一行
+            # tokens=0 的 usage_logs 记录, 让错误可统计 (此前这类请求完全不可见)。
+            if status_code >= 400:
+                body_text = tail_bytes.decode("utf-8", errors="replace")
+                from gateway.error_classifier import classify
+                info = classify(status_code, body_text)
+                group_id = _extract_group_id(requested_model)
+                try:
+                    loop = asyncio.get_running_loop()
+                    task = loop.create_task(
+                        _write_usage_log(
+                            channel_id=channel.get("id"),
+                            account_id=channel.get("account_id"),
+                            # 失败请求无上游 model 字段, 用请求侧解析
+                            model=_resolve_actual_model(channel, requested_model),
+                            input_tokens=0,
+                            output_tokens=0,
+                            status_code=status_code,
+                            latency_ms=latency_ms,
+                            group_id=group_id,
+                            caller_id=caller_id,
+                            caller_key_id=caller_key_id,
+                            error_msg=info.error_msg,
+                            error_type=info.category.value,
+                            error_code=info.error_code,
+                            needs_human=info.needs_human,
+                        )
+                    )
+                    task.add_done_callback(_log_task_result)
+                except RuntimeError as e:
+                    logger.warning(
+                        f"[P0-1] stream 失败落库 create_task 失败: {e}, 跳过"
+                    )
+                return
             # 上游未返回 usage (部分 provider stream 不带 usage), 跳过
             logger.debug(
                 f"[P0-1] stream 未提取到 usage, channel={channel.get('name')}, "
