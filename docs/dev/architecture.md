@@ -310,3 +310,4 @@ httpx.AsyncClient (上游调用)
 | V6.3 | F1 首启检测进 gateway startup | 空渠道/无 active 账号时 WARN 引导而非阻断启动（个人项目哲学：服务照起，引导到位）；manual_import.py 从必做降级为可选捷径 |
 | V6.3.1 | 顶栏 badge 不为自愈错误报警 | pending-summary 增 `exclude_transient`（badge 传 true）：瞬时冷却（cooldown_degraded，15-60s 自动恢复）不计入 badge，消除「顶栏有数但运维页为空」的观察时差噪音；同时观察点落 `cooldown_events` 流水（同 episode 按 cooldown_until 去重，badge 30s + ops 60s 双观察者不重复），运维页 24h 瞬时冷却记录卡留痕可回看 |
 | 2026-09-10 | CONTEXT_WINDOW 分类行为中性 | error_classifier 新增 `context_window` 分类（deepseek `CONTEXT_WINDOW_EXCEEDED` 等），但不冷却/不探测/不 needs_human——与 CLIENT_ERROR 同为客户端侧错误，避免上游拒收超大上下文被当成渠道故障；价值在可观测（流式 400 失败补落 usage_logs）+ 为「上下文超限路由更大窗口渠道」留分类基础 |
+| 2026-09-11 | 流式错误体走缓冲直通 | `_forward_stream` status≥400 时 aread() 已消费流，stream_generator 的 aiter_raw() 必抛 StreamConsumed（生产 326 例/5 天）；修复为 `is_stream_consumed` 时 generator 直接 yield 缓冲字节，tail/full 缓冲语义与正常路径一致——错误体不丢（usage_logs/转录可见），正常流路径零改动 |
