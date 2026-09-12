@@ -14,7 +14,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, Integer, Text, Float, DateTime, Boolean, ForeignKey, LargeBinary, JSON, func,
+    Column, Integer, Text, Float, DateTime, Boolean, ForeignKey, LargeBinary, JSON,
     Index, UniqueConstraint, text as sa_text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -91,8 +91,8 @@ class Channel(Base):
         Integer, nullable=False, server_default="1",
         comment="0=不自动学习, 1=上游 400 unsupported param 时自动加入 drop_params",
     )
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # 关系
     accounts = relationship("Account", back_populates="channel", lazy="selectin")
@@ -138,8 +138,8 @@ class Account(Base):
     last_error_at = Column(DateTime, nullable=True, comment="最后一次失败时间")
     last_error_type = Column(Text, nullable=True, comment="最后一次失败的 ErrorCategory")
     manual_disabled_at = Column(DateTime, nullable=True, comment="人工禁用时间 (NULL=未禁用)")
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # 关系
     channel = relationship("Channel", back_populates="accounts")
@@ -167,7 +167,7 @@ class PriceSnapshot(Base):
     effective_from = Column(Text, nullable=True, comment="生效日期 (ISO date 或 datetime)")
     effective_to = Column(Text, nullable=True, comment="失效日期，NULL=长期有效")
     source = Column(Text, nullable=True, comment="来源: manual/crawler/api")
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime, default=datetime.now)
 
     # P0-2 (2026-08-14): 缓存价格 + 优惠期 + raw_model_id 双轨
     raw_model_id = Column(
@@ -222,8 +222,8 @@ class Promotion(Base):
     # 不阻止入库，但人工关注 - LLM 可能编造看似合理的错误优惠
     flagged = Column(Integer, default=0, comment="0=正常, 1=异常（人工确认）")
     flagged_reason = Column(Text, nullable=True, comment="异常原因: low_confidence/abnormal_discount/...")
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class PromotionReviewQueue(Base):
@@ -247,7 +247,7 @@ class PromotionReviewQueue(Base):
     raw_data = Column(Text, nullable=True, comment="完整 ParseResult JSON (批准时用于入库)")
     approved = Column(Integer, default=0, comment="0=待审, 1=已处理")
     action = Column(Text, nullable=True, comment="approved / rejected (approved=1 时有值)")
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime, default=datetime.now)
     reviewed_at = Column(DateTime, nullable=True, comment="人工处理时间")
 
 
@@ -261,8 +261,8 @@ class ChannelQuota(Base):
     quota_type = Column(Text, nullable=False, comment="qpm/tpm/daily/total/concurrent")
     limit_value = Column(Integer, nullable=False, comment="限制值")
     reset_strategy = Column(Text, default="rolling_window", comment="rolling_window/fixed_daily/never")
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # 关系
     channel = relationship("Channel", back_populates="quotas")
@@ -298,7 +298,7 @@ class AccountQuota(Base):
         comment="rolling (滑动窗口) / fixed_daily / fixed_weekly / never (永久, 余额)",
     )
     enabled = Column(Integer, nullable=False, server_default="1", comment="0=禁用")
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     notes = Column(Text, nullable=True, comment="人工备注: 来源 URL / 厂商文档引用")
 
 
@@ -319,7 +319,7 @@ class AccountQuotaUsage(Base):
     dimension = Column(Text, primary_key=True, nullable=False)
     window_start = Column(DateTime, nullable=True)
     used_value = Column(Float, nullable=False, server_default="0")
-    last_updated = Column(DateTime, default=func.now(), onupdate=func.now())
+    last_updated = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class UsageLog(Base):
@@ -386,11 +386,13 @@ class UsageLog(Base):
         Integer, nullable=True,
         comment="思考 token 数 (usage.completion_tokens_details.reasoning_tokens), NULL=上游未返回",
     )
-    # P3 fix (2026-08-21): default 从 func.now() (SQLite CURRENT_TIMESTAMP=UTC) 改为
-    # Python 侧本地时间 — 跟所有读取方一致 (quota.py / dashboard/routes.py / 周报
-    # 脚本全用本地 datetime.now() 做窗口过滤)。之前 UTC 存储 + 本地读取导致
-    # daily quota 在本地 00:00-08:00 期间漏算当天用量 (3 个 flaky 测试同根因)。
-    # 存量 UTC 行需一次性迁移 (UTC→本地 +时差)。
+    # V6.4.1 (2026-09-12) 时区统一: 全库 DATETIME 列默认从 func.now()
+    # (SQLite CURRENT_TIMESTAMP=UTC) 改为 Python 侧本地时间 — 全仓读取方
+    # (quota.py / dashboard / 周报 / intel) 统一用本地 datetime.now() 做窗口过滤,
+    # 落库值统一带微秒 (本地时间)。前身 P3 fix (2026-08-21) 只改了 usage_logs:
+    # 当时 UTC 存储 + 本地读取导致 daily quota 在本地 00:00-08:00 期间漏算当天
+    # 用量 (3 个 flaky 测试同根因)。存量 UTC 行已按"无小数秒"特征一次性迁移
+    # (+8h → 本地), 见 scripts/tmp_tz_migrate.sql。
     created_at = Column(DateTime, default=datetime.now)
 
     # V4.9 (2026-08-25): 失败事件持久化字段
@@ -469,7 +471,7 @@ class ModelFeedbackSummary(Base):
     feedback_score = Column(Float, nullable=True)
     feedback_score_no_retry = Column(Float, nullable=True, comment="对照分数: 不含重试项 (100 - 50*fail_rate - 延迟分档扣分), 与 feedback_score 并存供对比取舍")
     client_breakdown = Column(Text, nullable=True, comment="JSON: 按 account_id 统计请求数")
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime, default=datetime.now)
 
     __table_args__ = (
         UniqueConstraint("model_id", "period_start", name="uq_feedback_model_period"),
@@ -489,8 +491,8 @@ class ParseRule(Base):
     ai_strategy = Column(Text, nullable=True, comment="AI 解析策略描述")
     confidence = Column(Float, nullable=True, comment="规则置信度")
     status = Column(Text, default="active", comment="active/failed/manual")
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class IntelSource(Base):
@@ -511,7 +513,7 @@ class IntelSource(Base):
     # A-2 (2026-09-08): 最后一次检测到内容变化的时间（含相似度噪声跳过）。
     # 系统级盲区审计判据: 全部 active 源 last_changed_at 距今 > N 天 → 情报系统失明
     last_changed_at = Column(DateTime, nullable=True, comment="最后变化检测时间 (A-2 盲区审计)")
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class ModelCard(Base):
@@ -535,8 +537,8 @@ class ModelCard(Base):
     tier = Column(Text, nullable=True, comment="适配场景: code/chinese/general/multimodal")
     source_url = Column(Text, nullable=True, comment="benchmark 数据来源链接")
     notes = Column(Text, nullable=True, comment="备注 (e.g. 'snapshot 2024-10')")
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class ModelRegistry(Base):
@@ -572,8 +574,8 @@ class ModelRegistry(Base):
     release_date = Column(Text, nullable=True, comment="发布日期")
     status = Column(Text, default="active", comment="active/deprecated/preview")
     notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # P0-2 扩展
     raw_ids = Column(
@@ -625,8 +627,8 @@ class ModelGroup(Base):
     fallback_group = Column(Text, nullable=True, comment="降级目标组ID (NULL=无降级)")
     enabled = Column(Integer, default=1, comment="0/1")
     sort_order = Column(Integer, default=0, comment="Dashboard 展示排序")
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class ModelGroupMember(Base):
@@ -665,7 +667,7 @@ class ModelGroupMember(Base):
     weight = Column(Float, default=1.0, comment="weighted 策略时的权重 (Phase 3)")
     max_cost_ratio = Column(Float, nullable=True, comment="价格超过组内最低 N 倍时排除 (NULL=不限)")
     added_by = Column(Text, default="manual", comment="manual/intel_auto")
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime, default=datetime.now)
     # P1-2 软删除: 出组不改 DELETE, 设 is_active=0 + 记录审计
     is_active = Column(Integer, default=1, nullable=False, comment="1=参与路由, 0=已出组 (软删除)")
     removed_at = Column(DateTime, nullable=True, comment="出组时间")
@@ -710,7 +712,7 @@ class ModelCapabilitiesLog(Base):
     approved = Column(Integer, default=0, comment="三态: 0=待审, 1=已批准, -1=已拒绝")
     # V4.8.6: 采集来源渠道 (moonshot/deepseek/siliconflow/...), NULL=legacy 数据
     provider = Column(Text, nullable=True, comment="采集来源渠道 (moonshot/deepseek/siliconflow/...)")
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime, default=datetime.now)
 
     # V4.8.6: pending 去重 — 同 (model_id, field_changed) 在 approved=0 时只保留 1 条.
     # 用 partial unique index (SQLite/PostgreSQL 均支持), approved=1 的审计行不受约束.
@@ -747,8 +749,8 @@ class CrossSourceDiscrepancy(Base):
     resolved_value = Column(Text, nullable=True, comment="人工拍板后的最终值 (JSON for capabilities)")
     resolved_note = Column(Text, nullable=True, comment="人工备注: 取信源X / 忽略 / 其他")
     resolved_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # P0-7 fix: 防止并发扫描产生重复 pending 行.
     # 业务语义是 “同 (model_id, field_changed, status) 只保留 1 条”,
@@ -805,7 +807,7 @@ class ModelChangeSuggestion(Base):
         Text, nullable=False, server_default="pending",
         comment="pending / approved / rejected / applied",
     )
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime, default=datetime.now)
     reviewed_at = Column(DateTime, nullable=True)
     reviewed_by = Column(Text, nullable=True)
     applied_at = Column(DateTime, nullable=True)
@@ -841,7 +843,7 @@ class GroupChangeSuggestion(Base):
     confidence = Column(Float, nullable=True)
     based_on = Column(Text, nullable=True, comment="JSON: {\"usage_pct\": {...}}")
     status = Column(Text, nullable=False, server_default="pending")
-    created_at = Column(DateTime, default=func.now())
+    created_at = Column(DateTime, default=datetime.now)
     reviewed_at = Column(DateTime, nullable=True)
     reviewed_by = Column(Text, nullable=True)
     applied_at = Column(DateTime, nullable=True)
@@ -971,7 +973,7 @@ class SettingsRuntime(Base):
 
     key = Column(Text, primary_key=True, comment="设置名: alert_channel / bark_key / feishu_webhook_url / serverchan_key")
     value = Column(Text, nullable=True, comment="override 值, NULL = 删除 override 回退 .env")
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 # ============================================================
@@ -1011,8 +1013,8 @@ class User(Base):
         comment="每月 token 限额 (input+output), NULL=不限",
     )
     notes = Column(Text, nullable=True, comment="备注 (e.g. '产品组')")
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # 关系
     api_keys = relationship("ApiKey", back_populates="user", lazy="selectin")
@@ -1052,8 +1054,8 @@ class ApiKey(Base):
     status = Column(Text, nullable=False, default="active", comment="active / revoked")
     label = Column(Text, nullable=True, comment="key 标签 (e.g. '工作机' / '笔记本')")
     last_used_at = Column(DateTime, nullable=True, comment="最后使用时间")
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     # 关系
     user = relationship("User", back_populates="api_keys")

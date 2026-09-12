@@ -939,7 +939,8 @@ async def upsert_cross_source_discrepancy(
 
     if row:
         # P2-17 fix: 不再手动赋值 updated_at. CrossSourceDiscrepancy.updated_at 已有
-        # onupdate=func.now() (db/models.py), flush 时 ORM 自动更新, 跟手工赋值等价
+        # onupdate=datetime.now (db/models.py, V6.4.1 时区统一), flush 时 ORM 自动更新,
+        # 跟手工赋值等价
         # 且避免 SQLAlchemy session.identity map 跟 onupdate 双重写入 (后者覆盖前者反而慢).
         row.sources_json = sources_json
         row.discrepancy_score = discrepancy_score

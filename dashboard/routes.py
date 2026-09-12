@@ -1365,7 +1365,7 @@ async def approve_suggestion(
         raise HTTPException(status_code=400, detail=f"建议当前 status='{s.status}', 只能批准 pending")
 
     s.status = "approved"
-    s.reviewed_at = func.now()
+    s.reviewed_at = datetime.now()
     s.reviewed_by = reviewed_by
     await session.commit()
     return {"ok": True, "id": suggestion_id, "status": "approved"}
@@ -1390,7 +1390,7 @@ async def reject_suggestion(
         raise HTTPException(status_code=404, detail=f"{suggestion_type} suggestion {suggestion_id} not found")
 
     s.status = "rejected"
-    s.reviewed_at = func.now()
+    s.reviewed_at = datetime.now()
     s.reviewed_by = reviewed_by
     await session.commit()
     return {"ok": True, "id": suggestion_id, "status": "rejected"}
@@ -1423,7 +1423,7 @@ async def apply_all_approved_suggestions(
     for s in (await session.execute(m_stmt)).scalars().all():
         try:
             await apply_model_suggestion(session, s, apply=True)
-            s.applied_at = func.now()
+            s.applied_at = datetime.now()
             s.status = "applied"
             s.reviewed_by = reviewed_by
             n_model += 1
@@ -1438,7 +1438,7 @@ async def apply_all_approved_suggestions(
     for s in (await session.execute(g_stmt)).scalars().all():
         try:
             await apply_group_suggestion(session, s, apply=True)
-            s.applied_at = func.now()
+            s.applied_at = datetime.now()
             s.status = "applied"
             s.reviewed_by = reviewed_by
             n_group += 1
@@ -1769,7 +1769,7 @@ async def get_group_routing_stats(days: int = 7, session: AsyncSession = Depends
     - summary: 总览数字
     """
     from datetime import datetime, timedelta
-    # usage_logs.created_at 存本地时间 (P3 修复), cutoff 须用本地 now 匹配
+    # usage_logs.created_at 存本地时间 (V6.4.1 全库统一), cutoff 须用本地 now 匹配
     cutoff = datetime.now() - timedelta(days=days)
 
     # 1) 按 group_id + model 聚合 (只统计 group_id 非 NULL)
@@ -1899,7 +1899,7 @@ async def list_requests(
 
     V6.3 F2: model 支持模糊匹配 (LIKE %model%), 如 model=glm 收窄到 glm 系。
     """
-    # usage_logs.created_at 存本地时间 (P3 修复), cutoff 须用本地 now 匹配
+    # usage_logs.created_at 存本地时间 (V6.4.1 全库统一), cutoff 须用本地 now 匹配
     cutoff = datetime.now() - timedelta(days=days)
     conds = [UsageLog.created_at >= cutoff]
     if status == "ok":
@@ -2414,11 +2414,11 @@ async def get_auto_join_metrics(
       (parser.py infer_tier 对无法从模型名推断参数规模的返回 None, 这些模型永远
       无法自动入组, 是 AUTO_JOIN 决策的关键盲区)
     """
-    # 本端点查两张表, 时间语义不同:
-    # - model_capabilities_log.created_at = func.now() (UTC)
-    # - usage_logs.created_at = Python 本地时间 (P3 修复)
-    cutoff_utc = datetime.utcnow() - timedelta(days=days)
-    cutoff_local = datetime.now() - timedelta(days=days)
+    # V6.4.1 时区统一: 全库 DATETIME 列已统一 Python 本地时间,
+    # 本端点两张表同一语义, 单一 cutoff (此前 capabilities_log=UTC /
+    # usage_logs=本地 双轨, 需 cutoff_utc/cutoff_local 两个窗口)。
+    now = datetime.now()
+    cutoff = now - timedelta(days=days)
 
     # --- 1) pending_review 积压 (当前 + 每周新增) ---
     pending_total = (
@@ -2429,11 +2429,10 @@ async def get_auto_join_metrics(
         )
     ).scalar() or 0
 
-    now_utc = datetime.utcnow()
     week_buckets = {
-        "0-7d": (now_utc - timedelta(days=7), now_utc),
-        "7-14d": (now_utc - timedelta(days=14), now_utc - timedelta(days=7)),
-        "14d+": (datetime(2000, 1, 1), now_utc - timedelta(days=14)),
+        "0-7d": (now - timedelta(days=7), now),
+        "7-14d": (now - timedelta(days=14), now - timedelta(days=7)),
+        "14d+": (datetime(2000, 1, 1), now - timedelta(days=14)),
     }
     pending_weekly = []
     if days >= 7:
@@ -2468,7 +2467,7 @@ async def get_auto_join_metrics(
             select(func.count(ModelCapabilitiesLog.id))
             .where(ModelCapabilitiesLog.source == "ai_infer")
             .where(ModelCapabilitiesLog.approved != 0)
-            .where(ModelCapabilitiesLog.created_at >= cutoff_utc)
+            .where(ModelCapabilitiesLog.created_at >= cutoff)
         )
     ).scalar() or 0
     approved_count = (
@@ -2476,7 +2475,7 @@ async def get_auto_join_metrics(
             select(func.count(ModelCapabilitiesLog.id))
             .where(ModelCapabilitiesLog.source == "ai_infer")
             .where(ModelCapabilitiesLog.approved == 1)
-            .where(ModelCapabilitiesLog.created_at >= cutoff_utc)
+            .where(ModelCapabilitiesLog.created_at >= cutoff)
         )
     ).scalar() or 0
     rejected_count = max(reviewed_count - approved_count, 0)
@@ -2485,7 +2484,7 @@ async def get_auto_join_metrics(
     group_rows = (
         await session.execute(
             select(UsageLog.group_id, func.count(UsageLog.id))
-            .where(UsageLog.created_at >= cutoff_local)
+            .where(UsageLog.created_at >= cutoff)
             .group_by(UsageLog.group_id)
         )
     ).all()
@@ -2505,7 +2504,7 @@ async def get_auto_join_metrics(
     rag_bge_count = (
         await session.execute(
             select(func.count(UsageLog.id))
-            .where(UsageLog.created_at >= cutoff_local)
+            .where(UsageLog.created_at >= cutoff)
             .where(UsageLog.model.in_(rag_bge_names))
         )
     ).scalar() or 0

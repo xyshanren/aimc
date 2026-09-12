@@ -106,7 +106,7 @@ async def write_to_model_cards(aggregates, session) -> dict:
         if existing is not None:
             existing.score = row["score"]
             existing.notes = row["notes"]
-            # updated_at 由 onupdate=func.now() 自动刷新
+            # updated_at 由 onupdate=datetime.now 自动刷新
             result["updated"] += 1
         else:
             session.add(ModelCard(
