@@ -6,7 +6,7 @@
 ## 1. 跑测试
 
 ```bash
-# 全部 (694 个 test, V6.3.1 基线 2026-09-06: 全绿; 含思考 token 解析 8 例 + V6.3 埋点/首启检测 6 例 + model 搜索 1 例 + V6.3.1 冷却流水 5 例)
+# 全部 (747 个 test, V6.4 基线 2026-09-12: 全绿; 含思考 Phase B 注入 + S3 门槛 + cache 折算 + 命名 org 段用例)
 python -m pytest tests/ -q
 
 # 单文件
@@ -73,7 +73,7 @@ pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`）�
 | `test_v631_cooldown_events.py` | 5 | pending-summary exclude_transient / cooldown_events 落库去重 / cooldown-events 端点过滤 | V6.3.1 |
 | `test_phase3_5_verification.py` | 4 | 情报采集 → registry/group 闭环验证 | 阶段3-5 |
 
-**总计**：76 个文件 / 694 个 test / ~5 分钟跑通（V6.3.1 基线 2026-09-06 全绿; 表内逐文件数字为历史版本快照）
+**总计**：78 个文件 / 747 个 test / ~6 分钟跑通（V6.4 基线 2026-09-12 全绿; 表内逐文件数字为历史版本快照）
 
 ## 3. 写新测试
 

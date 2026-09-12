@@ -170,6 +170,24 @@ V7.0 (远期, 拍板后立项)
 
 ## 6. 实施记录
 
+### V6.4（2026-09-11 ~ 09-12 上产，全量 747 测试全绿）
+
+**S3 生效（R4 收口）**
+- `intelligence/model_sync.py`：AUTO_JOIN_NON_T0=True + AUTO_JOIN_MIN_CONFIDENCE=0.9（should_auto_join 非 T0 额外门槛，T0 恒免人工；不达标走既有 pending 人工路径）。
+- `dashboard/routes.py` auto-join-metrics 补 `auto_join_enabled` / `auto_join_min_confidence` 运行时快照（延迟 import，测试可 patch）。
+- 测试：test_v64_decision_batch.py（S3 门槛 9 例）+ test_model_sync_auto_group.py / test_v63_auto_join_metrics.py 旧断言适配。
+
+**#11/#12 cache-aware 折算**
+- `gateway/router.py:_get_input_price`：`eff = hit*cached_price + (1-hit)*input_price`，渠道 7d 命中率内存缓存 5min TTL（`_cache_hit_pct` 只读 SQLite 连接）；hit=0/无 cache 价退化原价。
+- 坑：渠道缓存 dict 须同步携带新渠道字段——`disable_thinking_inject` 漏拷导致注入静默不生效（c5363bf 修）。
+
+**思考 Phase B**（详见 thinking-control-plan.md §3/§4）
+- 迁移 `2026_09_11_v6x_thinking_inject.py`（channels.disable_thinking_inject 默认 0）+ proxy `_inject_thinking_off` + 渠道页"思考注入"开关列。
+- 上游兼容矩阵实测：无上游执行 enable_thinking:false（glm_bigmodel 400 码 1210 强制思考已关回；sensenova=1 无害观察中）。
+
+**R9（运维处置）**
+- Phase 1-3 不立项；8 个持续 error 死源 2026-09-12 生产库 disabled（32 active / 8 disabled），采集异常告警实测静默。
+
 ### V6.3（2026-09-05 上产，全量 689 测试全绿）
 
 **F1 首启检测（R1 / 路径 B）**

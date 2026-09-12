@@ -88,6 +88,21 @@
 - 测试 `tests/test_v64_decision_batch.py`（注入 5 例 + S3 门槛 9 例 + cache 折算 8 例）。
 - **各渠道开关默认全关**，生产冒烟确认 6 渠道 inject=0 行为不变；开谁由用户看上表数据决定（建议先开 sensenova/glm_bigmodel 这类"思考比高 + 延迟高"渠道，逐渠道观察 reasoning_tokens 下降量）。
 
+### Phase B 上游兼容矩阵与开关现状（2026-09-12 实测拍板）
+
+全渠道对照实测（开关注入 vs 关，比对 reasoning_tokens）：**当前没有任何上游执行 `enable_thinking:false`**——
+
+| 渠道 | 结论 |
+|------|------|
+| glm_bigmodel | **400 拒绝**（错误码 1210"该模型始终思考，不支持关闭思考；请使用 low、high 或 max"）→ 开关已关回 |
+| sensenova_official | 忽略（6.8-lite / kimi-k3 照跑） |
+| siliconflow | 忽略（GLM-5.3 三轮对照无差异） |
+| minimax_compat | 忽略（41 vs 40） |
+| deepseek_official | 忽略（deepseek-flash 三轮对照无缩减；注意须以实际路由到的渠道为准测） |
+| stepfun_official | 不可观测（上游不返回 reasoning_tokens；渠道已禁用） |
+
+**开关现状（用户拍板）**：sensenova_official=1（无害观察），其余全 0。GLM low/high/max 档位降思考列为扩展项（设计要点：参数形态实测 + 暴露方式二选一——渠道级配置 or agent 可传参，后者需动剥离白名单否则客户端 thinking 参数先被剥离）。`gateway/router.py` 渠道缓存 dict 须携带 `disable_thinking_inject`（漏拷会导致注入静默不生效，c5363bf）。
+
 ### Phase B 预案（届时再细化，此处只记方向）
 
 - 注入点：`gateway/proxy.py` 与 `_strip_thinking_fields` 同位置，按渠道/模型粒度
@@ -99,6 +114,7 @@
 ## 4. 相关文件
 
 - `gateway/proxy.py` — `_strip_thinking_fields`（V4.6.4 请求侧剥离）、`_parse_reasoning_tokens`（V6.x 计量）、`_inject_thinking_off`（Phase B 注入）
+- `gateway/router.py` — 渠道缓存 dict 携带 `disable_thinking_inject`（漏拷=注入静默失效）；#11/#12 cache-aware 有效输入价
 - `db/migrations/2026_09_05_v6x_reasoning_tokens.py` — `usage_logs.reasoning_tokens` 列
 - `db/migrations/2026_09_11_v6x_thinking_inject.py` — `channels.disable_thinking_inject` 列
 - `db/models.py` — `UsageLog.reasoning_tokens`、`Channel.disable_thinking_inject`

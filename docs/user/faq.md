@@ -58,6 +58,9 @@ AIMC 的多维限额（P0-6）是**保护账号不过快消耗**，不是给客�
 ### Q: 支持流式吗？
 **A:** 支持。OpenAI SDK 设 `stream=True` 即可。
 
+### Q: OCR 模型（deepseek-ocr / paddleocr-vl-1.5）怎么调？
+**A:** 没有独立端点，跟对话模型一样走 `/v1/chat/completions`，用 OpenAI 多模态形态：`messages.content` 放 `[{"type":"image_url","image_url":{"url":...}}, {"type":"text","text":"识别图中文字"}]`。图片两种给法：**base64 data URI**（`data:image/png;base64,...`，推荐）或公网可下载 URL——注意 SiliconFlow 会拒绝它自己下载不到的图 URL（错误码 20040，raw.githubusercontent 实测被拒）。usage 正常落库（图片折算 prompt tokens）。
+
 ### Q: 数据库会无限增长吗？
 **A:** `usage_logs` 表会增长（每条请求一行）。建议每周跑 `python scripts/cleanup_old_usage_logs.py`（如果存在）保留最近 30 天。
 

@@ -5,7 +5,7 @@
 
 ## 1. 当前 migration 总览
 
-AIMC 当前有 **22 个 migration 脚本**（`db/migrations/`）：
+AIMC 当前有 **23 个 migration 脚本**（`db/migrations/`）：
 
 ```
 2026_07_xx  P0-P0.1  (历史)
@@ -31,6 +31,7 @@ AIMC 当前有 **22 个 migration 脚本**（`db/migrations/`）：
 2026_09_04_v61x_qwen_naming.py              # V6.x qwen 命名规范化（双前缀改名 39 + 重复条目合并 4, 级联 members/usage/prices）
 2026_09_05_v6x_reasoning_tokens.py          # V6.x 思考 token 计量（usage_logs.reasoning_tokens 列, NULL=上游未返回）
 2026_09_09_v6x_feedback_score_no_retry.py   # V6.x 反馈分四项修复（usage_logs.feedback_score_no_retry 列 + 聚合口径）
+2026_09_11_v6x_thinking_inject.py           # V6.4 思考 Phase B（channels.disable_thinking_inject 渠道注入开关, 默认 0）
 ```
 
 > 生产环境（ubuntu2401）只跑幂等 migration，**不要**跑 `seed_model_groups.py` /

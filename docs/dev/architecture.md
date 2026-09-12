@@ -313,4 +313,5 @@ httpx.AsyncClient (上游调用)
 | V6.4 | S3：AUTO_JOIN 开启 + 置信门槛 | `AUTO_JOIN_NON_T0=True` + `AUTO_JOIN_MIN_CONFIDENCE=0.9`（仅约束非 T0，T0 恒免人工）：观察期数据（pending 恒 0/组命中 96.5%/盲区良性）支持开启，kimi-k2.6 两次推断不一致支持置信门控；不达标走既有 pending 人工路径 |
 | V6.4 | Phase B 渠道级注入默认关 | 思考注入（`enable_thinking:false`）做成渠道开关且默认 0：强关思考可能降回答质量，先零行为上产，逐渠道看数据再开（思考比高+延迟高的渠道优先） |
 | V6.4 | cache-aware 有效输入价折算不落库 | 路由 sort_key 用滚动 7d 实测命中率折算 `eff = hit*cached_price + (1-hit)*input_price`，内存 5min TTL 不写价格表：命中率是渠道行为非模型属性，落库会引入陈旧性；hit=0 退化为原价保证零数据时行为不变 |
+| V6.4 | SF org 段不进 model_id | SF raw 名 `org/模型行` 的 org 与模型行名不同源时，family 取模型行系（FAMILY_HINTS：paddlepaddle→paddleocr、meituan-longcat→longcat、nex-agi→nex），model_part 已带 `{family}-` 时直接采用；厂商品牌前缀不叠词的保留（tongyi-mai/teleai/fnlp/funaudiollm/baai）。存量改名 paddleocr-vl-1.5 / longcat-2.0 / nex-n2-pro |
 | 2026-09-11 | 流式错误体走缓冲直通 | `_forward_stream` status≥400 时 aread() 已消费流，stream_generator 的 aiter_raw() 必抛 StreamConsumed（生产 326 例/5 天）；修复为 `is_stream_consumed` 时 generator 直接 yield 缓冲字节，tail/full 缓冲语义与正常路径一致——错误体不丢（usage_logs/转录可见），正常流路径零改动 |
