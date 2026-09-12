@@ -1915,7 +1915,7 @@ async function loadCooldownEvents() {
             html += '<div class="pr-row">';
             html += '<span class="status-dot-small" style="background:var(--color-warning);"></span>';
             html += '<strong>' + esc(ch) + esc(acct) + '</strong>';
-            html += '<span style="margin-left:auto;font-size:11px;color:var(--text-muted);">' + esc(ev.created_at || '') + '</span>';
+            html += '<span style="margin-left:auto;font-size:11px;color:var(--text-muted);">' + esc((ev.created_at || '').replace('T', ' ').slice(0, 19)) + '</span>';
             html += '</div>';
             html += '<div style="font-size:11px;margin-top:6px;color:var(--text-secondary);">';
             html += esc(etype) + ' · 观察时剩余冷却 ' + esc(remain);
