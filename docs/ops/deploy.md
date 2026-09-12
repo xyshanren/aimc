@@ -229,6 +229,13 @@ python -m pytest tests/ -v
   ```
 - 升级到 ≥ `041000e`（优惠情报治理）：建议清理历史"未知活动"垃圾条目：
   `sqlite3 data/aimc.db "DELETE FROM promotions WHERE title='未知活动' OR flagged=1"`
+- 升级到 ≥ `4198b8e`（2026-09-12 V6.4.1 时区统一）：全库 DATETIME 列默认从
+  `func.now()`（SQLite CURRENT_TIMESTAMP=UTC）改为 Python 本地时间 `datetime.now`，
+  与 P3 之后 usage_logs 的约定归一；唯一迁就 UTC 列的读取方
+  （dashboard auto_join 端点的 utcnow 双窗口）一并归一。
+  **存量行需一次性迁移**（无小数秒 = UTC 特征，+8h；脚本含前置 sanity check
+  与后置验证）：停服 → 备份 → `sqlite3 data/aimc.db < scripts/tmp_tz_migrate.sql`。
+  新部署或 2026-09-12 之后克隆的库无需迁移。
 
 ## 故障排查（部署阶段）
 

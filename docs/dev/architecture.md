@@ -203,7 +203,8 @@ usage_logs
 ├─ cached_input_tokens / cache_read_input_tokens / cache_creation_input_tokens [P0-3-followup]
 ├─ cost_estimate (实付估算, 元; 免费/订阅渠道 = 0)
 ├─ list_cost_estimate (V6.0 标价估算, 元; NULL=标价未知; 节省 = 标价 - 实付, 仅标价已知行)
-└─ created_at (本地时间, 2026-08-21 起; 存量 UTC 已迁移)
+└─ created_at (本地时间; usage_logs 2026-08-21 起, V6.4.1 2026-09-12 起全库
+   DATETIME 列统一 datetime.now 本地时间, 存量 UTC 行已按"无小数秒"特征迁移)
 
 users / api_keys (V4.8 多用户)
 ├─ users: username / role / status / daily_token_limit / monthly_token_limit
