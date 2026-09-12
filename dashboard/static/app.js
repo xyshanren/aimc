@@ -1542,7 +1542,7 @@ function syncRangeLabels() {
         ["group-routing-range-label", "Agent 视角 · " + lbl],
         ["requests-range-label", lbl],
         ["trend-range-label", lbl],
-        ["top-range-label", lbl],
+        ["top-range-label", lbl + " · 按请求数"],
         ["group-overview-label", lbl],
     ];
     for (const [id, text] of map) {
@@ -2245,12 +2245,16 @@ async function loadUsageTop() {
         const resp = await authFetch(`/dashboard/api/usage/cost-by-model?days=${fmtDays()}`);
         if (!resp.ok) return;
         const items = (await resp.json()).items || [];
-        if (items.length === 0) {
+        // 接口默认按标价降序 (成本审计口径); 概览卡是流量视角, 标价未知的高流量
+        // 模型 (如 PaddleOCR/minimax) 会被沉底截掉, 这里改按请求数排
+        const rows = items.filter(it => it.model)
+            .sort((a, b) => (b.request_count || 0) - (a.request_count || 0));
+        if (rows.length === 0) {
             el.innerHTML = '<p class="empty">近 ' + fmtDays() + ' 天无用量数据</p>';
             return;
         }
         let html = '<table><thead><tr><th>模型</th><th' + mdTitle('requests') + '>请求</th><th' + mdTitle('paid') + '>实付</th><th' + mdTitle('listPrice') + '>标价</th></tr></thead><tbody>';
-        for (const it of items.slice(0, 5)) {
+        for (const it of rows.slice(0, 5)) {
             html += '<tr><td><code class="text-mono">' + esc(it.model || '—') + '</code></td>'
                 + '<td>' + fmtNum(it.request_count) + '</td>'
                 + '<td class="mono">' + _costFmt(it.cost_yuan) + '</td>'
