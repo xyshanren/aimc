@@ -88,6 +88,8 @@ FAMILY_HINTS = {
     # V6.4 (2026-09-12): org 名与模型行名不同的厂商 — family 取模型行系,
     # 否则 org 段会被塞进 model_id (paddlepaddle-paddleocr-vl-1.5 实证)
     "paddlepaddle": "paddleocr",
+    "meituan-longcat": "longcat",
+    "nex-agi": "nex",
 }
 
 def infer_modality(model_id: str) -> str:

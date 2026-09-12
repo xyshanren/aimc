@@ -144,6 +144,18 @@ def test_convert_paddle_org_not_stuffed():
     assert validate_model_id(mid, fam) is True
 
 
+def test_convert_longcat_nex_org_not_stuffed():
+    """V6.4 (2026-09-12): 同类 org 叠词 — meituan-longcat/LongCat-2.0 曾产出
+    meituan-longcat-longcat-2.0; nex-agi/Nex-N2-Pro 曾产出 nex-agi-nex-n2-pro"""
+    from scripts.sync_siliconflow_to_registry import convert_sf_model_id
+    from db.normalizers import validate_model_id
+
+    assert convert_sf_model_id("meituan-longcat/LongCat-2.0") == ("longcat", "longcat-2.0")
+    assert convert_sf_model_id("nex-agi/Nex-N2-Pro") == ("nex", "nex-n2-pro")
+    assert validate_model_id("longcat-2.0", "longcat") is True
+    assert validate_model_id("nex-n2-pro", "nex") is True
+
+
 # ============================================================
 # Part 3: 迁移 (改名 + 级联 + 重复合并 + 幂等)
 # ============================================================
