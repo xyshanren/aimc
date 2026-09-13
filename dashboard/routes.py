@@ -362,34 +362,62 @@ async def get_promotions(
 
 @router.get("/api/usage/summary")
 async def get_usage_summary(days: int = 7, session: AsyncSession = Depends(get_session)):
-    """用量统计摘要"""
-    stmt = (
-        select(
-            func.date(UsageLog.created_at).label("date"),
-            func.count(UsageLog.id).label("request_count"),
-            func.sum(UsageLog.input_tokens).label("total_input_tokens"),
-            func.sum(UsageLog.output_tokens).label("total_output_tokens"),
-            func.sum(UsageLog.reasoning_tokens).label("total_reasoning_tokens"),
-            func.avg(UsageLog.latency_ms).label("avg_latency_ms"),
-        )
-        .group_by(func.date(UsageLog.created_at))
-        .order_by(func.date(UsageLog.created_at).desc())
-        .limit(days)
+    """用量统计摘要 (滚动窗口按时间桶聚合, 缺桶补零)
+
+    口径统一 (2026-09-13): 与全站一致用滚动窗口 cutoff=本地 now-days, 取代旧的
+    "最近 N 个有数据的自然日" LIMIT 语义 (无 cutoff 扫全表 + 零流量日凭空消失)。
+    days=1 按小时分桶 (近 24 小时分时, 消灭跨日半截桶), 其余按日分桶;
+    桶轴在 Python 侧生成, 无数据时段补零行 — 图表不断轴。时间升序 (画图用)。
+    """
+    cutoff = datetime.now() - timedelta(days=days)
+    hourly = days == 1
+    bucket = (
+        func.strftime("%Y-%m-%d %H:00", UsageLog.created_at)
+        if hourly else func.date(UsageLog.created_at)
     )
-    result = await session.execute(stmt)
-    rows = result.all()
+    rows = {
+        r.date: r
+        for r in (
+            await session.execute(
+                select(
+                    bucket.label("date"),
+                    func.count(UsageLog.id).label("request_count"),
+                    func.sum(UsageLog.input_tokens).label("total_input_tokens"),
+                    func.sum(UsageLog.output_tokens).label("total_output_tokens"),
+                    func.sum(UsageLog.reasoning_tokens).label("total_reasoning_tokens"),
+                    func.avg(UsageLog.latency_ms).label("avg_latency_ms"),
+                )
+                .where(UsageLog.created_at >= cutoff)
+                .group_by(bucket)
+            )
+        ).all()
+    }
+
+    # 完整桶轴: 滚动窗口覆盖到的时段全部产出, 含两端截段桶
+    now = datetime.now()
+    buckets = []
+    if hourly:
+        slot = cutoff.replace(minute=0, second=0, microsecond=0)
+        while slot <= now:
+            buckets.append(slot.strftime("%Y-%m-%d %H:00"))
+            slot += timedelta(hours=1)
+    else:
+        day, today = cutoff.date(), now.date()
+        while day <= today:
+            buckets.append(day.isoformat())
+            day += timedelta(days=1)
 
     return [
         {
-            "date": row.date,
-            "request_count": row.request_count,
-            "total_input_tokens": row.total_input_tokens or 0,
-            "total_output_tokens": row.total_output_tokens or 0,
+            "date": b,
+            "request_count": rows[b].request_count if b in rows else 0,
+            "total_input_tokens": (rows[b].total_input_tokens or 0) if b in rows else 0,
+            "total_output_tokens": (rows[b].total_output_tokens or 0) if b in rows else 0,
             # V6.x: 思考 token (关思考评估观察期指标, NULL 行不参与 SUM)
-            "total_reasoning_tokens": row.total_reasoning_tokens or 0,
-            "avg_latency_ms": round(row.avg_latency_ms or 0, 1),
+            "total_reasoning_tokens": (rows[b].total_reasoning_tokens or 0) if b in rows else 0,
+            "avg_latency_ms": round(rows[b].avg_latency_ms or 0, 1) if b in rows else 0.0,
         }
-        for row in rows
+        for b in buckets
     ]
 
 
@@ -591,44 +619,77 @@ async def get_cost_trend(
     days: int = Query(7, ge=1, le=90),
     session: AsyncSession = Depends(get_session),
 ):
-    """V6.0 Phase 2: 按天的成本趋势 (标价 vs 实付 vs 节省), 时间升序 (画图用)"""
+    """V6.0 Phase 2: 成本趋势 (标价 vs 实付 vs 节省), 时间升序 (画图用)
+
+    口径统一 (2026-09-13): days=1 按小时分桶 (近 24 小时分时), 其余按日;
+    桶轴 Python 侧生成缺桶补零 — 图表不断轴。totals 仍只算窗口内真实数据,
+    与 cost-by-* 端点可对账。
+    """
     cutoff = datetime.now() - timedelta(days=days)
-    rows = (
-        await session.execute(
-            select(
-                func.date(UsageLog.created_at).label("date"),
-                func.count(UsageLog.id).label("request_count"),
-                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
-                func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
-                func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan"),
-                func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).label("list_cost_yuan"),
-                func.count(UsageLog.list_cost_estimate).label("list_known_requests"),
+    hourly = days == 1
+    bucket = (
+        func.strftime("%Y-%m-%d %H:00", UsageLog.created_at)
+        if hourly else func.date(UsageLog.created_at)
+    )
+    rows = {
+        r.date: r
+        for r in (
+            await session.execute(
+                select(
+                    bucket.label("date"),
+                    func.count(UsageLog.id).label("request_count"),
+                    func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                    func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                    func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan"),
+                    func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).label("list_cost_yuan"),
+                    func.count(UsageLog.list_cost_estimate).label("list_known_requests"),
+                )
+                .where(UsageLog.created_at >= cutoff)
+                .group_by(bucket)
             )
-            .where(UsageLog.created_at >= cutoff)
-            .group_by(func.date(UsageLog.created_at))
-            .order_by(func.date(UsageLog.created_at).asc())
-        )
-    ).all()
+        ).all()
+    }
 
     priced = {
         r.date: float(r.cost_yuan_priced or 0)
         for r in (
             await session.execute(
                 select(
-                    func.date(UsageLog.created_at).label("date"),
+                    bucket.label("date"),
                     func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan_priced"),
                 )
                 .where(UsageLog.created_at >= cutoff)
                 .where(UsageLog.list_cost_estimate.isnot(None))
-                .group_by(func.date(UsageLog.created_at))
+                .group_by(bucket)
             )
         ).all()
     }
 
+    # 完整桶轴 (含两端截段桶), 补零行保证图上 x 轴连续
+    now = datetime.now()
+    buckets = []
+    if hourly:
+        slot = cutoff.replace(minute=0, second=0, microsecond=0)
+        while slot <= now:
+            buckets.append(slot.strftime("%Y-%m-%d %H:00"))
+            slot += timedelta(hours=1)
+    else:
+        day, today = cutoff.date(), now.date()
+        while day <= today:
+            buckets.append(day.isoformat())
+            day += timedelta(days=1)
+
     items = []
-    for row in rows:
-        item = {"date": row.date}
-        item.update(_cost_audit_row_dict(row, priced.get(row.date, 0.0)))
+    for b in buckets:
+        if b in rows:
+            item = {"date": b}
+            item.update(_cost_audit_row_dict(rows[b], priced.get(b, 0.0)))
+        else:
+            item = {
+                "date": b, "request_count": 0, "input_tokens": 0, "output_tokens": 0,
+                "cost_yuan": 0.0, "list_cost_yuan": 0.0, "saved_yuan": 0.0,
+                "list_known_requests": 0,
+            }
         items.append(item)
     return {"days": days, "totals": _cost_audit_totals(items), "items": items}
 

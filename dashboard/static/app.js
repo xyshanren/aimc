@@ -1259,7 +1259,7 @@ async function loadUsageChart() {
             _usageBarChart = new Chart(barCanvas, {
                 type: 'bar',
                 data: {
-                    labels: data.map(d => (d.date || '').slice(5)),
+                    labels: data.map(d => fmtDays() === 1 ? (d.date || '').slice(11, 16) : (d.date || '').slice(5)),
                     datasets: [{
                         label: '请求数',
                         data: data.map(d => d.request_count || 0),
@@ -1279,11 +1279,13 @@ async function loadUsageChart() {
             });
         }
         // V6.x: 思考列 = reasoning_tokens 合计 (NULL 行不参与 SUM, 0=上游未返回)
-        let html = '<table><thead><tr><th>日期</th><th>请求数</th><th class="mono">Input</th><th class="mono">Output</th><th class="mono">思考</th><th class="mono">平均延迟</th></tr></thead><tbody>';
+        // 桶列名随分桶粒度切换 (24h 档为小时桶), 表格滚动避免 24+ 行撑长卡片
+        const bucketTh = fmtDays() === 1 ? '时间' : '日期';
+        let html = '<div class="scroll-y-300"><table><thead><tr><th>' + bucketTh + '</th><th>请求数</th><th class="mono">Input</th><th class="mono">Output</th><th class="mono">思考</th><th class="mono">平均延迟</th></tr></thead><tbody>';
         for (const r of data) {
             html += `<tr><td>${esc(r.date || '—')}</td><td>${r.request_count || 0}</td><td class="mono">${fmtTokens(r.total_input_tokens || 0)}</td><td class="mono">${fmtTokens(r.total_output_tokens || 0)}</td><td class="mono">${r.total_reasoning_tokens ? fmtTokens(r.total_reasoning_tokens) : '—'}</td><td class="mono">${r.avg_latency_ms ? fmtLatency(r.avg_latency_ms) : '—'}</td></tr>`;
         }
-        html += '</tbody></table>';
+        html += '</tbody></table></div>';
         list.innerHTML = html;
         // V6.3 F7: 柱图↔日表双向 hover 联动
         _chartTableLink(_usageBarChart, list);
@@ -1519,6 +1521,38 @@ function mdTitle(key) {
     return def ? ` title="${esc(def.desc)}"` : '';
 }
 
+// 卡片/全局级口径 (2026-09-13): METRIC_DEFS 覆盖不了的时间窗口与整卡语义。
+// 指标口径速查卡 (运维页) 由 METRIC_DEFS + CARD_DEFS 同源渲染 — 改这里即可,
+// 表头 tooltip 与速查卡永远一致, 无第二份手工清单可漂移。
+const CARD_DEFS = [
+    { label: '统计窗口 (全局 24h/7d/30d)', desc: '滚动窗口 now − N×24h, 非自然日; 图表 24h 档按小时、7d/30d 档按日分桶, 缺桶补零' },
+    { label: '用量统计', desc: 'usage/summary 按时间桶聚合; 旧"最近 N 个有数据的自然日"口径已废弃' },
+    { label: 'Top 模型 (概览)', desc: '按请求数排序取前 5; 成本审计页保持按标价排序' },
+    { label: '成本审计', desc: '按当前 tab (模型/分组/用户) 聚合, 按标价降序; 覆盖率低时标价节省偏保守' },
+    { label: '今日摘要', desc: '近 24 小时请求数 + 账号/积压异常速览 (滚动窗口)' },
+    { label: '路由成功率', desc: '按分组路由匹配情况 (Agent 视角), 与 Cache 命中率无关' },
+    { label: '24h 瞬时冷却记录', desc: 'badge 观察到的瞬时冷却流水, 时间为本地时间; 冷却 15~60s 自愈属正常' },
+];
+
+// 指标口径速查卡 (运维页, once 渲染 — 口径是静态内容)
+function renderMetricDefs() {
+    const el = document.getElementById('metric-defs-list');
+    if (!el) return;
+    let html = '';
+    for (const [key, def] of Object.entries(METRIC_DEFS)) {
+        html += '<div style="display:flex;gap:8px;padding:3px 0;font-size:12px;">'
+            + '<span class="text-mono" style="min-width:110px;color:var(--text-secondary);">' + esc(def.label) + '</span>'
+            + '<span style="color:var(--text-muted);">' + esc(def.desc) + '</span></div>';
+    }
+    html += '<div style="border-top:1px solid var(--border-muted);margin:8px 0 4px;"></div>';
+    for (const def of CARD_DEFS) {
+        html += '<div style="display:flex;gap:8px;padding:3px 0;font-size:12px;">'
+            + '<span class="text-mono" style="min-width:110px;color:var(--text-secondary);">' + esc(def.label) + '</span>'
+            + '<span style="color:var(--text-muted);">' + esc(def.desc) + '</span></div>';
+    }
+    el.innerHTML = html;
+}
+
 // ============================================================
 // P1-1: 全局时间范围（24h / 7d / 30d）
 // - 持久化：localStorage + URL ?range= 双向（URL 优先，便于分享/刷新还原）
@@ -1543,6 +1577,7 @@ function syncRangeLabels() {
         ["requests-range-label", lbl],
         ["trend-range-label", lbl],
         ["top-range-label", lbl + " · 按请求数"],
+        ["usage-bucket-label", _timeRange === "1" ? "近 24 小时 · 按小时分桶" : lbl + " · 按日分桶"],
         ["group-overview-label", lbl],
     ];
     for (const [id, text] of map) {
@@ -2203,11 +2238,13 @@ async function loadOverviewTrend() {
         const resp = await authFetch(`/dashboard/api/usage/cost-trend?days=${fmtDays()}`);
         if (!resp.ok) return;
         const trend = await resp.json();
+        // 24h 档为小时桶 ("2026-09-12 09:00"), 刻度只取 HH:00; 日桶用完整日期
+        const tick = d => fmtDays() === 1 ? (d.date || '').slice(11, 16) : d.date;
         if (_overviewTrendChart) { _overviewTrendChart.destroy(); _overviewTrendChart = null; }
         _overviewTrendChart = new Chart(canvas, {
             type: 'line',
             data: {
-                labels: (trend.items || []).map(d => d.date),
+                labels: (trend.items || []).map(tick),
                 datasets: [{
                     label: '官方标价 ¥',
                     data: (trend.items || []).map(d => d.list_cost_yuan),
@@ -2355,7 +2392,7 @@ const PAGE_ROUTES = {
     // 注意: 情报页三张审批卡必须留在轮询 — 批准/拒绝只做本地 card.remove(), 卡间联动全靠轮询.
     channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard], once: [loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
     intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard], once: [loadReportsList, loadWeeklyReportLatest] },
-    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadSuggestionsList, loadAccountsCard, loadAutoJoinMetrics], once: [loadUserKeys, loadSources] },
+    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadSuggestionsList, loadAccountsCard, loadAutoJoinMetrics], once: [loadUserKeys, loadSources, renderMetricDefs] },
 };
 
 let _currentPage = null;

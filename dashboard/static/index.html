@@ -14,7 +14,7 @@
 <header class="status-bar">
     <div class="status-bar-left">
         <span class="status-bar-brand">AIMC</span>
-        <div class="range-switch" id="global-range" style="display:flex;gap:4px;">
+        <div class="range-switch" id="global-range" title="统计窗口为滚动口径: 近 N×24 小时 (非自然日); 图表分桶 24h 档按小时、7d/30d 档按日" style="display:flex;gap:4px;">
             <button class="btn btn-sm range-btn" data-range="1">24h</button>
             <button class="btn btn-sm range-btn" data-range="7">7d</button>
             <button class="btn btn-sm range-btn" data-range="30">30d</button>
@@ -134,7 +134,7 @@
         <!-- ===== 用量 ===== -->
         <section class="page" id="page-usage">
             <div class="card">
-                <div class="card-title"><span class="card-title-main">用量统计</span></div>
+                <div class="card-title"><span class="card-title-main">用量统计</span><span class="card-title-sub" id="usage-bucket-label">按日分桶</span></div>
                 <div class="card-body">
                     <div class="chart-box" style="height:180px;">
                         <canvas id="usage-bar-chart"></canvas>
@@ -356,6 +356,17 @@
                         <span id="aj-metrics-meta" class="meta"></span>
                     </div>
                     <div id="auto-join-metrics-list">
+                        <p class="loading">加载中…</p>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title">
+                    <span class="card-title-main">指标口径速查</span>
+                    <span class="card-title-sub">与看板同源渲染 · 鼠标悬停各表头亦有同款说明</span>
+                </div>
+                <div class="card-body">
+                    <div id="metric-defs-list">
                         <p class="loading">加载中…</p>
                     </div>
                 </div>

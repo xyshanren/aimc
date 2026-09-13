@@ -45,7 +45,7 @@ python scripts/aimc.py status          # 全部子命令 --help 可查
 | `GET /dashboard/api/channels` | 渠道 + 价格 + 配额 |
 | `GET /dashboard/api/accounts` | 渠道账号状态 |
 | `GET /dashboard/api/cooldown` / `.../needs-human` | 冷却中 / 需人工干预账号 |
-| `GET /dashboard/api/usage/summary?days=N` | 每日请求/token/延迟 |
+| `GET /dashboard/api/usage/summary?days=N` | 用量摘要：滚动窗口 now−N×24h 按时间桶聚合（days=1 小时桶，其余日桶），时间升序、缺桶补零 |
 | `GET /dashboard/api/stats/per-user?days=N` | 按调用方用量（含 key 下钻） |
 | `GET /dashboard/api/stats/group_routing` | 组路由命中/fallback 分布 |
 | `GET /dashboard/api/usage/cost-by-model?days=N` | 成本审计：按模型（V6.0） |

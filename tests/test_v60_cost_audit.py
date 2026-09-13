@@ -323,9 +323,115 @@ def test_cost_endpoints_empty_db():
 
     for ep, status, data in asyncio.run(_run()):
         assert status == 200, ep
-        assert data["items"] == []
         assert data["totals"]["request_count"] == 0
         assert data["totals"]["list_coverage_pct"] == 0.0
+        if ep == "cost-trend":
+            # 口径统一 (2026-09-13): 趋势桶轴补零 — 空库也是连续轴, 不再是 []
+            assert len(data["items"]) == 8
+            assert all(i["request_count"] == 0 and i["cost_yuan"] == 0.0
+                       for i in data["items"])
+        else:
+            assert data["items"] == []
+
+
+# ============================================================
+# 口径统一 (2026-09-13): usage/summary + cost-trend
+# 滚动窗口 cutoff 取代"最近 N 个有数据的自然日"LIMIT 语义;
+# days=1 小时桶, 其余日桶; 缺桶补零 — 图表不断轴
+# (置于 migration 段之前: 迁移测试会重指 settings.db_path 且不恢复,
+#  其后的测试 _reset_db 与引擎绑定的库将分叉, 种子互相污染)
+# ============================================================
+
+def test_usage_summary_rolling_window_and_zero_fill():
+    """cutoff 过滤窗口外行; 桶轴连续升序, 零流量日补零行"""
+    from db.engine import async_session_factory
+
+    async def _run():
+        await _reset_db()
+        now = datetime.now()
+        await _seed_usage_log(async_session_factory, "glm-5.3-flash",
+                              input_tokens=4000, created_at=now - timedelta(days=10))
+        await _seed_usage_log(async_session_factory, "glm-5.3-flash",
+                              input_tokens=100, created_at=now - timedelta(days=3))
+        await _seed_usage_log(async_session_factory, "deepseek-v4-flash",
+                              input_tokens=200, created_at=now - timedelta(days=3))
+        async with _get_client() as client:
+            resp = await client.get("/dashboard/api/usage/summary?days=7")
+        assert resp.status_code == 200
+        return resp.json()
+
+    data = asyncio.run(_run())
+    dates = [r["date"] for r in data]
+    # 10 天前那条被 cutoff 过滤
+    assert sum(r["request_count"] for r in data) == 2
+    # 桶轴连续: 7 天窗口跨 8 个自然日 (两端截段), 升序
+    assert len(dates) == 8
+    assert dates == sorted(dates)
+    assert dates[0] == (datetime.now() - timedelta(days=7)).date().isoformat()
+    assert dates[-1] == datetime.now().date().isoformat()
+    # 零流量日是零值桶 (补零行), 有数据日合计正确
+    by_date = {r["date"]: r for r in data}
+    target = (datetime.now() - timedelta(days=3)).date().isoformat()
+    assert by_date[target]["request_count"] == 2
+    assert by_date[target]["total_input_tokens"] == 300
+    zero_days = [r for r in data if r["request_count"] == 0]
+    assert len(zero_days) == 7
+    assert all(r["total_input_tokens"] == 0 and r["avg_latency_ms"] == 0.0 for r in zero_days)
+
+
+def test_usage_summary_hourly_buckets_for_days_1():
+    """days=1 → 小时桶: 桶数=窗口覆盖小时数, 行落在所属小时桶"""
+    from db.engine import async_session_factory
+
+    async def _run():
+        await _reset_db()
+        now = datetime.now()
+        await _seed_usage_log(async_session_factory, "glm-5.3-flash",
+                              input_tokens=111, created_at=now - timedelta(hours=2))
+        await _seed_usage_log(async_session_factory, "glm-5.3-flash",
+                              input_tokens=222, created_at=now - timedelta(hours=30))
+        async with _get_client() as client:
+            resp = await client.get("/dashboard/api/usage/summary?days=1")
+        assert resp.status_code == 200
+        return resp.json()
+
+    data = asyncio.run(_run())
+    # 30 小时前的行被滚动窗口过滤
+    assert sum(r["request_count"] for r in data) == 1
+    assert sum(r["total_input_tokens"] for r in data) == 111
+    # 小时桶轴: "YYYY-MM-DD HH:00" 格式, 连续升序, 24~25 个
+    assert all(len(r["date"]) == 16 and r["date"].endswith(":00") for r in data)
+    dates = [r["date"] for r in data]
+    assert dates == sorted(dates)
+    assert 24 <= len(dates) <= 25
+    # 非零桶唯一 — 请求落在 2 小时前那个桶
+    nonzero = [r for r in data if r["request_count"] > 0]
+    assert len(nonzero) == 1
+
+
+def test_cost_trend_hourly_and_zero_rows():
+    """cost-trend days=1 小时桶补零行, 零行字段全零; totals 不受补零影响"""
+    from db.engine import async_session_factory
+
+    async def _run():
+        await _reset_db()
+        now = datetime.now()
+        await _seed_usage_log(async_session_factory, "glm-5.3-flash",
+                              cost=0.01, list_cost=0.02, created_at=now - timedelta(hours=1))
+        async with _get_client() as client:
+            resp = await client.get("/dashboard/api/usage/cost-trend?days=1")
+        assert resp.status_code == 200
+        return resp.json()
+
+    data = asyncio.run(_run())
+    items = data["items"]
+    assert 24 <= len(items) <= 25
+    assert sum(i["request_count"] for i in items) == 1
+    assert abs(data["totals"]["list_cost_yuan"] - 0.02) < 1e-6
+    zero_items = [i for i in items if i["request_count"] == 0]
+    assert zero_items, "补零行应存在"
+    assert all(i["cost_yuan"] == 0.0 and i["list_cost_yuan"] == 0.0 and i["saved_yuan"] == 0.0
+               for i in zero_items)
 
 
 # ============================================================
