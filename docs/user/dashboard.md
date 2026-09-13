@@ -183,7 +183,7 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 
 | 想做什么 | 在哪改 | 生效时间 |
 |---------|--------|----------|
-| 调整 score 5 维权重 | `PUT /api/settings/router-score-weights` | 60s 内 refresh cache |
+| 调整 score 5 维权重 | `PUT /api/settings/router-score-weights`（⚠️ **无看板 UI**，仅 REST / agent 可调） | 60s 内 refresh cache |
 | 调整某 channel 是否启用 | Dashboard "账号管理" 或 `UPDATE channels SET status='disabled'` | 立即生效（refresh cache） |
 | 调整某 account 是否启用 | 同上 | 同上 |
 | 修改限额 | Dashboard 运维页「账号管理」卡（限额预警展示）或 `UPDATE account_quotas` | 立即生效 |
@@ -196,7 +196,7 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 
 常用：
 - `GET /dashboard/api/channels` — 渠道列表
-- `PUT /api/settings/router-score-weights` — 改 score 权重
+- `PUT /api/settings/router-score-weights` — 改 score 权重（无看板 UI，走 REST/agent）
 - `POST /api/cache/refresh` — 立即刷新路由缓存（不等 TTL）
 - `GET /dashboard/api/cache/stats?days=7` — cache 节省
 - `GET /dashboard/api/data-freshness` — job 健康度

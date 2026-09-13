@@ -163,7 +163,7 @@ sqlite3 data/aimc.db "SELECT dimension, COUNT(*) FROM account_quotas GROUP BY di
 
 # 5. 测试套件
 python -m pytest tests/ -v | tail -3
-# 期望: 694 passed
+# 期望: 750 passed
 
 # 6. e2e
 KEY=$(grep ^AIMC_API_KEY= .env | cut -d= -f2)

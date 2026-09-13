@@ -111,7 +111,7 @@ sqlite3 data/aimc.db "
 
 ## 数据新鲜度
 
-[Dashboard §数据新鲜度](dashboard.md#3-数据新鲜度) 卡片显示约 41 个 apscheduler job 的健康状态。
+[Dashboard §数据新鲜度](dashboard.md#3-数据新鲜度) 卡片显示约 42 个 apscheduler job 的健康状态。
 
 **怎么看**：
 - 🟢 = job 正常

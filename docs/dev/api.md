@@ -112,7 +112,7 @@ curl http://localhost:8080/dashboard/api/data-freshness \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
-返回 ~41 个 APScheduler job 的健康状态（`last_success_at` / `health`: healthy/warning/stale/unknown）。
+返回 ~42 个 APScheduler job 的健康状态（`last_success_at` / `health`: healthy/warning/stale/unknown）。
 
 ### GET /dashboard/api/suggestions?status=pending
 
