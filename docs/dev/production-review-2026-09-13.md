@@ -83,6 +83,15 @@ new_headers.pop("content-length", None)
 本报告不主张立即接线，但建议**至少显式化**：看板限额卡与服务文档注明「本地位限额当前为装饰性，
 真实保护=上游 429→冷却」。接线触发器见 [next-stage-research.md](next-stage-research.md) §2.1。
 
+> **⚠️ 补充修正（2026-09-14 生产实证）**：上述「恒放行」结论只适用于 rpm/concurrent/daily 等
+> 「纯 used_value」维度；**tpm 维度是反面**——判定式 `已用 + max_tokens×2 > 限额`
+> （`gateway/routes.py:186` 传 `estimated_tokens=(max_tokens or 100)*2`；`gateway/quota.py:129`
+> tpm 判定）在 used=0 时退化为 `max_tokens×2 > limit`。deepseek_01 的 `tpm=100000` 行
+> （8/14 建库拍脑袋估算，DeepSeek 实际按并发限流）把 zcode 声明 output=128000 的请求**恒拒死**，
+> 且 routes 预检拒绝路径**直接 return：不 failover、不 mark_failure、不落 usage_logs** →
+> 看板完全隐形（tier:flagship 兜底链因此失效）。已商定 3 项修复，进行中——
+> 详见 [next-stage-research.md](next-stage-research.md)「⚡ 进行中：429 隐形拒绝修复」。
+
 ### S3【中高】优惠→价格行：生产 0 产出 + 一旦触发会大面积错价
 
 三个叠加问题（`intelligence/healer.py:64-105`）：
