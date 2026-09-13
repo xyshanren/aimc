@@ -66,6 +66,10 @@ class CooldownManager:
     - accounts_due_for_probe(now=None) -> list[int]                   # V4.9: 该探活的
     """
 
+    # V6.5: 冷却过期后 count 的保留窗 (秒) — 窗口内再次失败延续指数退避序列,
+    # 超过窗口视作新的一系列失败, count 从 0 重来 (防陈年 count 吃满退避上限)
+    _COUNT_RETENTION_SECONDS: float = 600.0
+
     def __init__(
         self,
         cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
@@ -88,8 +92,12 @@ class CooldownManager:
         if not s or s.get("cooldown_until") is None:
             return False
         if time.time() >= s["cooldown_until"]:
-            # 过期了, 自动清掉
-            self._state.pop(account_id, None)
+            # V6.5: 过期不再 pop 整个 state — count 承载指数退避序列, 而
+            # 「到期 → router 候选过滤查询 → 重撞」是主场景, pop 会把 count
+            # 清零使退避永远停在首档 (v64x-429-fix-review.md §2.1 实证)。
+            # 只记录过期时刻, state 由 cleanup() 按保留窗物理清理。
+            s["cooldown_expired_at"] = s["cooldown_until"]
+            s["cooldown_until"] = None
             return False
         return True
 
@@ -100,7 +108,9 @@ class CooldownManager:
             return 0.0
         remaining = s["cooldown_until"] - time.time()
         if remaining <= 0:
-            self._state.pop(account_id, None)
+            # V6.5: 同 is_in_cooldown — 过期不 pop, 保留 count 供退避延续
+            s["cooldown_expired_at"] = s["cooldown_until"]
+            s["cooldown_until"] = None
             return 0.0
         return remaining
 
@@ -161,6 +171,7 @@ class CooldownManager:
         s = self._state.setdefault(account_id, {
             "count": 0,
             "cooldown_until": None,
+            "cooldown_expired_at": None,
             # V4.9 扩展字段默认值
             "first_failure_at": now,
             "last_failure_at": now,
@@ -185,6 +196,15 @@ class CooldownManager:
             s["probe_attempts"] = 0
             s["last_success_at"] = None
             s["manual_disabled_at"] = None
+        if "cooldown_expired_at" not in s:
+            s["cooldown_expired_at"] = None
+
+        # V6.5: 上一次冷却过期已超过保留窗 → count 归零视作新的一系列失败
+        # (否则陈年 count 会让久未触发的账号一次偶发失败就吃到退避上限)
+        exp_at = s.get("cooldown_expired_at")
+        if exp_at is not None and (now - exp_at) > self._COUNT_RETENTION_SECONDS:
+            s["count"] = 0
+        s["cooldown_expired_at"] = None
 
         s["count"] += 1
         s["last_failure_at"] = now
@@ -293,6 +313,7 @@ class CooldownManager:
             return
         s["count"] = 0
         s["cooldown_until"] = None
+        s["cooldown_expired_at"] = None
         s["needs_human"] = False
         s["next_probe_at"] = None
         s["probe_attempts"] = 0
@@ -379,19 +400,19 @@ class CooldownManager:
     def cleanup(self) -> int:
         """清理已过期的 entry. 返清理数.
 
-        定期调用 (e.g. 5 分钟) 防止 _state 膨胀. 不强制 (is_in_cooldown 内会自动清).
+        定期调用 (e.g. 5 分钟) 防止 _state 膨胀.
+        V6.5: 过期不再立即清 — 「冷却过期 → 查询 → 重撞」主场景下 count 需
+        存活以延续指数退避 (v64x-429-fix-review.md §2.1), 过期超过
+        _COUNT_RETENTION_SECONDS 保留窗才物理清理.
         保留条件 (entry 不会被清):
         - needs_human=True (等人介入)
         - manual_disabled (人工禁用)
         - next_probe_at 未来 (等智能探活)
+        - 过期未超保留窗 (count 供退避延续)
         """
         now = time.time()
         expired = []
         for aid, s in self._state.items():
-            cu = s.get("cooldown_until")
-            # cooldown 必须已过期
-            if cu is None or now < cu:
-                continue
             # needs_human 永远保留
             if s.get("needs_human"):
                 continue
@@ -402,7 +423,18 @@ class CooldownManager:
             npa = s.get("next_probe_at")
             if npa is not None and npa > now:
                 continue
-            # 其他清掉
+            # 过期参考点: 未被查询过的取 cooldown_until, 已被查询置空的取
+            # cooldown_expired_at; 都没有 = 不在冷却序列, 保留 (如刚 mark_success)
+            cu = s.get("cooldown_until")
+            exp_at = s.get("cooldown_expired_at")
+            if cu is not None and now >= cu:
+                expiry_ref = cu
+            elif cu is None and exp_at is not None:
+                expiry_ref = exp_at
+            else:
+                continue
+            if (now - expiry_ref) < self._COUNT_RETENTION_SECONDS:
+                continue
             expired.append(aid)
         for aid in expired:
             self._state.pop(aid, None)

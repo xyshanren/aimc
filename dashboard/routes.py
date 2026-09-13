@@ -7,6 +7,7 @@
 - /api/dashboard/accounts/* -> V4.6 账号管理 (列表/加/启停/轮换/过期扫描)
 """
 
+import html
 import json
 import logging
 import asyncio
@@ -2838,8 +2839,11 @@ async def get_latest_report():
         )
     text = latest_path.read_text(encoding="utf-8")
     stat = latest_path.stat()
+    # V6.5 (production-review S6): 周报原文含采集来的第三方数据 (模型名/URL 等),
+    # 直接拼 HTML = 管理域存储型 XSS。escape 后前端 DOMParser 的 textContent
+    # 会自动反转义回原文, marked 渲染链路零改动。
     return HTMLResponse(
-        content=f"<pre class='report-md'>{text}</pre>",
+        content=f"<pre class='report-md'>{html.escape(text)}</pre>",
         headers={
             "X-AIMC-Size": str(stat.st_size),
             "X-AIMC-Modified": str(int(stat.st_mtime)),
@@ -2862,8 +2866,9 @@ async def get_report_by_date(date: str):
             detail=f"周报 weekly_{date}.md 不存在",
         )
     text = report_path.read_text(encoding="utf-8")
+    # V6.5 (production-review S6): 同 get_latest_report — 先 escape 防存储型 XSS
     return HTMLResponse(
-        content=f"<pre class='report-md'>{text}</pre>",
+        content=f"<pre class='report-md'>{html.escape(text)}</pre>",
         headers={"Cache-Control": "no-cache"},
     )
 

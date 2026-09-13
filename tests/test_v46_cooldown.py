@@ -98,7 +98,7 @@ def test_cooldown_mark_success_resets():
 # Test 3: is_in_cooldown 自动清过期 entry
 # ============================================================
 def test_cooldown_auto_clear_expired():
-    print("\n=== Test 3: 自动清过期 entry ===")
+    print("\n=== Test 3: 过期自动解除冷却 ===")
     from gateway.cooldown import CooldownManager
 
     mgr = CooldownManager(cooldown_seconds=1, failure_threshold=1)
@@ -106,11 +106,15 @@ def test_cooldown_auto_clear_expired():
     assert mgr.is_in_cooldown(303)
 
     time.sleep(1.1)  # 等冷却过期
-    # 下一次 is_in_cooldown 应自动清理过期 entry
+    # 下一次 is_in_cooldown 应判定过期
     assert not mgr.is_in_cooldown(303), "1.1s 后冷却应过期"
-    # _state 也应清掉
-    assert 303 not in mgr.snapshot(), "过期 entry 应被自动清理"
-    print(f"  [OK] 1s 冷却 + sleep 1.1s → 自动清掉 entry")
+    # V6.5: 过期不再 pop 整个 state — count 承载指数退避序列, 只标记过期
+    # (cooldown_until=None + cooldown_expired_at), 物理清理交给 cleanup 保留窗
+    snap = mgr.snapshot()[303]
+    assert snap["cooldown_until"] is None
+    assert snap["in_cooldown"] is False
+    assert 303 in mgr._state and mgr._state[303]["cooldown_expired_at"] is not None
+    print(f"  [OK] 1s 冷却 + sleep 1.1s → 冷却解除, state 保留 (V6.5 退避延续)")
 
 
 # ============================================================
@@ -125,10 +129,15 @@ def test_cooldown_cleanup():
     mgr.mark_failure(2)
     mgr.mark_failure(3)
     time.sleep(1.1)
+    # V6.5: 过期未超保留窗不清 (count 供退避延续); 拨过保留窗后才清
+    assert mgr.cleanup() == 0, "保留窗内 cleanup 不得清"
+    for aid in (1, 2, 3):
+        mgr._state[aid]["cooldown_until"] = None  # 模拟 is_in_cooldown 查询的过期标记
+        mgr._state[aid]["cooldown_expired_at"] = time.time() - 700
     removed = mgr.cleanup()
-    assert removed == 3, f"cleanup 应清掉 3 个, 实际 {removed}"
+    assert removed == 3, f"超保留窗后 cleanup 应清掉 3 个, 实际 {removed}"
     assert mgr.snapshot() == {}, "清理后 _state 应空"
-    print(f"  [OK] cleanup 一次清掉 3 个过期 entry")
+    print(f"  [OK] cleanup 保留窗外一次清掉 3 个过期 entry")
 
 
 # ============================================================

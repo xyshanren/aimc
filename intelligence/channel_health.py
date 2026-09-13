@@ -27,7 +27,7 @@ from config import settings
 from db.engine import async_session_factory
 from db.models import Account, AccountHealthLog, Channel
 from gateway.cooldown import cooldown_manager
-from gateway.error_classifier import ErrorCategory, classify
+from gateway.error_classifier import ErrorCategory, ErrorInfo, classify
 from sqlalchemy import delete, func, select
 
 logger = logging.getLogger(__name__)
@@ -134,6 +134,28 @@ async def _probe_one(account_id: int, base_url: str, api_key: Optional[str]) -> 
             "error_code": None,
             "error_msg": str(e)[:200],
         }
+
+
+def _probe_error_info(r: dict) -> ErrorInfo:
+    """探活失败结果 → ErrorInfo (V6.5 从 channel_health_probe 内联抽出, 可单测).
+
+    B1 修复背景: 本模块此前只 import 了 ErrorCategory/classify, 内联构造
+    ErrorInfo 抛 NameError → 失败探活永不回写 cooldown_manager (成功分支正常,
+    AccountHealthLog 写入在其之前完成, 故仅有 job_health 失败记录可循)。
+    """
+    try:
+        cat = ErrorCategory(r.get("error_type") or "unknown")
+    except ValueError:
+        cat = ErrorCategory.UNKNOWN
+    return ErrorInfo(
+        category=cat,
+        error_code=r.get("error_code"),
+        error_msg=r.get("error_msg") or "",
+        needs_human=cat in (ErrorCategory.QUOTA_EXHAUSTED, ErrorCategory.AUTH_FAILED,
+                            ErrorCategory.MODEL_UNSUPPORTED),
+        suggested_cooldown_seconds=60 if cat == ErrorCategory.UPSTREAM_5XX else 15,
+        suggested_probe_after_seconds=300 if cat == ErrorCategory.UPSTREAM_5XX else 60,
+    )
 
 
 async def channel_health_probe() -> int:
@@ -266,21 +288,9 @@ async def channel_health_probe() -> int:
         if r["success"]:
             cooldown_manager.probe_result(r["account_id"], success=True)
         else:
-            # 构造 ErrorInfo 给 probe_result
-            try:
-                cat = ErrorCategory(r.get("error_type") or "unknown")
-            except ValueError:
-                cat = ErrorCategory.UNKNOWN
-            info = ErrorInfo(
-                category=cat,
-                error_code=r.get("error_code"),
-                error_msg=r.get("error_msg") or "",
-                needs_human=cat in (ErrorCategory.QUOTA_EXHAUSTED, ErrorCategory.AUTH_FAILED,
-                                     ErrorCategory.MODEL_UNSUPPORTED),
-                suggested_cooldown_seconds=60 if cat == ErrorCategory.UPSTREAM_5XX else 15,
-                suggested_probe_after_seconds=300 if cat == ErrorCategory.UPSTREAM_5XX else 60,
+            cooldown_manager.probe_result(
+                r["account_id"], success=False, error_info=_probe_error_info(r)
             )
-            cooldown_manager.probe_result(r["account_id"], success=False, error_info=info)
 
     ok_count = sum(1 for r in clean if r["success"])
     fail_count = len(clean) - ok_count

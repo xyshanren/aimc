@@ -337,6 +337,12 @@ async def chat_completions(request: Request):
             if isinstance(parsed, dict) and "error" in parsed:
                 parsed["error"]["failed_channels"] = failed_channels
             new_headers = dict(response.headers)
+            # V6.5 (production-review S1): 复制的 headers 带原响应的 content-length
+            # (及 hop-by-hop 头), 注入 failed_channels 后 body 变长而 starlette 检测到
+            # 已有 content-length 不再重算 → 声明长度 < 实际长度, h11 断连或客户端
+            # 截断 JSON (本机实证: 声明 25B / 实际 351B)。构造新响应前必须剥掉。
+            for _h in ("content-length", "transfer-encoding", "connection"):
+                new_headers.pop(_h, None)
             new_headers["X-AIMC-Failed-Channels"] = json.dumps(failed_channels, ensure_ascii=False)
             # V4.9: 加 X-AIMC-Last-Error-Type + Last-Error-Code, 客户端无需 parse JSON
             if failed_channels:

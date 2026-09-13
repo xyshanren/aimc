@@ -21,6 +21,10 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from config import settings
 
+# V6.5: 项目根目录 (原 _weekly_suggest_changes_task 硬编码 /home/lxc/aimc,
+# 换部署路径即子进程起不来 → 周建议静默断更; 相对模块定位对任意部署路径成立)
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+
 logger = logging.getLogger(__name__)
 
 # V4.8.4: 追踪 run_source_now 派发的 in-flight task, 供 shutdown 优雅等待
@@ -746,14 +750,13 @@ async def _weekly_suggest_changes_task():
     - 数据源 query 失败 → log error, 下周重试
     """
     try:
-        from intelligence.analytics.suggest_changes import main as suggest_main
         # 用 subprocess 跑 (跟 scripts/ 风格一致, 不在 scheduler 进程内)
         import subprocess
         import sys as _sys
         result = subprocess.run(
             [_sys.executable, "-m", "intelligence.analytics.suggest_changes",
              "--apply"],  # 生产模式: 写 db (周报需要读)
-            cwd="/home/lxc/aimc",  # TODO: 改 config-based path
+            cwd=_PROJECT_ROOT,  # V6.5: 相对模块定位 (原硬编码 /home/lxc/aimc, 换部署路径即静默断)
             capture_output=True,
             text=True,
             timeout=120,
