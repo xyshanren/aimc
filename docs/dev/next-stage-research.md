@@ -101,17 +101,18 @@ sensenova 账号（lixiaoy / sensenova_01）被轮流反复撞击；备用成员
 
 ### 2.0 建议的稳定性批次（P0→P1，~1.5~2 天，来源=审查批次一/二）
 
-**批次一（P0，~0.5 天）— 低成本、高确定性、直接修可见缺陷**
+**批次一（P0）— ✅ 已完成（2026-09-14，V6.5 首批，全量 779 全绿）**
 
-| 项 | 位置 | 改法 | 来源 |
-|----|------|------|------|
-| S1 失败链响应 Content-Length 损坏 | `gateway/routes.py:274-289` | 构造新 JSONResponse 前 `new_headers.pop("content-length", None)`；补回归测试 | [审查] 实证 |
-| S5 失败重复 mark_failure | `gateway/proxy.py:847` + `gateway/routes.py:244` | routes 复用 proxy 的分类，不重复 mark；或 proxy 只返回分类由 routes 统一 mark | [审查] |
-| S6 周报存储型 XSS | `dashboard/routes.py:2842,2866` | 改返回 `text/plain`/JSON，或 `html.escape`；前端 `textContent` | [审查] |
-| B1 探活 NameError | `intelligence/channel_health.py:30,274` | import 补 `ErrorInfo` + 失败探活回写单测 | [结合] |
-| G 部署路径硬编码 | `intelligence/scheduler.py:756` | `cwd` 改 `Path(__file__).resolve().parents[1]`；删死导入 | [结合] |
+| 项 | 位置 | 状态 |
+|----|------|------|
+| S5 失败重复 mark_failure | `gateway/proxy.py` + `gateway/routes.py` | ✅ 已随 429 批次完成（8bc0f25） |
+| **2.1 退避架空**（审核发现插队） | `gateway/cooldown.py` | ✅ `is_in_cooldown`/`cooldown_remaining` 过期不再 pop 整个 state（置 `cooldown_until=None` + 记 `cooldown_expired_at`），count 供退避延续；`cleanup()` 加 600s 保留窗；超窗 `mark_failure` 视作新系列；`needs_human` 不再被过期查询顺带洗白。`tests/test_v65_cooldown_expiry_retention.py` 8 例（含端到端乒乓升级序列） |
+| S1 失败链 Content-Length | `gateway/routes.py` | ✅ 构造重包装响应前 pop `content-length`/`transfer-encoding`/`connection`。`tests/test_v65_failover_content_length.py` 2 例（真实 ASGI 链路断言声明长度==实际长度） |
+| S6 周报存储型 XSS | `dashboard/routes.py` 两端点 | ✅ 后端 `html.escape`（前端 DOMParser textContent 自动反转义，marked 链路零改动）。`tests/test_v65_report_xss_escape.py` 2 例 |
+| B1 探活 NameError | `intelligence/channel_health.py` | ✅ 补 `ErrorInfo` import + 抽模块级 `_probe_error_info()` 可单测。`tests/test_v65_intel_batch1.py` 5 例 |
+| G 部署路径硬编码 | `intelligence/scheduler.py` | ✅ 模块级 `_PROJECT_ROOT` 相对定位替换 `cwd="/home/lxc/aimc"`；删死导入 `suggest_main`（顺带消除 except 求值 UnboundLocalError 隐患）；源码断言防回归 |
 
-**批次二（P1，~1 天）— 数据正确性**
+**批次二（P1，~1 天）— 数据正确性（下一批）**
 
 | 项 | 位置 | 改法 | 来源 |
 |----|------|------|------|

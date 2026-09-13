@@ -33,7 +33,7 @@
 
 ## 2. 待处理问题
 
-### 2.1【高·已实证，上产版本受影响】指数退避被「过期 pop」架空
+### 2.1【高·已实证】指数退避被「过期 pop」架空 —— ✅ 已修复（V6.5 批次一，2026-09-14）
 
 **机制**：`is_in_cooldown()` / `cooldown_remaining()` 在冷却过期时 `self._state.pop(account_id)`
 （cooldown.py:92/103，V4.6.1 既有行为——旧实现冷却固定时长，pop 无害）。本批次让 `count` 承载
@@ -54,6 +54,14 @@
 ```
 
 新测试没有覆盖「过期 → 查询 → 重撞」路径，所以全绿通过但退避在生产流量下不生效。
+
+**修复记录（V6.5 批次一）**：`is_in_cooldown`/`cooldown_remaining` 过期分支改为置
+`cooldown_until=None` + 记 `cooldown_expired_at`（不 pop state，count 存活）；`cleanup()` 加
+600s 保留窗（过期未超窗保留，超窗物理清理）；`mark_failure` 对超保留窗的陈年 count 归零
+（视作新系列，防偶发失败直接吃满退避上限）；顺带理顺 §2.5——`needs_human` 不再被过期查询
+顺带洗白（洗白走 ack_recover / mark_success / cleanup 保留语义一致）。
+测试 `tests/test_v65_cooldown_expiry_retention.py` 8 例，含端到端乒乓升级序列
+（30→60→120s），全量 779 全绿。
 
 **建议修法**（约 0.5 天含测试）：
 - 过期时只视为「不在冷却」，**不 pop state**：`is_in_cooldown`/`cooldown_remaining` 过期分支改
