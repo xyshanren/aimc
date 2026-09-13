@@ -71,6 +71,9 @@ def test_cooldown_mark_failure_triggers():
 
 # ============================================================
 # Test 2: mark_success 清冷却
+# V6.4.x 语义更新: 冷却期内的"迟到成功"不再清冷却 (在途长流式请求完成
+# 不证明账号当前健康, 生产实证 429 冷却被 2s 后完成的 200 擦掉);
+# 冷却过期后的成功仍全量复位
 # ============================================================
 def test_cooldown_mark_success_resets():
     print("\n=== Test 2: mark_success 清冷却 ===")
@@ -81,9 +84,14 @@ def test_cooldown_mark_success_resets():
     assert mgr.is_in_cooldown(202)
 
     mgr.mark_success(202)
-    assert not mgr.is_in_cooldown(202), "mark_success 后应清掉 cooldown"
+    assert mgr.is_in_cooldown(202), "冷却期内的迟到成功不应清掉 cooldown (V6.4.x)"
+
+    # 模拟冷却过期后再成功 → 全量复位
+    mgr._state[202]["cooldown_until"] = time.time() - 1
+    mgr.mark_success(202)
+    assert not mgr.is_in_cooldown(202), "冷却过期后 mark_success 应清掉 cooldown"
     assert mgr.cooldown_remaining(202) == 0.0
-    print(f"  [OK] mark_success 后: is_in_cooldown=False")
+    print(f"  [OK] 冷却内迟到成功保留冷却 / 冷却过期后成功复位")
 
 
 # ============================================================
@@ -206,8 +214,11 @@ def test_proxy_update_cooldown_hook():
     assert mgr.is_in_cooldown(999), "401 应触发冷却"
 
     # 3) 200 → mark_success (恢复)
+    # V6.4.x: 冷却期内的迟到成功不再清冷却; 冷却外的 200 无冷却可清,
+    # 用 reset 模拟"冷却已结束"后验证 200 分支不误标失败
+    mgr.reset(999)
     proxy_mod._update_cooldown(channel, 200)
-    assert not mgr.is_in_cooldown(999), "200 应清掉 401 触发的冷却"
+    assert not mgr.is_in_cooldown(999), "冷却外 200 应走 mark_success, 不进冷却"
 
     # 4) 400 → 不动 (4xx 客户端错误, 不应让账号冷却)
     mgr.reset(999)
@@ -257,8 +268,10 @@ def test_router_is_channel_usable_skips_cooldown():
     assert not engine._is_channel_usable(ch), "冷却中应 unusable"
 
     # 3) mark_success 后: 恢复
+    # V6.4.x: 冷却期内迟到成功不清冷却, 先模拟冷却过期再验证复位
+    mgr._state[808]["cooldown_until"] = time.time() - 1
     mgr.mark_success(808)
-    assert engine._is_channel_usable(ch), "mark_success 后应 usable"
+    assert engine._is_channel_usable(ch), "冷却过期后 mark_success 应 usable"
     print(f"  [OK] 未冷却→usable / 冷却中→unusable / mark_success→usable")
 
 

@@ -7,6 +7,7 @@
 """
 
 import logging
+import time
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -91,6 +92,7 @@ async def chat_completions(request: Request):
     3. 原样透传到上游（流式/非流式）
     """
     body = await request.body()
+    _req_start = time.time()
 
     # 解析请求中的 model 字段（仅用于路由，不修改 body）
     import json
@@ -174,6 +176,12 @@ async def chat_completions(request: Request):
 
         # P0-6 (2026-08-14): 多维限额检查 (rpm/tpm/concurrent/daily/weekly/5h)
         # V4.8: 同时做 per-user 日/月 token 限额检查
+        # V6.4.x (2026-09-14): 账号配额预检失败不再直接拒死请求. 旧行为是隐形
+        # 429 (不 mark_failure / 不落 usage_logs / 不 failover), 生产实证:
+        # deepseek_01 tpm 静态估算 (max_tokens×2 > 100000 恒真) 把 deepseek-flash
+        # 兜底永久封死且看板不可见. 新行为: mark_failure 冷却该账号 (路由层跳过)
+        # + 落 usage_logs + 组路由 failover 重选下一候选.
+        # 用户级限额仍直接拒绝 (换渠道无济于事, 属调用方自身配额).
         if channel is not None:
             from gateway.quota import check_account_quota, check_user_quota
             from db.engine import async_session_factory
@@ -186,13 +194,68 @@ async def chat_completions(request: Request):
                     estimated_tokens=(body_json.get("max_tokens") or 100) * 2,
                 )
                 if not allowed:
+                    from gateway.cooldown import cooldown_manager
+                    from gateway.error_classifier import ErrorCategory, ErrorInfo
+                    from gateway.proxy import _write_usage_log
+                    _quota_info = ErrorInfo(
+                        category=ErrorCategory.QUOTA_EXHAUSTED,
+                        error_code=None,
+                        error_msg=reason,
+                        needs_human=True,
+                        suggested_cooldown_seconds=3600,
+                        suggested_probe_after_seconds=None,
+                    )
+                    cooldown_manager.mark_failure(
+                        channel["account_id"],
+                        error_info=_quota_info,
+                        sibling_account_ids=route_engine.sibling_account_ids(
+                            channel["id"], channel["account_id"]
+                        ),
+                    )
+                    failed_channels.append({
+                        "channel": channel["name"],
+                        "account": channel.get("account_name", ""),
+                        "account_id": channel.get("account_id"),
+                        "status": 429,
+                        "error_type": _quota_info.category.value,
+                        "error_code": None,
+                        "error_msg": reason[:200],
+                        "needs_human": True,
+                    })
+                    logger.warning(
+                        f"配额预检拒绝: {channel['name']}"
+                        f"/{channel.get('account_name', '')} {reason}, "
+                        f"failover 到下一候选 (attempt {attempt + 1}/{max_retries + 1})"
+                    )
+                    # 失败落库 — 旧行为此路径无 usage_logs 行, 看板完全不可见
+                    await _write_usage_log(
+                        channel["id"], channel["account_id"], model,
+                        input_tokens=0, output_tokens=0,
+                        status_code=429,
+                        latency_ms=int((time.time() - _req_start) * 1000),
+                        group_id=channel.get("_group_id"),
+                        caller_id=caller_id,
+                        caller_key_id=caller_key_id,
+                        error_msg=reason[:500],
+                        error_type=_quota_info.category.value,
+                        needs_human=True,
+                    )
+                    if attempt < max_retries:
+                        continue
                     return JSONResponse(
                         status_code=429,
                         content={"error": {
                             "message": f"Quota exceeded: {reason}",
                             "type": "rate_limit_error",
+                            "failed_channels": failed_channels,
                         }},
-                        headers={"retry-after": "60"},
+                        headers={
+                            "retry-after": "60",
+                            "X-AIMC-Failed-Channels": json.dumps(
+                                failed_channels, ensure_ascii=False
+                            ),
+                            "X-AIMC-Last-Error-Type": _quota_info.category.value,
+                        },
                     )
 
                 # V4.8: per-user 日/月 token 限额 (caller_id=None 时跳过)
@@ -202,6 +265,9 @@ async def chat_completions(request: Request):
                         estimated_tokens=(body_json.get("max_tokens") or 100) * 2,
                     )
                     if not u_allowed:
+                        logger.warning(
+                            f"用户配额拒绝: caller_id={caller_id} {u_reason}"
+                        )
                         return JSONResponse(
                             status_code=429,
                             content={"error": {
@@ -233,17 +299,16 @@ async def chat_completions(request: Request):
         if is_group_route and response.status_code == 400:
             retryable_status = True
         if (not is_stream) and retryable_status and attempt < max_retries:
-            from gateway.cooldown import cooldown_manager
             from gateway.error_classifier import classify
             # V4.9: 用 error_classifier 拿到 error_type/error_msg/needs_human
+            # V6.4.x: 这里不再 mark_failure — proxy.forward_request 内部的
+            # _update_cooldown 已标记过, 双重标记会把连续失败计数翻倍
+            # (指数退避下首败冷却就会翻倍), 只保留分类供 failed_channels 记录
             try:
                 _resp_body = response.text
             except Exception:
                 _resp_body = None
             _error_info = classify(response.status_code, _resp_body, None)
-            cooldown_manager.mark_failure(
-                channel["account_id"], error_info=_error_info
-            )
             # V4.8.7 P7 + V4.9: 记录失败渠道 + 错误分类, 供最终响应注入
             failed_channels.append({
                 "channel": channel["name"],

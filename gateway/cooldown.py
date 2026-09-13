@@ -136,6 +136,7 @@ class CooldownManager:
         account_id: int,
         reason: str = "",
         error_info=None,  # gateway.error_classifier.ErrorInfo
+        sibling_account_ids: Optional[list[int]] = None,
     ) -> None:
         """标记一次失败. 失败次数达阈值 → 进入 cooldown.
 
@@ -144,6 +145,13 @@ class CooldownManager:
         - 用 error_info.suggested_probe_after_seconds 决定下次探活
         - 累计次数达 needs_human_thresholds → needs_human=True
         - 记录 last_error_type / last_error_code / last_error_msg
+
+        V6.4.x (2026-09-14):
+        - rate_limited 指数退避: 连续失败冷却 30s→60s→…封顶
+          max_probe_backoff_seconds (共享池限流下固定 30s 会解冻即重撞)
+        - sibling_account_ids: 同渠道兄弟账号. 兄弟已在 rate_limited 冷却中
+          说明共享池整体饱和 (sensenova 双账号同池实证), 自身冷却对齐兄弟
+          剩余时长, 消除账号轮换乒乓
 
         向后兼容 (旧调用方只传 reason):
         - reason 字段保留作为日志
@@ -198,9 +206,39 @@ class CooldownManager:
             cooldown_secs = error_info.suggested_cooldown_seconds
             probe_after = error_info.suggested_probe_after_seconds
 
+            # V6.4.x: rate_limited 指数退避 (count 含本次, 首败即基准值不翻倍)
+            if error_info.category == ErrorCategory.RATE_LIMITED and cooldown_secs > 0:
+                cooldown_secs = min(
+                    cooldown_secs * (2 ** (s["count"] - 1)),
+                    self.max_probe_backoff_seconds,
+                )
+
             # 触发条件: 失败次数 >= failure_threshold
             if s["count"] >= self.failure_threshold:
                 s["cooldown_until"] = now + cooldown_secs
+
+                # V6.4.x: 渠道级限流同步 — 只对齐"兄弟也在 rate_limited 冷却中"
+                # 的场景 (共享池饱和信号); 兄弟因 auth/quota 冷却与本账号无关
+                if (
+                    error_info.category == ErrorCategory.RATE_LIMITED
+                    and sibling_account_ids
+                ):
+                    sibling_until = max(
+                        (
+                            o.get("cooldown_until") or 0
+                            for aid, o in self._state.items()
+                            if aid in sibling_account_ids
+                            and o.get("last_error_type") == "rate_limited"
+                        ),
+                        default=0,
+                    )
+                    if sibling_until > (s["cooldown_until"] or 0):
+                        s["cooldown_until"] = sibling_until
+                        logger.info(
+                            f"CooldownManager: account_id={account_id} "
+                            f"渠道级限流同步, 冷却对齐兄弟账号 "
+                            f"(remaining={sibling_until - now:.1f}s)"
+                        )
 
             # needs_human 阈值判断 (quota/auth/model)
             threshold = self.needs_human_thresholds.get(error_info.category.value, 999)
@@ -237,17 +275,29 @@ class CooldownManager:
         )
 
     def mark_success(self, account_id: int) -> None:
-        """标记一次成功 → 重置失败计数 + 清 cooldown + 清 needs_human."""
-        if account_id in self._state:
-            # 保留 last_success_at, 其他重置
-            self._state[account_id]["last_success_at"] = time.time()
-            self._state[account_id]["count"] = 0
-            self._state[account_id]["cooldown_until"] = None
-            self._state[account_id]["needs_human"] = False
-            self._state[account_id]["next_probe_at"] = None
-            self._state[account_id]["probe_attempts"] = 0
-            # 保留 manual_disabled_at (人工禁用是独立的)
-            # 保留 last_error_* (用于审计)
+        """标记一次成功 → 重置失败计数 + 清 cooldown + 清 needs_human.
+
+        V6.4.x: 冷却期内的"迟到成功"不复位 — 长流式请求在冷却设置前路由、
+        完成于冷却期内 (共享池饱和期 200/429 交替, 生产实证 429 冷却被 2s 后
+        完成的在途 200 擦掉, 下一请求立刻重撞). 在途成功不证明账号当前健康:
+        只记 last_success_at, 保留 count (指数退避延续) 与 cooldown_until
+        (到期自愈). 冷却外的成功仍是全量复位.
+        """
+        s = self._state.get(account_id)
+        if not s:
+            return
+        now = time.time()
+        s["last_success_at"] = now
+        cu = s.get("cooldown_until")
+        if cu is not None and now < cu:
+            return
+        s["count"] = 0
+        s["cooldown_until"] = None
+        s["needs_human"] = False
+        s["next_probe_at"] = None
+        s["probe_attempts"] = 0
+        # 保留 manual_disabled_at (人工禁用是独立的)
+        # 保留 last_error_* (用于审计)
 
     def reset(self, account_id: int) -> None:
         """强制清空 (admin 操作). 与 mark_success 类似, 但也清 manual_disabled."""

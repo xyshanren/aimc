@@ -935,7 +935,18 @@ def _update_cooldown(channel: dict, status_code_or_response) -> None:
             return
 
         # 走 mark_failure(error_info=...) 新签名 (由 Commit 2 实现)
-        cooldown_manager.mark_failure(account_id, error_info=info)
+        # V6.4.x: 传同渠道兄弟账号 — 共享池限流 (sensenova 双账号同池) 时
+        # cooldown_manager 做渠道级同步, 消除账号轮换乒乓
+        try:
+            from gateway.router import route_engine as _route_engine
+            _siblings = _route_engine.sibling_account_ids(
+                channel.get("id"), account_id
+            )
+        except Exception:
+            _siblings = []
+        cooldown_manager.mark_failure(
+            account_id, error_info=info, sibling_account_ids=_siblings
+        )
 
         # V4.9: needs_human=True 的错误触发专门告警 (quota/auth/model_unsupported)
         # 之前的 _schedule_alert 只覆盖 5xx+401/403, 漏了 420/余额不足等

@@ -3,7 +3,7 @@
 > AIMC（AI Model Compass）是一个轻量级 LLM 网关 + 优惠情报聚合工具。
 > 本文档是**所有文档的入口**。按你的角色选择下面任一入口。
 
-**项目状态**：**V6.4.1 完成（2026-09-13，全量 750 测试全绿）**。已落地：V6.0（模型组分级 vision-light + GLM 免费模型 + P0-3 收窄；标价双轨成本审计 + 4 个 cost API + 看板成本审计卡）、V6.1（鉴权统一 admin key、发 key REST、统一 CLI `scripts/aimc.py`、agent 契约 [agent-api.md](agent-api.md)、Mimosa 存量清零）、V6.x（qwen 命名规范化 qwen3-vl-*/qwen3-8b + 4 个存量 e2e 失败修复）。2026-09-05 看板补齐：卡片折叠统一 `<details>` + 全局时间范围 24h/7d/30d + fmtCNY + **指标体系统一（Cache 节省/标价节省/路由成功率 命名收敛、fmtTokens/fmtPct/fmtLatency、状态栏去业务指标、组路由跟随时间范围）**，见 [dashboard-metrics-plan.md](dashboard-metrics-plan.md)；**思考 token 计量上产（usage_logs.reasoning_tokens + 看板 4 处展示，注入模式进观察期）**，见 [thinking-control-plan.md](thinking-control-plan.md)。
+**项目状态**：**V6.4.1 完成（2026-09-13，全量 762 测试全绿）**。已落地：V6.0（模型组分级 vision-light + GLM 免费模型 + P0-3 收窄；标价双轨成本审计 + 4 个 cost API + 看板成本审计卡）、V6.1（鉴权统一 admin key、发 key REST、统一 CLI `scripts/aimc.py`、agent 契约 [agent-api.md](agent-api.md)、Mimosa 存量清零）、V6.x（qwen 命名规范化 qwen3-vl-*/qwen3-8b + 4 个存量 e2e 失败修复）。2026-09-05 看板补齐：卡片折叠统一 `<details>` + 全局时间范围 24h/7d/30d + fmtCNY + **指标体系统一（Cache 节省/标价节省/路由成功率 命名收敛、fmtTokens/fmtPct/fmtLatency、状态栏去业务指标、组路由跟随时间范围）**，见 [dashboard-metrics-plan.md](dashboard-metrics-plan.md)；**思考 token 计量上产（usage_logs.reasoning_tokens + 看板 4 处展示，注入模式进观察期）**，见 [thinking-control-plan.md](thinking-control-plan.md)。
 **V6.3 自动化收口（2026-09-05）**：F1 首启检测（空渠道 WARN 引导，manual_import 降级可选）+ F2 请求日志 model 搜索后端（`?model=` 模糊过滤）+ F3 自动入组埋点（运维页「自动入组观察」卡，纯只读 5 组指标）+ F7 图-表双向 hover 联动（Cache 环图↔渠道表、柱图↔日表），见 [dev/automation-closure-plan.md](dev/automation-closure-plan.md) §6。
 **V6.4 中期决策批次（2026-09-11，提前于 9/19）**：① **思考 Phase B 上产** — `channels.disable_thinking_inject` 渠道级注入开关（默认全关，开谁看数据定），见 [thinking-control-plan.md](thinking-control-plan.md) §3 决策记录；② **F3 收口 S3** — AUTO_JOIN_NON_T0=True + `AUTO_JOIN_MIN_CONFIDENCE=0.9`（非 T0 门槛，T0 恒免人工），见 [dev/automation-closure-plan.md](dev/automation-closure-plan.md) §5；③ **R9 不立项** — Phase 1-3 不做，8 死源运维禁用，见 [dev/next-step-plan.md](dev/next-step-plan.md) §十一；④ **#11/#12** — 路由有效输入价按渠道 7d cache 命中率折算（hit=0 退化原价）；⑤ 顺带修 `_update_cooldown` unawaited 告警协程。反馈公式 retry 项保留双分现状，观察 2~4 周后再取舍。
 **V6.4 收尾（2026-09-12）**：⑥ **DeepSeek V4.1 迁移** — 官方 id 只剩 `deepseek-flash`（=V4.1-Flash，多模态，价格降 33%）+ `deepseek-v4-pro`；deepseek-flash T0 进 flagship/vision 组，旧名 deepseek-v4-flash 保留 strong/code（sensenova 0 元 + SF 仍供，registry 已恢复 active——deprecated=退出组路由实证），vision-exp 无渠道提供已下线，r1 系 T0 事实错误修正（→T2/T3）；⑦ **SF org 段命名修复** — org 与模型行名不同源时不再塞进 model_id，存量改名 paddleocr-vl-1.5 / longcat-2.0 / nex-n2-pro，8 行厂商品牌前缀保留（tongyi-mai/teleai/fnlp/funaudiollm/baai）；⑧ **全渠道思考注入兼容矩阵** — 实测无上游执行 enable_thinking:false（glm_bigmodel 400 强制思考、sensenova/siliconflow/minimax/deepseek 忽略），sensenova 开关注入观察中其余全关；⑨ **OCR 模型调用面确认** — deepseek-ocr/paddleocr-vl-1.5 无独立端点，走 chat 多模态（image_url 内容段），SF 拒不可下载图 URL（20040），base64 data URI 可用。全量 747 测试全绿。
@@ -15,7 +15,7 @@
 
 **生产审查（2026-09-13）**：在结合诊断基础上做四路静态审查 + 逐条读码复核 + **生产库实证**（VM ubuntu2401，10,559 usage_logs），产出 **[dev/production-review-2026-09-13.md](dev/production-review-2026-09-13.md)**。**需处理**：① S1 失败链响应复制旧 `Content-Length` → body 变长被截断/h11 协议错（**本机实证** starlette 1.3.1：声明 25B / 实际 351B）；② S3 情报「优惠→价格行」生产 0 产出且一旦触发会把折扣乘到该渠道**全部**模型（siliconflow 99 模型）；③ S8 路由成功率 30d 因 `LIMIT 20` 被高估（实测 27>20）；④ S9 cache 命中率查询用 UTC 窗口与本地时区相悖（实测 ~0.9% 偏移）；⑤ S5 失败重复计数、S6 周报 XSS、S4 differ 先落 hash、S7 停机 drain。**同时纠正 4 条首轮误判**（流式 usage 未丢、DeepSeek cache 已解析、cache JOIN 无丢行、Anthropic 口径为潜伏项——6 渠道全 `api_style=openai`）。建议修复排期已并入 [dev/next-stage-research.md](dev/next-stage-research.md) §2.0。
 
-**下阶段拍板与 429 隐形拒绝批次（2026-09-14）**：决策清单 #2（S3 双轨：订阅类维持仅入库展示 + 修真折扣链路缺陷）、#4（迁移机制 V6.5 后做轻方案 A）已拍板。同日生产实证 **tier:flagship 兜底链失效**三根因——① 配额预检判定式 `已用+max_tokens×2 > 限额` 在 used 恒 0 时退化为 `max_tokens×2 > limit`，deepseek_01 的 tpm=100000 行（8/14 拍脑袋估算）把 zcode 声明 128000 output 的请求恒拒死，且拒绝路径直接 return 不 failover/不落库 → 看板隐形（**同时修正审查报告 S2 结论**：tpm 维度非恒放行而是恒拒死）；② 429001 池级限流撞上账号级固定 30s 冷却，无升级；③ 流式 200 的 mark_success 无条件擦除冷却。商定 3 项修复进行中：预检改跳过重选+落库、删 tpm 行、rate_limited 指数退避 + mark_success 保留未到期冷却 + 同渠道双 429 升级渠道级冷却。详见 [dev/next-stage-research.md](dev/next-stage-research.md)「⚡ 进行中」小节。
+**下阶段拍板与 429 隐形拒绝批次（2026-09-14）**：决策清单 #2（S3 双轨：订阅类维持仅入库展示 + 修真折扣链路缺陷）、#4（迁移机制 V6.5 后做轻方案 A）已拍板。同日生产实证 **tier:flagship 兜底链失效**三根因——① 配额预检判定式 `已用+max_tokens×2 > 限额` 在 used 恒 0 时退化为 `max_tokens×2 > limit`，deepseek_01 的 tpm=100000 行（8/14 拍脑袋估算）把 zcode 声明 128000 output 的请求恒拒死，且拒绝路径直接 return 不 failover/不落库 → 看板隐形（**同时修正审查报告 S2 结论**：tpm 维度非恒放行而是恒拒死）；② 429001 池级限流撞上账号级固定 30s 冷却，无升级；③ 流式 200 的 mark_success 无条件擦除冷却。**3 项修复已于当日全部上产**：预检拒绝改 mark_failure + usage_logs 落库 + 组路由 failover 重选；删 deepseek_01 tpm 行（生产库操作留档可回插，e2e 实证 deepseek-flash 从隐形 429 变真实转发 200）；rate_limited 冷却指数退避（30s×2^n 封顶 3600s）+ mark_success 迟到成功守卫（冷却期内在途 200 不再擦冷却）+ 同渠道兄弟账号冷却对齐（渠道级同步）；顺带移除 routes failover 块与 proxy._update_cooldown 的双重 mark_failure（批次一 S5 主修复点）。新增 `tests/test_v64x_cooldown_quota_failover.py`（26 项）+ test_v46_cooldown.py 3 处断言按新语义更新，全量 762 全绿。详见 [dev/next-stage-research.md](dev/next-stage-research.md)「⚡ 已上产」小节。
 
 **V6.3.1 瞬时冷却 badge 修复（2026-09-06）**：顶栏待处理 badge 不再为自愈型瞬时冷却（15-60s 自动恢复）报警（`/api/pending-summary?exclude_transient=true`），消除「顶栏有数但运维页为空」的观察时差；同时观察点落 `cooldown_events` 流水（同 episode 按 cooldown_until 去重），运维页新增「24h 瞬时冷却记录」卡留痕可回看。
 **请求日志并显上游账号（2026-09-07）**：一渠道多账号落地后的用量可观测补齐——请求日志「渠道」列以 muted 后缀并显服务账号（`sensenova_official · sensenova_01`），详情抽屉 meta 同步显示；list/transcript 端点新增 `account_name` 字段（`usage_logs.account_id` 反查，legacy NULL 行显示 —），零迁移（dcab606）。
@@ -59,7 +59,7 @@
 | 本地搭建开发环境 | [dev/setup.md](dev/setup.md) |
 | commit / 分支 / 测试 规范 | [dev/conventions.md](dev/conventions.md) |
 | 写测试 / 提 PR / 贡献代码 | [dev/contributing.md](dev/contributing.md) |
-| 跑 750 个测试 + 加新测试 | [dev/testing.md](dev/testing.md) |
+| 跑 762 个测试 + 加新测试 | [dev/testing.md](dev/testing.md) |
 | 查 post-merge 修复（21 commit 整改）| [dev/post-merge-fixes.md](dev/post-merge-fixes.md) |
 
 ---
@@ -96,7 +96,7 @@
 ## 文档元信息
 
 - **最后更新**：2026-09-13
-- **测试覆盖**：750 tests（pytest，~6 分钟跑通，2026-09-13 基线全绿）
+- **测试覆盖**：762 tests（pytest，~6.5 分钟跑通，2026-09-14 基线全绿）
 - **观察期关注**：缓存命中率（路径 A）、周报 timer 首次自动触发（周一）、vision 400 率、**思考注入各渠道开谁（Phase B 已上产默认全关，见 [thinking-control-plan.md](thinking-control-plan.md) §3）**、**S3 生效后 pending 变化与门槛拦截量（AUTO_JOIN_MIN_CONFIDENCE=0.9，见 [dev/automation-closure-plan.md](dev/automation-closure-plan.md) §5）**、**反馈公式 retry 项取舍（双分并存，观察 2~4 周 ~2026-09-23~10-07）**
 - **模块结合待办**：见 [dev/module-integration-audit.md](dev/module-integration-audit.md)（P0：探活 NameError / 部署路径硬编码；决策项：本地限流与账号配额是否接线）与 [dev/next-stage-research.md](dev/next-stage-research.md)（建议稳定性批次）
 - **V4.9 新功能**：Dashboard **🔴 待处理 (N)** tab（余额不足 / Key 失效 / 智能探活状态），见 [user/dashboard.md](user/dashboard.md)

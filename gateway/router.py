@@ -922,6 +922,20 @@ class RouteEngine:
             return False
         return True
 
+    def sibling_account_ids(self, channel_id: int, exclude_account_id) -> list[int]:
+        """V6.4.x: 同渠道其他账号 id (cooldown_manager 渠道级限流同步用)
+
+        _channels_cache 每个活跃账号一条 entry, 据此取同渠道兄弟账号.
+        cache 未加载 / 渠道未知时返回空列表 (调用方退化为纯账号级冷却).
+        """
+        try:
+            return [
+                c["account_id"] for c in self._channels_cache
+                if c["id"] == channel_id and c["account_id"] != exclude_account_id
+            ]
+        except Exception:
+            return []
+
     def _match_time_range(self, time_range: str, now: datetime) -> bool:
         """判断当前时间是否在时段范围内 (V4.8.7: 支持工作日/周末峰谷)
 

@@ -433,3 +433,5 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
 | 2026-09-11 | 流式错误体走缓冲直通 | `_forward_stream` status≥400 已 aread() → 改 yield 缓冲字节，修 StreamConsumed |
 | V6.4.1 | 全库时区统一本地时间 | 根除 `func.now()`(UTC) 与 `datetime.now`(本地) 混写，存量 UTC 行 +8h 迁移 |
 | 2026-09-13 | 看板统计口径统一为滚动窗口 | 三语义（滚动/自然日 LIMIT/滚动分桶）同页不可对账；LIMIT 语义废弃，桶轴 Python 补零；rollup 表不立项（30d 聚合 11ms） |
+| 2026-09-14 | 配额预检拒绝改 failover + 落库 | 预检静态估算（max_tokens×2>limit 恒真）拒死 deepseek-flash 兜底且隐形 429（不 mark_failure/不落 usage_logs）；回归 quota.py "try_next_account" 原设计意图 |
+| 2026-09-14 | rate_limited 冷却指数退避 + 迟到成功守卫 + 渠道级同步 | sensenova 双账号共享 TPM 池：固定 30s 账号冷却解冻即重撞；冷却期内在途 200 完成会擦掉冷却（mark_success 守卫）；兄弟账号 rate_limited 冷却对齐 = 共享池渠道级升级 |
