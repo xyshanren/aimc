@@ -3,7 +3,9 @@
 > 受众：维护 AIMC 全链路的开发者
 > 方法：四层（gateway / db / intelligence / dashboard）逐一读取，用「符号全仓引用计数」
 > 判定调用点是否存在，再对可疑项逐一打开源码确认。
-> 配套：[architecture.md](architecture.md)（分层与数据流）、[next-stage-research.md](next-stage-research.md)（处置规划）
+> 配套：[architecture.md](architecture.md)（分层与数据流）、
+> [production-review-2026-09-13.md](production-review-2026-09-13.md)（生产审查：bug/指标/安全）、
+> [next-stage-research.md](next-stage-research.md)（处置规划）
 
 > **判定口径**：行号随代码演进漂移，主键是符号名。本清单每个结论都做过 grep 复核。
 > **重要前提**：`data/aimc.db` 是 `.gitignore` 的本地开发库（已腐化），**不能**用它判断

@@ -11,7 +11,9 @@
 
 **看板统计口径统一（2026-09-13）**：三张卡三种时间语义（滚动窗口 / "最近 N 个有数据的自然日"LIMIT / 滚动按日分桶）导致的同页不可对账收口为**滚动窗口单一口径**——`usage/summary` 补 cutoff + 桶轴 Python 侧补零（取代无 cutoff 全表扫描的 LIMIT 语义，零流量日不再凭空消失），24h 档 `usage/summary`+`cost-trend` 改按小时分桶（消灭跨日半截柱），7d/30d 维持按日；概览 Top 模型卡改按请求数排序取前 5（成本审计页保持按标价排序，6c8fd61）；口径就地亮出（Top 模型"按请求数"、用量统计"按小时/日分桶"副标题 + 全局 24h/7d/30d 选择器滚动窗口 tooltip）+ 运维页新增「指标口径速查」卡（METRIC_DEFS + CARD_DEFS 同源渲染，与表头 tooltip 永远一致）。agent-api.md 契约同步。**每日预聚合 rollup 表不立项**（实测 30d 聚合 11ms、余量 30 倍），触发器三条见观察清单：usage_logs>50 万行或 30d 聚合>300ms / 引入 usage_logs 留存清理 / 跨季度分析需求。
 
-**架构梳理与模块结合诊断（2026-09-13）**：对 gateway / db / intelligence / dashboard 四层做了一次全链路梳理，产出两份文档——**[dev/architecture.md](dev/architecture.md) 重写**（四层结构 + 依赖图 + 请求数据流 + 迁移机制 + 结合诊断摘要 + 决策表，修正 41→42 job / 6→7 tier 组 / 30+→67 端点 / 删除 config 中不存在的 per-vendor key 说明）；新增 **[dev/module-integration-audit.md](dev/module-integration-audit.md)**（逐条证据：4 类「接通但空转」旁路——本地限流计数侧零调用、账号配额 `used_value` 生产零写入、model_cards 评分未接入路由、结构化价格解析被丢弃；1 个确定性 bug——`channel_health` 探活失败分支 `ErrorInfo` 未 import 致 NameError；死代码清单 + 4 死端点 + 3 孤儿前端资产 + 3 遗留 schema 文件；双向依赖/掏私有成员/静默吞异常/迁移三轨风险）。**新增 [dev/next-stage-research.md](dev/next-stage-research.md)** 给出下阶段调研：建议先做一个 ~2 天的「稳定性批次」（P0 修 NameError + 部署路径硬编码解耦 + 死代码清理 + except 收窄）。V7.0/V6.2/操作审计等仍待用户口令。
+**架构梳理与模块结合诊断（2026-09-13）**：对 gateway / db / intelligence / dashboard 四层做了一次全链路梳理，产出两份文档——**[dev/architecture.md](dev/architecture.md) 重写**（四层结构 + 依赖图 + 请求数据流 + 迁移机制 + 结合诊断摘要 + 决策表，修正 41→42 job / 6→7 tier 组 / 30+→67 端点 / 删除 config 中不存在的 per-vendor key 说明）；新增 **[dev/module-integration-audit.md](dev/module-integration-audit.md)**（逐条证据：4 类「接通但空转」旁路——本地限流计数侧零调用、账号配额 `used_value` 生产零写入、model_cards 评分未接入路由、结构化价格解析被丢弃；1 个确定性 bug——`channel_health` 探活失败分支 `ErrorInfo` 未 import 致 NameError；死代码清单 + 4 死端点 + 3 孤儿前端资产 + 3 遗留 schema 文件；双向依赖/掏私有成员/静默吞异常/迁移三轨风险）。
+
+**生产审查（2026-09-13）**：在结合诊断基础上做四路静态审查 + 逐条读码复核 + **生产库实证**（VM ubuntu2401，10,559 usage_logs），产出 **[dev/production-review-2026-09-13.md](dev/production-review-2026-09-13.md)**。**需处理**：① S1 失败链响应复制旧 `Content-Length` → body 变长被截断/h11 协议错（**本机实证** starlette 1.3.1：声明 25B / 实际 351B）；② S3 情报「优惠→价格行」生产 0 产出且一旦触发会把折扣乘到该渠道**全部**模型（siliconflow 99 模型）；③ S8 路由成功率 30d 因 `LIMIT 20` 被高估（实测 27>20）；④ S9 cache 命中率查询用 UTC 窗口与本地时区相悖（实测 ~0.9% 偏移）；⑤ S5 失败重复计数、S6 周报 XSS、S4 differ 先落 hash、S7 停机 drain。**同时纠正 4 条首轮误判**（流式 usage 未丢、DeepSeek cache 已解析、cache JOIN 无丢行、Anthropic 口径为潜伏项——6 渠道全 `api_style=openai`）。建议修复排期已并入 [dev/next-stage-research.md](dev/next-stage-research.md) §2.0。
 
 **V6.3.1 瞬时冷却 badge 修复（2026-09-06）**：顶栏待处理 badge 不再为自愈型瞬时冷却（15-60s 自动恢复）报警（`/api/pending-summary?exclude_transient=true`），消除「顶栏有数但运维页为空」的观察时差；同时观察点落 `cooldown_events` 流水（同 episode 按 cooldown_until 去重），运维页新增「24h 瞬时冷却记录」卡留痕可回看。
 **请求日志并显上游账号（2026-09-07）**：一渠道多账号落地后的用量可观测补齐——请求日志「渠道」列以 muted 后缀并显服务账号（`sensenova_official · sensenova_01`），详情抽屉 meta 同步显示；list/transcript 端点新增 `account_name` 字段（`usage_logs.account_id` 反查，legacy NULL 行显示 —），零迁移（dcab606）。
@@ -48,6 +50,7 @@
 |--------|--------|
 | 了解架构 / 数据流 | [dev/architecture.md](dev/architecture.md) |
 | 查模块间结合诊断（断链/死代码/耦合）| [dev/module-integration-audit.md](dev/module-integration-audit.md) |
+| 看生产审查报告（bug/指标口径/安全）| [dev/production-review-2026-09-13.md](dev/production-review-2026-09-13.md) |
 | 看下一阶段规划调研 | [dev/next-stage-research.md](dev/next-stage-research.md) |
 | 看 API 端点（OpenAI + Dashboard）| [dev/api.md](dev/api.md) |
 | **Agent 编程接入（REST/CLI 契约, V6.1）** | [agent-api.md](agent-api.md) |
