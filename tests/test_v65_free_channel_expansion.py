@@ -24,9 +24,16 @@ def test_manual_import_modelscope_config():
     assert cfg["priority"] == 10, "免费兜底应最低档 (priority 大 = 靠后)"
     assert cfg["qpm"] == 30
     # 价格行: raw 名直录 (同 siliconflow 聚合模式), 全 0 元
+    # 模型行来自 2026-09-14 用户全量实测 (只录大参数直接可用行)
     models = [p[0] for p in cfg["prices"]]
-    assert "deepseek-ai/DeepSeek-V4-Flash" in models
+    assert "deepseek-ai/DeepSeek-V4.1-Flash" in models
     assert "deepseek-ai/DeepSeek-V4-Pro" in models
+    assert "ZhipuAI/GLM-5.2" in models
+    assert "Qwen/Qwen3-Next-80B-A3B-Instruct" in models
+    # 实测不可用/需流式的行不应录入
+    assert "deepseek-ai/DeepSeek-V4-Flash" not in models  # ModelScope 无此 id
+    assert "MiniMax/MiniMax-M3" not in models  # has no provider
+    assert "ZhipuAI/GLM-4.7-Flash" not in models  # 1305 过载
     for row in cfg["prices"]:
         assert row[1] == "normal" and row[2] == "全天"
         assert row[3] == 0.0 and row[4] == 0.0

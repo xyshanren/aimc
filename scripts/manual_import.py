@@ -266,21 +266,32 @@ CHANNELS = [
     {
         # V6.5+ (2026-09-14): ModelScope 魔搭 API-Inference (免费渠道扩容, 调研 §2.6.1)
         # OpenAI 兼容: https://api-inference.modelscope.cn/v1, 鉴权 Bearer ms- token
-        # 免费额度 2000 RPD — 超额 429 → 冷却自愈 (同 sensenova 模式, 无硬伤)
+        # 免费额度动态调整 (官方无固定 RPD) — 超额 429/空壳 200 → 冷却自愈 (同 sensenova 模式)
         # 价格行 = raw 名直录 (同 siliconflow 聚合平台模式, price_snapshots 行
         # 动态决定渠道候选); 全 0 元 (免费额度内)
-        # 首期只录 deepseek 双子 (给 v4-pro / v4-flash 各加一条免费第二供给,
-        # 缓解 sensenova 池级 429 单点); GLM/Qwen 重合或观察后再加
+        # ⚠️ 模型行来自 2026-09-14 shouyi01 账号全量实测 (API-Inference可用模型实测
+        # _2026-09-14.md): 只录大参数可用行, 小模型/需流式/不可用行不录。
+        #   - DeepSeek-V4.1-Flash: 实测直接可用 (注意! ModelScope 的 V4.1-Flash ≈
+        #     官方 deepseek-flash, 与 sensenova 行 deepseek-v4-flash 是不同代 —
+        #     各自独立行, 不互相覆盖)
+        #   - DeepSeek-V4-Pro / -0813: 实测直接可用 (v4-pro 第二免费供给)
+        #   - ZhipuAI/GLM-5.2: 实测直接可用 (glm-5.2 跨渠道第三供给)
+        #   - Qwen3-Next-80B-A3B-Instruct / Qwen3-235B-A22B: 大参数新面孔,
+        #     暂不入 tier 组, 观察后定
+        #   MiniMax-M3 / GLM-4.7-Flash / Hunyuan-Hy3 等实测不可用或 1305 过载, 不录
         "key": "modelscope",
         "name": "modelscope_inference",
         "provider": "modelscope",
-        "base_url": "https://api-inference.modelscope.cn/v1",
+        "base_url": os.getenv("MODELSCOPE_BASE_URL", "https://api-inference.modelscope.cn/v1"),
         "priority": 10,  # 最低档兜底 — 已有 0 元渠道 (sensenova) 先走
         "env_var": "MODELSCOPE_API_KEY",
         "qpm": 30,
         "prices": [
-            ("deepseek-ai/DeepSeek-V4-Flash", "normal", "全天", 0.0, 0.0),
+            ("deepseek-ai/DeepSeek-V4.1-Flash", "normal", "全天", 0.0, 0.0),
             ("deepseek-ai/DeepSeek-V4-Pro", "normal", "全天", 0.0, 0.0),
+            ("ZhipuAI/GLM-5.2", "normal", "全天", 0.0, 0.0),
+            ("Qwen/Qwen3-Next-80B-A3B-Instruct", "normal", "全天", 0.0, 0.0),
+            ("Qwen/Qwen3-235B-A22B", "normal", "全天", 0.0, 0.0),
         ],
     },
 ]
