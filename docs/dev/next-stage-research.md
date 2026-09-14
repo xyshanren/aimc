@@ -169,14 +169,14 @@ sensenova 账号（lixiaoy / sensenova_01）被轮流反复撞击；备用成员
 **删前确认**：`GET /api/cooldown` 等「仅文档留档」端点属 agent 契约（保留）；
 死端点删除前 grep 一次 `docs/agent-api.md` 与 `scripts/aimc.py`，避免删掉对外契约。
 
-### 2.4 迁移机制收敛（建议立项，1~2 天）
+### 2.4 迁移机制收敛（✅ 已上产，2026-09-14）
 
-见 [module-integration-audit.md](module-integration-audit.md) §F。二选一：
-- **A（轻）**：扩展 `ensure_migrations` 覆盖全部 ORM 列（以 `db.models` 为单一事实源，
-  create_all 之外补「列存在性 + 缺失即 ALTER」），加 `schema_migrations` 版本表记录已跑脚本。
-- **B（重）**：引入 Alembic（autogenerate + 版本链）。
-
-个人项目定位下建议 A；触发提前做的事件：出现一次「老库 no such column」生产事故。
+见 [module-integration-audit.md](module-integration-audit.md) §F。**已实施轻方案 A**：
+`db/schema_align.py`（ORM 单一事实源列对齐，238 条生成器纯字面量常量 +
+`schema_migrations` 版本表，init_db 四步串联自动跑）+ `scripts/gen_orm_column_ddl.py`
+（ORM 变更后重生成常量）。测试 `tests/test_v65_schema_align.py`（7 例）。
+R1 双轨漂移 / R2 无版本表关闭；R3 约束漂移、R5 启动 DELETE 残余开放。
+Alembic（方案 B）不引入，版本表名格式兼容保留演进空间。
 
 ### 2.5 静默吞异常收窄（建议批次，~半天）
 

@@ -3,6 +3,25 @@
 > 受众：AIMC 升级或 reset_db 后跑 migration 的人
 > 前提：[dev/setup.md](../dev/setup.md)（本地跑起来）
 
+## 0. V6.5+ 迁移收敛（轻方案 A，2026-09-14 上产）
+
+`init_db()` 现在自动完成四步：`create_all`（建缺失表）→ `ensure_migrations()`
+（历史硬编码幂等迁移，保留不动）→ `ensure_schema_alignment()`（**ORM 单一事实源
+列对齐**，`db/schema_align.py`）→ `mark_legacy_migrations()`（历史脚本登记版本表）。
+
+- **版本表** `schema_migrations(migration, note, applied_at)`：记录 align 补列
+  （note=`orm-align`）与 23 个历史手动脚本基线（note=`legacy-manual`），
+  解决「无法判断某脚本是否已跑」的审计盲区。
+- **列对齐**：以 `db/models.py` 为单一事实源。新 ORM 列忘写迁移 → 启动时自动
+  对老库补 `ALTER TABLE ADD COLUMN`（幂等）。日常维护流程：改 `db/models.py`
+  → 跑 `python scripts/gen_orm_column_ddl.py` → 将输出整段替换
+  `db/schema_align.py` 的 `_ALIGN_DDL`（diff 逐条可评审）→ 提交。
+- **边界**：NOT NULL 且无 server_default 的列 SQLite ALTER 硬限制不可 ADD，
+  不进对齐常量（只在全新库出现，create_all 已带约束）；这类列老库缺失仍走
+  人工重建表流程。列类型变更/删列/数据回填仍按下面 §2 人工迁移。
+- **排查**：`python -c "import asyncio; from db.schema_align import dry_run; asyncio.run(dry_run())"`
+  打印将执行的 DDL；`get_applied_migrations()` 读版本表。
+
 ## 1. 当前 migration 总览
 
 AIMC 当前有 **23 个 migration 脚本**（`db/migrations/`）：

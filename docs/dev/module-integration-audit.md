@@ -189,6 +189,13 @@ import 缺失会抛 500，属相对安全写法。
 
 ## F. 迁移机制风险（三轨并存、无版本表）
 
+> **✅ 轻方案 A 已上产（2026-09-14）**：`db/schema_align.py` 以 ORM 为单一事实源
+> 列对齐（238 条生成器产出的纯字面量 ALTER 常量，启动时自动补缺列）+
+> `schema_migrations` 版本表（align 补列 note=`orm-align`、23 个历史脚本基线
+> note=`legacy-manual`）。**R1 双轨漂移 / R2 无版本表已解决**；R3 约束漂移
+> （create_all 不给已存在表补索引）与 R5 启动路径 DELETE 属残余风险仍开放；
+> R4 为 SQLite 固有限制已知未动。详见 docs/ops/migration.md §0。
+
 - 机制：`create_all`（只建缺失表）+ `init_db.ensure_migrations()`（硬编码约 30 列/索引的
   幂等 ALTER）+ `db/migrations/*.py`（23 个手动脚本，`--apply`，**无调用方**）。
 - 风险：
@@ -232,7 +239,7 @@ import 缺失会抛 500，属相对安全写法。
 | P0 | G 修 `scheduler` 硬编码 cwd + 删死导入 | ✅ 已修（V6.5 批次一，`_PROJECT_ROOT` 相对定位） |
 | P1 | C 死代码清理 | **待做**（~半天；fallback.py / crud 16 函数 / schemas 3 文件 / 静态孤儿 / 死端点） |
 | P1 | H 文档漂移 | ✅ 已修（architecture 重写 + 测试/job/端点数字收口 + H2 标注无 UI） |
-| P2 | F 迁移机制收敛 | **已拍板 2026-09-14：V6.5 后做轻方案 A**（~1~2 天） |
+| P2 | F 迁移机制收敛 | ✅ **已上产（2026-09-14，轻方案 A）**：schema_align ORM 列对齐 + schema_migrations 版本表；R1/R2 关闭，R3/R5 残余见 §F |
 | P2 | E 静默 except 收窄 | **待做**（~半天；`middleware._query_api_key` 与 proxy 用量链优先） |
 | P3 | A3/A4 接线评分与结构化价格 | 待决策（与 V7.0/F4 同批；折扣链 S3a/S3b 已修但 `pricing_writer` 仍未接） |
 | 决策项 | A1/A2 限流与配额是否接线 | **维持 defer 仅显式化**（2026-09-14 部分落地：删 deepseek_01 tpm 行 + 预检改 failover+落库；累加落库式接线触发器不变） |

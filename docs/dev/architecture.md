@@ -352,20 +352,29 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
 
 共 27 个 ORM 表（另有 APScheduler 自建的 `apscheduler_jobs`）。
 
-## 8. 迁移机制（重要，有已知风险）
+## 8. 迁移机制（V6.5+ 收敛为轻方案 A，2026-09-14 上产）
 
-不是 Alembic，没有版本表。两套并存：
+不是 Alembic（个人项目零运维哲学，版本表迁移名格式与 Alembic 兼容保留演进空间），
+`init_db()` 四步串联：
 
-- **自动**：`init_db()` = `Base.metadata.create_all`（只建缺失的表）+ `ensure_migrations()`
-  （`db/init_db.py`，用 `PRAGMA table_info` 判断 + 手写 `ALTER TABLE ADD COLUMN`，
-  硬编码覆盖约 30 个列/索引，幂等）。
-- **手动**：`db/migrations/*.py` 共 23 个，`argparse + sqlite3` 直连，默认 dry-run，
-  需 `--apply`；**无任何代码调用，全靠人工按 [../ops/migration.md](../ops/migration.md) 执行**。
+1. `Base.metadata.create_all` — 只建缺失的表（不改已有表）。
+2. `ensure_migrations()`（`db/init_db.py`）— 历史硬编码幂等迁移（`PRAGMA table_info`
+   判断 + 纯字面量 `ALTER TABLE ADD COLUMN`），保留不动。
+3. **`ensure_schema_alignment()`（`db/schema_align.py`，V6.5+ 新增）— ORM 单一事实源
+   列对齐**：`_ALIGN_DDL` 为生成器（`scripts/gen_orm_column_ddl.py`）从 `db/models.py`
+   产出的 238 条显式字面量常量，启动时对实际库逐条比对（`pragma_table_info` 一次取
+   全部表全部列），缺列即执行预生成 `ALTER` 并登记版本表（幂等）。覆盖「新 ORM 列
+   忘写迁移 → 老库 no such column」这一最高频事故路径。NOT NULL 无 server_default
+   列不在常量内（SQLite ALTER 硬限制不可 ADD，只出现在全新库）。
+4. `mark_legacy_migrations()` — 23 个历史手动迁移脚本登记 `schema_migrations` 版本表
+   （note=`legacy-manual`，仅登记不执行），解决「无法判断某脚本是否已跑」的审计盲区。
 
-**已知风险**（详见 [module-integration-audit.md](module-integration-audit.md) §F）：
-新增 ORM 列若忘写 `ensure_migrations` 又不跑手动脚本，老库启动不报错、用到时才
-`no such column`；`create_all` 不会给已存在表补约束/索引，ORM 声明的唯一索引在
-「老库升级」与「全新库」上不一致；无版本表 → 无法判断某脚本是否已跑。
+**手动**：`db/migrations/*.py` 共 23 个，`argparse + sqlite3` 直连，默认 dry-run，
+需 `--apply`；**无任何代码调用，全靠人工按 [../ops/migration.md](../ops/migration.md) 执行**。
+
+**仍需人工迁移的场景**：列类型变更、删列、数据回填、NOT NULL 无默认列的补齐
+（重建表流程）。ORM 列变更日常维护：改 `db/models.py` → 跑生成器替换 `_ALIGN_DDL`
+→ 提交，启动自动对齐。
 
 ## 9. 模块间结合诊断（摘要，2026-09-14 更新）
 
@@ -389,8 +398,9 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
 2. **确定性 bug**：探活 `ErrorInfo` NameError **已修**（V6.5 批次一，失败探活恢复回写冷却）。
 3. **工程债**：S1 Content-Length / S4 differ 吞变化 / S6 周报 XSS / S7 停机丢计量 /
    S8 路由成功率截断 / S9 cache 时区 / S11 sync_engine PRAGMA / S12 旧 job 残留
-   **已全部修复**（V6.5 三批，2026-09-14）；死代码清理（`gateway/fallback.py`、crud 死函数、
-   schemas 遗留、死端点、孤儿前端资产）、静默 except 收窄、迁移机制收敛**待后续批次**。
+   **已全部修复**（V6.5 三批，2026-09-14）；迁移机制收敛轻方案 A **已上产**
+   （schema_migrations 版本表 + ORM 列对齐，见 §8）；死代码清理（`gateway/fallback.py`、
+   crud 死函数、schemas 遗留、死端点、孤儿前端资产）、静默 except 收窄**待后续批次**。
 
 ## 10. 设计哲学
 

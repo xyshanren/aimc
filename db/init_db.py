@@ -19,10 +19,21 @@ logger = logging.getLogger(__name__)
 
 
 async def init_db():
-    """创建所有表（如果不存在）+ 跑幂等迁移"""
+    """创建所有表（如果不存在）+ 跑幂等迁移 + ORM 列对齐
+
+    迁移收敛轻方案 A (V6.5+, 2026-09-14)：
+    create_all (建缺失表) → ensure_migrations (历史硬编码迁移, 保留不动)
+    → ensure_schema_alignment (以 ORM 为单一事实源补缺失列, 覆盖
+    「新 ORM 列忘写迁移」事故) → mark_legacy_migrations (历史手动脚本
+    登记版本表)。
+    """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await ensure_migrations()
+
+    from db.schema_align import ensure_schema_alignment, mark_legacy_migrations
+    await ensure_schema_alignment()
+    await mark_legacy_migrations()
     logger.info("数据库表初始化完成")
 
 
