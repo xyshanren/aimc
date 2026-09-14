@@ -272,7 +272,13 @@ Alembic（方案 B）不引入，版本表名格式兼容保留演进空间。
 
 #### 2.6.3 交付物清单
 
-> **✅ 已上产（2026-09-14，a08da05 + f9e8c0d + 51f249e，814 测试全绿）**
+> **✅ 已上产（2026-09-14，a08da05→1760a9d，814 测试全绿）**
+>
+> **✅ 方案 A 验收完成（2026-09-14 晚）**：modelscope_inference 渠道 id=7 +
+> account modelscope_01 + 5 价格行（按用户 shouyi01 账号当日全量实测矩阵精选，
+> 见 §2.6.1 表下注）落库；e2e 实证 `deepseek-ai/DeepSeek-V4.1-Flash` 精确路由
+> 200（usage_logs id=11278, latency 6.9s, 34/15 tokens）、`tier:flagship` 组
+> 路由 200 不受影响。观察期 1b 启动。
 
 1. `scripts/manual_import.py`：+modelscope 配置块（channel/prices/qpm）✅
 2. `intelligence/sources/free_llm_collection.py`（新）+ `sources/__init__.py` 注册（38 源）✅
@@ -281,10 +287,17 @@ Alembic（方案 B）不引入，版本表名格式兼容保留演进空间。
      promotions id=1097（confidence 0.92，"免费大模型 API 合集"摘要，含硅基流动
      1000 RPM / OpenRouter 20 RPM/200 RPD 额度信息）、content hash 已 commit、
      调度 job `batch_crawl_free_llm_collection_86400` 注册。
-   - 方案 A **代码就绪待 token**：VM `.env` 加入 `MODELSCOPE_API_KEY=ms-xxx` 后跑
-     `manual_import.py`（幂等，跳过已有渠道）→ `add_account.py --channel modelscope
-     --name modelscope_01 --api-key <token>` → 重启 → e2e（`deepseek-v4-flash`
-     精确路由应出现 modelscope 候选）。
+   - 方案 A **✅ 验收完成**：渠道 id=7 / account modelscope_01 / 5 价格行
+     （deepseek-ai/DeepSeek-V4.1-Flash、deepseek-ai/DeepSeek-V4-Pro、ZhipuAI/GLM-5.2、
+     Qwen/Qwen3-Next-80B-A3B-Instruct、Qwen/Qwen3-235B-A22B，全 0 元）。
+     价格行按用户 2026-09-14 实测矩阵选定（49 目录实测 31 可用；只录大参数
+     直接可用行——小模型硅基流动已长期免费覆盖、需流式 3 个、不可用 18 个均不录；
+     ModelScope 无 DeepSeek-V4-Flash 这个 id，其 V4.1-Flash ≈ 官方 deepseek-flash
+     与 sensenova 行不同代各自独立）。e2e：精确 raw 名 200 + flagship 组 200。
+     **接入过程修复 manual_import 三个幂等缺陷**（284cea0/8264a76/1760a9d）：
+     价格行 create→upsert（UNIQUE 中断致后续渠道漏建）、skip 分支补齐缺失
+     价格行（渠道已存在但 0 价格行自愈）、命名空间 raw 名跳过 normalize
+     （小写化会致上游 404，与 siliconflow api sync 同口径）。
 4. 测试 ✅：`test_v65_free_channel_expansion.py` 5 例 + 3 处源总数快照 37→38
 5. 文档 ✅：本节 + index 状态行 + agent-api 不涉及
 
@@ -320,7 +333,7 @@ Alembic（方案 B）不引入，版本表名格式兼容保留演进空间。
 | # | 观察线 | 现状 / 最近截止 |
 |---|--------|----------------|
 | 1 | sensenova 积分池压力（60k/5h + 600k/周，池级共享 TPM） | 持续观察；输入分组再平衡已上产 |
-| 1b | **modelscope 渠道观察**（渠道建行后启用）：请求数/失败率/2000 RPD 消耗、与 sensenova 的 deepseek-v4-flash 流量分配变化 | 渠道待用户 token 建行 |
+| 1b | **modelscope 渠道观察**：请求数/失败率/免费额度消耗（官方"动态调整"无固定 RPD）、与 sensenova 的 deepseek 系流量分配变化、V4.1-Flash 与 sensenova deepseek-v4-flash 的代际混淆是否造成路由困扰 | 2026-09-14 渠道上线，e2e 200 |
 | 1c | **free_llm_collection 情报源观察**：README 变化 → 审批队列产出节奏（首批 conf 0.92 已入库）；GitHub raw 经 Playwright `<pre>` 包装的解析质量 | 2026-09-14 首采成功 |
 | 2 | glm_bigmodel 1305 过载波纹（同账号 30s 冷却波及免费模型） | 持续观察 |
 | 3 | vision / 总体 400 率（<3% 达标） | qwen3-vl-8b-instruct 全 400 小信号跟踪 |
