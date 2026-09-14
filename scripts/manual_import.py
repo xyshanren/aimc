@@ -415,11 +415,13 @@ async def import_one_channel(session, cfg: dict) -> bool:
         select(ChannelModel).where(ChannelModel.name == cfg["name"])
     )).scalar_one_or_none()
     if existing_ch is not None:
-        # 检查该 channel 是否有 active account
+        # V6.5.1 (2026-09-14): 幂等判断按"该渠道下是否存在任意账号"（不看 status）—
+        # 生产实证: 用户在运维页禁用账号后重跑本脚本, 旧判断只认 active 找不到账号,
+        # 落入 recover 分支用同一把 key 重建同名 active 账号, 绕过了禁用意图
+        # (glm/stepfun 各多出一条 glm_01/stepfun_01)。disabled 账号同样算已存在。
         existing_acc = (await session.execute(
             select(AccountModel).where(
                 AccountModel.channel_id == existing_ch.id,
-                AccountModel.status == "active",
             )
         )).scalars().first()
         if existing_acc is not None:
@@ -437,8 +439,8 @@ async def import_one_channel(session, cfg: dict) -> bool:
                     await _upsert_price_row(session, existing_ch.id, row)
                 await session.commit()
             return False
-        # channel 在但没 active account (老 data 残留) → 复用 channel 重建 account
-        print(f"[recover] {cfg['name']}: channel 存在但无 active account, 重建 account")
+        # channel 在但一条账号都没有 (真·老 data 残留, 非 disabled) → 复用 channel 重建 account
+        print(f"[recover] {cfg['name']}: channel 存在但无任何账号, 重建 account")
         channel = existing_ch
     else:
         channel = None  # 下面会 create_channel
