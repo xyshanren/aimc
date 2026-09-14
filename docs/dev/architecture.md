@@ -5,7 +5,7 @@
 > 配套：模块间结合问题的逐条清单见 [module-integration-audit.md](module-integration-audit.md)；
 > 下一阶段规划调研见 [next-stage-research.md](next-stage-research.md)
 
-> **文档时点**：2026-09-13（对应 V6.4.1 上产 + 看板口径统一）。文中的文件行号会随代码演进漂移，
+> **文档时点**：2026-09-14（对应 V6.5 稳定性批次完成，802 测试全绿）。文中的文件行号会随代码演进漂移，
 > 引用时以函数名/符号名为主键，行号仅作定位辅助。
 
 ## 1. 系统分层
@@ -367,28 +367,30 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
 `no such column`；`create_all` 不会给已存在表补约束/索引，ORM 声明的唯一索引在
 「老库升级」与「全新库」上不一致；无版本表 → 无法判断某脚本是否已跑。
 
-## 9. 模块间结合诊断（摘要）
+## 9. 模块间结合诊断（摘要，2026-09-14 更新）
 
 > 逐条清单、证据与建议见 [module-integration-audit.md](module-integration-audit.md)。
-> 这里只列结论。
+> 这里只列结论。**V6.5 三批（2026-09-14）已修复其中大部分**，各项现状态见该文档 §I。
 
 **主干贯通**：`/v1/chat/completions` 的「鉴权 → 路由 → 限额 → 转发 → 冷却/分类 →
 用量落库」全链路真实生效；情报「采集 → 变化 → 解析 → 落库 → 路由」的价格与元信息
 两条支链贯通；dashboard 活跃前后端无断链。
 
-**但存在三类结构性问题**：
+**三类结构性问题的现状态**：
 
 1. **「看起来接通、实际空转」的旁路**（最隐蔽）：
    - 本地限流 `limiter.record_*` 全项目零调用 → `is_limited` 恒 False（真实保护=429→冷却）。
-   - 账号配额 `quota.increment_usage` 不可达 → `AccountQuotaUsage.used_value` 生产零写入
-     → 除余额外全部限额恒放行。
+     **用户拍板 defer**（触发器见 next-stage-research §2.1）；账号配额 tpm 维度曾恒拒死且
+     隐形（deepseek_01 tpm 行已删 + 预检改 failover+落库，2026-09-14）。
    - `router.score_bonus`（model_cards 评分）未被 `score_account` 调用 → 卡片缓存白加载。
+     **待 C4 决策**（与 V7.0/F4 同批）。
    - `pricing_writer.write_pricing_snapshots_from_parse` 生产零调用 → 结构化价格被丢弃。
-2. **确定性 bug**：`intelligence/channel_health.py` 探活失败分支用 `ErrorInfo` 但未 import
-   → NameError → 失败探活不回写冷却状态机（成功分支正常）。
-3. **工程债**：`gateway/fallback.py` 整模块死代码；dashboard 4 个死端点 + 2 个孤儿前端资产；
-   `schemas/` 除 intel 外全部遗留；跨模块掏私有成员（`route_engine._channels_cache` 等）
-   与宽 `except` 静默吞异常广泛存在（历史已因此发生过 route_engine NameError 断链）。
+     **未接**（healer 走正则 + 折扣链已修正，见下）。
+2. **确定性 bug**：探活 `ErrorInfo` NameError **已修**（V6.5 批次一，失败探活恢复回写冷却）。
+3. **工程债**：S1 Content-Length / S4 differ 吞变化 / S6 周报 XSS / S7 停机丢计量 /
+   S8 路由成功率截断 / S9 cache 时区 / S11 sync_engine PRAGMA / S12 旧 job 残留
+   **已全部修复**（V6.5 三批，2026-09-14）；死代码清理（`gateway/fallback.py`、crud 死函数、
+   schemas 遗留、死端点、孤儿前端资产）、静默 except 收窄、迁移机制收敛**待后续批次**。
 
 ## 10. 设计哲学
 
@@ -435,3 +437,7 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
 | 2026-09-13 | 看板统计口径统一为滚动窗口 | 三语义（滚动/自然日 LIMIT/滚动分桶）同页不可对账；LIMIT 语义废弃，桶轴 Python 补零；rollup 表不立项（30d 聚合 11ms） |
 | 2026-09-14 | 配额预检拒绝改 failover + 落库 | 预检静态估算（max_tokens×2>limit 恒真）拒死 deepseek-flash 兜底且隐形 429（不 mark_failure/不落 usage_logs）；回归 quota.py "try_next_account" 原设计意图 |
 | 2026-09-14 | rate_limited 冷却指数退避 + 迟到成功守卫 + 渠道级同步 | sensenova 双账号共享 TPM 池：固定 30s 账号冷却解冻即重撞；冷却期内在途 200 完成会擦掉冷却（mark_success 守卫）；兄弟账号 rate_limited 冷却对齐 = 共享池渠道级升级 |
+| 2026-09-14 (V6.5) | 冷却过期不 pop state | 过期 pop 连 count 一起丢 → 「到期→router 查询→重撞」主场景下退避恒 30s（审核实证）；改 `cooldown_expired_at` 标记 + cleanup 600s 保留窗 + 超窗 count 归零；needs_human 不再被过期查询洗白 |
+| 2026-09-14 (V6.5) | differ peek/commit 两段式 | 先落 hash 再解析，解析失败即永久吞掉该次变化（页面不再变则永不重试）；改 `has_changed(commit=False)` + `commit_source_hash()`，解析成功才提交 |
+| 2026-09-14 (V6.5) | 折扣只作用解析命中模型 + promotion 强制 effective_to | 旧实现折扣乘到渠道全部 normal 模型（siliconflow 99 个）；promotion 行缺 end_date 经 upsert 旧值兜底永久生效（永久打折）；router 对存量 `effective_to=None` promotion 脏行拒绝兜底。订阅类（无折扣率）不转价格行（双轨拍板） |
+| 2026-09-14 (V6.5) | fire-and-forget 任务登记 + 停机 drain | 裸 create_task 不保存引用，lifespan dispose 前未等待 → 重启丢计量；`proxy._spawn()` 登记 + `shutdown_drain_tasks(timeout=10)`；定时采集 job 注册进 `_inflight_tasks` |

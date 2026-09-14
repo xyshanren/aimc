@@ -67,7 +67,7 @@ aimc/
 ├── db/                     # 数据库层 (含 21 个 migration)
 ├── dashboard/              # Dashboard 后端 (FastAPI routes) + 前端 (原生 JS + Chart.js)
 ├── scripts/                # 运维脚本 (sync_prices / apply_suggestions / weekly_report)
-├── tests/                  # 750 个测试 (pytest, ~5min, 全绿)
+├── tests/                  # 802 个测试 (pytest, ~7min, 全绿)
 └── docs/                   # 完整文档 (见 docs/index.md)
 ```
 

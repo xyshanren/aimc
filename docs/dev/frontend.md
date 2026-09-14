@@ -241,7 +241,7 @@ async function authFetch(url, opts = {}) {
 - [ ] **响应式**：新增卡片在窄屏（≤900px 侧边栏转横向顶条）下测试
 - [ ] **快捷键冲突**：新快捷键不要跟 `r/a// /?` 重叠
 - [ ] **不要修改后端**：纯前端改动不应改 `dashboard/routes.py`
-- [ ] **测试仍跑通**：前端改完 `python -m pytest tests/` 验证后端没坏（750 tests）
+- [ ] **测试仍跑通**：前端改完 `python -m pytest tests/` 验证后端没坏（802 tests）
 
 ## 7. 已知 UI 模式（参考 DeepSeek/Claude）
 

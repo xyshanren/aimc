@@ -221,21 +221,23 @@ import 缺失会抛 500，属相对安全写法。
 
 ---
 
-## I. 处置建议（按性价比排序）
+## I. 处置建议（按性价比排序；2026-09-14 落状态）
 
 > 均为**建议**；A1/A2 属用户决策项（勿自行开工），V7.0 级别事项等口令。
+> **状态更新（2026-09-14，V6.5 三批 + 429 批次上产后）**：
 
-| 优先级 | 项 | 工作量 | 说明 |
-|--------|----|--------|------|
-| P0 | B1 修 `channel_health` `ErrorInfo` import | 1 行 | 探活失败回写链路修复 |
-| P0 | G 修 `scheduler` 硬编码 cwd + 删死导入 | 2 行 | 部署路径解耦 |
-| P1 | C 死代码清理 | ~半天 | fallback.py / crud 16 函数 / schemas 3 文件 / 静态孤儿 / 死端点（删前确认非 agent 契约） |
-| P1 | H 文档漂移 | 随本次 | architecture 已重写；H2/H3/H4 顺带 |
-| P2 | F 迁移机制收敛 | 1~2 天 | 二选一：扩展 `ensure_migrations` 覆盖全部 ORM 列（以 ORM 为单一事实源）或引入 Alembic；加版本表 |
-| P2 | E 静默 except 收窄 | ~半天 | 至少 `middleware._query_api_key`（鉴权）与 proxy 用量链改为「区分预期/非预期异常」 |
-| P3 | A3/A4 接线评分与结构化价格 | ~1~2 天 | 属功能决策，需先定语义 |
-| 决策项 | A1/A2 限流与配额是否接线 | ~半天/项 | 用户拍板；不接则建议把「恒放行」写进文档/看板避免误读 |
+| 优先级 | 项 | 状态 |
+|--------|----|------|
+| P0 | B1 修 `channel_health` `ErrorInfo` import | ✅ 已修（V6.5 批次一，抽 `_probe_error_info` 可单测） |
+| P0 | G 修 `scheduler` 硬编码 cwd + 删死导入 | ✅ 已修（V6.5 批次一，`_PROJECT_ROOT` 相对定位） |
+| P1 | C 死代码清理 | **待做**（~半天；fallback.py / crud 16 函数 / schemas 3 文件 / 静态孤儿 / 死端点） |
+| P1 | H 文档漂移 | ✅ 已修（architecture 重写 + 测试/job/端点数字收口 + H2 标注无 UI） |
+| P2 | F 迁移机制收敛 | **已拍板 2026-09-14：V6.5 后做轻方案 A**（~1~2 天） |
+| P2 | E 静默 except 收窄 | **待做**（~半天；`middleware._query_api_key` 与 proxy 用量链优先） |
+| P3 | A3/A4 接线评分与结构化价格 | 待决策（与 V7.0/F4 同批；折扣链 S3a/S3b 已修但 `pricing_writer` 仍未接） |
+| 决策项 | A1/A2 限流与配额是否接线 | **维持 defer 仅显式化**（2026-09-14 部分落地：删 deepseek_01 tpm 行 + 预检改 failover+落库；累加落库式接线触发器不变） |
+| （审查新增） | S1/S4~S9/S11/S12/S3a-c/S7 生产审查项 | ✅ 已全部修复（V6.5 三批，750→802 测试；明细见 [next-stage-research.md](next-stage-research.md) §2.0 与 [production-review-2026-09-13.md](production-review-2026-09-13.md)） |
 
 ---
 
-*本文档基于 2026-09-13 代码快照；`docs/dev/architecture.md` §9 为其摘要版。*
+*本文档基于 2026-09-13 代码快照（各项现状态以 §I 状态列为准）；`docs/dev/architecture.md` §9 为其摘要版。*
