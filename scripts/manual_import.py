@@ -410,18 +410,33 @@ async def import_one_channel(session, cfg: dict) -> bool:
         assert model_norm == model, (
             f"manual_import.py cfg 里 model='{model}' 应已归一化为 '{model_norm}'"
         )
-        kwargs = dict(
+        # V6.5+ (2026-09-14): create → upsert — 幂等修复。旧 create 在重跑时对
+        # 已存在行抛 UNIQUE 约束 (生产实证: 全量重跑在 stepfun 行中断, 后续渠道
+        # 全部漏建); upsert 语义与 crud.upsert_price_snapshot 一致 (值以 cfg 为准)。
+        await crud.upsert_price_snapshot(
+            session,
             channel_id=channel.id,
             model=model_norm,
-            price_type=price_type,
-            time_range=time_range,
             input_price=in_p,
             output_price=out_p,
             source="manual",
+            price_type=price_type,
+            time_range=time_range,
         )
         if cached_price is not None:
-            kwargs["cached_input_price"] = cached_price
-        await crud.create_price_snapshot(session, **kwargs)
+            # upsert_price_snapshot 不含 cached_input_price 列 — 新行补写
+            from sqlalchemy import select as _select
+            from db.models import PriceSnapshot
+            row = (await session.execute(
+                _select(PriceSnapshot).where(
+                    PriceSnapshot.channel_id == channel.id,
+                    PriceSnapshot.model == model_norm,
+                    PriceSnapshot.price_type == price_type,
+                    PriceSnapshot.time_range == time_range,
+                )
+            )).scalar_one_or_none()
+            if row is not None and row.cached_input_price is None:
+                row.cached_input_price = cached_price
     print(f"[+] {cfg['name']} 价格已录入 ({len(cfg['prices'])} 条)")
 
     await crud.create_quota(
