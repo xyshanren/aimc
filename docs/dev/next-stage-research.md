@@ -272,12 +272,34 @@ Alembic（方案 B）不引入，版本表名格式兼容保留演进空间。
 
 #### 2.6.3 交付物清单
 
-1. `scripts/manual_import.py`：+modelscope 配置块（channel/prices/qpm）
-2. `intelligence/sources/free_llm_collection.py`（新）+ `sources/__init__.py` 注册
-3. VM 生产操作序列：.env 加 `MODELSCOPE_API_KEY` → manual_import → add_account →
-   重启 → e2e（README raw 源首轮采集验证）
-4. 测试：modelscope 配置块幂等性（manual_import 既有测试模式）+ 新源注册断言
-5. 文档：本节落完成状态 + index 状态行 + agent-api 不涉及
+> **✅ 已上产（2026-09-14，a08da05 + f9e8c0d + 51f249e，814 测试全绿）**
+
+1. `scripts/manual_import.py`：+modelscope 配置块（channel/prices/qpm）✅
+2. `intelligence/sources/free_llm_collection.py`（新）+ `sources/__init__.py` 注册（38 源）✅
+3. VM 生产操作序列 ✅/⏳：
+   - 方案 B **已完成验收**：`intel_sources` id=42 active、首轮采集成功、AI 解析产出
+     promotions id=1097（confidence 0.92，"免费大模型 API 合集"摘要，含硅基流动
+     1000 RPM / OpenRouter 20 RPM/200 RPD 额度信息）、content hash 已 commit、
+     调度 job `batch_crawl_free_llm_collection_86400` 注册。
+   - 方案 A **代码就绪待 token**：VM `.env` 加入 `MODELSCOPE_API_KEY=ms-xxx` 后跑
+     `manual_import.py`（幂等，跳过已有渠道）→ `add_account.py --channel modelscope
+     --name modelscope_01 --api-key <token>` → 重启 → e2e（`deepseek-v4-flash`
+     精确路由应出现 modelscope 候选）。
+4. 测试 ✅：`test_v65_free_channel_expansion.py` 5 例 + 3 处源总数快照 37→38
+5. 文档 ✅：本节 + index 状态行 + agent-api 不涉及
+
+**首采暴露并顺带修复的两个通用缺陷**（不止影响本源）：
+
+- **clean_html 对纯文本/markdown 源失效**（f9e8c0d）：GitHub raw README 无
+  `<html>` 包装时 BS4 行为退化 + 1500 字截断丢清单主体。修复：无 html/body
+  标签特征 → 去空行直通截断。注：实际抓取经 Playwright 后 raw.githubusercontent
+  返回 `<pre>` 包装页（含 html 标签），该修复对**不经浏览器的未来文本源**仍有效，
+  本源实际受益的是下一条。
+- **parse_content max_tokens 1200→4000**（51f249e）：parse_model=tier:balanced
+  实际路由 minimax-m3（思考模型），1200 token 时思考未完即截断 → content 无
+  JSON → S4 peek/commit 下轮同条件重试同失败 → 该源变化被永久吞。对照实验：
+  2000 token 即 finish_reason=stop；JSON 本体 ~1k，4000 留 3k 思考余量。
+  **所有情报源解析稳定性共同受益**。
 
 ---
 
@@ -298,6 +320,8 @@ Alembic（方案 B）不引入，版本表名格式兼容保留演进空间。
 | # | 观察线 | 现状 / 最近截止 |
 |---|--------|----------------|
 | 1 | sensenova 积分池压力（60k/5h + 600k/周，池级共享 TPM） | 持续观察；输入分组再平衡已上产 |
+| 1b | **modelscope 渠道观察**（渠道建行后启用）：请求数/失败率/2000 RPD 消耗、与 sensenova 的 deepseek-v4-flash 流量分配变化 | 渠道待用户 token 建行 |
+| 1c | **free_llm_collection 情报源观察**：README 变化 → 审批队列产出节奏（首批 conf 0.92 已入库）；GitHub raw 经 Playwright `<pre>` 包装的解析质量 | 2026-09-14 首采成功 |
 | 2 | glm_bigmodel 1305 过载波纹（同账号 30s 冷却波及免费模型） | 持续观察 |
 | 3 | vision / 总体 400 率（<3% 达标） | qwen3-vl-8b-instruct 全 400 小信号跟踪 |
 | 4 | 思考 Phase B：6 渠道开谁（全渠道实测无上游执行 `enable_thinking:false`） | **等用户口令**；glm 可试 low/high/max 档位 |
