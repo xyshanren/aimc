@@ -325,13 +325,18 @@ async def _upsert_price_row(session, channel_id: int, price_row: tuple) -> None:
     model, price_type, time_range, in_p, out_p, *rest = price_row
     cached_price = rest[0] if rest else None
 
-    # Phase 4 v4.3.1 (2026-08-13): 防御性归一化
-    # 即使 cfg 写了 "MiniMax-M3" 之类的大写, 也能在写入 db 前归一化为 "minimax-m3".
-    # 跟 db/crud.py upsert_model_registry 一致.
-    model_norm = normalize_model_id(model)
-    assert model_norm == model, (
-        f"manual_import.py cfg 里 model='{model}' 应已归一化为 '{model_norm}'"
-    )
+    # V6.5+ (2026-09-14): 聚合平台 raw 名 (含大写/斜杠命名空间, e.g.
+    # "deepseek-ai/DeepSeek-V4.1-Flash") 不过 normalize_model_id — 归一化会把
+    # 上游 raw 名小写化, 请求时上游 404。与 siliconflow 的 api sync (raw 名直录,
+    # _siliconflow_sync.py) 同口径: price_snapshots.model 存上游原始 id,
+    # usage_logs/路由透传同值。仅对无命名空间分隔符的短名保留归一化防御。
+    if "/" not in model:
+        model_norm = normalize_model_id(model)
+        assert model_norm == model, (
+            f"manual_import.py cfg 里 model='{model}' 应已归一化为 '{model_norm}'"
+        )
+    else:
+        model_norm = model
     await crud.upsert_price_snapshot(
         session,
         channel_id=channel_id,
