@@ -189,6 +189,96 @@ Alembic（方案 B）不引入，版本表名格式兼容保留演进空间。
 （价格缺失高频预期态，断链由 cost 覆盖率指标暴露）。
 同批死代码清理见 [module-integration-audit.md](module-integration-audit.md) §C 状态块。
 
+### 2.6 免费渠道扩容：ModelScope 接入 + Free-LLM-Collection 情报源（已拍板 2026-09-14，当日实施）
+
+> 调研背景：[github.com/for-the-zero/Free-LLM-Collection](https://github.com/for-the-zero/Free-LLM-Collection)
+> ——单人手工维护的免费 LLM API 静态清单（26 来源/100+ 模型，仅 OpenAI 兼容格式，
+> 无价格无 key 无自动化）。价值=**线索清单**而非数据源；用户拍板：① 接 ModelScope
+> 渠道（已有账号）；② README 加为情报采集源；③ OpenRouter（海外聚合器）先不做。
+
+#### 2.6.1 方案 A：ModelScope 渠道接入（实施主体）
+
+**为什么选它**：README 中对 AIMC 价值最高的国内源——2000 RPD 免费额度、模型阵容
+与现有主力高度重合（DeepSeek-V4-Pro/Flash、GLM-5.x、Qwen3-235B）、国内直连稳定。
+接入后给 tier:flagship/strong 的免费兜底链增加第三供给方（现有 sensenova 池级
+429 是最大单点，87 次/7d）。
+
+| 配置项 | 值 | 说明 |
+|--------|-----|------|
+| provider / key | `modelscope` | 新 provider |
+| channel name | `modelscope_inference` | |
+| base_url | `https://api-inference.modelscope.cn/v1` | OpenAI 兼容 |
+| env_var | `MODELSCOPE_API_KEY` | 用户已有账号，token 放 .env |
+| priority | `10` | 最低档兜底（同 sensenova 的 5 之下的新阶梯；免费源 priority 越大越靠后，让已有 0 元渠道先走） |
+| qpm | `30` | channel_quotas 装饰性配置，保持一致性（见 [[channel-quotas-dead-code]]） |
+| 价格行 | 全部 `0.0 / 0.0` | 免费额度内 0 元；超 2000 RPD 由 429→冷却自愈，同 sensenova 模式 |
+
+**入选价格行（首期 4 个，宁缺毋滥）**：
+
+| model（ModelScope raw 名） | 归一化名 | 理由 |
+|---|---|---|
+| `deepseek-ai/DeepSeek-V4-Pro` | 不入组，精确路由备用 | v4-pro 第二免费供给（现仅 deepseek 官方付费） |
+| `deepseek-ai/DeepSeek-V4-Flash` | 不入组，精确路由备用 | v4-flash 第二免费供给（现仅 sensenova，池级 429 单点） |
+| `ZhipuAI/GLM-5.1` | 暂不入 | 与 glm 渠道重合，观察后再定 |
+| `Qwen/Qwen3-235B-A22B-Instruct-2507` | 暂不入 | 大参数新面孔，观察后定 tier |
+
+**关键设计决策**：
+1. **raw 名直录 price_snapshots**（`deepseek-ai/DeepSeek-V4-Flash`）——与 siliconflow
+   同模式（[[model-channel-binding-price-snapshots]]：price_snapshots 行动态决定渠道
+   候选，无映射表）。usage_logs 落上游 raw 名，dashboard 展示与 siliconflow 现状一致。
+   不做归一化改名（`normalize_model_id` 对斜杠族名不适用，参考 SF paddleocr 教训只
+   改厂商品牌前缀行——本批不涉及）。
+2. **首批不入 tier 组**——deepseek 系已有精确路由消费（无组成员走精确匹配，
+   cheapest 优先会把 modelscope 的 0 元行排进候选），先观察一周：请求数/失败率/
+   429 分布，再决定是否把 V4-Flash 加入 tier:strong 成员（模型名与 sensenova 行
+   同名，路由天然多渠道竞争，无需改组）。
+3. **接入流程**：`manual_import.py` 加 modelscope 配置块 → VM 跑 `manual_import.py
+   --channel modelscope` → `add_account.py --channel modelscope --name modelscope_01
+   --api-key <token>` → 重启 → e2e 验证（`tier:balanced` 与精确 `deepseek-v4-flash`
+   各一发）。
+4. **观察项**（进 §4 观察线）：modelscope 请求量/失败率、2000 RPD 是否够用
+   （超了会 429→冷却，无硬伤）、与 sensenova 的 deepseek-v4-flash 流量分配变化。
+
+#### 2.6.2 方案 B：Free-LLM-Collection README 情报源
+
+**为什么值得**：intel 系统正处验收死线（~2026-10-06 产出 ≥1 条可路由优惠），
+「新免费源出现/免费额度变更」是比厂商降价页更高频的可路由情报品类。README 是
+纯静态 Markdown（GitHub raw 直出），内容变化 = 上新免费源。
+
+| 配置项 | 值 |
+|--------|-----|
+| provider | `free_llm_collection` |
+| source_type | `price_aggregator`（第三方聚合语义；含免费额度/模型清单信息） |
+| url | `https://raw.githubusercontent.com/for-the-zero/Free-LLM-Collection/main/README.md` |
+| poll_interval | `86400`（1 天；清单更新频率低，自适应降频会自动拉长） |
+| css_selector | 不设（raw markdown 无需 selector；fetcher 默认全文） |
+| wait_until | `domcontentloaded`（纯静态文本，非 SPA） |
+| api_endpoint | 不设 |
+
+**实施**：新建 `intelligence/sources/free_llm_collection.py`
+（仿 [qianwenai.py](../intelligence/sources/qianwenai.py) 观察性源，~30 行）+
+注册进 `get_all_sources()`。**DB 侧无需手工插入**——scheduler 启动时按
+`get_all_sources()` 与 `intel_sources` 表对齐建行（`_sync_sources_to_db` 既有逻辑）。
+
+**预期产出**：README 变化 → AI 解析出「新免费源/额度变化」条目 → 落 promotions
+审批队列（低置信度）或 intel 观察——**人工审批后**才可能转价格行，与 S3 双轨
+拍板一致（订阅/免费类仅入库展示）。
+
+**风险与边界**：
+- GitHub raw 直连在生产 VM（境内网络）可能超时——首次采集若连续失败会被
+  content_guard 抓禁用+告警（既有机制），不影响其他源；届时评估走镜像前缀。
+- 解析质量：LLM 对 markdown 清单的解析置信度可能偏低 → 多数进审批队列人工看，
+  符合预期，不是缺陷。
+
+#### 2.6.3 交付物清单
+
+1. `scripts/manual_import.py`：+modelscope 配置块（channel/prices/qpm）
+2. `intelligence/sources/free_llm_collection.py`（新）+ `sources/__init__.py` 注册
+3. VM 生产操作序列：.env 加 `MODELSCOPE_API_KEY` → manual_import → add_account →
+   重启 → e2e（README raw 源首轮采集验证）
+4. 测试：modelscope 配置块幂等性（manual_import 既有测试模式）+ 新源注册断言
+5. 文档：本节落完成状态 + index 状态行 + agent-api 不涉及
+
 ---
 
 ## 3. 已规划但未拍板的版本（等口令）

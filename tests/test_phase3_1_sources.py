@@ -52,12 +52,13 @@ def test_source_registration():
     演进: P2 6 + P3.1 6 + P3.6 7 + v4.2 1 + v4.3 9 + v4.3.1 7 = 36
     实际去重后 34 (siliconflow pricing 重复合并; 部分源共享 provider)
     V4.8.3: +3 个 benchmark 源 (artificial_analysis/livebench/opencompass) → 37
+    V6.5+: +1 个 free_llm_collection 观察源 (2026-09-14) → 38
     """
     print("\n=== Test 2: 源注册总数 ===")
     from intelligence.sources import get_all_sources
 
     all_sources = get_all_sources()
-    assert len(all_sources) == 37, f"应 37 个源, 实际 {len(all_sources)}"
+    assert len(all_sources) == 38, f"应 38 个源, 实际 {len(all_sources)}"
 
     # 按 type 分组 (V4.8.3 后快照)
     type_counts = {}
@@ -67,13 +68,13 @@ def test_source_registration():
         "web_page": 4,                  # deepseek/qwen/qwen/glm (价格页)
         "announcement": 9,              # deepseek/glm + v4.3.1 新增 7 家
         "model_list": 9,                # P3.1 2 + P3.6 7
-        "price_aggregator": 10,        # siliconflow×2 + openrouter + v4.3 7 + qianwenai
+        "price_aggregator": 11,        # siliconflow×2 + openrouter + v4.3 7 + qianwenai + free_llm_collection
         "benchmark": 5,                 # lmsys/superclue + V4.8.3: artificial_analysis/livebench/opencompass
     }
     assert type_counts == expected_counts, \
         f"type 分布应 = {expected_counts}, 实际 = {type_counts}"
 
-    print(f"  [OK] 总 37 个源: {dict(sorted(type_counts.items()))}")
+    print(f"  [OK] 总 38 个源: {dict(sorted(type_counts.items()))}")
 
 
 # ============================================================

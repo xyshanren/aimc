@@ -42,6 +42,8 @@ from intelligence.sources.price_aggregator import (
 )
 # Phase 4 v4.2 (2026-08-06): 阿里千问AI 观察性情报源
 from intelligence.sources.qianwenai import QianwenAISource
+# V6.5+ (2026-09-14): Free-LLM-Collection 免费 API 合集观察源
+from intelligence.sources.free_llm_collection import FreeLLMCollectionSource
 from intelligence.sources.benchmark import (
     LMSYSArenaBenchmarkSource,
     SuperCLUEBenchmarkSource,
@@ -106,6 +108,8 @@ def get_all_sources() -> list[IntelSourceBase]:
         StepFunPricingSource(),
         # Phase 4 v4.2 price_aggregator (观察)
         QianwenAISource(),
+        # V6.5+ (2026-09-14) price_aggregator (观察): Free-LLM-Collection 免费 API 合集
+        FreeLLMCollectionSource(),
         # Phase 3.1 benchmark
         LMSYSArenaBenchmarkSource(),
         SuperCLUEBenchmarkSource(),

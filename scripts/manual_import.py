@@ -263,6 +263,26 @@ CHANNELS = [
             ("glm-5.2", "normal", "全天", 0.0, 0.0),  # 公测免费 (跨渠道, 免费第二渠道)
         ],
     },
+    {
+        # V6.5+ (2026-09-14): ModelScope 魔搭 API-Inference (免费渠道扩容, 调研 §2.6.1)
+        # OpenAI 兼容: https://api-inference.modelscope.cn/v1, 鉴权 Bearer ms- token
+        # 免费额度 2000 RPD — 超额 429 → 冷却自愈 (同 sensenova 模式, 无硬伤)
+        # 价格行 = raw 名直录 (同 siliconflow 聚合平台模式, price_snapshots 行
+        # 动态决定渠道候选); 全 0 元 (免费额度内)
+        # 首期只录 deepseek 双子 (给 v4-pro / v4-flash 各加一条免费第二供给,
+        # 缓解 sensenova 池级 429 单点); GLM/Qwen 重合或观察后再加
+        "key": "modelscope",
+        "name": "modelscope_inference",
+        "provider": "modelscope",
+        "base_url": "https://api-inference.modelscope.cn/v1",
+        "priority": 10,  # 最低档兜底 — 已有 0 元渠道 (sensenova) 先走
+        "env_var": "MODELSCOPE_API_KEY",
+        "qpm": 30,
+        "prices": [
+            ("deepseek-ai/DeepSeek-V4-Flash", "normal", "全天", 0.0, 0.0),
+            ("deepseek-ai/DeepSeek-V4-Pro", "normal", "全天", 0.0, 0.0),
+        ],
+    },
 ]
 
 
