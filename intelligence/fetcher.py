@@ -112,71 +112,6 @@ async def _apply_stealth(context) -> None:
     await stealth.apply_stealth_async(context)
 
 
-async def fetch_page(
-    url: str,
-    wait_until: str = "domcontentloaded",
-    timeout: int = 30000,
-    wait_for: Optional[str] = None,
-    wait_for_timeout: int = 10000,
-    max_attempts: int = 3,
-    base_delay: float = 1.0,
-    backoff: float = 2.0,
-) -> Optional[str]:
-    """抓取页面内容，带重试 + 指数退避
-
-    Args:
-        url: 目标 URL
-        wait_until: page.goto 等待条件 (load/domcontentloaded/networkidle)
-        timeout: 单次请求超时（毫秒），同时也是 wait_for 的默认超时
-        wait_for: 可选 CSS selector，page.goto 后等该元素出现（Phase 2B-3）
-        wait_for_timeout: wait_for 的超时（毫秒），默认 10s
-        max_attempts: 最大尝试次数（默认 3）
-        base_delay: 首次重试等待秒数（默认 1.0）
-        backoff: 退避倍数（默认 2.0，1s → 2s → 4s）
-
-    Returns:
-        页面 HTML 内容，全部失败返回 None
-
-    借鉴：firecrawl apps/api/src/lib/utils/retry.ts
-    """
-    last_error: Optional[Exception] = None
-
-    for attempt in range(1, max_attempts + 1):
-        try:
-            content = await asyncio.wait_for(
-                _fetch_page_once(
-                    url, wait_until, timeout, wait_for, wait_for_timeout
-                ),
-                timeout=settings.browser_fetch_timeout,
-            )
-            if content is not None:
-                if attempt > 1:
-                    logger.info(f"fetch 重试成功 (attempt {attempt}/{max_attempts}): {url}")
-                return content
-            # content is None（异常被吞了）→ 视为失败，继续重试
-            last_error = Exception("fetch_page_once returned None")
-
-        except Exception as e:
-            last_error = e
-            # 4xx 客户端错误不重试（重试无意义）
-            # 5xx / Timeout / ConnectError 等才重试
-            status = getattr(e, "status", None) or getattr(getattr(e, "response", None), "status", None)
-            if status and 400 <= status < 500 and status not in (408, 429):
-                logger.warning(f"fetch 客户端错误 {status}，不重试: {url}")
-                return None
-
-        if attempt < max_attempts:
-            delay = base_delay * (backoff ** (attempt - 1))
-            logger.warning(
-                f"fetch 失败 (attempt {attempt}/{max_attempts}): {url} "
-                f"error={last_error}, {delay:.1f}s 后重试"
-            )
-            await asyncio.sleep(delay)
-
-    logger.error(f"fetch 全部 {max_attempts} 次失败: {url}, last_error={last_error}")
-    return None
-
-
 async def _fetch_page_once(
     url: str,
     wait_until: str,
@@ -194,7 +129,7 @@ async def _fetch_page_once(
     - 顺序很重要：先 new_context → 后 apply_stealth（init script）
 
     V4.8.4: 加 Semaphore (并发 context 上限) + 不再在此层包 wait_for
-    (wait_for 由调用方 fetch_page / fetch_page_with_error 统一包)
+    (wait_for 由调用方 fetch_page_with_error 统一包)
     """
     async with _get_fetch_semaphore():
         browser = await _get_browser()
@@ -234,7 +169,7 @@ async def fetch_text(
         url: 目标 URL
         css_selector: CSS 选择器，None 则获取 body 全文
         timeout: 单次请求超时（毫秒）
-        max_attempts / base_delay / backoff: 同 fetch_page
+        max_attempts / base_delay / backoff: 同 fetch_page_with_error
     """
     last_error: Optional[Exception] = None
 
@@ -312,7 +247,7 @@ async def fetch_page_with_error(
     base_delay: float = 1.0,
     backoff: float = 2.0,
 ) -> tuple[Optional[str], Optional[str]]:
-    """fetch_page 升级版：返回 (content, error) tuple
+    """HTML 抓取（带重试 + 指数退避）：返回 (content, error) tuple
 
     Phase 2C-1: 让 _run_source_task 拿到错误原因，告警能显示具体问题
 
@@ -320,9 +255,8 @@ async def fetch_page_with_error(
         (content, None) 成功
         (None, error_str) 失败（含具体原因）
 
-    与 fetch_page 区别：
-    - fetch_page 返回 content | None（丢错误原因）
-    - fetch_page_with_error 返回 (content, error)，调用方知道为什么失败
+    与已删除的 fetch_page 不同，本函数返回 (content, error)，调用方知道为什么失败
+    (content=None, error=None 表示重试后仍拿不到内容且无异常对象)。
     """
     last_error: Optional[Exception] = None
     last_error_status: Optional[int] = None

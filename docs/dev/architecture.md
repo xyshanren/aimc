@@ -400,7 +400,9 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
    S8 路由成功率截断 / S9 cache 时区 / S11 sync_engine PRAGMA / S12 旧 job 残留
    **已全部修复**（V6.5 三批，2026-09-14）；迁移机制收敛轻方案 A **已上产**
    （schema_migrations 版本表 + ORM 列对齐，见 §8）；死代码清理（`gateway/fallback.py`、
-   crud 死函数、schemas 遗留、死端点、孤儿前端资产）、静默 except 收窄**待后续批次**。
+   crud 17 死函数、schemas 3 文件、`fetcher.fetch_page`、静态孤儿 3、死端点 4）与
+   静默 except 收窄（middleware._query_api_key 两档 + proxy 5 处 warning 化）
+   **已上产**（V6.5 第四批，2026-09-14）。
 
 ## 10. 设计哲学
 

@@ -98,6 +98,14 @@
 
 ## C. 死代码 / 死资产
 
+> **✅ 已清理（2026-09-14，V6.5 第四批）**：C1 整模块删除、C2 17 个死函数删除
+> （16 个 + 复查时 `list_cross_source_discrepancies` 也因列表端点删除而变死）、
+> C3 三文件删除（仅留 intel.py）、C6 `fetch_page` 与 base 两方法删除、
+> C7 三个静态孤儿删除、4 个死端点删除。**未动**（有意保留）：C4 benchmark 链
+> （A3/C4 决策项候选，删了就没了接入基础）、C5 `suggest_main`（V6.5 批次一已删）、
+> C8/C9（表/列删除涉及生产迁移与数据，defer——schema_align 版本表已使
+> 「是否已跑」可审计，等 SQLite 重建表流程与需求对齐再做）。
+
 | # | 位置 | 符号 | 证据 |
 |---|------|------|------|
 | C1 | `gateway/fallback.py` | `forward_with_fallback`(20) | **整模块零 import**（`gateway.fallback` 全仓无引用）。被 `routes.py` 重试循环取代 |
@@ -166,6 +174,13 @@
 ---
 
 ## E. 静默吞异常（历史已被此坑过）
+
+> **✅ 已收窄（2026-09-14，V6.5 第四批）**：`middleware._query_api_key` 拆两档
+> （OperationalError=老库预期降级 debug / 非预期异常 warning）；proxy 五处
+> `except Exception: pass`/debug 全部升级 warning 带上下文（`_schedule_usage_log` /
+> `_schedule_stream_usage_log` / `_schedule_transcript_log` / `_update_cooldown` /
+> `_auto_learn_drop_params`）。`_estimate_cost`/`_estimate_list_cost` 维持 debug
+> +None（价格缺失是高频预期态，warning 会刷屏；断链由 cost 覆盖率指标暴露）。
 
 历史实证：`dashboard/routes.py` 的 `approve_pending_review` / `resolve_cross_source_discrepancy`
 曾调 `route_engine.refresh_cache()` 但缺局部 import → `NameError` 被外层 `except Exception`
@@ -237,10 +252,10 @@ import 缺失会抛 500，属相对安全写法。
 |--------|----|------|
 | P0 | B1 修 `channel_health` `ErrorInfo` import | ✅ 已修（V6.5 批次一，抽 `_probe_error_info` 可单测） |
 | P0 | G 修 `scheduler` 硬编码 cwd + 删死导入 | ✅ 已修（V6.5 批次一，`_PROJECT_ROOT` 相对定位） |
-| P1 | C 死代码清理 | **待做**（~半天；fallback.py / crud 16 函数 / schemas 3 文件 / 静态孤儿 / 死端点） |
+| P1 | C 死代码清理 | ✅ **已清理（2026-09-14）**：fallback.py / crud 17 函数 / schemas 3 文件 / fetch_page+base 方法 / 静态孤儿 3 / 死端点 4；C4 benchmark 链与 C8/C9 表列**有意保留**（决策项/需生产迁移） |
 | P1 | H 文档漂移 | ✅ 已修（architecture 重写 + 测试/job/端点数字收口 + H2 标注无 UI） |
 | P2 | F 迁移机制收敛 | ✅ **已上产（2026-09-14，轻方案 A）**：schema_align ORM 列对齐 + schema_migrations 版本表；R1/R2 关闭，R3/R5 残余见 §F |
-| P2 | E 静默 except 收窄 | **待做**（~半天；`middleware._query_api_key` 与 proxy 用量链优先） |
+| P2 | E 静默 except 收窄 | ✅ **已收窄（2026-09-14）**：middleware._query_api_key 两档 + proxy 5 处升级 warning；_estimate_cost 维持 debug（高频预期态） |
 | P3 | A3/A4 接线评分与结构化价格 | 待决策（与 V7.0/F4 同批；折扣链 S3a/S3b 已修但 `pricing_writer` 仍未接） |
 | 决策项 | A1/A2 限流与配额是否接线 | **维持 defer 仅显式化**（2026-09-14 部分落地：删 deepseek_01 tpm 行 + 预检改 failover+落库；累加落库式接线触发器不变） |
 | （审查新增） | S1/S4~S9/S11/S12/S3a-c/S7 生产审查项 | ✅ 已全部修复（V6.5 三批，750→802 测试；明细见 [next-stage-research.md](next-stage-research.md) §2.0 与 [production-review-2026-09-13.md](production-review-2026-09-13.md)） |

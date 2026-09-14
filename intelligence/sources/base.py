@@ -98,11 +98,3 @@ class IntelSourceBase:
     # api_key_from: 从 channels 表读 api_key 的 provider 标识 (e.g. "siliconflow" / "deepseek")
     #              None 表示该 endpoint 无需鉴权 (公开 list)
     api_key_from: Optional[str] = None
-
-    def get_fetch_url(self) -> str:
-        """获取实际抓取的 URL（子类可覆盖）"""
-        return self.url
-
-    def get_css_selector(self) -> Optional[str]:
-        """获取 CSS 选择器（子类可覆盖）"""
-        return self.css_selector

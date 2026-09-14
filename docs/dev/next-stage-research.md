@@ -160,14 +160,16 @@ sensenova 账号（lixiaoy / sensenova_01）被轮流反复撞击；备用成员
 | B1 探活失败 NameError | `intelligence/channel_health.py` | `import` 补 `ErrorInfo`（`:30`）；补一个「失败探活回写冷却」的单测 |
 | G 部署路径硬编码 | `intelligence/scheduler.py:756` | `cwd` 改相对定位（`Path(__file__).resolve().parents[1]`）；删 `:749` 死导入 |
 
-### 2.3 死代码清理（建议批次，~半天）
+### 2.3 死代码清理（✅ 已上产，2026-09-14）
 
-按 [module-integration-audit.md](module-integration-audit.md) §C 清单：
-`gateway/fallback.py`（整模块）、`db/crud.py` 16 个死函数、`schemas/{channel,pricing,routing}.py`、
+已删：`gateway/fallback.py`（整模块）、`db/crud.py` 17 个死函数（16 + 复查新增
+`list_cross_source_discrepancies`）、`schemas/{channel,pricing,routing}.py`（仅留 intel.py）、
+`fetcher.fetch_page` + `sources/base.py get_fetch_url/get_css_selector`、
 静态孤儿 `app.js.p0ui.js` / `app.js.quota-warning.js` / `vendor/htmx.min.js`、
-4 个 dashboard 死端点。
-**删前确认**：`GET /api/cooldown` 等「仅文档留档」端点属 agent 契约（保留）；
-死端点删除前 grep 一次 `docs/agent-api.md` 与 `scripts/aimc.py`，避免删掉对外契约。
+4 个 dashboard 死端点（auth/logout、transcripts×2、cross-source 列表）。
+**有意保留**：agent 契约端点（cooldown 等）、C4 benchmark 链（V7.0/F4 决策项基础）、
+C8/C9 表与列（需生产迁移，defer）。
+删前已 grep `docs/agent-api.md` 与 `scripts/aimc.py` 确认无契约命中。
 
 ### 2.4 迁移机制收敛（✅ 已上产，2026-09-14）
 
@@ -178,11 +180,14 @@ sensenova 账号（lixiaoy / sensenova_01）被轮流反复撞击；备用成员
 R1 双轨漂移 / R2 无版本表关闭；R3 约束漂移、R5 启动 DELETE 残余开放。
 Alembic（方案 B）不引入，版本表名格式兼容保留演进空间。
 
-### 2.5 静默吞异常收窄（建议批次，~半天）
+### 2.5 静默吞异常收窄（✅ 已上产，2026-09-14）
 
-优先 `middleware._query_api_key`（鉴权降级，安全相关）与 `proxy` 用量/费用链：
-把「预期异常」（如价格缺失）与「非预期异常」（NameError/AttributeError）区分，
-后者至少 `logger.error` 不静默 pass。历史已因此发生过 route_engine NameError 断链。
+`middleware._query_api_key` 拆两档（OperationalError=老库预期降级 debug /
+非预期异常 warning）+ proxy 5 处 `except Exception: pass`/debug 升级 warning
+带上下文（非流式/流式 usage_log 预处理、transcript 预处理、`_update_cooldown`、
+`_auto_learn_drop_params`）。`_estimate_cost`/`_estimate_list_cost` 维持 debug
+（价格缺失高频预期态，断链由 cost 覆盖率指标暴露）。
+同批死代码清理见 [module-integration-audit.md](module-integration-audit.md) §C 状态块。
 
 ---
 

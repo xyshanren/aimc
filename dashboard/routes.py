@@ -201,15 +201,6 @@ async def dashboard_auth_login(request: Request):
     return response
 
 
-@router.post("/api/auth/logout")
-async def dashboard_auth_logout():
-    """P1-7: dashboard 登出 (清 cookie)"""
-    from starlette.responses import JSONResponse
-    response = JSONResponse(content={"ok": True})
-    response.delete_cookie("aimc_dashboard_token")
-    return response
-
-
 @router.get("/api/channels")
 async def get_channels_status(session: AsyncSession = Depends(get_session)):
     """渠道状态列表 (P1-12: 加 api_base / api_style / supports_prompt_cache)"""
@@ -2643,40 +2634,6 @@ async def get_auto_join_metrics(
 # Phase 4 E3: Dashboard 跨源分歧 (cross_source_discrepancies)
 # ============================================================
 
-@router.get("/api/cross-source/discrepancies")
-async def get_cross_source_discrepancies(
-    status: str = Query("pending", pattern="^(pending|resolved|ignored)$"),
-    limit: int = Query(50, ge=1, le=200),
-    session: AsyncSession = Depends(get_session),
-):
-    """Phase 4 E3: 列出跨源分歧记录。
-
-    Returns 每条:
-    - id, model_id, field_changed, sources_json (parsed), discrepancy_score
-    - status, resolved_value, resolved_at
-    """
-    rows = await crud.list_cross_source_discrepancies(session, status=status, limit=limit)
-    return {
-        "count": len(rows),
-        "items": [
-            {
-                "id": r.id,
-                "model_id": r.model_id,
-                "field_changed": r.field_changed,
-                "sources": json.loads(r.sources_json) if r.sources_json else [],
-                "discrepancy_score": r.discrepancy_score,
-                "status": r.status,
-                "resolved_value": r.resolved_value,
-                "resolved_note": r.resolved_note,
-                "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-            }
-            for r in rows
-        ],
-    }
-
-
 @router.post("/api/cross-source/discrepancies/{discrepancy_id}/resolve")
 async def resolve_cross_source_discrepancy(
     discrepancy_id: int,
@@ -3522,65 +3479,6 @@ async def reject_promotion_review(
         "status": "rejected",
         "review_id": review_id,
     }
-
-
-# ============================================================
-# V4.9.3: 请求/响应转录查询 API (缓存诊断)
-# ============================================================
-
-@router.get("/api/transcripts")
-async def list_transcripts(
-    days: int = Query(3, ge=1, le=30, description="最近 N 天"),
-    limit: int = Query(100, ge=1, le=500, description="最多返回条数"),
-    channel_id: Optional[int] = Query(None, description="按 channel 过滤"),
-    model: Optional[str] = Query(None, description="按 model 模糊过滤"),
-    session: AsyncSession = Depends(get_session),
-):
-    """V4.9.3: 列出最近的请求转录日志 (不含 body, 概览用)
-
-    按 created_at DESC 排序, 返回 id / channel_id / model / status_code /
-    request_len / response_len / created_at。要查完整 body 用 /api/transcripts/{id}。
-    """
-    from db.models import RequestTranscript
-
-    cutoff = datetime.now() - timedelta(days=days)
-    stmt = (
-        select(RequestTranscript)
-        .where(RequestTranscript.created_at >= cutoff)
-        .order_by(RequestTranscript.created_at.desc())
-        .limit(limit)
-    )
-    if channel_id is not None:
-        stmt = stmt.where(RequestTranscript.channel_id == channel_id)
-    if model:
-        stmt = stmt.where(RequestTranscript.model.like(f"%{model}%"))
-
-    result = await session.execute(stmt)
-    rows = result.scalars().all()
-    return {
-        "total": len(rows),
-        "transcripts": [r.to_dict(include_body=False) for r in rows],
-    }
-
-
-@router.get("/api/transcripts/{transcript_id}")
-async def get_transcript(
-    transcript_id: int,
-    session: AsyncSession = Depends(get_session),
-):
-    """V4.9.3: 单条转录详情 (含完整 request/response body)
-
-    用于 A/B 对比时人工检查 cache 开/关下的上游请求差异和响应质量。
-    """
-    from db.models import RequestTranscript
-
-    result = await session.execute(
-        select(RequestTranscript).where(RequestTranscript.id == transcript_id)
-    )
-    row = result.scalars().first()
-    if not row:
-        raise HTTPException(status_code=404, detail=f"Transcript {transcript_id} not found")
-    return row.to_dict(include_body=True)
 
 
 # ============================================================

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response, JSONResponse, RedirectResponse
+from sqlalchemy.exc import OperationalError
 
 from config import settings
 
@@ -111,7 +112,9 @@ async def _lookup_api_key(token: str) -> ApiKeyInfo | None:
 async def _query_api_key(key_hash: str) -> ApiKeyInfo | None:
     """V4.8: 从 api_keys 表查 key_hash -> user 信息
 
-    表不存在或查询异常时返回 None (让 caller 回退到 legacy 模式)
+    OperationalError (V4.8 前老库 api_keys 表未建) 返回 None 走 legacy 单 key;
+    其他异常仍返回 None 保可用, 但升级为 warning — 静默降级是安全相关行为,
+    必须日志可见 (audit §E: 原 debug 级会掩盖鉴权链断裂)。
     """
     try:
         from db.engine import async_session_factory
@@ -139,8 +142,14 @@ async def _query_api_key(key_hash: str) -> ApiKeyInfo | None:
                 is_admin=bool(api_key.is_admin) or user.role == "admin",
                 key_id=api_key.id,
             )
+    except OperationalError as e:
+        # V4.8 前老库 api_keys 表未建 — 预期场景, 降级 legacy 鉴权
+        logger.debug(f"V4.8 api_keys 表未就绪, 降级 legacy 鉴权: {e}")
+        return None
     except Exception as e:
-        logger.debug(f"V4.8 _query_api_key 异常 (可能表未建): {e}")
+        # 非预期异常 (DB 损坏/列缺失/驱动错误): 仍降级保可用, 但必须告警可见
+        # audit §E: 原 debug 级静默会掩盖鉴权链断裂
+        logger.warning(f"_query_api_key 非预期异常, 降级 legacy 鉴权: {e!r}")
         return None
 
 

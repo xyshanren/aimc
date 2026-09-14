@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import (
     Channel, Account, PriceSnapshot, Promotion,
-    ChannelQuota, UsageLog, ParseRule, IntelSource,
-    ModelCard, SettingsRuntime, ModelFeedbackSummary,
+    ChannelQuota, ParseRule, IntelSource,
+    SettingsRuntime, ModelFeedbackSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,10 +27,6 @@ async def create_channel(session: AsyncSession, **kwargs) -> Channel:
     session.add(channel)
     await session.flush()
     return channel
-
-
-async def get_channel(session: AsyncSession, channel_id: int) -> Optional[Channel]:
-    return await session.get(Channel, channel_id)
 
 
 async def list_channels(session: AsyncSession, status: str = "active") -> list[Channel]:
@@ -84,11 +80,6 @@ async def list_active_channels_by_provider(
     return list(result.scalars().all())
 
 
-async def update_channel_status(session: AsyncSession, channel_id: int, status: str):
-    stmt = update(Channel).where(Channel.id == channel_id).values(status=status)
-    await session.execute(stmt)
-
-
 # === 账号操作 ===
 
 async def create_account(session: AsyncSession, **kwargs) -> Account:
@@ -102,17 +93,6 @@ async def get_accounts_by_channel(session: AsyncSession, channel_id: int) -> lis
     stmt = select(Account).where(Account.channel_id == channel_id)
     result = await session.execute(stmt)
     return list(result.scalars().all())
-
-
-async def update_account_quota(session: AsyncSession, account_id: int, used_delta: int):
-    """增量更新账号已用配额"""
-    account = await session.get(Account, account_id)
-    if account:
-        account.quota_used = (account.quota_used or 0) + used_delta
-        # 检查是否耗尽
-        if account.quota_total and account.quota_used >= account.quota_total:
-            account.status = "exhausted"
-            logger.info(f"账号 {account.account_name} 配额已耗尽")
 
 
 async def list_accounts(
@@ -163,18 +143,6 @@ async def create_price_snapshot(session: AsyncSession, **kwargs) -> PriceSnapsho
     session.add(snapshot)
     await session.flush()
     return snapshot
-
-
-async def get_prices_by_channel(session: AsyncSession, channel_id: int) -> list[PriceSnapshot]:
-    stmt = select(PriceSnapshot).where(PriceSnapshot.channel_id == channel_id)
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
-
-
-async def get_prices_by_model(session: AsyncSession, model: str) -> list[PriceSnapshot]:
-    return list((await session.execute(
-        select(PriceSnapshot).where(PriceSnapshot.model == model)
-    )).scalars().all())
 
 
 # Phase 3.4 (2026-07-29): 价格变动更新/upsert + 路由缓存刷新
@@ -283,22 +251,6 @@ async def create_promotion(session: AsyncSession, **kwargs) -> Promotion:
     return promo
 
 
-async def list_promotions(session: AsyncSession, status: str = "active", limit: int = 50) -> list[Promotion]:
-    stmt = (
-        select(Promotion)
-        .where(Promotion.status == status)
-        .order_by(Promotion.created_at.desc())
-        .limit(limit)
-    )
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
-
-
-async def expire_promotion(session: AsyncSession, promo_id: int):
-    stmt = update(Promotion).where(Promotion.id == promo_id).values(status="expired")
-    await session.execute(stmt)
-
-
 # === 优惠审查队列操作 (V4.8.4) ===
 
 async def create_promotion_review(session: AsyncSession, **kwargs):
@@ -348,13 +300,6 @@ async def get_quotas_by_channel(session: AsyncSession, channel_id: int) -> list[
 
 # === 用量日志操作 ===
 
-async def create_usage_log(session: AsyncSession, **kwargs) -> UsageLog:
-    log = UsageLog(**kwargs)
-    session.add(log)
-    await session.flush()
-    return log
-
-
 async def upsert_feedback_summary(session: AsyncSession, **kwargs) -> ModelFeedbackSummary:
     """按 (model_id, period_start) 幂等写入周反馈汇总。"""
     stmt = select(ModelFeedbackSummary).where(
@@ -388,15 +333,6 @@ async def list_feedback_summary(
 
 
 # === 解析规则操作 ===
-
-async def get_parse_rules(session: AsyncSession, provider: str) -> list[ParseRule]:
-    stmt = select(ParseRule).where(
-        ParseRule.provider == provider,
-        ParseRule.status == "active",
-    )
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
-
 
 async def get_active_parse_rule(session: AsyncSession, provider: str) -> Optional[ParseRule]:
     """获取 provider 当前 active 的最高 confidence 解析规则
@@ -438,11 +374,6 @@ async def get_intel_sources(session: AsyncSession, status: str = "active") -> li
     stmt = select(IntelSource).where(IntelSource.status == status)
     result = await session.execute(stmt)
     return list(result.scalars().all())
-
-
-async def update_intel_source(session: AsyncSession, source_id: int, **kwargs):
-    stmt = update(IntelSource).where(IntelSource.id == source_id).values(**kwargs)
-    await session.execute(stmt)
 
 
 async def get_intel_source_by_provider_url(
@@ -771,19 +702,6 @@ async def has_available_channel(session: AsyncSession, model_id: str) -> bool:
     return result.scalar_one_or_none() is not None
 
 
-async def find_candidate_group_for_tier(tier: str) -> Optional[str]:
-    """Phase 3.3: 按 tier 找一个候选 group_id。
-
-    策略: 找 group_id 以 'tier:' 开头 且 group.tier == target_tier 的组。
-    没有匹配返 None (caller 跳过自动入组)。
-    """
-    from db.models import ModelGroup
-    from sqlalchemy import select
-
-    # 暂时用同步路径, 供 Phase 3.3 消费: 加载 group 后比对
-    return None  # 实现需在 model_sync 中用 session 调, 这里仅声明
-
-
 # === Phase 4 E1: Pending Review (人工确认队列) ===
 
 async def list_pending_review(
@@ -902,29 +820,6 @@ async def approve_capability_change(
 
 
 # === Phase 4 E3: 跨源交叉验证 (Cross-Source Discrepancy) ===
-
-async def list_cross_source_discrepancies(
-    session: AsyncSession,
-    status: str = "pending",
-    limit: int = 100,
-) -> list["CrossSourceDiscrepancy"]:
-    """列出跨源分歧记录 (Phase 4 E3)。
-
-    Args:
-        status: pending / resolved / ignored (默认只显示待处理)
-        limit: 最多返回条数
-    """
-    from db.models import CrossSourceDiscrepancy
-
-    stmt = (
-        select(CrossSourceDiscrepancy)
-        .where(CrossSourceDiscrepancy.status == status)
-        .order_by(CrossSourceDiscrepancy.discrepancy_score.desc(), CrossSourceDiscrepancy.created_at.desc())
-        .limit(limit)
-    )
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
-
 
 async def upsert_cross_source_discrepancy(
     session: AsyncSession,
@@ -1057,66 +952,9 @@ async def reject_capability_change(
     return log
 
 
-# === ModelCard 操作 (Phase 2D-4, 2026-07-24) ===
-
-async def upsert_model_card(session, model: str, benchmark: str, **kwargs) -> ModelCard:
-    """插入或更新 ModelCard（用 model+benchmark 作为唯一键）"""
-    from sqlalchemy import select
-
-    stmt = select(ModelCard).where(
-        ModelCard.model == model, ModelCard.benchmark == benchmark
-    )
-    existing = (await session.execute(stmt)).scalar_one_or_none()
-
-    if existing:
-        for k, v in kwargs.items():
-            setattr(existing, k, v)
-        return existing
-    else:
-        card = ModelCard(model=model, benchmark=benchmark, **kwargs)
-        session.add(card)
-        await session.flush()
-        return card
-
-
-async def list_model_cards(session, provider: str = None) -> list[ModelCard]:
-    """列出 ModelCard，可按 provider 过滤"""
-    from sqlalchemy import select
-
-    stmt = select(ModelCard)
-    if provider:
-        stmt = stmt.where(ModelCard.provider == provider)
-    stmt = stmt.order_by(ModelCard.model, ModelCard.benchmark)
-    return list((await session.execute(stmt)).scalars().all())
-
-
-async def get_best_model_for_tier(session, tier: str) -> ModelCard | None:
-    """按 tier 找 score 最高的模型（用于路由决策）
-
-    Returns:
-        score > 0 的最高分 ModelCard；全为 0 时返回第一个
-    """
-    from sqlalchemy import select
-
-    stmt = (
-        select(ModelCard)
-        .where(ModelCard.tier == tier)
-        .order_by(ModelCard.score.desc())
-        .limit(1)
-    )
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
 # === SettingsRuntime 操作 (API-Sec-2, 2026-07-29) ===
 # k-v 存储 runtime settings (alert_channel / bark_key / feishu_webhook_url)
 # dashboard PUT 即时生效, alerter 优先读这里, fallback 到 .env
-
-async def get_runtime_setting(session: AsyncSession, key: str) -> Optional[str]:
-    """读 runtime override value. None = 没 override (用 .env)"""
-    stmt = select(SettingsRuntime).where(SettingsRuntime.key == key)
-    row = (await session.execute(stmt)).scalar_one_or_none()
-    return row.value if row else None
-
 
 async def set_runtime_setting(session: AsyncSession, key: str, value: Optional[str]) -> None:
     """写 runtime override. value=None 表示删除 override 回退 .env

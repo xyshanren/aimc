@@ -342,7 +342,8 @@ async def _auto_learn_drop_params(channel: dict, params: list[str]):
         except Exception:
             pass
     except Exception as e:
-        logger.debug(f"V4.8.7 auto-learn failed (non-fatal): {e}")
+        # audit §E: 参数学习断链不可见会让 drop_params 永不生效, 升级 warning
+        logger.warning("auto-learn drop_params 失败: channel=%s params=%s err=%r", channel.get("name"), params, e)
 
 
 def _maybe_rewrite_body_model(
@@ -979,7 +980,12 @@ def _update_cooldown(channel: dict, status_code_or_response) -> None:
                     f"channel={channel.get('name')} {info.category.value}"
                 )
     except Exception as e:
-        logger.debug(f"_update_cooldown 非致命: {e}")
+        # audit §E: 冷却安全网链 (classify/mark_failure) 断裂会让 429 自愈失效,
+        # 原 debug 级不可见。非预期异常升级 warning; 常见的 httpx 解析小问题仍低噪。
+        logger.warning(
+            "_update_cooldown 异常 (冷却未更新): channel=%s account=%s err=%r",
+            channel.get("name"), account_id, e,
+        )
 
 
 def _resolve_actual_model(channel: dict, requested_model: str, fallback_model: str = "") -> str:
@@ -1133,8 +1139,14 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
         except RuntimeError as e:
             # 没有 running loop (不可能在 FastAPI handler 里, 但兜底)
             logger.warning(f"V4.6.4: asyncio.create_task 失败: {e}, 跳过本次 usage_log")
-    except Exception:
-        pass  # 用量记录失败不影响主流程
+    except Exception as e:
+        # audit §E: 原 `pass` 会把用量链的名字错误 (NameError/AttributeError)
+        # 静默吞掉 → 看板/周报整链断且不可见。解析失败多为上游响应体非 JSON
+        # (预期), 保持 warning 级别但带堆栈可见。
+        logger.warning(
+            "usage_log 预处理失败 (用量不入库): channel=%s model=%s err=%r",
+            channel.get("name"), requested_model, e,
+        )
 
 
 def _log_task_result(task: asyncio.Task) -> None:
@@ -1271,8 +1283,9 @@ def _schedule_transcript_log(
             caller_key_id=caller_key_id,
         ))
         task.add_done_callback(_log_task_result)
-    except Exception:
-        pass  # 转录失败不影响主流程
+    except Exception as e:
+        # audit §E: 原 `pass` 静默; 转录失败不影响主流程但需可见
+        logger.warning("transcript 预处理失败 (转录不入库): channel=%s err=%r", channel.get("name"), e)
 
 
 async def _write_transcript_log(
@@ -1458,8 +1471,12 @@ def _schedule_stream_usage_log(
             task.add_done_callback(_log_task_result)
         except RuntimeError as e:
             logger.warning(f"[P0-1] stream asyncio.create_task 失败: {e}, 跳过本次 usage_log")
-    except Exception:
-        pass  # 用量记录失败不影响主流程
+    except Exception as e:
+        # audit §E: 原 `pass` 静默吞掉流式用量链错误 (同 _schedule_usage_log)
+        logger.warning(
+            "stream usage_log 预处理失败 (用量不入库): channel=%s model=%s err=%r",
+            channel.get("name"), requested_model, e,
+        )
 
 
 def _schedule_alert(channel: dict, response: httpx.Response):
