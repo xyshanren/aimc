@@ -364,6 +364,11 @@ async def parse_content(
     client = _get_client()  # 缺 key 时这里抛 OpenAIError
 
     # 1. 净化 HTML → 干净 Markdown
+    # V6.5+ (2026-09-14): max_tokens 1200→4000 — parse_model=tier:balanced
+    # 实际路由 minimax-m3 (思考模型), 思考块耗 token; 首采实证 1500 字清单
+    # 页 + 1200 token 上限时思考未完即被截断 → content 无 JSON → 解析失败
+    # (S4 peek/commit 会下轮重试, 但同样失败 → 永久吞该源变化)。
+    # 思考完成后 JSON 本体 ~1k token, 4000 给思考留 3k 余量。
     cleaned_md = clean_html(content, max_chars=1500)
 
     user_prompt = f"""页面来源：{provider} ({url})
@@ -383,7 +388,7 @@ async def parse_content(
         ],
         response_format={"type": "json_object"},
         temperature=0.1,
-        max_tokens=1200,
+        max_tokens=4000,
     )
 
     result_text = response.choices[0].message.content
