@@ -112,15 +112,15 @@ sensenova 账号（lixiaoy / sensenova_01）被轮流反复撞击；备用成员
 | B1 探活 NameError | `intelligence/channel_health.py` | ✅ 补 `ErrorInfo` import + 抽模块级 `_probe_error_info()` 可单测。`tests/test_v65_intel_batch1.py` 5 例 |
 | G 部署路径硬编码 | `intelligence/scheduler.py` | ✅ 模块级 `_PROJECT_ROOT` 相对定位替换 `cwd="/home/lxc/aimc"`；删死导入 `suggest_main`（顺带消除 except 求值 UnboundLocalError 隐患）；源码断言防回归 |
 
-**批次二（P1，~1 天）— 数据正确性（下一批）**
+**批次二（P1）— 数据正确性 — ✅ 已完成（2026-09-14，V6.5 第二批，全量 789 全绿）**
 
-| 项 | 位置 | 改法 | 来源 |
-|----|------|------|------|
-| S8 路由成功率 LIMIT 截断 | `dashboard/routes.py:1901-1917` | unmatched 求和改**不带 limit** 的 `count()`；`limit(20)` 只用于 top_models；两边 `model.isnot(None)` 一致（30d 实证已触发，27>20） | [审查] 实证 |
-| S9 cache 命中率时区/实现 | `gateway/router.py:1566-1578` | cutoff 改 Python `datetime.now()` 传参（与 quota 一致）；按 `channel_id` 而非 name 子查询；必要时走 async session | [审查] 实证 |
-| S4 differ 先落 hash | `intelligence/differ.py:72/91/101` | 拆 `peek_hash`/`commit_hash`，仅解析成功后提交 hash | [审查] |
-| S11 sync_engine PRAGMA | `db/engine.py:42-47` | 补 `busy_timeout=5000`/`synchronous=NORMAL`（与 async 一致） | [审查] |
-| S12 调度器旧 job 残留 | `intelligence/scheduler.py:103-111` | 启动时按当前 `batch_crawl_{provider}_{interval}` 集合枚举清理不匹配 job | [审查] |
+| 项 | 位置 | 状态 |
+|----|------|------|
+| S8 路由成功率 LIMIT 截断 | `dashboard/routes.py` | ✅ unmatched 总量改不带 limit 的 `session.scalar(count)`；limit(20) 仅用于 top_models（30d 实证 27>20 已触发）。测试种子 27 精确+5 组路由断言 27/32 |
+| S9 cache 命中率时区/实现 | `gateway/router.py` | ✅ cutoff 改 Python 本地时间传参（原 `datetime('now')`=UTC 比对本地 created_at，窗口偏移 8h）；channel 关联改按 `channel_id`（原 name 子查询，重名串号）；缓存 key 同步改 id。tmp sqlite 库断言窗口外行不计入 |
+| S4 differ 先落 hash | `differ.py` + `healer.py` + `scheduler.py` | ✅ `has_changed(commit=False)` peek + 新增 `commit_source_hash()`；`handle_parse_result` 返回 bool（AI/CSS 任一入库成功）；scheduler 解析成功才提交 hash，失败保留旧 hash 下轮自动重试 |
+| S11 sync_engine PRAGMA | `db/engine.py` | ✅ 补 `busy_timeout=5000`/`synchronous=NORMAL`（job_health 经 sync_engine 写，原缺 → 并发 locked 被 listener 吞） |
+| S12 调度器旧 job 残留 | `intelligence/scheduler.py` | ✅ 注册后按本轮新 id 集合清理不匹配 `batch_crawl_*`（改 poll_interval 后旧 interval job 永久残留重复采集）；抽 `_prune_stale_crawl_jobs` 可单测 |
 
 **批次三（P1，~1~1.5 天）— 情报核心链修复 + 验收（价值最高，需先确认产品意图）**
 

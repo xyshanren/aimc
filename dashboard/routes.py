@@ -1899,6 +1899,15 @@ async def get_group_routing_stats(days: int = 7, session: AsyncSession = Depends
     groups_out.sort(key=lambda x: -x["request_count"])
 
     # 5) unmatched: group_id 为 NULL 的精确模型路由
+    # V6.5 S8 (production-review): 总量改不带 limit 的 count — 旧实现先
+    # limit(20) 再对截断行求和, 精确路由 distinct model > 20 时 total/
+    # exact/group_routed_pct 分母全部偏小 → 路由成功率被高估 (30d 实证
+    # distinct=27>20 已触发)。limit(20) 仅用于 top_models 展示。
+    unmatched_total = await session.scalar(
+        select(func.count(UsageLog.id))
+        .where(UsageLog.created_at >= cutoff)
+        .where(UsageLog.group_id.is_(None))
+    ) or 0
     stmt2 = (
         select(
             UsageLog.model,
@@ -1912,7 +1921,7 @@ async def get_group_routing_stats(days: int = 7, session: AsyncSession = Depends
         .limit(20)
     )
     unmatched_rows = (await session.execute(stmt2)).all()
-    unmatched_total = sum(r.count for r in unmatched_rows)
+    # V6.5 S8: unmatched_total 已改为上方不带 limit 的 count (sum 语义废弃)
 
     # 6) 总览 summary
     total_requests = sum(g["request_count"] for g in groups_out) + unmatched_total

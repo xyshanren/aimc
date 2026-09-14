@@ -130,9 +130,12 @@ def guard_env(monkeypatch):
     async def _fake_fetch_error(source, error):
         calls["fetch_error"].append(error)
 
-    async def _fake_has_changed(source, content):
+    async def _fake_has_changed(source, content, *, commit=True):
         calls["has_changed"] += 1
         return True
+
+    async def _fake_commit_hash(source, content):
+        pass
 
     import intelligence.fetcher as fetcher_mod
     import intelligence.healer as healer_mod
@@ -144,6 +147,7 @@ def guard_env(monkeypatch):
     monkeypatch.setattr(fetcher_mod, "fetch_page_with_error", _fake_fetch)
     monkeypatch.setattr(healer_mod, "handle_fetch_error", _fake_fetch_error)
     monkeypatch.setattr(differ_mod, "has_changed", _fake_has_changed)
+    monkeypatch.setattr(differ_mod, "commit_source_hash", _fake_commit_hash)
 
     return calls, fetcher_mod, monkeypatch
 

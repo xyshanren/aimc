@@ -41,9 +41,19 @@ async_session_factory = async_sessionmaker(
 
 @event.listens_for(sync_engine, "connect")
 def _set_sqlite_pragma_sync(dbapi_conn, connection_record):
-    """P0-8: sync engine 也设 WAL (跟 async 一致)"""
+    """P0-8: sync engine PRAGMA (跟 async 一致).
+
+    V6.5 S11 (production-review): 原来只设 WAL — job_health 经 sync_engine 写
+    (scheduler event listener), 与 async 侧并发写时缺 busy_timeout 易
+    database is locked, 且异常被 listener 吞掉 → job_health 数据静默缺失。
+    (foreign_keys 不在此处开: 与 async 侧保持差异最小化, 避免 listener 存量
+    写入行为变化; async 侧已开不受影响)
+    """
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
 
 
 @event.listens_for(engine.sync_engine, "connect")

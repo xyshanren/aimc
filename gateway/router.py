@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -1548,27 +1548,32 @@ class RouteEngine:
         cached_price = price_info.get("cached_input_price")
         if cached_price is None or float(cached_price) >= input_price:
             return input_price
-        hit_pct = self._cache_hit_pct(channel.get("name", ""))
+        hit_pct = self._cache_hit_pct(channel.get("id"))
         if hit_pct <= 0:
             return input_price
         eff = hit_pct * float(cached_price) + (1 - hit_pct) * input_price
         return min(eff, input_price)  # 折算只降不升 (防御浮点边界)
 
-    # V6.4 #11/#12: 渠道 7d cache 命中率缓存 {channel_name: (fetched_at_monotonic, pct)}
+    # V6.4 #11/#12: 渠道 7d cache 命中率缓存 {channel_id: (fetched_at_monotonic, pct)}
     _cache_hit_cache: dict = {}
     _CACHE_HIT_TTL = 300.0  # 5 分钟
 
-    def _cache_hit_pct(self, channel_name: str) -> float:
+    def _cache_hit_pct(self, channel_id) -> float:
         """渠道滚动 7d cache 命中率 (cached+cache_read tokens / input tokens), 0~1.
 
         每 5min 刷一次 (跨请求共享, 组路由每请求可能调多次);
         查询失败 / 无数据 → 0.0 (sort_key 退化为原价, 行为不变).
+
+        V6.5 S9 (production-review): cutoff 改 Python 本地时间传参 — 原实现用
+        SQLite datetime('now')=UTC 比对本地 created_at, 窗口整体偏移 8h (~0.9%
+        实测); channel 关联改按 channel_id — 原按 channels.name 子查询, name
+        无唯一约束, 重名渠道命中率串号。
         """
-        if not channel_name:
+        if not channel_id:
             return 0.0
         import time as _time
         now_m = _time.monotonic()
-        cached = self._cache_hit_cache.get(channel_name)
+        cached = self._cache_hit_cache.get(channel_id)
         if cached and now_m - cached[0] < self._CACHE_HIT_TTL:
             return cached[1]
         pct = 0.0
@@ -1577,14 +1582,16 @@ class RouteEngine:
             from config import settings as _settings
             db_path = _settings.db_path
             if db_path and db_path != ":memory:":
+                cutoff = (datetime.now() - timedelta(days=7)).strftime(
+                    "%Y-%m-%d %H:%M:%S.%f"
+                )
                 conn = _sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
                 try:
                     row = conn.execute(
                         "SELECT SUM(COALESCE(cache_read_input_tokens,0)+COALESCE(cached_input_tokens,0)), "
                         "SUM(input_tokens) FROM usage_logs "
-                        "WHERE created_at >= datetime('now','-7 days') AND channel_id = "
-                        "(SELECT id FROM channels WHERE name = ?)",
-                        (channel_name,),
+                        "WHERE created_at >= ? AND channel_id = ?",
+                        (cutoff, channel_id),
                     ).fetchone()
                     hit_t = int(row[0] or 0)
                     in_t = int(row[1] or 0)
@@ -1593,9 +1600,9 @@ class RouteEngine:
                 finally:
                     conn.close()
         except Exception as e:
-            logger.debug(f"_cache_hit_pct 查询失败 (用 0): channel={channel_name} err={e}")
+            logger.debug(f"_cache_hit_pct 查询失败 (用 0): channel_id={channel_id} err={e}")
             pct = 0.0
-        self._cache_hit_cache[channel_name] = (now_m, pct)
+        self._cache_hit_cache[channel_id] = (now_m, pct)
         return pct
 
 

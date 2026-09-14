@@ -40,7 +40,7 @@ def compute_similarity(old_content: str, new_content: str) -> float:
     return SequenceMatcher(None, old_truncated, new_truncated).ratio()
 
 
-async def has_changed(source, new_content: str) -> bool:
+async def has_changed(source, new_content: str, *, commit: bool = True) -> bool:
     """判断采集源内容是否发生变化
 
     三级检测：
@@ -56,6 +56,18 @@ async def has_changed(source, new_content: str) -> bool:
     每次 tick 反序列化出全新的 source 副本 → in-memory last_hash 永远为 None →
     每次采集都判定 has_changed=True → 自愈+告警刷屏。
 
+    V6.5 S4 (production-review): 新增 commit=False 的 peek 模式 — 判定照常,
+    但「将触发解析」路径不提交新 hash。采集→解析是两步, 旧实现先落 hash 再解析,
+    解析失败(LLM 超时/异常/无规则)即把该次变化永久吞掉(页面字节不再变则永不
+    重试)。调用方在解析成功后调 commit_source_hash() 补提交。
+
+    Args:
+        source: 采集源对象
+        new_content: 新内容
+        commit: True(默认)=检测到变化即提交新 hash(旧行为);
+                False=peek, 只判定不提交(相似度跳过分支仍提交 — 该分支不触发
+                解析, 无"失败重试"语义)
+
     Returns:
         True 表示有变化，需要触发 AI 解析
     """
@@ -69,7 +81,8 @@ async def has_changed(source, new_content: str) -> bool:
 
     # 1. 首次采集
     if not source.last_hash:
-        await _update_source_hash(source, new_hash, new_content)
+        if commit:
+            await _update_source_hash(source, new_hash, new_content)
         return True
 
     # 2. 哈希完全相同
@@ -98,8 +111,19 @@ async def has_changed(source, new_content: str) -> bool:
             )
     # else: hash 不同 + 没 last_content → 保守返回 True（首次迁移场景）
 
-    await _update_source_hash(source, new_hash, new_content)
+    # V6.5 S4: peek 模式下延迟提交 — 解析成功后由调用方 commit_source_hash(),
+    # 解析失败保留旧 hash, 下轮同内容重新判定为"有变化"自动重试。
+    if commit:
+        await _update_source_hash(source, new_hash, new_content)
     return True
+
+
+async def commit_source_hash(source, new_content: str) -> None:
+    """V6.5 S4: 解析成功后提交新 hash/last_content (peek/commit 两段式的 commit 段).
+
+    无状态: 自行重算 hash, 幂等可重复调用。
+    """
+    await _update_source_hash(source, compute_hash(new_content), new_content)
 
 
 async def _update_source_hash(source, new_hash: str, new_content: Optional[str] = None):

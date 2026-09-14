@@ -68,6 +68,28 @@ def _build_scheduler() -> AsyncIOScheduler:
 scheduler = _build_scheduler()
 
 
+def _prune_stale_crawl_jobs(scheduler_obj, current_job_ids: set) -> int:
+    """V6.5 S12 (production-review): 清理残留的 batch_crawl_* job.
+
+    改 poll_interval 后旧 batch_crawl_{provider}_{old_interval} 永久留在
+    SQLAlchemyJobStore 继续跑 → 同源重复采集/重复入库。只保留本轮注册的
+    id 集合内的采集 job, 其余 batch_crawl_* 一律移除。
+
+    Returns:
+        移除数
+    """
+    removed = 0
+    for job in list(scheduler_obj.get_jobs()):
+        if job.id.startswith("batch_crawl_") and job.id not in current_job_ids:
+            try:
+                scheduler_obj.remove_job(job.id)
+                removed += 1
+                logger.info(f"清理残留采集 job: {job.id}")
+            except Exception as e:
+                logger.warning(f"清理残留采集 job 失败: {job.id} ({e})")
+    return removed
+
+
 async def start_scheduler():
     """启动情报采集调度器
 
@@ -130,6 +152,15 @@ async def start_scheduler():
             f"注册批量采集: {provider} ({len(group_sources)} sources, "
             f"间隔 {interval}s)"
         )
+
+    # V6.5 S12 (production-review): 清理残留采集 job — 上面只删两代更旧的 id,
+    # 改 poll_interval 后旧 batch_crawl_{provider}_{old_interval} 会永久留在
+    # SQLAlchemyJobStore 继续跑 → 同源重复采集/重复入库。按本轮新 id 集合
+    # 兜底清理一切不匹配的 batch_crawl_*。
+    _prune_stale_crawl_jobs(
+        scheduler,
+        {f"batch_crawl_{p}_{i}" for (p, i) in by_provider_interval},
+    )
 
     # 路由缓存定时刷新
     scheduler.add_job(
@@ -578,7 +609,10 @@ async def _run_source_task(source):
             return
 
         # 2. Diff 检测
-        changed = await has_changed(source, content)
+        # V6.5 S4 (production-review): peek/commit 两段式 — 旧实现先落 hash
+        # 再解析, 解析失败(LLM 超时/异常/无规则)即把该次变化永久吞掉(页面
+        # 字节不再变则永不重试)。peek 判定, 解析成功才提交 hash。
+        changed = await has_changed(source, content, commit=False)
         if not changed:
             logger.debug(f"无变化，跳过: {source.provider}")
             return
@@ -587,7 +621,16 @@ async def _run_source_task(source):
 
         # 3. 自愈流程（AI 解析 → CSS 降级 → 告警）
         # Phase 2B-2: handle_parse_result 接收原始 content，自己跑 AI
-        await handle_parse_result(content, source)
+        # V6.5 S4: 返回 True(AI/CSS 任一入库成功)才提交新 hash; False 保留
+        # 旧 hash, 下轮同内容重新判定"有变化"自动重试
+        from intelligence.differ import commit_source_hash
+        parsed_ok = await handle_parse_result(content, source)
+        if parsed_ok:
+            await commit_source_hash(source, content)
+        else:
+            logger.warning(
+                f"解析失败, 保留旧 hash 下轮重试: {source.provider}"
+            )
 
     except Exception as e:
         # 外层 Exception 是代码 bug，开发者排查用

@@ -109,13 +109,14 @@ from gateway.router import RouteEngine
 
 def _engine_with_hit(hit: float) -> RouteEngine:
     eng = RouteEngine()
-    eng._cache_hit_cache["ch-hit"] = (float("inf"), hit)  # inf future → 永不过期
-    eng._cache_hit_cache["ch-zero"] = (float("inf"), 0.0)
+    # V6.5 S9: 缓存 key 从 channel name 改 channel id (name 无唯一约束)
+    eng._cache_hit_cache[1] = (float("inf"), hit)  # inf future → 永不过期
+    eng._cache_hit_cache[2] = (float("inf"), 0.0)
     return eng
 
 
-def _channel(name: str, prices: list) -> dict:
-    return {"name": name, "prices": prices}
+def _channel(name: str, prices: list, cid: int = 1) -> dict:
+    return {"id": cid, "name": name, "prices": prices}
 
 
 class TestCacheAwareInputPrice:
@@ -133,7 +134,7 @@ class TestCacheAwareInputPrice:
 
     def test_hit_zero_degrades_to_original(self):
         eng = _engine_with_hit(0.0)
-        ch = _channel("ch-zero", [self._price(input_price=10.0, cached=1.0)])
+        ch = _channel("ch-zero", [self._price(input_price=10.0, cached=1.0)], cid=2)
         assert eng._get_input_price(ch, "m") == 10.0
 
     def test_hit_discounts_price(self):
@@ -149,7 +150,7 @@ class TestCacheAwareInputPrice:
 
     def test_no_hit_data_channel_degrades(self):
         eng = _engine_with_hit(0.9)
-        ch = _channel("ch-unknown", [self._price(input_price=10.0, cached=1.0)])
+        ch = _channel("ch-unknown", [self._price(input_price=10.0, cached=1.0)], cid=99)
         assert eng._get_input_price(ch, "m") == 10.0
 
     def test_null_price_999_fallback(self):
@@ -167,7 +168,7 @@ class TestCacheAwareInputPrice:
             _channel("ch-hit", [self._price(input_price=5.0, cached=0.5)]), "m")
         # B: 原价 4 元, 零命中 → eff = 4.0 (原价更低但不折算)
         eff_b = eng._get_input_price(
-            _channel("ch-zero", [self._price(input_price=4.0, cached=0.4)]), "m")
+            _channel("ch-zero", [self._price(input_price=4.0, cached=0.4)], cid=2), "m")
         assert eff_a < eff_b  # 折算后 A 反超
         key_a = _group_cheapest_sort_key(({"billing_mode": "pay_per_token"}, "m", eff_a, 0, 100, "cm"))
         key_b = _group_cheapest_sort_key(({"billing_mode": "pay_per_token"}, "m", eff_b, 0, 100, "cm"))

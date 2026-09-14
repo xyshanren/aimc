@@ -172,12 +172,18 @@ def _sanity_check(result: ParseResult, source_type: str = "web_page") -> tuple[b
     return False, None
 
 
-async def handle_parse_result(content: str, source):
+async def handle_parse_result(content: str, source) -> bool:
     """自愈循环主入口
 
     Args:
         content: 页面 HTML（已通过 differ 检测有变化）
         source: 采集源对象
+
+    Returns:
+        V6.5 S4: True=解析链路产出可入库结果 (AI/CSS 任一成功);
+                False=全部失败 — 调用方 (scheduler) 据此决定是否提交新 hash,
+                False 保留旧 hash 让下轮采集重试 (旧实现先落 hash 再解析,
+                解析失败即把该次变化永久吞掉)。
 
     流程图：
     ┌─────────────────┐
@@ -243,7 +249,7 @@ async def handle_parse_result(content: str, source):
                 f"优惠入库(AI): [{ai_result.provider}] {ai_result.title} "
                 f"(置信度: {ai_result.confidence:.2f})"
             )
-        return
+        return True
 
     # === 3. 触发降级：AI 失败 OR AI 成功但低置信度 OR AI 判断非优惠 ===
     # （注：即使 AI 判断"非优惠"，CSS 降级也可能捞到手动漏掉的活动）
@@ -254,7 +260,7 @@ async def handle_parse_result(content: str, source):
             f"优惠入库(CSS 降级): [{css_result.provider}] "
             f"selector={css_result.summary!r}"
         )
-        return
+        return True
 
     # === 4. 全部失败 → 告警 ===
     if ai_result and ai_result.is_promotion:
@@ -266,6 +272,7 @@ async def handle_parse_result(content: str, source):
             f"非优惠或全部失败，跳过: {source.provider} "
             f"(ai={'failed' if ai_result is None else 'no_promotion'})"
         )
+    return False
 
 
 async def _handle_price_aggregator_result(result: ParseResult, source):
