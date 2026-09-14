@@ -297,6 +297,67 @@ CHANNELS = [
 ]
 
 
+async def _price_row_exists(session, channel_id: int, model: str, price_type: str, time_range: str) -> bool:
+    """检查 (channel, model, price_type, time_range) 价格行是否已存在"""
+    from sqlalchemy import select
+    from db.models import PriceSnapshot
+
+    stmt = select(PriceSnapshot.id).where(
+        PriceSnapshot.channel_id == channel_id,
+        PriceSnapshot.model == model,
+        PriceSnapshot.price_type == price_type,
+        PriceSnapshot.time_range == time_range,
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def _upsert_price_row(session, channel_id: int, price_row: tuple) -> None:
+    """单条价格行 upsert (幂等)。
+
+    V4.9.5: 支持可选 cached_input_price (第 6 个元素)
+    旧格式: (model, price_type, time_range, in_p, out_p)
+    新格式: (model, price_type, time_range, in_p, out_p, cached_input_price)
+
+    V6.5+ (2026-09-14): create → upsert — 幂等修复。旧 create 在重跑时对
+    已存在行抛 UNIQUE 约束 (生产实证: 全量重跑在 stepfun 行中断, 后续渠道
+    全部漏建); upsert 语义与 crud.upsert_price_snapshot 一致 (值以 cfg 为准)。
+    """
+    model, price_type, time_range, in_p, out_p, *rest = price_row
+    cached_price = rest[0] if rest else None
+
+    # Phase 4 v4.3.1 (2026-08-13): 防御性归一化
+    # 即使 cfg 写了 "MiniMax-M3" 之类的大写, 也能在写入 db 前归一化为 "minimax-m3".
+    # 跟 db/crud.py upsert_model_registry 一致.
+    model_norm = normalize_model_id(model)
+    assert model_norm == model, (
+        f"manual_import.py cfg 里 model='{model}' 应已归一化为 '{model_norm}'"
+    )
+    await crud.upsert_price_snapshot(
+        session,
+        channel_id=channel_id,
+        model=model_norm,
+        input_price=in_p,
+        output_price=out_p,
+        source="manual",
+        price_type=price_type,
+        time_range=time_range,
+    )
+    if cached_price is not None:
+        # upsert_price_snapshot 不含 cached_input_price 列 — 新行补写
+        from sqlalchemy import select
+        from db.models import PriceSnapshot
+        row = (await session.execute(
+            select(PriceSnapshot).where(
+                PriceSnapshot.channel_id == channel_id,
+                PriceSnapshot.model == model_norm,
+                PriceSnapshot.price_type == price_type,
+                PriceSnapshot.time_range == time_range,
+            )
+        )).scalar_one_or_none()
+        if row is not None and row.cached_input_price is None:
+            row.cached_input_price = cached_price
+
+
 def _clean_env_value(value: str) -> str:
     """跟 scripts/check_env.py 保持一致: 清洗行内注释 ('KEY=  # 注释')"""
     v = (value or "").strip()
@@ -357,7 +418,19 @@ async def import_one_channel(session, cfg: dict) -> bool:
             )
         )).scalars().first()
         if existing_acc is not None:
+            # V6.5+ (2026-09-14): channel+account 已存在 ≠ 价格行已齐 —
+            # 生产实证: 首次运行曾因 UNIQUE 中断留下 0 价格行渠道, 重跑被
+            # 此处 skip 挡住永远补不上。补齐缺失价格行后再返回 (upsert 幂等)。
             print(f"[skip] {cfg['name']}: channel + account 已存在 (channel_id={existing_ch.id}), 如需更新 key 走 dashboard")
+            missing = [
+                row for row in cfg["prices"]
+                if not await _price_row_exists(session, existing_ch.id, row[0], row[1], row[2])
+            ]
+            if missing:
+                print(f"[recover] {cfg['name']}: 补齐缺失价格行 {len(missing)}/{len(cfg['prices'])}")
+                for row in missing:
+                    await _upsert_price_row(session, existing_ch.id, row)
+                await session.commit()
             return False
         # channel 在但没 active account (老 data 残留) → 复用 channel 重建 account
         print(f"[recover] {cfg['name']}: channel 存在但无 active account, 重建 account")
@@ -397,46 +470,7 @@ async def import_one_channel(session, cfg: dict) -> bool:
     print(f"[+] 创建账号: {account.account_name} (key 已加密)")
 
     for price_row in cfg["prices"]:
-        # V4.9.5: 支持可选 cached_input_price (第 6 个元素)
-        # 旧格式: (model, price_type, time_range, in_p, out_p)
-        # 新格式: (model, price_type, time_range, in_p, out_p, cached_input_price)
-        model, price_type, time_range, in_p, out_p, *rest = price_row
-        cached_price = rest[0] if rest else None
-
-        # Phase 4 v4.3.1 (2026-08-13): 防御性归一化
-        # 即使 cfg 写了 "MiniMax-M3" 之类的大写, 也能在写入 db 前归一化为 "minimax-m3".
-        # 跟 db/crud.py upsert_model_registry 一致.
-        model_norm = normalize_model_id(model)
-        assert model_norm == model, (
-            f"manual_import.py cfg 里 model='{model}' 应已归一化为 '{model_norm}'"
-        )
-        # V6.5+ (2026-09-14): create → upsert — 幂等修复。旧 create 在重跑时对
-        # 已存在行抛 UNIQUE 约束 (生产实证: 全量重跑在 stepfun 行中断, 后续渠道
-        # 全部漏建); upsert 语义与 crud.upsert_price_snapshot 一致 (值以 cfg 为准)。
-        await crud.upsert_price_snapshot(
-            session,
-            channel_id=channel.id,
-            model=model_norm,
-            input_price=in_p,
-            output_price=out_p,
-            source="manual",
-            price_type=price_type,
-            time_range=time_range,
-        )
-        if cached_price is not None:
-            # upsert_price_snapshot 不含 cached_input_price 列 — 新行补写
-            from sqlalchemy import select as _select
-            from db.models import PriceSnapshot
-            row = (await session.execute(
-                _select(PriceSnapshot).where(
-                    PriceSnapshot.channel_id == channel.id,
-                    PriceSnapshot.model == model_norm,
-                    PriceSnapshot.price_type == price_type,
-                    PriceSnapshot.time_range == time_range,
-                )
-            )).scalar_one_or_none()
-            if row is not None and row.cached_input_price is None:
-                row.cached_input_price = cached_price
+        await _upsert_price_row(session, channel.id, price_row)
     print(f"[+] {cfg['name']} 价格已录入 ({len(cfg['prices'])} 条)")
 
     await crud.create_quota(
