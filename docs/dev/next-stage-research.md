@@ -122,14 +122,15 @@ sensenova 账号（lixiaoy / sensenova_01）被轮流反复撞击；备用成员
 | S11 sync_engine PRAGMA | `db/engine.py` | ✅ 补 `busy_timeout=5000`/`synchronous=NORMAL`（job_health 经 sync_engine 写，原缺 → 并发 locked 被 listener 吞） |
 | S12 调度器旧 job 残留 | `intelligence/scheduler.py` | ✅ 注册后按本轮新 id 集合清理不匹配 `batch_crawl_*`（改 poll_interval 后旧 interval job 永久残留重复采集）；抽 `_prune_stale_crawl_jobs` 可单测 |
 
-**批次三（P1，~1~1.5 天）— 情报核心链修复 + 验收（价值最高，需先确认产品意图）**
+**批次三（P1）— 情报核心链修复 + 验收 — ✅ 已完成（2026-09-14，V6.5 第三批，全量 802 全绿）**
 
-| 项 | 位置 | 改法 | 来源 |
-|----|------|------|------|
-| S3a 折扣乘到全部模型 | `intelligence/healer.py:70-94` | 折扣只作用于 `result.models` 命中的模型集合，无模型信息则不做价格行 | [审查] |
-| S3b promotion 永久打折风险 | `healer.py:81-94` + `router.py:828` | promotion 强制 `effective_to`（缺失用抓取日 +7/+30 天）；router 对 promotion 加"过期回退 normal" | [审查] |
-| S3c 促销可路由验收线 | tests | 端到端"五折"样例测试，确立「promotion 参与路由」的验收标准（当前生产 `is_promotion=1` = 0 行） | [审查] 实证 |
-| S7 停机 drain | `gateway/proxy.py` create_task + `app.py:104-130` + `scheduler.py:310-336` | 模块级 `set[Task]` 登记并在 `engine.dispose()` 前 `gather(timeout=...)`；定时采集也纳入 in-flight | [审查] |
+| 项 | 位置 | 状态 |
+|----|------|------|
+| S3a 折扣乘到全部模型 | `intelligence/healer.py` | ✅ 折扣只作用 `result.models` 命中的模型集合（`hit_models` 过滤）；无模型信息不做价格行（宁缺毋滥）；命中模型无 normal 价行跳过 |
+| S3b promotion 永久打折风险 | `healer.py` + `gateway/router.py` | ✅ 双层修复：healer 缺 `end_date` 补抓取日 +7d 保守默认；router `_is_price_effective` 对 `is_promotion=1 且 effective_to=None` 的**存量脏行**拒绝兜底（过期回退 normal） |
+| S3c 促销可路由验收线 | `tests/test_v65_batch3_promotion_routable.py` 8 例 | ✅ 合成「半价」样例走 解析→折扣→价行→router 选价 全链断言；反向断言「订阅套餐类（无折扣率）不转价格行」——双轨拍板两边都有验收线 |
+| S7 停机 drain | `gateway/proxy.py` + `gateway/app.py` + `intelligence/scheduler.py` | ✅ proxy 新增 `_spawn()` 登记式 fire-and-forget（全部 10 处裸 `loop.create_task` 迁移）+ `_pending_tasks` 集合；lifespan 关停在 `engine.dispose()` 前 `shutdown_drain_tasks(timeout=10)`；`_run_provider_batch` 自身注册进 `_inflight_tasks`（定时采集关停可等待） |
+| （顺带）healer 内联 select 收敛 | `db/crud.py` | ✅ 新增 `crud.get_normal_price_rows()`，healer 不再内联 select 构造（Mimosa SQL 注入误报源收敛，同 pricing_sync 模式） |
 
 ### 2.1 决策项：本地限流 / 账号配额是否接线
 

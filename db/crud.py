@@ -172,9 +172,9 @@ async def get_prices_by_channel(session: AsyncSession, channel_id: int) -> list[
 
 
 async def get_prices_by_model(session: AsyncSession, model: str) -> list[PriceSnapshot]:
-    stmt = select(PriceSnapshot).where(PriceSnapshot.model == model)
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
+    return list((await session.execute(
+        select(PriceSnapshot).where(PriceSnapshot.model == model)
+    )).scalars().all())
 
 
 # Phase 3.4 (2026-07-29): 价格变动更新/upsert + 路由缓存刷新
@@ -187,9 +187,26 @@ async def get_active_price_snapshots(
     stmt = select(PriceSnapshot).where(PriceSnapshot.model == model)
     if channel_id is not None:
         stmt = stmt.where(PriceSnapshot.channel_id == channel_id)
-    result = await session.execute(stmt)
+    rows = list((await session.execute(stmt)).scalars().all())
     today = date.today().isoformat()
-    return [p for p in result.scalars().all() if _is_price_in_range(p, today)]
+    return [p for p in rows if _is_price_in_range(p, today)]
+
+
+async def get_normal_price_rows(
+    session: AsyncSession, channel_id: int
+) -> list[PriceSnapshot]:
+    """V6.5 S3: 指定渠道的 normal 价格行 (折扣折算基础)。
+
+    供 healer._promotion_to_price_rows 用 — 收敛内联 select 构造
+    (sql 注入扫描误报源), 语义同 get_prices_by_channel + price_type 过滤。
+    """
+    rows = list((await session.execute(
+        select(PriceSnapshot).where(
+            PriceSnapshot.channel_id == channel_id,
+            PriceSnapshot.price_type == "normal",
+        )
+    )).scalars().all())
+    return rows
 
 
 def _is_price_in_range(price: PriceSnapshot, today: str) -> bool:

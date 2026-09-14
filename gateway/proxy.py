@@ -48,6 +48,21 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# V6.5 S7 (production-review): fire-and-forget 任务登记 — 旧实现 create_task
+# 后不保存引用, lifespan 关停时未等待即 engine.dispose(), 重启瞬间在途的
+# usage/transcript/告警任务被取消 → 计量丢失。app.shutdown_drain_tasks()
+# 关停前 gather 本集合 (task done 后自移除, 集合不膨胀)。
+_pending_tasks: set = set()
+
+
+def _spawn(coro):
+    """登记式 fire-and-forget: 替代裸 loop.create_task, 关停可 drain。"""
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(coro)
+    _pending_tasks.add(task)
+    task.add_done_callback(_pending_tasks.discard)
+    return task
+
 
 def _estimate_cost(
     channel: dict,
@@ -734,7 +749,7 @@ async def _forward_stream(
         if bad_params:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(_auto_learn_drop_params(channel, bad_params))
+                _spawn(_auto_learn_drop_params(channel, bad_params))
             except RuntimeError:
                 pass
 
@@ -856,7 +871,7 @@ async def _forward_normal(
         if bad_params:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(_auto_learn_drop_params(channel, bad_params))
+                _spawn(_auto_learn_drop_params(channel, bad_params))
             except RuntimeError:
                 pass
 
@@ -957,7 +972,7 @@ def _update_cooldown(channel: dict, status_code_or_response) -> None:
         if info.needs_human:
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(_schedule_alert_with_info(channel, info))
+                _spawn(_schedule_alert_with_info(channel, info))
             except RuntimeError:
                 logger.warning(
                     f"[needs_human 无 running loop, 告警丢失] "
@@ -1089,9 +1104,10 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
         # 修复 V4.6.4: 用 asyncio.create_task 替代 asyncio.get_event_loop().create_task
         # 之前: get_event_loop() 在 Python 3.12 + uvicorn 多 worker 场景下可能返回错的 loop 或 RuntimeError
         # 现在: 直接用 asyncio.create_task (Python 3.10+ 推荐)
+        # V6.5 S7: _spawn 登记进 _pending_tasks, 关停时可 drain (原裸 create_task
+        # 不保存引用, lifespan dispose 前未等待 → 重启瞬间用量日志丢失)
         try:
-            loop = asyncio.get_running_loop()
-            task = loop.create_task(
+            task = _spawn(
                 _write_usage_log(
                     channel_id=channel.get("id"),
                     account_id=channel.get("account_id"),
@@ -1245,7 +1261,7 @@ def _schedule_transcript_log(
             status_code = stream_status or 0
 
         loop = asyncio.get_running_loop()
-        task = loop.create_task(_write_transcript_log(
+        task = _spawn(_write_transcript_log(
             channel_id=channel.get("id"),
             model=requested_model,
             request_body=req_text,
@@ -1353,7 +1369,7 @@ def _schedule_stream_usage_log(
                 group_id = _extract_group_id(requested_model)
                 try:
                     loop = asyncio.get_running_loop()
-                    task = loop.create_task(
+                    task = _spawn(
                         _write_usage_log(
                             channel_id=channel.get("id"),
                             account_id=channel.get("account_id"),
@@ -1418,7 +1434,7 @@ def _schedule_stream_usage_log(
         # get_event_loop() 在 Python 3.12 + uvicorn 多 worker 下可能返回错的 loop 或 RuntimeError
         try:
             loop = asyncio.get_running_loop()
-            task = loop.create_task(
+            task = _spawn(
                 _write_usage_log(
                     channel_id=channel.get("id"),
                     account_id=channel.get("account_id"),
@@ -1477,7 +1493,7 @@ def _schedule_alert(channel: dict, response: httpx.Response):
     throttle_key = f"{channel_name}:{status}"
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(
+        _spawn(
             _send_alert_async(msg, key=throttle_key)
         )
     except RuntimeError:
@@ -1508,7 +1524,7 @@ async def _schedule_alert_with_info(channel: dict, error_info) -> None:
     throttle_key = f"needs_human:{channel_name}:{error_info.category.value}"
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(
+        _spawn(
             _send_alert_with_silence(msg, key=throttle_key, silence_seconds=3600)
         )
     except RuntimeError:

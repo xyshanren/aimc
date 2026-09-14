@@ -414,10 +414,18 @@ async def _run_provider_batch(provider: str, sources: list):
     - 顺序触发 (避免同 provider 多 source 同时 fetch 撞限流)
     - 单个 source 失败不影响其他
 
+    V6.5 S7 (production-review): 自身注册进 _inflight_tasks — 旧实现只有
+    run_source_now 手动任务被登记, 定时 batch job 关停时不被 wait_inflight_fetches
+    等待 → 正在抓取/落库的采集被 engine.dispose() 打断 (hash 已更新内容未入库)。
+
     Args:
         provider: 厂商标识 (e.g. "deepseek")
         sources: 该 provider 的 Source 列表
     """
+    task = asyncio.current_task()
+    if task is not None:
+        _inflight_tasks.add(task)
+        task.add_done_callback(_inflight_tasks.discard)
     logger.info(f"[batch_crawl_{provider}] 启动 {len(sources)} 个 source")
     for source in sources:
         try:

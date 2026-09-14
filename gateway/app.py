@@ -125,9 +125,34 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"关 probe client 失败: {e}")
 
+    # V6.5 S7 (production-review): drain fire-and-forget 用量/转录/告警任务
+    # — 旧实现直接 dispose, 重启瞬间在途 _write_usage_log 等被取消 → 计量丢失
+    try:
+        await shutdown_drain_tasks(timeout=10.0)
+    except Exception as e:
+        logger.warning(f"drain fire-and-forget 任务失败: {e}")
+
     # 关 DB 引擎
     from db.engine import engine
     await engine.dispose()
+
+
+async def shutdown_drain_tasks(timeout: float = 10.0) -> int:
+    """V6.5 S7: 等待 proxy._pending_tasks 中的在途任务完成 (带超时)。
+
+    Returns:
+        drain 的任务数
+    """
+    import asyncio as _asyncio
+    from gateway.proxy import _pending_tasks
+    tasks = [t for t in _pending_tasks if not t.done()]
+    if not tasks:
+        return 0
+    logger.info(f"drain {len(tasks)} 个在途 fire-and-forget 任务 (timeout={timeout}s)")
+    done, pending = await _asyncio.wait(tasks, timeout=timeout)
+    if pending:
+        logger.warning(f"drain 超时, {len(pending)} 个任务被丢弃")
+    return len(done)
 
 
 def create_app() -> FastAPI:

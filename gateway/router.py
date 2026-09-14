@@ -602,6 +602,12 @@ class RouteEngine:
             return False
         if price.effective_to and price.effective_to < today:
             return False
+        # V6.5 S3b (production-review): promotion 行兜底过期回退 — upsert 链
+        # 曾把 effective_to=None 的 promotion 行永久化 (healer 缺 end_date 时),
+        # 此处对无到期日的 promotion 行拒绝兜底, 宁可退回 normal 价也不永久打折。
+        # (新写入的 promotion 行已由 healer 强制 effective_to, 本防御覆盖存量行)
+        if getattr(price, "is_promotion", 0) == 1 and not price.effective_to:
+            return False
         return True
 
     def select_best_channel(self, model: str, messages: Optional[list] = None) -> Optional[dict]:

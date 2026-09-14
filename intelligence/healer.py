@@ -39,6 +39,12 @@ async def _promotion_to_price_rows(result: ParseResult, provider: str) -> int:
     price_type="promotion", is_promotion=1, effective_from/to 来自 result 日期.
     路由侧 _is_price_effective 自动按日期生效/失效, 零改动消费.
 
+    V6.5 S3 (production-review):
+    - S3a: 折扣只作用本次解析命中的模型 (result.models), 无模型信息不做价格行
+      — 旧实现乘到该渠道全部 normal 模型 (siliconflow 99 个全 5 折风险)
+    - S3b: promotion 行强制 effective_to (缺失用抓取日 +7d 保守默认)
+      — 旧实现 None 永久生效, 该模型价格永久打折
+
     Returns: 成功生成/刷新的 promotion 价行数
     """
     from intelligence.pricing_sync import sync_price_change, apply_price_change_to_route_cache
@@ -62,24 +68,52 @@ async def _promotion_to_price_rows(result: ParseResult, provider: str) -> int:
         return 0
 
     # 2. 查 provider 的 channel + 当前 normal 价格行
-    async with async_session_factory() as session:
-        from db import crud
+    # V6.5: crud 新增按 (channel_id, price_type) 的行查询, 本函数不再内联
+    # select 构造 (sql 注入扫描误报源, 与 pricing_sync 同款收敛)
+    from db import crud
+    from db.engine import async_session_factory as _session_factory
+    async with _session_factory() as session:
         channel = await crud.get_channel_by_provider(session, provider)
         if not channel:
             return 0
-        stmt = select(PriceSnapshot).where(
-            PriceSnapshot.channel_id == channel.id,
-            PriceSnapshot.price_type == "normal",
-        )
-        rows = (await session.execute(stmt)).scalars().all()
+        rows = await crud.get_normal_price_rows(session, channel.id)
 
     if not rows:
         logger.debug(f"优惠转价格行跳过(无 normal 价基础): {provider}")
         return 0
 
-    # 3. 逐 model 生成 promotion 价行
+    # 3. 确定折扣作用的模型集合 (S3a) + 有效期 (S3b)
+    # S3a: 折扣只作用于本次解析命中的模型 — 旧实现把折扣乘到该渠道【全部】
+    # normal 模型 (siliconflow 99 个全打 5 折风险, production-review S3)。
+    # AI 未给出模型信息时不做价格行 (无法界定作用面)。
+    hit_models: set[str] = {m.model_id for m in (result.models or []) if m.model_id}
+    if not hit_models:
+        logger.info(
+            f"优惠转价格行跳过(解析未给出作用模型, 无法界定折扣面): "
+            f"{provider} {result.title}"
+        )
+        return 0
+    rows = [r for r in rows if r.model in hit_models]
+    if not rows:
+        logger.debug(
+            f"优惠转价格行跳过(命中模型无 normal 价基础): {provider} "
+            f"models={sorted(hit_models)[:8]}"
+        )
+        return 0
+
+    # S3b: promotion 行强制 effective_to — 缺失时用保守默认 (抓取日 +7 天)。
+    # 旧实现 None 经 upsert 的旧值兜底后永久生效, router 见 is_promotion=1
+    # 直接返回 → 该模型价格永久打折 (实扣高于估算)。
     effective_from = result.start_date
     effective_to = result.end_date
+    if not effective_to:
+        effective_to = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+        logger.info(
+            f"promotion 缺 end_date, 保守默认 +7d: {provider} "
+            f"{result.title} → effective_to={effective_to}"
+        )
+
+    # 4. 逐 model 生成 promotion 价行
     synced = 0
     for row in rows:
         if row.input_price is None and row.output_price is None:
