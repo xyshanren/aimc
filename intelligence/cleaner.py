@@ -178,6 +178,24 @@ def clean_html(html: str, max_chars: int = 1500) -> str:
     if not html:
         return ""
 
+    # V6.5+ (2026-09-14): 纯文本/markdown 源直通 — GitHub raw README 等
+    # 非 HTML 内容没有标签可净化, BeautifulSoup 会把整个文档塞进一个
+    # <html><body> 再逐行转义输出, 且 1500 字截断对 11KB 的 README 只留
+    # 头部说明 (首采实证: tier:balanced 解析 JSON 失败, 模型清单全丢)。
+    # 判据: 不含 '<' 标签开头特征 → 原样截断返回 (markdown 语法本身含
+    # '<' 的概率极低, 误判也只走原 HTML 路径, 行为安全)。
+    if "<html" not in html[:2000].lower() and "<body" not in html[:2000].lower():
+        stripped = html.strip()
+        if stripped.startswith("<") and ">" not in stripped[:500]:
+            # 疑似转义/片段, 仍走 HTML 路径
+            pass
+        else:
+            import re
+            result = re.sub(r"\n{3,}", "\n\n", stripped)
+            if len(result) > max_chars:
+                result = result[:max_chars] + "..."
+            return result
+
     try:
         from bs4 import BeautifulSoup
     except ImportError:
