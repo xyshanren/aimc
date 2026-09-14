@@ -195,6 +195,8 @@ Alembic（方案 B）不引入，版本表名格式兼容保留演进空间。
 > ——单人手工维护的免费 LLM API 静态清单（26 来源/100+ 模型，仅 OpenAI 兼容格式，
 > 无价格无 key 无自动化）。价值=**线索清单**而非数据源；用户拍板：① 接 ModelScope
 > 渠道（已有账号）；② README 加为情报采集源；③ OpenRouter（海外聚合器）先不做。
+> **NVIDIA NIM 已放弃（2026-09-14）**：注册需手机号收短信验证，国内手机号收不到
+> ——海外源（OpenRouter/Groq/Gemini/HuggingFace/NIM）默认全部不接，除非用户主动提出。
 
 #### 2.6.1 方案 A：ModelScope 渠道接入（实施主体）
 
