@@ -7,10 +7,12 @@ Phase 1 使用：在爬虫未就绪前，手动录入渠道信息。
 - 从环境变量读：DEEPSEEK_API_KEY / QWEN_API_KEY / GLM_API_KEY / KIMI_API_KEY / ...
 - 没填对应 env → 跳过该渠道（不创建占位 account）
 
-支持的渠道（9 个）:
+支持的渠道（11 个）:
 - 5 家直连: deepseek / qwen / glm / kimi / minimax
 - 1 个第三方聚合: siliconflow (推荐 1 个 key 通吃 5 家 + 多家国内 model)
 - 3 个国内直连官方平台: volcengine (字节方舟) / hunyuan (腾讯混元) / stepfun (阶跃)
+- 3 个 coding plan / 免费供给: sensenova (公测 token plan) / modelscope (魔搭 API-Inference)
+  / taotoken (TaoToken Coding Plan, 按调用次数限额)
 
 用法：
     1. 编辑 .env，至少填一个厂商的 key（推荐 SILICONFLOW_API_KEY 一码通）
@@ -292,6 +294,34 @@ CHANNELS = [
             ("ZhipuAI/GLM-5.2", "normal", "全天", 0.0, 0.0),
             ("Qwen/Qwen3-Next-80B-A3B-Instruct", "normal", "全天", 0.0, 0.0),
             ("Qwen/Qwen3-235B-A22B", "normal", "全天", 0.0, 0.0),
+        ],
+    },
+    {
+        # V6.5+ (2026-09-15): TaoToken Coding Plan Pro (第三方 coding plan 会员聚合)
+        # OpenAI 兼容: https://api.taotoken.net/coding/v1 (gateway 拼 /chat/completions
+        # 正好命中官方完整地址), 鉴权标准 Bearer; env TAOTOKEN_BASE_URL 可覆盖
+        # ⚠️ 限额按"调用次数"非 token: Pro 档 ~2000 次/5h + ~15000 次/周 —
+        #    account_quotas 无按次维度, 不建配额行 (防止套错 tpm/daily 语义);
+        #    超额上游 429 → 冷却指数退避 + failover 自愈 (同 sensenova 模式)
+        # ⚠️ 平台条款禁止 Hermes/OpenClaw 类智能体接入。AIMC 转发上游只带
+        #    Content-Type + Authorization 两个头 (proxy.py forward_headers),
+        #    无任何智能体特征; 也不做 UA 伪装 — 冒充特定客户端身份反而违反条款
+        # priority=4: 双模型兜底源 — group 平价 tie-break "-channel.priority 越大越
+        #    优先", 4 < sensenova(5)/glm_bigmodel(8) 保证 deepseek-v4-flash 主
+        #    sensenova、glm-5.3-flash 主 glm_bigmodel, taotoken 仅在主源 429
+        #    冷却/失败时承接 (相当于白捡 ~15000 次/周冗余预算)
+        # 价格行 0 元 = 订阅套餐边际成本口径 (同 glm_bigmodel coding plan);
+        #    model 名与上游 Model ID 逐字一致 (已是规范小写名, 无需透传映射)
+        "key": "taotoken",
+        "name": "taotoken_coding",
+        "provider": "taotoken",
+        "base_url": os.getenv("TAOTOKEN_BASE_URL", "https://api.taotoken.net/coding/v1"),
+        "priority": 4,
+        "env_var": "TAOTOKEN_API_KEY",
+        "qpm": 30,
+        "prices": [
+            ("glm-5.3-flash", "normal", "全天", 0.0, 0.0),
+            ("deepseek-v4-flash", "normal", "全天", 0.0, 0.0),
         ],
     },
 ]
