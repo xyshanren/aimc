@@ -303,20 +303,23 @@ CHANNELS = [
         # ⚠️ 限额按"调用次数"非 token: Pro 档 ~2000 次/5h + ~15000 次/周 —
         #    account_quotas 无按次维度, 不建配额行 (防止套错 tpm/daily 语义);
         #    超额上游 429 → 冷却指数退避 + failover 自愈 (同 sensenova 模式)
+        #    用户直连实测该限额基本不触发, 故定为双模型主力供给 (2026-09-16 拍板)
         # ⚠️ 平台条款禁止 Hermes/OpenClaw 类智能体接入。AIMC 转发上游只带
         #    Content-Type + Authorization 两个头 (proxy.py forward_headers),
         #    无任何智能体特征; 也不做 UA 伪装 — 冒充特定客户端身份反而违反条款
-        # priority=4: 双模型兜底源 — group 平价 tie-break "-channel.priority 越大越
-        #    优先", 4 < sensenova(5)/glm_bigmodel(8) 保证 deepseek-v4-flash 主
-        #    sensenova、glm-5.3-flash 主 glm_bigmodel, taotoken 仅在主源 429
-        #    冷却/失败时承接 (相当于白捡 ~15000 次/周冗余预算)
-        # 价格行 0 元 = 订阅套餐边际成本口径 (同 glm_bigmodel coding plan);
+        # priority=9 双模型主力 (2026-09-16 由 4 上调): 平价 tie-break
+        #    "-channel.priority 越大越优先" —
+        #    glm-5.3-flash: taotoken(9) 主, glm_bigmodel(8) 兜底;
+        #    deepseek-v4-flash: taotoken(9) 主, sensenova(5) 补充 (sensenova 历史
+        #    频繁 tpm 限流)。glm_01 系用户有意 disabled (glm 积分不够时暂停,
+        #    额度恢复后启用, 启用后自动成为 glm-5.3-flash 兜底)
+        # 价格行 0 元 = 订阅边际成本口径 (同 glm_bigmodel coding plan);
         #    model 名与上游 Model ID 逐字一致 (已是规范小写名, 无需透传映射)
         "key": "taotoken",
         "name": "taotoken_coding",
         "provider": "taotoken",
         "base_url": os.getenv("TAOTOKEN_BASE_URL", "https://api.taotoken.net/coding/v1"),
-        "priority": 4,
+        "priority": 9,
         "env_var": "TAOTOKEN_API_KEY",
         "qpm": 30,
         "prices": [
