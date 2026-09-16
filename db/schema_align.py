@@ -142,6 +142,8 @@ _ALIGN_DDL = {
         "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:channels.disable_thinking_pass_through', 'orm-align')"),
     "ALTER TABLE channels ADD COLUMN disable_thinking_inject INTEGER DEFAULT '0' NOT NULL": ("channels", "disable_thinking_inject",
         "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:channels.disable_thinking_inject', 'orm-align')"),
+    "ALTER TABLE channels ADD COLUMN requires_reasoning_echo INTEGER DEFAULT '0' NOT NULL": ("channels", "requires_reasoning_echo",
+        "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:channels.requires_reasoning_echo', 'orm-align')"),
     "ALTER TABLE channels ADD COLUMN drop_params TEXT": ("channels", "drop_params",
         "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:channels.drop_params', 'orm-align')"),
     "ALTER TABLE channels ADD COLUMN auto_drop_params INTEGER DEFAULT '1' NOT NULL": ("channels", "auto_drop_params",

@@ -77,6 +77,14 @@ class Channel(Base):
         Integer, nullable=False, server_default="0",
         comment="0=不注入 (默认), 1=proxy 注入 enable_thinking:false (Phase B, 渠道级)",
     )
+    # V6.5 (2026-09-16): 要求历史每轮 assistant 都回传 reasoning_content 的上游
+    # (DeepSeek 官方带 tools 的 thinking 模式). 混合历史 (部分 assistant 有 rc,
+    # 部分没有, e.g. 跨渠道会话) 会被上游 400. proxy 转发前对缺 rc 的 assistant
+    # 补占位, 避免整轮 400. 默认 0 = 不处理 (其他渠道不在乎 rc)
+    requires_reasoning_echo = Column(
+        Integer, nullable=False, server_default="0",
+        comment="0=不强制 (默认), 1=转发前补齐缺失的 reasoning_content (DeepSeek 官方要求)",
+    )
     # P2-B (2026-08-20): 按 channel 剥离不支持的上游参数 (deny-list)
     # JSON-as-text 存 list[str], e.g. '["reasoning_effort","max_tokens"]'
     # proxy 层在 thinking strip 之后过滤 body 顶层字段, messages/model/stream 永远保留
