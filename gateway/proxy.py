@@ -45,6 +45,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.datastructures import Headers
 
 from config import settings
+from gateway.quota import concurrent_acquire, concurrent_release
 
 logger = logging.getLogger(__name__)
 
@@ -770,45 +771,72 @@ async def _forward_stream(
         content=body,
     )
 
-    response = await client.send(req, stream=True)
+    # V6.6: concurrent 维度真实计数 — 转发前 +1, 流结束/异常时 -1 (幂等)。
+    # in-flight 覆盖整个上游流 (含流式 body), 进程重启归零属预期。
+    account_id = channel.get("account_id")
+    concurrent_acquire(account_id)
+    _concurrent_released = False
 
-    # V4.9.1 修复: stream 模式下 response.text 会失败 (body 还在 stream),
-    # 必须先 await response.aread() 缓冲到内存, 才能用 .text 提取 error code/message.
-    # 不然 classify(429, None, None) 走 status_code fallback 误判为 rate_limited,
-    # 错过 quota_exhausted 关键字, needs_human 永远不触发.
-    if response.status_code >= 400:
-        try:
-            await response.aread()
-        except Exception:
-            pass
+    def _release_concurrent_once() -> None:
+        nonlocal _concurrent_released
+        if not _concurrent_released:
+            _concurrent_released = True
+            concurrent_release(account_id)
 
-    # V4.9: 上游响应 → error_classifier 统一处理 cooldown + needs_human
-    _update_cooldown(channel, response)
+    try:
+        response = await client.send(req, stream=True)
+    except Exception:
+        _release_concurrent_once()
+        await client.aclose()
+        raise
 
-    # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
-    if response.status_code in (401, 403, 500, 502, 503, 504):
-        _schedule_alert(channel, response)
-
-    # V4.8.7: 流式 400 同样自动学习 drop_params
-    if response.status_code == 400 and channel.get("auto_drop_params", 1):
-        bad_params = _extract_unsupported_params(response, body)
-        if bad_params:
+    try:
+        # V4.9.1 修复: stream 模式下 response.text 会失败 (body 还在 stream),
+        # 必须先 await response.aread() 缓冲到内存, 才能用 .text 提取 error code/message.
+        # 不然 classify(429, None, None) 走 status_code fallback 误判为 rate_limited,
+        # 错过 quota_exhausted 关键字, needs_human 永远不触发.
+        if response.status_code >= 400:
             try:
-                loop = asyncio.get_running_loop()
-                _spawn(_auto_learn_drop_params(channel, bad_params))
-            except RuntimeError:
+                await response.aread()
+            except Exception:
                 pass
 
-    # V6.x 修复: 上方 aread() 已消费流时, stream_generator 里的 aiter_raw()
-    # 会抛 httpx.StreamConsumed — 客户端只收到错误 status 而 body 为空,
-    # tail/full 缓冲也是空的 (错误体完全丢失)。此处捕获已缓冲的错误体,
-    # generator 改为直接 yield 缓冲字节, tail/full 缓冲语义与正常路径一致。
-    prebuffered: bytes | None = None
-    if response.is_stream_consumed:
+        # V4.9: 上游响应 → error_classifier 统一处理 cooldown + needs_human
+        _update_cooldown(channel, response)
+
+        # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
+        if response.status_code in (401, 403, 500, 502, 503, 504):
+            _schedule_alert(channel, response)
+
+        # V4.8.7: 流式 400 同样自动学习 drop_params
+        if response.status_code == 400 and channel.get("auto_drop_params", 1):
+            bad_params = _extract_unsupported_params(response, body)
+            if bad_params:
+                try:
+                    loop = asyncio.get_running_loop()
+                    _spawn(_auto_learn_drop_params(channel, bad_params))
+                except RuntimeError:
+                    pass
+
+        # V6.x 修复: 上方 aread() 已消费流时, stream_generator 里的 aiter_raw()
+        # 会抛 httpx.StreamConsumed — 客户端只收到错误 status 而 body 为空,
+        # tail/full 缓冲也是空的 (错误体完全丢失)。此处捕获已缓冲的错误体,
+        # generator 改为直接 yield 缓冲字节, tail/full 缓冲语义与正常路径一致。
+        prebuffered: bytes | None = None
+        if response.is_stream_consumed:
+            try:
+                prebuffered = response.content
+            except Exception:
+                prebuffered = None
+    except Exception:
+        # 发送后的预处理若抛异常, generator 不会运行 — 在此释放并发计数
+        _release_concurrent_once()
         try:
-            prebuffered = response.content
+            await response.aclose()
         except Exception:
-            prebuffered = None
+            pass
+        await client.aclose()
+        raise
 
     async def stream_generator():
         # P0-1: 滑动缓冲, 只保留末尾 N 字节用于扫描 usage chunk
@@ -841,6 +869,7 @@ async def _forward_stream(
                     if full_buffer is not None:
                         full_buffer.extend(chunk)
         finally:
+            _release_concurrent_once()
             await response.aclose()
             await client.aclose()
             latency_ms = int((time.time() - start_time) * 1000)
@@ -898,8 +927,14 @@ async def _forward_normal(
     V4.8.1: 接收 caller_key_id 透传给 _schedule_usage_log
     """
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(settings.request_timeout, connect=10.0)) as client:
-        response = await client.post(url, headers=headers, content=body)
+    # V6.6: concurrent 维度真实计数 — 覆盖上游调用窗口 (非流式到响应返回即止)
+    account_id = channel.get("account_id")
+    concurrent_acquire(account_id)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(settings.request_timeout, connect=10.0)) as client:
+            response = await client.post(url, headers=headers, content=body)
+    finally:
+        concurrent_release(account_id)
 
     latency_ms = int((time.time() - start_time) * 1000)
     logger.info(f"[Normal] {channel['name']} -> {response.status_code} ({latency_ms}ms)")

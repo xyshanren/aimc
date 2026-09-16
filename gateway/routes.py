@@ -188,10 +188,11 @@ async def chat_completions(request: Request):
             caller_id = getattr(request.state, "caller_id", None)
             caller_key_id = getattr(request.state, "caller_key_id", None)
             async with async_session_factory() as qsession:
+                # V6.6: 账号配额为纯真实测量 (usage_logs 窗口 SUM/COUNT + 内存并发),
+                # 无 estimated_tokens 预留 — 旧静态门 max_tokens×2>limit 已根除
                 allowed, reason = await check_account_quota(
                     qsession,
                     channel["account_id"],
-                    estimated_tokens=(body_json.get("max_tokens") or 100) * 2,
                 )
                 if not allowed:
                     from gateway.cooldown import cooldown_manager

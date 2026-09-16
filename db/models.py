@@ -414,6 +414,8 @@ class UsageLog(Base):
 
 Index("idx_usage_logs_error_type", UsageLog.error_type)
 Index("idx_usage_logs_needs_human", UsageLog.needs_human)
+# V6.6: 账号配额真实测量 (quota.py 窗口 SUM/COUNT 按账号+时间过滤)
+Index("idx_usage_logs_account_time", UsageLog.account_id, UsageLog.created_at)
 
 
 class RequestTranscript(Base):

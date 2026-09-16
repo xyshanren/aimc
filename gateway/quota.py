@@ -1,25 +1,27 @@
-"""P0-6 (2026-08-14): 多维限额检查 + 累加 (router pre-check / proxy post-success)
+"""P0-6 (2026-08-14) 多维限额检查 — V6.6 (2026-09-16) 起账号配额 = 纯真实测量
 
-设计:
-- router pre-check: 请求前按 (account, dimension) 检查, 超额则跳过该 account
-- proxy post-success: 成功后按 response.usage 累加 (input + output tokens)
-- 并发维度 (concurrent): 请求开始 +1, 结束 -1 (用 asyncio context manager)
-
-rolling window:
-- 维护 window_start 时间戳, 检查 "now - window_start > window_seconds" 时 roll over
-- 简化实现: usage_logs 表里有 timestamp, 可以查过去 N 秒的 sum
-- 当前实现: window_start + 累计 used_value (粗略, 不精确 sliding 但够用)
+设计 (V6.6 重设计, 替代原「预留 estimated_tokens + used_value 结算」两段式):
+- 原设计缺陷: 结算半边 increment_usage 从未接线 (零调用点), account_quota_usage
+  恒空 → 预检退化为纯静态门 max_tokens×2 > limit。tpm (60s 短窗) 对大 max_tokens
+  请求恒拒 — deepseek_01/glm_01/stepfun_01 三行 tpm 全中招 (前两行 9/14、后两行
+  9/16 已删行止血, 见 docs/dev/architecture.md 决策表)。
+- 新设计: token (tpm/daily/weekly/5h) 与 rpm 维度直接对 usage_logs 按
+  账号 + 窗口真实 SUM/COUNT (沿用 V4.8 用户配额 _sum_user_tokens 模式)。
+  无预留、无 used_value、无静态假门 — 128k max_tokens 的请求真实输出常只有
+  几千 token, 吞吐门本就不能预押。
+- concurrent 维度: 单进程内存 in-flight 计数 (proxy 转发前 concurrent_acquire,
+  上游响应完成/流结束 concurrent_release), 进程重启归零属预期 (in-flight 本就是
+  瞬态); 限额值仍配在 account_quotas (dimension=concurrent)。
+- balance_cny 维度: 不变 (依赖 account_quota_usage.window_start 作 sync 标记)。
 
 限额检查返回 (allowed: bool, reason: str) 让 caller 决定怎么处理
-- allowed=False 时 caller 应该 try_next_account
+- allowed=False 时 caller 应该 try_next_account (routes.py 已 failover + 落库)
 
-V4.8 (2026-08-19): per-user 日/月 token 限额
-- check_user_quota: 直接查 usage_logs 的 SUM(input+output), 不建累计表
-- caller_id 为 None (legacy/未鉴权) 时调用方跳过本检查
+V4.8 (2026-08-19): per-user 日/月 token 限额 — 真实 SUM + 准入预留, 语义不变
+(预算门可以预押一笔估算, 吞吐门不行)。
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -32,17 +34,40 @@ from db.models import Account, AccountQuota, AccountQuotaUsage, UsageLog, User
 logger = logging.getLogger(__name__)
 
 
+# ====== 并发 in-flight 计数 (内存, 单进程) ======
+
+_INFLIGHT: dict[int, int] = {}
+
+
+def concurrent_acquire(account_id: int) -> None:
+    """V6.6: proxy 转发上游前 +1 (请求开始)"""
+    _INFLIGHT[account_id] = _INFLIGHT.get(account_id, 0) + 1
+
+
+def concurrent_release(account_id: int) -> None:
+    """V6.6: 上游响应完成/流结束后 -1 (幂等: 多释放不会变负)"""
+    n = _INFLIGHT.get(account_id, 0)
+    if n <= 1:
+        _INFLIGHT.pop(account_id, None)
+    else:
+        _INFLIGHT[account_id] = n - 1
+
+
+def concurrent_inflight(account_id: int) -> int:
+    """当前 in-flight 数 (预检读这个, 不读库)"""
+    return _INFLIGHT.get(account_id, 0)
+
+
 # ====== 限额检查 ======
 
 async def check_account_quota(
-    session: AsyncSession, account_id: int, estimated_tokens: int = 0
+    session: AsyncSession, account_id: int
 ) -> tuple[bool, Optional[str]]:
-    """P0-6: 检查 account 是否所有限额维度都在预算内
+    """P0-6: 检查 account 所有限额维度 (V6.6: 纯真实测量)
 
     Args:
         session: AsyncSession
         account_id: 账号 ID
-        estimated_tokens: 估算本请求消耗的 token 数 (用于 daily/weekly/5h 维度预判)
 
     Returns:
         (allowed, reason) — allowed=False 时 reason 描述哪个维度超额
@@ -58,7 +83,7 @@ async def check_account_quota(
         return True, None  # 没配置 = 不限
 
     for q in quotas:
-        ok, reason = await _check_dimension(session, account_id, q, estimated_tokens)
+        ok, reason = await _check_dimension(session, account_id, q)
         if not ok:
             return False, reason
 
@@ -66,9 +91,9 @@ async def check_account_quota(
 
 
 async def _check_dimension(
-    session: AsyncSession, account_id: int, quota: AccountQuota, estimated_tokens: int
+    session: AsyncSession, account_id: int, quota: AccountQuota
 ) -> tuple[bool, Optional[str]]:
-    """检查单个维度"""
+    """检查单个维度 (V6.6: 全部真实测量, 无 estimated_tokens 预留)"""
     dim = quota.dimension
 
     if dim == "balance_cny":
@@ -87,93 +112,89 @@ async def _check_dimension(
             return False, f"账户余额耗尽 ({usage.used_value:.2f} 元)"
         return True, None
 
-    elif dim == "rpm":
-        # RPM: 当前分钟内已用请求数
-        usage = await _get_or_create_usage(session, account_id, dim)
-        now = datetime.now()
-        if usage.window_start is None or (
-            now - usage.window_start
-        ).total_seconds() > 60:
-            # rollover
-            usage.window_start = now
-            usage.used_value = 0
-        if usage.used_value >= quota.limit_value:
-            return False, f"RPM 超额 ({usage.used_value:.0f}/{quota.limit_value:.0f})"
+    if dim == "rpm":
+        # V6.6: 真实计数 — 近 60s 该账号请求数 (usage_logs 每次转发都落一行)
+        since = datetime.now() - timedelta(seconds=60)
+        count = await _count_account_requests(session, account_id, since)
+        if count >= quota.limit_value:
+            return False, f"RPM 超额 (近60s 已 {count} 次 / 限额 {quota.limit_value:.0f})"
+        return True, None
 
-    elif dim == "concurrent":
-        # 并发: in-flight 请求数
-        usage = await _get_or_create_usage(session, account_id, dim)
-        if usage.used_value >= quota.limit_value:
-            return False, f"并发超限 ({usage.used_value:.0f}/{quota.limit_value:.0f})"
+    if dim == "concurrent":
+        # V6.6: 内存 in-flight 计数 (proxy concurrent_acquire/release 维护)
+        inflight = concurrent_inflight(account_id)
+        if inflight >= quota.limit_value:
+            return False, f"并发超限 (in-flight {inflight} / 限额 {quota.limit_value:.0f})"
+        return True, None
 
-    elif dim in ("daily_tokens", "weekly_tokens", "5h_tokens"):
-        # Token 限额: 窗口内累计 used_value + estimated_tokens
-        usage = await _get_or_create_usage(session, account_id, dim)
-        if usage.window_start is None or _is_window_expired(usage, quota):
-            _rollover_window(usage, quota)
-        if usage.used_value + estimated_tokens > quota.limit_value:
+    if dim in ("tpm", "daily_tokens", "weekly_tokens", "5h_tokens"):
+        # V6.6: 真实测量 — usage_logs 按账号+窗口 SUM(input+output), 无预留。
+        # 吞吐门 (tpm) 不能预押: 大 max_tokens 请求的真实消耗远小于声明值。
+        since = _token_window_start(quota)
+        used = await _sum_account_tokens(session, account_id, since)
+        if used > quota.limit_value:
             return False, (
-                f"{dim} 超额 ({usage.used_value:.0f}+{estimated_tokens} > "
-                f"{quota.limit_value:.0f})"
+                f"{dim} 实测超额 (窗口内已 {used:.0f} / 限额 {quota.limit_value:.0f})"
             )
+        return True, None
 
-    elif dim == "tpm":
-        # TPM: 当前分钟内已用 token 数
-        usage = await _get_or_create_usage(session, account_id, dim)
-        now = datetime.now()
-        if usage.window_start is None or (
-            now - usage.window_start
-        ).total_seconds() > 60:
-            usage.window_start = now
-            usage.used_value = 0
-        if usage.used_value + estimated_tokens > quota.limit_value:
-            return False, f"TPM 超额 ({usage.used_value:.0f}+{estimated_tokens} > {quota.limit_value:.0f})"
-
+    # 未知维度: 不拦 (与旧行为一致 — 旧实现未知维度也是落到末尾 return True)
     return True, None
 
 
-def _is_window_expired(usage: AccountQuotaUsage, quota: AccountQuota) -> bool:
-    """窗口是否过期 (需要 rollover)"""
-    if usage.window_start is None:
-        return True
-    if quota.reset_strategy == "rolling":
-        # rolling: window_seconds 前到现在的请求算窗口
-        # 简化: window_start 是窗口起点, 过期 = now - window_start > window_seconds
-        if quota.window_seconds is None:
-            return False  # 没设窗口 = 不过期
-        return (datetime.now() - usage.window_start).total_seconds() > quota.window_seconds
-    elif quota.reset_strategy == "fixed_daily":
-        # daily: 跨天就 rollover
-        now = datetime.now()
-        return usage.window_start.date() < now.date()
-    elif quota.reset_strategy == "fixed_weekly":
-        # weekly: 跨 ISO 周就 rollover
-        now = datetime.now()
-        return usage.window_start.isocalendar()[1] != now.isocalendar()[1]
-    return False
-
-
-def _rollover_window(usage: AccountQuotaUsage, quota: AccountQuota) -> None:
-    """窗口过期时重置"""
+def _token_window_start(quota: AccountQuota) -> datetime:
+    """token 维度统计窗口起点 (V6.6: 每次检查现算, 不再维护窗口状态行)"""
+    dim = quota.dimension
     now = datetime.now()
-    if quota.reset_strategy == "rolling":
-        usage.window_start = now
-        usage.used_value = 0
-    elif quota.reset_strategy == "fixed_daily":
-        usage.window_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        usage.used_value = 0
-    elif quota.reset_strategy == "fixed_weekly":
-        # 周一 00:00 为起点
-        days_since_monday = now.weekday()
-        week_start = now - timedelta(days=days_since_monday)
-        usage.window_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
-        usage.used_value = 0
+    if dim == "tpm":
+        return now - timedelta(seconds=60)
+    if dim == "daily_tokens":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if dim == "weekly_tokens":
+        if quota.reset_strategy == "rolling" and quota.window_seconds:
+            return now - timedelta(seconds=quota.window_seconds)
+        monday = now - timedelta(days=now.weekday())
+        return monday.replace(hour=0, minute=0, second=0, microsecond=0)
+    if dim == "5h_tokens":
+        seconds = quota.window_seconds or 5 * 3600
+        return now - timedelta(seconds=seconds)
+    # 未知 token 维: 有 window_seconds 用滚动窗, 否则近 24h 兜底
+    return now - timedelta(seconds=quota.window_seconds or 86400)
+
+
+async def _sum_account_tokens(session: AsyncSession, account_id: int, since: datetime) -> int:
+    """V6.6: 账号窗口内真实 token 消耗 (input+output, NULL 记 0)
+
+    沿用 V4.8 用户配额 _sum_user_tokens 的查询模式 (真实 SUM, 不建累计状态)。
+    """
+    result = await session.execute(
+        select(func.coalesce(func.sum(
+            func.coalesce(UsageLog.input_tokens, 0)
+            + func.coalesce(UsageLog.output_tokens, 0)
+        ), 0)).where(
+            UsageLog.account_id == account_id,
+            UsageLog.created_at >= since,
+        )
+    )
+    total = result.scalar()
+    return int(total) if total is not None else 0
+
+
+async def _count_account_requests(session: AsyncSession, account_id: int, since: datetime) -> int:
+    """V6.6: 账号窗口内真实请求数 (usage_logs 每次转发落一行, 失败行也计)"""
+    result = await session.execute(
+        select(func.count()).select_from(UsageLog).where(
+            UsageLog.account_id == account_id,
+            UsageLog.created_at >= since,
+        )
+    )
+    return int(result.scalar() or 0)
 
 
 async def _get_or_create_usage(
     session: AsyncSession, account_id: int, dimension: str
 ) -> AccountQuotaUsage:
-    """P0-6: 读或 lazy-init usage 行"""
+    """读或 lazy-init usage 行 (V6.6 起仅 balance_cny 的 sync 标记在用)"""
     usage = (await session.execute(
         select(AccountQuotaUsage).where(
             AccountQuotaUsage.account_id == account_id,
@@ -192,30 +213,8 @@ async def _get_or_create_usage(
     return usage
 
 
-# ====== 累加 (proxy 成功后调用) ======
-
-async def increment_usage(
-    session: AsyncSession,
-    account_id: int,
-    dimension: str,
-    amount: float,
-) -> None:
-    """P0-6: 累加 usage (proxy 成功后调用)"""
-    usage = await _get_or_create_usage(session, account_id, dimension)
-    usage.used_value += amount
-    usage.last_updated = datetime.now()
-    await session.commit()
-
-
-async def decrement_concurrent(
-    session: AsyncSession, account_id: int, amount: float = 1.0
-) -> None:
-    """P0-6: 释放并发计数 (请求结束时调用)"""
-    await increment_usage(session, account_id, "concurrent", -amount)
-
-
 # ============================================================
-# V4.8 (2026-08-19): per-user 日/月 token 限额
+# V4.8 (2026-08-19): per-user 日/月 token 限额 (语义不变)
 # ============================================================
 
 async def check_user_quota(
@@ -223,8 +222,9 @@ async def check_user_quota(
 ) -> tuple[bool, Optional[str]]:
     """V4.8: 检查 user 日/月 token 限额
 
-    直接查 usage_logs 的 SUM(input_tokens + output_tokens), 不建累计表。
-    3~5 人小团队 QPS 低, 每请求一次 SUM 查询开销可忽略。
+    真实 SUM (usage_logs) + 准入预留 estimated_tokens。用户预算门保留预留是
+    有意的: 预算是长窗累计, 预押一笔估算可防单笔大请求击穿剩余额度; 账号侧
+    吞吐门 (tpm) 则不能预押 (V6.6 起已去掉)。
 
     Args:
         session: AsyncSession
