@@ -144,6 +144,33 @@ RouteEngine (单例 route_engine)
 > model not exist。同渠道"规范名行 + raw 行"并存是设计内形态，不是脏数据。
 > 未接组的模型（如 modelscope 的 `Qwen/*` 两行）只有 raw 行，要进组时补"规范名行 + raw_model_id"即可。
 
+**全渠道价行形态盘点（2026-09-16，有效行口径）**
+
+| 渠道 | 规范名行 | raw/未注册行 | 判定 |
+|---|---|---|---|
+| deepseek_official | 2 | 0 | ✅ 全规范（v4-flash 系 6 行已清） |
+| glm_bigmodel | 4 | 0 | ✅ 全规范 |
+| minimax_compat | 8 | 0 | ✅ 全规范 |
+| taotoken_coding | 2 | 0 | ✅ 全规范 |
+| sensenova_official | 5 | 2 | ✅ 规范为主；2 行供应商自有名（sensenova-6.7-flash-lite / u1-fast）未注册 = 直连专用 |
+| modelscope_inference | 3 | 5 | ✅ 本规范首例：3 规范行（raw_model_id 指 raw id）+ 3 raw 行（直连入口）+ 2 Qwen 纯直连 |
+| stepfun_official | 0 | 2 | ⚠️ step-1o / step-3.5-flash 即上游真名且未注册 = 仅直连/fallback；要进组须先注册规范名再补规范价行 |
+| siliconflow_aggregator | 0 | 99 | ⚠️ **有意保持 fallback-only**：聚合渠道 99 行全 raw，靠 Phase 2E fallback + 零精确候选时 fuzzy 接流量；registry.raw_ids 映射其 79 个模型，其中 ~57 个全靠 SF 独供（Qwen3.x/omni/vl/embedding/reranker、hunyuan、kimi-k2.x、图像视频语音等）、4 个与别处规范行重复（deepseek-v4-flash / deepseek-v4-pro / glm-5.2 / minimax-m2.5） |
+
+**新渠道 / 新模型接入规范（V6.6 起，此后一律照此办理）**
+
+1. 渠道价行 `model` 一律用**客户端会请求的名字**做匹配键：要进组路由的模型用 `model_registry`
+   里的规范名；只做直连的模型用上游真名即可（精确路由不查 registry，直接匹配价行名）。
+2. 上游真实模型 id 与匹配键不同时（`deepseek-ai/*`、`zai-org/*` 等带 org 前缀），差异填进
+   `raw_model_id`，router 会优先用它改写 body.model；相同时留空。
+3. 需要"直连 raw id"路径（观察线 / e2e / 临时直测）才额外保留 raw 行，否则不建。
+4. 组成员的 model_id 必须在至少一个渠道有规范名精确价行，否则该成员永远选不到
+   （fuzzy 只在"零精确候选"时兜底，有任一精确候选即被挡）。
+5. `registry.raw_ids` 只有 embeddings 消费；chat 路由消费的是 `price_snapshots.raw_model_id`，
+   两者不要混为一谈。
+6. 聚合类渠道（siliconflow 模式）可整渠道保持 raw 行、专职 fallback——这是设计内形态；
+   一旦要把它的某模型提为"一等候选"（进组/精确路由），再按本规范补规范名行。
+
 ### `gateway/proxy.py` — 上游转发
 
 ```
