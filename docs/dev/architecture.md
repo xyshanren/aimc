@@ -127,6 +127,23 @@ RouteEngine (单例 route_engine)
 └── invalidate_price() / invalidate_group()  情报侧精准失效
 ```
 
+**价行 `model` = 匹配键，`raw_model_id` = 真实上游模型名（V6.6, 2026-09-16）**
+
+`price_snapshots` 的 `model` 列只做**候选匹配键**（请求的规范名精确匹配；fuzzy 仅在无任何精确候选时兜底），
+转发上游时 `_channel_model` **优先取 `raw_model_id`**（exact/fuzzy/fallback 三处同规则），body.model 由此改写。
+接入"上游模型 id 与规范名不同"的渠道（modelscope `deepseek-ai/*`、siliconflow `zai-org/*`）时，
+每个模型**两行并存，各司其职**：
+
+| 价行 model | raw_model_id | 作用 |
+|---|---|---|
+| 规范名（如 `deepseek-flash`） | 上游 raw id（如 `deepseek-ai/DeepSeek-V4.1-Flash`） | **组路由入口**——成员按规范名命中渠道，上游收到 raw id |
+| 上游 raw id（raw_model_id 空） | — | **直连入口**——客户端按 raw id 请求时精确命中（观察线/e2e 用） |
+
+> ⚠️ raw 行**不要删**：删掉后直连 raw id 的请求不再精确命中该渠道（fuzzy 也匹配不上），会掉到
+> fallback 聚合渠道。反过来，只补规范名行而不填 `raw_model_id` 也不行——上游会收到规范名导致
+> model not exist。同渠道"规范名行 + raw 行"并存是设计内形态，不是脏数据。
+> 未接组的模型（如 modelscope 的 `Qwen/*` 两行）只有 raw 行，要进组时补"规范名行 + raw_model_id"即可。
+
 ### `gateway/proxy.py` — 上游转发
 
 ```
@@ -454,5 +471,5 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
 | 2026-09-14 (V6.5) | 折扣只作用解析命中模型 + promotion 强制 effective_to | 旧实现折扣乘到渠道全部 normal 模型（siliconflow 99 个）；promotion 行缺 end_date 经 upsert 旧值兜底永久生效（永久打折）；router 对存量 `effective_to=None` promotion 脏行拒绝兜底。订阅类（无折扣率）不转价格行（双轨拍板） |
 | 2026-09-14 (V6.5) | fire-and-forget 任务登记 + 停机 drain | 裸 create_task 不保存引用，lifespan dispose 前未等待 → 重启丢计量；`proxy._spawn()` 登记 + `shutdown_drain_tasks(timeout=10)`；定时采集 job 注册进 `_inflight_tasks` |
 | 2026-09-16 | requires_reasoning_echo 渠道级 CoT 回传 | DeepSeek 官方带 tools 要求每轮 assistant 回传 reasoning_content，跨渠道混合历史整轮 400；缺 rc 补空串占位 + CoT 会话不注入 enable_thinking=false（Phase B 注入会抹平 CoT） |
-| 2026-09-16 | 规范名匹配键与上游模型名分离 | 价行 `model` 只做匹配键，`_channel_model` 优先 `raw_model_id`（modelscope `deepseek-ai/*` 规范价行接入的前提） |
+| 2026-09-16 | 规范名匹配键与上游模型名分离 | 价行 `model` 只做匹配键，`_channel_model` 优先 `raw_model_id`（modelscope `deepseek-ai/*` 规范价行接入的前提）；同渠道"规范名行+raw 行"并存是设计内形态（raw 行=直连入口勿删），见 §3 router 小节 |
 | 2026-09-16 | 删 glm/stepfun tpm 假门，metering 立项未实现 | `increment_usage` 零调用点 → account_quotas 预检=纯静态门 `max_tokens×2>limit`；删假阳性行止血（deepseek_01 先例），token 维改 usage_logs SUM 真实测量单独立项 |
