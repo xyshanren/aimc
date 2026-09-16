@@ -5,7 +5,7 @@
 > 配套：模块间结合问题的逐条清单见 [module-integration-audit.md](module-integration-audit.md)；
 > 下一阶段规划调研见 [next-stage-research.md](next-stage-research.md)
 
-> **文档时点**：2026-09-14（对应 V6.5 稳定性批次完成，802 测试全绿）。文中的文件行号会随代码演进漂移，
+> **文档时点**：2026-09-16（对应旗舰修复批，840 测试全绿）。文中的文件行号会随代码演进漂移，
 > 引用时以函数名/符号名为主键，行号仅作定位辅助。
 
 ## 1. 系统分层
@@ -453,3 +453,6 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
 | 2026-09-14 (V6.5) | differ peek/commit 两段式 | 先落 hash 再解析，解析失败即永久吞掉该次变化（页面不再变则永不重试）；改 `has_changed(commit=False)` + `commit_source_hash()`，解析成功才提交 |
 | 2026-09-14 (V6.5) | 折扣只作用解析命中模型 + promotion 强制 effective_to | 旧实现折扣乘到渠道全部 normal 模型（siliconflow 99 个）；promotion 行缺 end_date 经 upsert 旧值兜底永久生效（永久打折）；router 对存量 `effective_to=None` promotion 脏行拒绝兜底。订阅类（无折扣率）不转价格行（双轨拍板） |
 | 2026-09-14 (V6.5) | fire-and-forget 任务登记 + 停机 drain | 裸 create_task 不保存引用，lifespan dispose 前未等待 → 重启丢计量；`proxy._spawn()` 登记 + `shutdown_drain_tasks(timeout=10)`；定时采集 job 注册进 `_inflight_tasks` |
+| 2026-09-16 | requires_reasoning_echo 渠道级 CoT 回传 | DeepSeek 官方带 tools 要求每轮 assistant 回传 reasoning_content，跨渠道混合历史整轮 400；缺 rc 补空串占位 + CoT 会话不注入 enable_thinking=false（Phase B 注入会抹平 CoT） |
+| 2026-09-16 | 规范名匹配键与上游模型名分离 | 价行 `model` 只做匹配键，`_channel_model` 优先 `raw_model_id`（modelscope `deepseek-ai/*` 规范价行接入的前提） |
+| 2026-09-16 | 删 glm/stepfun tpm 假门，metering 立项未实现 | `increment_usage` 零调用点 → account_quotas 预检=纯静态门 `max_tokens×2>limit`；删假阳性行止血（deepseek_01 先例），token 维改 usage_logs SUM 真实测量单独立项 |

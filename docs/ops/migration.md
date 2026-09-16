@@ -51,6 +51,7 @@ AIMC 当前有 **23 个 migration 脚本**（`db/migrations/`）：
 2026_09_05_v6x_reasoning_tokens.py          # V6.x 思考 token 计量（usage_logs.reasoning_tokens 列, NULL=上游未返回）
 2026_09_09_v6x_feedback_score_no_retry.py   # V6.x 反馈分四项修复（usage_logs.feedback_score_no_retry 列 + 聚合口径）
 2026_09_11_v6x_thinking_inject.py           # V6.4 思考 Phase B（channels.disable_thinking_inject 渠道注入开关, 默认 0）
+2026_09_16_v6x_requires_reasoning_echo.py   # V6.6 DeepSeek thinking 回传（channels.requires_reasoning_echo 渠道标记, 默认 0）
 ```
 
 > 生产环境（ubuntu2401）只跑幂等 migration，**不要**跑 `seed_model_groups.py` /
