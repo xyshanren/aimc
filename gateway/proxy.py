@@ -192,6 +192,37 @@ def _inject_thinking_off(body_dict: dict) -> dict:
     return out
 
 
+def _fill_reasoning_content(body: bytes) -> bytes:
+    """V6.5: 补齐缺失的 reasoning_content 占位 (DeepSeek 官方 thinking 回传要求)
+
+    DeepSeek 官方在带 tools 的请求里要求历史**每一轮** assistant 都带
+    reasoning_content, 混合历史 (部分有 rc, 部分没有, e.g. 跨渠道会话) 会被上游
+    400 (retryable=false, 整轮失败). 当某渠道 requires_reasoning_echo=1 时,
+    proxy 转发前对缺 rc 的 assistant 补空串占位, 统一历史形态避免 400.
+
+    只在"历史混合"时补: 全有 rc 或全无 rc 都不改 (全无 rc 上游也能接受).
+    空串占位已实测 (2026-09-16) DeepSeek 返回 200, 且不注入假文本污染上下文.
+    """
+    try:
+        body_dict = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return body
+    msgs = body_dict.get("messages")
+    if not msgs:
+        return body
+    assistants = [m for m in msgs if m.get("role") == "assistant"]
+    if not assistants:
+        return body
+    has_any = any(isinstance(m.get("reasoning_content"), str) for m in assistants)
+    missing = [m for m in assistants if "reasoning_content" not in m]
+    if not has_any or not missing:
+        return body
+    for m in missing:
+        m["reasoning_content"] = ""
+    logger.info(f"[V6.5 reasoning 补齐] 为 {len(missing)} 条缺失 reasoning_content 的 assistant 补占位")
+    return json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
+
+
 def _parse_drop_params(raw) -> list:
     """P2-B: 解析 channel.drop_params 为 list[str]
 
@@ -599,13 +630,22 @@ async def forward_request(
         try:
             import json as _tjson
             _body_dict = _tjson.loads(body)
-            _injected_body = _inject_thinking_off(_body_dict)
-            if _injected_body is not _body_dict:  # 实际注入了
-                body = _tjson.dumps(_injected_body, ensure_ascii=False).encode("utf-8")
-                logger.info(
-                    f"[Phase B thinking 注入] channel={channel.get('name')} "
-                    f"enable_thinking=false"
-                )
+            # V6.5 (2026-09-16): 会话已带 CoT (assistant 有 reasoning_content) 时
+            # 不再注入 enable_thinking=false — 强关思考会抹掉该渠道轮次的 CoT,
+            # 产生混合历史, 后续落到 DeepSeek 官方 (requires_reasoning_echo) 会被 400.
+            _has_cot = any(
+                isinstance(m.get("reasoning_content"), str)
+                for m in (_body_dict.get("messages") or [])
+                if m.get("role") == "assistant"
+            )
+            if not _has_cot:
+                _injected_body = _inject_thinking_off(_body_dict)
+                if _injected_body is not _body_dict:  # 实际注入了
+                    body = _tjson.dumps(_injected_body, ensure_ascii=False).encode("utf-8")
+                    logger.info(
+                        f"[Phase B thinking 注入] channel={channel.get('name')} "
+                        f"enable_thinking=false"
+                    )
         except (json.JSONDecodeError, UnicodeDecodeError):
             pass  # 非 JSON body, 跳过
 
@@ -624,6 +664,11 @@ async def forward_request(
         body = _maybe_rewrite_body_model(body, channel, requested_model, channel_model)
     elif actual_model != requested_model:
         body = _maybe_rewrite_body_model(body, channel, requested_model, actual_model)
+
+    # V6.5 (2026-09-16): requires_reasoning_echo 渠道 (DeepSeek 官方) 转发前补齐
+    # 缺失的 reasoning_content 占位, 避免带 tools 的混合历史被上游 400.
+    if channel.get("requires_reasoning_echo"):
+        body = _fill_reasoning_content(body)
 
     # 构建上游请求头
     forward_headers = {
@@ -1212,38 +1257,51 @@ async def _write_usage_log(
         from db.engine import async_session_factory
         from db.models import UsageLog
 
-        async with async_session_factory() as session:
-            log = UsageLog(
-                channel_id=channel_id,
-                account_id=account_id,
-                model=model,
-                group_id=group_id,
-                caller_id=caller_id,
-                key_id=caller_key_id,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                status_code=status_code,
-                latency_ms=latency_ms,
-                # P0-3 follow-up: 3 个 cache token 字段
-                cached_input_tokens=cached_input_tokens,
-                cache_read_input_tokens=cache_read_input_tokens,
-                cache_creation_input_tokens=cache_creation_input_tokens,
-                # V6.x: 思考 token (观察关思考评估)
-                reasoning_tokens=reasoning_tokens,
-                # V4.8.5: 估算费用 (激活成本告警 / 周报 / 看板省钱量化)
-                cost_estimate=cost_estimate,
-                # V6.0 Phase 2: 官方标价口径 (成本审计, 节省 = 标价 - 实付)
-                list_cost_estimate=list_cost_estimate,
-                # V6.x: 上游失败落库 (流式 4xx/5xx 无 usage 时补一行错误记录)
-                error_msg=error_msg,
-                error_type=error_type,
-                error_code=error_code,
-                needs_human=bool(needs_human) if needs_human is not None else False,
-            )
-            session.add(log)
-            await session.commit()
+        # V6.5 (2026-09-16): sqlite 并发写 SQLITE_BUSY (database is locked) 时
+        # 短重试 (每次新 session, 避免 rollback 后对象态问题). 之前异常被吞掉 →
+        # 这类拒绝在 usage_logs 不可见, 只有 cooldown_events 有记录.
+        last_err: Exception | None = None
+        for _attempt in range(3):
+            try:
+                async with async_session_factory() as session:
+                    log = UsageLog(
+                        channel_id=channel_id,
+                        account_id=account_id,
+                        model=model,
+                        group_id=group_id,
+                        caller_id=caller_id,
+                        key_id=caller_key_id,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        status_code=status_code,
+                        latency_ms=latency_ms,
+                        # P0-3 follow-up: 3 个 cache token 字段
+                        cached_input_tokens=cached_input_tokens,
+                        cache_read_input_tokens=cache_read_input_tokens,
+                        cache_creation_input_tokens=cache_creation_input_tokens,
+                        # V6.x: 思考 token (观察关思考评估)
+                        reasoning_tokens=reasoning_tokens,
+                        # V4.8.5: 估算费用 (激活成本告警 / 周报 / 看板省钱量化)
+                        cost_estimate=cost_estimate,
+                        # V6.0 Phase 2: 官方标价口径 (成本审计, 节省 = 标价 - 实付)
+                        list_cost_estimate=list_cost_estimate,
+                        # V6.x: 上游失败落库 (流式 4xx/5xx 无 usage 时补一行错误记录)
+                        error_msg=error_msg,
+                        error_type=error_type,
+                        error_code=error_code,
+                        needs_human=bool(needs_human) if needs_human is not None else False,
+                    )
+                    session.add(log)
+                    await session.commit()
+                return
+            except Exception as e:
+                last_err = e
+                if "database is locked" in str(e) and _attempt < 2:
+                    await asyncio.sleep(0.05 * (_attempt + 1))
+                    continue
+                raise
     except Exception as e:
-        logger.warning(f"用量日志写入失败: {e}")
+        logger.warning(f"用量日志写入失败: {last_err if last_err is not None else e}")
 
 
 def _schedule_transcript_log(

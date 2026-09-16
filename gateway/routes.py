@@ -171,7 +171,7 @@ async def chat_completions(request: Request):
                         "failed_channels": failed_channels,
                     }
                 },
-                headers={"X-AIMC-Failed-Channels": json.dumps(failed_channels, ensure_ascii=False)} if failed_channels else {},
+                headers={"X-AIMC-Failed-Channels": json.dumps(failed_channels, ensure_ascii=True)} if failed_channels else {},
             )
 
         # P0-6 (2026-08-14): 多维限额检查 (rpm/tpm/concurrent/daily/weekly/5h)
@@ -343,7 +343,7 @@ async def chat_completions(request: Request):
             # 截断 JSON (本机实证: 声明 25B / 实际 351B)。构造新响应前必须剥掉。
             for _h in ("content-length", "transfer-encoding", "connection"):
                 new_headers.pop(_h, None)
-            new_headers["X-AIMC-Failed-Channels"] = json.dumps(failed_channels, ensure_ascii=False)
+            new_headers["X-AIMC-Failed-Channels"] = json.dumps(failed_channels, ensure_ascii=True)
             # V4.9: 加 X-AIMC-Last-Error-Type + Last-Error-Code, 客户端无需 parse JSON
             if failed_channels:
                 last = failed_channels[-1]
@@ -370,5 +370,5 @@ async def chat_completions(request: Request):
             "type": "service_unavailable",
             "failed_channels": failed_channels,
         }},
-        headers={"X-AIMC-Failed-Channels": json.dumps(failed_channels, ensure_ascii=False)} if failed_channels else {},
+        headers={"X-AIMC-Failed-Channels": json.dumps(failed_channels, ensure_ascii=True)} if failed_channels else {},
     )
