@@ -33,6 +33,33 @@ logger = logging.getLogger(__name__)
 ROUTER_CACHE_TTL_SECONDS = int(os.getenv("AIMC_ROUTER_CACHE_TTL", "60"))
 
 
+def _estimate_input_tokens(messages) -> int:
+    """V6.6.x 体量准入: 粗估单请求输入 token 数 (只用于渠道准入门槛, 不求精确)
+
+    口径: 文本 ~3 字符/token (英文 ~4, 中文 ~1.5, 取中), 图片每张按 1000 token 计。
+    宁大勿小 — 高估只会让大请求更早绕开小容量渠道, 不会误放。
+    """
+    if not messages:
+        return 0
+    total_chars = 0
+    images = 0
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    total_chars += len(part.get("text") or "")
+                elif part.get("type") in ("image_url", "image", "input_image"):
+                    images += 1
+    return total_chars // 3 + images * 1000
+
+
 def _has_multimodal_content(messages):
     """P0-3 (2026-08-14): 判断 messages 是否含 multimodal content (image/audio/file)
 
@@ -685,6 +712,24 @@ class RouteEngine:
                 return fallback
             logger.warning(f"无可用渠道支持模型: {model}")
             return None
+
+        # 1.5 V6.6.x 体量准入: 单请求估算输入超过渠道上限的候选剔除;
+        # 全部候选都超限时保留原候选 (宁试一次也不 503 — 共享池偶发的余量窗口仍能接住)
+        _max_in_map = getattr(settings, "channel_max_input_tokens", None) or {}
+        if _max_in_map and messages:
+            _est_in = _estimate_input_tokens(messages)
+            if _est_in > 0:
+                def _over_limit(pair):
+                    ch, _ = pair
+                    limit = _max_in_map.get(ch["name"])
+                    return limit is not None and _est_in > limit
+                _over = [p for p in candidates if _over_limit(p)]
+                if _over and len(_over) < len(candidates):
+                    candidates = [p for p in candidates if not _over_limit(p)]
+                    logger.info(
+                        f"[V6.6.x 体量准入] est_input_tokens={_est_in} 超过渠道上限, "
+                        f"剔除 {[p[0]['name'] for p in _over]} (model={model})"
+                    )
 
         # 2. 频限过滤
         from gateway.limiter import rate_limiter

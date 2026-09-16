@@ -44,6 +44,35 @@
 > `[结合]` = [module-integration-audit.md](module-integration-audit.md)。
 > 严重度以审查报告的 S1~S12 编号为准。
 
+### ⚡ 已上产（2026-09-16）：sensenova 体量准入 + TPM/RPM 冷却基数
+
+**根因（直连探测 4 轮 + 用户控制台截图定量）**：9/13 起 sensenova 上游 429001 近乎全挂
+（9/13-9/16 共 55 次尝试 43 次 429），不是账号积分问题——两账号通用池 5h 窗口可用
+94.6%/100%、周余额 488k/599.6k（额度 600k）仍被拒。真实约束 = **免费公测池的共享吞吐
+TPM**：同一秒同 key 下 84 token 请求 200、110k token 429（0.5~1.2s 立即返回）；完全静默
+300s 后 6k 仍挂；阈值不单调（2k 挂/6k 过/12k 挂）= 抢共享池瞬时余量。独立闸门：**RPM
+≈8 次/分**（`code 8 / quota_exceeded_error / rpm exhausted`，与 429001 是两回事）。
+上游响应无任何 `x-ratelimit-*` 头。生产影响：sensenova 的 deepseek 价行 0.0 → cheapest
+恒第一 → 每个旗舰请求先白跑一趟 429（600~800ms）再 failover；9/12 起 deepseek-v4-pro
+成功率仅 21%（16/76）。
+
+**处置（两项，同日上产）**：
+1. **路由体量准入**：`config.channel_max_input_tokens`（渠道名→估算输入 token 上限，
+   默认 `{"sensenova_official": 30000}`，env `AIMC_CHANNEL_MAX_INPUT_TOKENS` JSON 可调）。
+   `router.select_best_channel` 在频限过滤前按 `_estimate_input_tokens`（文本 ~3 字符/
+   token，图片 1000/张，宁大勿小）剔除超限候选；**全部候选都超限时保留原候选**
+   （宁试一次也不 503，共享池偶发余量窗口如 9/16 10:48 三连 107k 仍能接住）。
+2. **TPM/RPM 类 429 冷却基数 30s→300s**：`error_classifier` 对 429 且 code 含 `429001`
+   或 code+message 含 `tpm`/`rpm` 的 rate_limited 给 `300s/600s`（指数退避与
+   `health_probe_max_backoff=3600` 封顶不变，连续失败 300→600→1200→2400→3600）；
+   其他瞬时 429（glm 1305 过载波纹等）保持 30s/60s。依据：实测 63% 的 429 后面跟着
+   429、静默 5 分钟不恢复，30s 基数解冻即重撞。
+
+**测试**：新增 `tests/test_v66x_size_admission_tpm_cooldown.py` 28 项（估算器 8 + 准入
+路由 7 + 分类 3 + 冷却序列 2 + 既有行为回归），全量 834 全绿。
+**明确不做**：按时段限流（工作日 9-18 更易限流的假设被簇级 bootstrap 证伪：剔 1 个簇即
+消失、簇数 7≈暴露期望 6.2、CI 跨 0）；渠道 disabled（会丢掉偶发大窗口的免费额度）。
+
 ### ⚡ 已上产（2026-09-14 商定并当日完成，优先于下方所有批次）：429 隐形拒绝修复
 
 **现象**：tier:flagship 组的请求（zcode 调用）在 sensenova_official 被 429 限流期间，两个
@@ -334,7 +363,7 @@ Alembic（方案 B）不引入，版本表名格式兼容保留演进空间。
 
 | # | 观察线 | 现状 / 最近截止 |
 |---|--------|----------------|
-| 1 | sensenova 积分池压力（60k/5h + 600k/周，池级共享 TPM） | 持续观察；输入分组再平衡已上产 |
+| 1 | sensenova 429 观察线（2026-09-16 探测定性：429001=免费公测池**共享吞吐**，与积分无关——积分满格仍拒；另有独立 RPM≈8/分闸门 code 8；积分窗口 60k/5h 仅在重载日成为附加约束） | 体量准入（>30k token 不走 sensenova）+ 429001 冷却基数 300s 已上产；观察 channel_id=5 的 429 率与大请求成功率，若共享池余量恢复（大请求重新可过）再评估放宽阈值 |
 | 1b | **modelscope 渠道观察**：请求数/失败率/免费额度消耗（官方"动态调整"无固定 RPD）、与 sensenova 的 deepseek 系流量分配变化、V4.1-Flash 与 sensenova deepseek-v4-flash 的代际混淆是否造成路由困扰 | 2026-09-14 渠道上线，e2e 200 |
 | 1c | **free_llm_collection 情报源观察**：README 变化 → 审批队列产出节奏（首批 conf 0.92 已入库）；GitHub raw 经 Playwright `<pre>` 包装的解析质量 | 2026-09-14 首采成功 |
 | 2 | glm_bigmodel 1305 过载波纹（同账号 30s 冷却波及免费模型） | 持续观察 |

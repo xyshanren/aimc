@@ -146,6 +146,17 @@ class Settings(BaseSettings):
     # V4.9.1 防护 #3: account_health_log 保留天数 (防表无限增长)
     account_health_log_retention_days: int = 7         # env: AIMC_ACCOUNT_HEALTH_LOG_RETENTION_DAYS
 
+    # === V6.6.x (2026-09-16): 路由体量准入 ===
+    # 渠道名 -> 单请求估算输入 token 上限。估算超过阈值的请求不把该渠道列入路由候选;
+    # 若全部候选都超限则保留原候选 (宁试一次也不 503, 共享池偶发的余量窗口仍能接住)。
+    # 背景: sensenova 免费公测池为全体用户共享吞吐, 10 万 token 级大请求基本必被
+    # 429001 拒 (同秒小请求可过), 每次白跑一趟上游再 failover; 小请求成功率高。
+    # 估算口径见 gateway/router.py:_estimate_input_tokens (~3 字符/token, 图片 1000/张)。
+    # env: AIMC_CHANNEL_MAX_INPUT_TOKENS (JSON, e.g. '{"sensenova_official": 30000}')
+    channel_max_input_tokens: dict = Field(
+        default_factory=lambda: {"sensenova_official": 30000},
+    )
+
     # === V4.9: needs_human 触发阈值 (按 ErrorCategory) ===
     # 当某 error_type 累计失败次数 >= 此阈值时, 标 needs_human=True (等人介入, 不再主动探)
     needs_human_quota_threshold: int = 2               # env: AIMC_NEEDS_HUMAN_QUOTA_THRESHOLD (quota 失败 2 次 → 需人工)

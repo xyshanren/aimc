@@ -240,6 +240,20 @@ def classify(
     # === 5. status_code fallback ===
     if status_code == 429:
         # 429 但 code/message 不匹配 quota → rate_limited
+        # V6.6.x (2026-09-16): TPM/RPM 类限流是共享池吞吐约束而非瞬时过载 —
+        # sensenova 实测 63% 的 429 后面跟着 429, 完全静默 5 分钟也不恢复,
+        # 30s 基数解冻即重撞; 提到 300s (指数退避不变, 仍封顶 health_probe_max_backoff)。
+        # 其他瞬时 429 (如 glm 1305 过载波纹) 保持 30s 快速自愈。
+        _h = haystack.lower()
+        if "429001" in _h or "tpm" in _h or "rpm" in _h:
+            return ErrorInfo(
+                category=ErrorCategory.RATE_LIMITED,
+                error_code=code,
+                error_msg=msg,
+                needs_human=False,
+                suggested_cooldown_seconds=300,
+                suggested_probe_after_seconds=600,
+            )
         return ErrorInfo(
             category=ErrorCategory.RATE_LIMITED,
             error_code=code,
