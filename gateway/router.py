@@ -713,24 +713,6 @@ class RouteEngine:
             logger.warning(f"无可用渠道支持模型: {model}")
             return None
 
-        # 1.5 V6.6.x 体量准入: 单请求估算输入超过渠道上限的候选剔除;
-        # 全部候选都超限时保留原候选 (宁试一次也不 503 — 共享池偶发的余量窗口仍能接住)
-        _max_in_map = getattr(settings, "channel_max_input_tokens", None) or {}
-        if _max_in_map and messages:
-            _est_in = _estimate_input_tokens(messages)
-            if _est_in > 0:
-                def _over_limit(pair):
-                    ch, _ = pair
-                    limit = _max_in_map.get(ch["name"])
-                    return limit is not None and _est_in > limit
-                _over = [p for p in candidates if _over_limit(p)]
-                if _over and len(_over) < len(candidates):
-                    candidates = [p for p in candidates if not _over_limit(p)]
-                    logger.info(
-                        f"[V6.6.x 体量准入] est_input_tokens={_est_in} 超过渠道上限, "
-                        f"剔除 {[p[0]['name'] for p in _over]} (model={model})"
-                    )
-
         # 2. 频限过滤
         from gateway.limiter import rate_limiter
         from gateway.cooldown import cooldown_manager
@@ -755,6 +737,35 @@ class RouteEngine:
         if not candidates:
             logger.warning(f"所有渠道配额耗尽: {model}")
             return None
+
+        # 3.5 V6.6.x 体量准入 (2026-09-16): 渠道可声明单请求输入 token 适配窗
+        # [min, max] (config.channel_min_input_tokens / channel_max_input_tokens),
+        # 窗口外的候选剔除; 全部候选都在窗外则保留原候选 (宁试一次也不 503 —
+        # 冷却/配额过滤之后才做本步, 保证任何可用渠道不会被窗口规则饿死)。
+        # 依据 (直连探测 + 用户拍板): sensenova 免费池=共享吞吐, 大请求基本必拒、
+        #   小请求可过 → max 30000 挡大; taotoken 按**调用次数**计费 (~2000 次/5h),
+        #   小请求烧次数不划算 → min 30000 挡小, 次数留给 sensenova 接不住的大请求。
+        # 即: 小请求优先 sensenova, 大请求走 taotoken; 一方不可用时另一方兜底。
+        _min_map = getattr(settings, "channel_min_input_tokens", None) or {}
+        _max_map = getattr(settings, "channel_max_input_tokens", None) or {}
+        if (_min_map or _max_map) and messages:
+            # est=0 (极小请求) 对上界无影响, 对下界意味着 "远低于窗" — 必须参与判定
+            _est_in = _estimate_input_tokens(messages)
+
+            def _out_of_window(pair):
+                ch, _ = pair
+                lo = _min_map.get(ch["name"])
+                hi = _max_map.get(ch["name"])
+                return (lo is not None and _est_in < lo) or (
+                    hi is not None and _est_in > hi)
+
+            _out = [p for p in candidates if _out_of_window(p)]
+            if _out and len(_out) < len(candidates):
+                candidates = [p for p in candidates if not _out_of_window(p)]
+                logger.info(
+                    f"[V6.6.x 体量准入] est_input_tokens={_est_in} 超出渠道适配窗, "
+                    f"剔除 {[p[0]['name'] for p in _out]} (model={model})"
+                )
 
         # 阶段3 (2026-08-14): score-based 多维排序
         # 替代原 round-robin + 多 key 排序, 改为单 score (DESC 排序)

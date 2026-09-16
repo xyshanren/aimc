@@ -97,7 +97,8 @@ def test_estimate_empty():
 # ====================== 2. select_best_channel 体量准入 ======================
 
 def _build_channels(names):
-    """sensenova (0 价, priority 5) + deepseek_official (3 元, priority 10)"""
+    """sensenova (0 价, priority 5) + deepseek_official (3 元, priority 10)
+    + taotoken_coding (0 价, priority 9)"""
     pool = {
         "sensenova_official": {
             "id": 5, "name": "sensenova_official", "provider": "sensenova",
@@ -119,6 +120,17 @@ def _build_channels(names):
             "prices": [{"model": "deepseek-v4-pro", "price_type": "normal",
                         "time_range": "全天", "input_price": 3.0,
                         "output_price": 9.0}],
+            "quotas": [],
+        },
+        "taotoken_coding": {
+            "id": 8, "name": "taotoken_coding", "provider": "taotoken",
+            "priority": 9, "provider_type": "official",
+            "billing_mode": "pay_per_token", "account_id": 53,
+            "account_name": "tt-01", "api_key": "sk-mock",
+            "quota_total": None, "quota_used": 0, "quota_remaining": None,
+            "prices": [{"model": "deepseek-v4-pro", "price_type": "normal",
+                        "time_range": "全天", "input_price": 0.0,
+                        "output_price": 0.0}],
             "quotas": [],
         },
     }
@@ -272,6 +284,100 @@ def test_cooldown_backoff_plain_429_unchanged():
     check("plain 1st ~30s", 25 <= got[0] <= 35, True)
     check("plain 2nd ~60s", 55 <= got[1] <= 65, True)
     check("plain 3rd ~120s", 115 <= got[2] <= 125, True)
+
+
+# ====================== 2b. 适配窗下界 (小请求优先 sensenova) ======================
+
+def _set_window(min_map, max_map):
+    settings.channel_min_input_tokens = min_map
+    settings.channel_max_input_tokens = max_map
+
+
+_WINDOW = ({"taotoken_coding": 30000}, {"sensenova_official": 30000})
+
+
+def test_small_request_prefers_sensenova():
+    """小请求: taotoken 在窗口下界之外被剔除, 0 价 sensenova 接盘 (省 taotoken 次数)"""
+    old = (getattr(settings, "channel_min_input_tokens", None),
+           getattr(settings, "channel_max_input_tokens", None))
+    _set_window(*_WINDOW)
+    try:
+        ch = _select(["sensenova_official", "taotoken_coding"],
+                     [{"role": "user", "content": "hi"}])
+        check("small request prefers sensenova", ch["name"], "sensenova_official")
+    finally:
+        _set_window(*old)
+
+
+def test_big_request_goes_taotoken():
+    """大请求: sensenova 被上界剔除, taotoken 承接 (次数花在 sensenova 接不住的请求上)"""
+    old = (getattr(settings, "channel_min_input_tokens", None),
+           getattr(settings, "channel_max_input_tokens", None))
+    _set_window(*_WINDOW)
+    try:
+        ch = _select(["sensenova_official", "taotoken_coding"],
+                     [{"role": "user", "content": "x" * 120000}])
+        check("big request goes taotoken", ch["name"], "taotoken_coding")
+    finally:
+        _set_window(*old)
+
+
+def test_sensenova_cooldown_small_falls_back_taotoken():
+    """sensenova 冷却中 + 小请求: 窗口内无候选 → 保留全部 → taotoken 兜底 (不 503)"""
+    from gateway.cooldown import cooldown_manager
+    from gateway.error_classifier import ErrorCategory, ErrorInfo
+    old = (getattr(settings, "channel_min_input_tokens", None),
+           getattr(settings, "channel_max_input_tokens", None))
+    _set_window(*_WINDOW)
+    cooldown_manager.mark_failure(51, error_info=ErrorInfo(
+        category=ErrorCategory.RATE_LIMITED, error_code="429001",
+        error_msg="inference exceeds tpm/rpm limit", needs_human=False,
+        suggested_cooldown_seconds=300, suggested_probe_after_seconds=600))
+    try:
+        ch = _select(["sensenova_official", "taotoken_coding"],
+                     [{"role": "user", "content": "hi"}])
+        check("cooldown fallback to taotoken", ch["name"], "taotoken_coding")
+    finally:
+        _set_window(*old)
+        cooldown_manager._state.pop(51, None)
+
+
+def test_min_map_empty_disables_floor():
+    """min map 为空 → 下界关闭, 小请求回到分数排序 (taotoken 0 价 + priority 高胜出)"""
+    old = (getattr(settings, "channel_min_input_tokens", None),
+           getattr(settings, "channel_max_input_tokens", None))
+    _set_window({}, {"sensenova_official": 30000})
+    try:
+        ch = _select(["sensenova_official", "taotoken_coding"],
+                     [{"role": "user", "content": "hi"}])
+        check("min map empty -> taotoken wins", ch["name"], "taotoken_coding")
+    finally:
+        _set_window(*old)
+
+
+def test_boundary_exact_min_allowed():
+    """估算恰好等于下界 (90000 字符 → 30000) → taotoken 仍在窗内 (只剔 strictly below)"""
+    old = (getattr(settings, "channel_min_input_tokens", None),
+           getattr(settings, "channel_max_input_tokens", None))
+    _set_window(*_WINDOW)
+    try:
+        ch = _select(["sensenova_official", "taotoken_coding"],
+                     [{"role": "user", "content": "x" * 90000}])
+        check("est == min still taotoken", ch["name"], "taotoken_coding")
+    finally:
+        _set_window(*old)
+
+
+def test_taotoken_only_small_kept():
+    """只有 taotoken 一个候选 + 小请求 (窗外) → 保留原候选 (不 503)"""
+    old = (getattr(settings, "channel_min_input_tokens", None),
+           getattr(settings, "channel_max_input_tokens", None))
+    _set_window(*_WINDOW)
+    try:
+        ch = _select(["taotoken_coding"], [{"role": "user", "content": "hi"}])
+        check("taotoken only small kept", ch["name"], "taotoken_coding")
+    finally:
+        _set_window(*old)
 
 
 # ====================== runner ======================

@@ -147,14 +147,18 @@ class Settings(BaseSettings):
     account_health_log_retention_days: int = 7         # env: AIMC_ACCOUNT_HEALTH_LOG_RETENTION_DAYS
 
     # === V6.6.x (2026-09-16): 路由体量准入 ===
-    # 渠道名 -> 单请求估算输入 token 上限。估算超过阈值的请求不把该渠道列入路由候选;
-    # 若全部候选都超限则保留原候选 (宁试一次也不 503, 共享池偶发的余量窗口仍能接住)。
-    # 背景: sensenova 免费公测池为全体用户共享吞吐, 10 万 token 级大请求基本必被
-    # 429001 拒 (同秒小请求可过), 每次白跑一趟上游再 failover; 小请求成功率高。
+    # 渠道名 -> 单请求估算输入 token 的适配窗上/下界。窗口外的候选在频限+配额过滤
+    # 之后剔除; 全部候选都在窗外则保留原候选 (宁试一次也不 503)。
+    # 依据: sensenova 免费公测池=共享吞吐, 大请求基本必拒、小请求可过 → max 挡大;
+    # taotoken 按**调用次数**计费 (~2000 次/5h), 小请求烧次数不划算 → min 挡小。
+    # 即: 小请求优先 sensenova, 大请求走 taotoken; 一方不可用时另一方兜底。
     # 估算口径见 gateway/router.py:_estimate_input_tokens (~3 字符/token, 图片 1000/张)。
-    # env: AIMC_CHANNEL_MAX_INPUT_TOKENS (JSON, e.g. '{"sensenova_official": 30000}')
+    # env: AIMC_CHANNEL_MAX_INPUT_TOKENS / AIMC_CHANNEL_MIN_INPUT_TOKENS (JSON)
     channel_max_input_tokens: dict = Field(
         default_factory=lambda: {"sensenova_official": 30000},
+    )
+    channel_min_input_tokens: dict = Field(
+        default_factory=lambda: {"taotoken_coding": 30000},
     )
 
     # === V4.9: needs_human 触发阈值 (按 ErrorCategory) ===
