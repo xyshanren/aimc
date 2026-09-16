@@ -303,6 +303,7 @@ class RouteEngine:
                     "cached_input_price": p.cached_input_price,
                     "cache_write_price": p.cache_write_price,
                     "is_promotion": p.is_promotion,
+                    "raw_model_id": p.raw_model_id,
                 }
                 for p in ch.price_snapshots
                 if self._is_price_effective(p)
@@ -415,6 +416,8 @@ class RouteEngine:
                 "cached_input_price": p.cached_input_price,
                 "cache_write_price": p.cache_write_price,
                 "is_promotion": p.is_promotion,
+                # V6.5: 上游模型名 (modelscope 等 raw id 与规范名不同时, 冲突绑定键/上游名分离)
+                "raw_model_id": p.raw_model_id,
             }
             for p in ch.price_snapshots
             if self._is_price_effective(p)
@@ -448,6 +451,7 @@ class RouteEngine:
                 "supports_prompt_cache": ch.supports_prompt_cache,  # P1-12: cache 支持
                 "disable_thinking_pass_through": ch.disable_thinking_pass_through,  # V4.6.4: thinking 剥离
                 "disable_thinking_inject": ch.disable_thinking_inject,  # Phase B: thinking 注入
+                "requires_reasoning_echo": ch.requires_reasoning_echo,  # V6.5: DeepSeek thinking 回传
                 "drop_params": ch.drop_params,  # P2-B: 按通道剥离不支持的上游参数
                 "auto_drop_params": ch.auto_drop_params,  # V4.8.7: 上游 400 自动学习
                 "priority": ch.priority,
@@ -663,7 +667,7 @@ class RouteEngine:
                 # V4.9.7: 无条件覆写 — ch 是 _channels_cache 共享 dict, 旧逻辑"同名精确匹配
                 # 不写入"会让上一请求残留的 _channel_model (e.g. minimax-m3) 泄漏给本次
                 # 同名匹配的请求 (e.g. minimax-m2.5), proxy body 被替换成错误模型
-                channel_model = price_info.get("model") or model
+                channel_model = price_info.get("raw_model_id") or price_info.get("model") or model
                 if channel_model != model:
                     logger.debug(
                         f"[V4.6.5] _channel_model: {model} -> {channel_model} (channel={ch['name']})"
@@ -678,7 +682,7 @@ class RouteEngine:
                 if price_info is not None:
                     # V4.6.5: fuzzy match 同样存 _channel_model (可能 prefix-stripped)
                     # V4.9.7: 同上, 无条件覆写防共享 dict 残留值泄漏
-                    channel_model = price_info.get("model") or model
+                    channel_model = price_info.get("raw_model_id") or price_info.get("model") or model
                     if channel_model != model:
                         logger.debug(
                             f"[V4.6.5 fuzzy] _channel_model: {model} -> {channel_model} (channel={ch['name']})"
@@ -698,7 +702,7 @@ class RouteEngine:
                 # - 我们用 fuzzy 找到的 price_model 替换, 上游能识别
                 fuzzy_price = self._get_fuzzy_price(fallback, model, now)
                 if fuzzy_price:
-                    fallback["_channel_model"] = fuzzy_price["model"]  # proxy 用这个
+                    fallback["_channel_model"] = fuzzy_price.get("raw_model_id") or fuzzy_price["model"]  # proxy 用这个
                     logger.info(
                         f"无可用渠道支持模型: {model}, fallback 到 {fallback['name']} "
                         f"-> upstream model={fuzzy_price['model']} (priority={fallback['priority']})"
