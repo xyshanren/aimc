@@ -168,15 +168,23 @@ forward_request(channel, body, headers, requested_model, actual_model)
 ### `gateway/quota.py` — 多维限额检查
 
 ```
-check_user_quota(caller_id, estimated_tokens) [V4.8]
-└── _sum_user_tokens() 按 usage_logs.caller_id 聚合本地日/月窗口
+check_user_quota(caller_id, estimated_tokens) [V4.8, 语义不变]
+└── _sum_user_tokens() 按 usage_logs.caller_id 聚合本地日/月窗口 + 准入预留
     └── 超限 → 429 daily/monthly_token_limit_exceeded
 
-check_account_quota(account_id, estimated_tokens) [P0-6]
-└── _check_dimension() 读 AccountQuotaUsage.used_value
-    ├── balance_cny: window_start IS NULL = 未 sync -> 跳过 [P1-15]
-    ├── rpm / tpm / concurrent / daily_tokens / weekly_tokens / 5h_tokens
-    └── ⚠️ used_value 生产无写入方 → 除 balance 外恒放行 (见结合诊断 §A2)
+check_account_quota(account_id) [P0-6 → V6.6 纯真实测量, 无预留]
+└── _check_dimension()
+    ├── balance_cny: 读 AccountQuotaUsage (window_start=sync 标记) [P1-15]
+    ├── tpm/daily/weekly/5h_tokens: usage_logs 按账号+窗口 SUM [V6.6]
+    │   └── _token_window_start(): tpm=60s / daily=本地零点 / weekly=ISO周一
+    │       或 rolling window_seconds / 5h=rolling 18000s
+    ├── rpm: usage_logs 近 60s COUNT [V6.6]
+    └── concurrent: 内存 in-flight 计数 (proxy acquire/release) [V6.6]
+
+⚠️ 历史 (已根除): 旧实现读 AccountQuotaUsage.used_value 且结算半边
+increment_usage 零调用点 → 预检退化静态门 max_tokens×2>limit, tpm 短窗对
+大 max_tokens 请求恒拒 (deepseek_01/glm_01/stepfun_01 三行 tpm 全中招, 均已删)。
+V6.6 重设计见决策表; account_quota_usage 仅剩 balance_cny sync 标记在用。
 ```
 
 ### `gateway/cooldown.py` — 失败账号冷却状态机（V4.9）
@@ -473,3 +481,4 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
 | 2026-09-16 | requires_reasoning_echo 渠道级 CoT 回传 | DeepSeek 官方带 tools 要求每轮 assistant 回传 reasoning_content，跨渠道混合历史整轮 400；缺 rc 补空串占位 + CoT 会话不注入 enable_thinking=false（Phase B 注入会抹平 CoT） |
 | 2026-09-16 | 规范名匹配键与上游模型名分离 | 价行 `model` 只做匹配键，`_channel_model` 优先 `raw_model_id`（modelscope `deepseek-ai/*` 规范价行接入的前提）；同渠道"规范名行+raw 行"并存是设计内形态（raw 行=直连入口勿删），见 §3 router 小节 |
 | 2026-09-16 | 删 glm/stepfun tpm 假门，metering 立项未实现 | `increment_usage` 零调用点 → account_quotas 预检=纯静态门 `max_tokens×2>limit`；删假阳性行止血（deepseek_01 先例），token 维改 usage_logs SUM 真实测量单独立项 |
+| 2026-09-16 (V6.6) | 账号配额改纯真实测量（metering 重设计落地） | token 维=usage_logs 按账号+窗口 SUM（tpm 60s/daily 零点/weekly/5h rolling）、rpm=近 60s COUNT、concurrent=内存 in-flight（proxy acquire/release，重启归零属预期）；预检不再收 estimated_tokens——吞吐门不能预押，结算半边（increment_usage）连同窗口状态行一并废除；balance_cny 语义不变 |
