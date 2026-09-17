@@ -70,6 +70,17 @@ _CONTEXT_WINDOW_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# V6.7 (2026-09-17): 限流语义提示词 — 上游把 TPM 限流标成 insufficient_quota 时兜底。
+# 生产实证 (2026-09-17): sensenova 同端点对不同账号返回不同 error.code
+# (429001 / insufficient_quota, message 同为 "inference exceeds tpm/rpm limit",
+# type 字段都是 "rate_limit_error"); modelscope 免费层 token-limit 429 也是
+# code=insufficient_quota + message 指向 error-code#token-limit。
+# 这类都是共享池吞吐限流 (分钟级自愈), 不是计费配额耗尽。
+_RATE_LIMIT_HINT = re.compile(
+    r"(rate.?limit|\btpm\b|\brpm\b|429001|token.?limit|too many requests|触发限流|请求过于频繁)",
+    re.IGNORECASE,
+)
+
 _ERR_MSG_MAX = 500
 
 
@@ -80,15 +91,15 @@ def _truncate(s: Optional[str], n: int = _ERR_MSG_MAX) -> str:
     return s[:n] if len(s) > n else s
 
 
-def _extract_code_and_msg(response_body: Optional[str]) -> tuple[Optional[str], str]:
-    """从 response body 提取 (error.code, error.message)
+def _extract_code_and_msg(response_body: Optional[str]) -> tuple[Optional[str], str, Optional[str]]:
+    """从 response body 提取 (error.code, error.message, error.type)
     支持两种格式:
-    1. OpenAI 风格: {"error": {"code": "...", "message": "..."}}
+    1. OpenAI 风格: {"error": {"code": "...", "message": "...", "type": "..."}}
     2. 国内厂商: {"code": "...", "message": "..."}
     3. 纯文本 (兜底)
     """
     if not response_body:
-        return None, ""
+        return None, "", None
 
     # 尝试 JSON 解析
     try:
@@ -99,16 +110,19 @@ def _extract_code_and_msg(response_body: Optional[str]) -> tuple[Optional[str], 
             if isinstance(err, dict):
                 code = err.get("code") or err.get("type")
                 msg = err.get("message") or err.get("msg") or ""
-                return (str(code) if code else None), _truncate(str(msg) if msg else "")
+                err_type = err.get("type")
+                return (str(code) if code else None), _truncate(str(msg) if msg else ""), (
+                    str(err_type) if err_type else None
+                )
             # 国内厂商顶层 code/message
             code = parsed.get("code")
             msg = parsed.get("message") or ""
             if code or msg:
-                return (str(code) if code else None), _truncate(str(msg) if msg else "")
+                return (str(code) if code else None), _truncate(str(msg) if msg else ""), None
     except (json.JSONDecodeError, ValueError, TypeError):
         pass
 
-    return None, _truncate(response_body)
+    return None, _truncate(response_body), None
 
 
 def classify(
@@ -149,9 +163,24 @@ def classify(
             suggested_probe_after_seconds=300,
         )
 
-    # === 2. 提取 code/message ===
-    code, msg = _extract_code_and_msg(response_body)
-    haystack = f"{code or ''} {msg}".strip()
+    # === 2. 提取 code/message/type ===
+    code, msg, err_type = _extract_code_and_msg(response_body)
+    haystack = f"{code or ''} {err_type or ''} {msg}".strip()
+
+    # === 2.5 V6.7: 限流语义兜底 (先于 code 精确匹配) ===
+    # 429 + 报错文案/ type 带限流语义 → RATE_LIMITED, 即使 code 是
+    # insufficient_quota (sensenova/modelscope 把共享池 TPM 限流标成配额错误,
+    # 生产实证见 _RATE_LIMIT_HINT 注释)。真计费耗尽的 message 不含这些词,
+    # 仍走下方 code 分支判 quota_exhausted。
+    if status_code == 429 and _RATE_LIMIT_HINT.search(haystack):
+        return ErrorInfo(
+            category=ErrorCategory.RATE_LIMITED,
+            error_code=code,
+            error_msg=msg,
+            needs_human=False,
+            suggested_cooldown_seconds=300,
+            suggested_probe_after_seconds=600,
+        )
 
     # === 3. code 字段优先匹配 (最准) ===
     if code:

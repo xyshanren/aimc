@@ -3,7 +3,9 @@
 > AIMC（AI Model Compass）是一个轻量级 LLM 网关 + 优惠情报聚合工具。
 > 本文档是**所有文档的入口**。按你的角色选择下面任一入口。
 
-**项目状态**：**V6.6.x 账号配额真实测量（metering 重设计）+ 旗舰修复批（2026-09-16，全量 850 测试全绿）**。前一里程碑：sensenova 体量准入（上+下界）+ TPM/RPM 冷却基数（2026-09-16）；V6.5 稳定性批次完成（2026-09-14，802 测试全绿，本地 + VM 双基线）。已落地：V6.0（模型组分级 vision-light + GLM 免费模型 + P0-3 收窄；标价双轨成本审计 + 4 个 cost API + 看板成本审计卡）、V6.1（鉴权统一 admin key、发 key REST、统一 CLI `scripts/aimc.py`、agent 契约 [agent-api.md](agent-api.md)、Mimosa 存量清零）、V6.x（qwen 命名规范化 qwen3-vl-*/qwen3-8b + 4 个存量 e2e 失败修复）。2026-09-05 看板补齐：卡片折叠统一 `<details>` + 全局时间范围 24h/7d/30d + fmtCNY + **指标体系统一（Cache 节省/标价节省/路由成功率 命名收敛、fmtTokens/fmtPct/fmtLatency、状态栏去业务指标、组路由跟随时间范围）**，见 [dashboard-metrics-plan.md](dashboard-metrics-plan.md)；**思考 token 计量上产（usage_logs.reasoning_tokens + 看板 4 处展示，注入模式进观察期）**，见 [thinking-control-plan.md](thinking-control-plan.md)。
+**项目状态**：**V6.7 流式 failover + 限流分类兜底（2026-09-17，全量 859 测试全绿）**。前一里程碑：V6.6.x 账号配额真实测量（metering 重设计）+ 旗舰修复批（2026-09-16，850 绿）；sensenova 体量准入（上+下界）+ TPM/RPM 冷却基数（2026-09-16）；V6.5 稳定性批次完成（2026-09-14，802 测试全绿，本地 + VM 双基线）。已落地：V6.0（模型组分级 vision-light + GLM 免费模型 + P0-3 收窄；标价双轨成本审计 + 4 个 cost API + 看板成本审计卡）、V6.1（鉴权统一 admin key、发 key REST、统一 CLI `scripts/aimc.py`、agent 契约 [agent-api.md](agent-api.md)、Mimosa 存量清零）、V6.x（qwen 命名规范化 qwen3-vl-*/qwen3-8b + 4 个存量 e2e 失败修复）。2026-09-05 看板补齐：卡片折叠统一 `<details>` + 全局时间范围 24h/7d/30d + fmtCNY + **指标体系统一（Cache 节省/标价节省/路由成功率 命名收敛、fmtTokens/fmtPct/fmtLatency、状态栏去业务指标、组路由跟随时间范围）**，见 [dashboard-metrics-plan.md](dashboard-metrics-plan.md)；**思考 token 计量上产（usage_logs.reasoning_tokens + 看板 4 处展示，注入模式进观察期）**，见 [thinking-control-plan.md](thinking-control-plan.md)。
+
+**V6.7 流式 failover + 限流分类兜底（2026-09-17，生产双 429 报障当日落地）**：① **流式请求参与 failover**——routes.py failover 分支旧 `not is_stream` 门使流式请求（ZCode 全流量）零 failover，上游 429/5xx 直接打穿到客户端（生产实证：modelscope 429 后从未尝试组内其余候选即返回）；`_forward_stream` 对 status>=400 改为**错误体缓冲普通 Response 直返**（此时客户端尚未收到任何字节，换候选安全；旧 prebuffered/StreamConsumed 机制随之移除），routes 重试分支对流式/非流式统一，并加 `body_iterator` 守卫防"failover 后流式成功被错误 JSON 包裹"；② **限流语义兜底**——sensenova 同端点对不同账号对同一 TPM 限流返回不同 code（429001 / insufficient_quota，type 均为 `rate_limit_error`）、modelscope 免费层 token-limit 429 也是 `insufficient_quota`，分类器按 code 误判 quota_exhausted（3600s 冷却 + 假"需人工干预"告警 + 共享池分钟级自愈却被封 1 小时）；新增 hint 正则（rate_limit/tpm/rpm/token-limit）在 code 精确匹配**之前**判 RATE_LIMITED 300s，真计费耗尽 message 不含这些词不受影响；③ **终态 429 语义改写**——所有候选耗尽仍返回 429 时，把语义是限流的 `insufficient_quota` 错误体改写为 `rate_limit_error`（保留原始 message + Retry-After: 30），消除客户端（ZCode）对 insufficient_quota 判 `retryable=false` 直接终止回合的问题。新增 `tests/test_v67_stream_failover.py`（9 项），全量 859 全绿。详见 [dev/architecture.md](dev/architecture.md) 决策表 V6.7 行。
 
 **账号配额真实测量重设计（2026-09-16，metering 立项当日落地）**：account_quotas 原「预留 estimated_tokens=max_tokens×2 + used_value 结算」两段式，因结算半边 `increment_usage` **零调用点**退化为纯静态门 `max_tokens×2>limit`——tpm（60s 短窗）对大 max_tokens 请求恒拒，deepseek_01/glm_01/stepfun_01 三行 tpm 全中招（前两行已删行止血）。V6.6 重设计四点：① **token 维改真实测量**——tpm/daily_tokens/weekly_tokens/5h_tokens 直接对 usage_logs 按账号+窗口 SUM(input+output)（沿用 V4.8 `_sum_user_tokens` 模式；tpm=60s 滚动、daily=本地零点、weekly=ISO 周一或 rolling window_seconds、5h=rolling 18000s），无预留无 used_value；② **rpm 改近 60s 真实 COUNT**；③ **concurrent 改单进程内存 in-flight 计数**（proxy 转发前 `concurrent_acquire`、上游响应完成/流结束 `concurrent_release`，异常路径幂等释放，重启归零属预期；限额值仍配在 account_quotas）；④ **预检不再收 estimated_tokens**——吞吐门不能预押；用户级日/月预算门保留「真实 SUM + 准入预留」语义不变。`increment_usage`/`decrement_concurrent`/`_is_window_expired`/`_rollover_window` 连同窗口状态行维护一并删除，`account_quota_usage` 仅剩 balance_cny sync 标记在用。新增索引 `idx_usage_logs_account_time(account_id, created_at)`（ORM 声明 + 生产手动 CREATE INDEX）。test_quota_check.py 按新语义重写 18 项（含 tpm 假门回归锚点：无真实消耗时 128k 声明值不再触发拒绝），全量 850 全绿。机制详见 [dev/architecture.md](dev/architecture.md) §3 quota.py 小节 + 决策表。
 
@@ -71,7 +73,7 @@
 | 本地搭建开发环境 | [dev/setup.md](dev/setup.md) |
 | commit / 分支 / 测试 规范 | [dev/conventions.md](dev/conventions.md) |
 | 写测试 / 提 PR / 贡献代码 | [dev/contributing.md](dev/contributing.md) |
-| 跑 802 个测试 + 加新测试 | [dev/testing.md](dev/testing.md) |
+| 跑 859 个测试 + 加新测试 | [dev/testing.md](dev/testing.md) |
 | 查 post-merge 修复（21 commit 整改）| [dev/post-merge-fixes.md](dev/post-merge-fixes.md) |
 
 ---
@@ -107,8 +109,8 @@
 
 ## 文档元信息
 
-- **最后更新**：2026-09-14
-- **测试覆盖**：802 tests（pytest，~7 分钟跑通，2026-09-14 V6.5 基线全绿）
+- **最后更新**：2026-09-17
+- **测试覆盖**：859 tests（pytest，~7 分钟跑通，2026-09-17 V6.7 基线全绿）
 - **观察期关注**：缓存命中率（路径 A）、周报 timer 首次自动触发（周一）、vision 400 率、**思考注入各渠道开谁（Phase B 已上产默认全关，见 [thinking-control-plan.md](thinking-control-plan.md) §3）**、**S3 生效后 pending 变化与门槛拦截量（AUTO_JOIN_MIN_CONFIDENCE=0.9，见 [dev/automation-closure-plan.md](dev/automation-closure-plan.md) §5）**、**反馈公式 retry 项取舍（双分并存，观察 2~4 周 ~2026-09-23~10-07）**
 - **模块结合待办**：[dev/module-integration-audit.md](dev/module-integration-audit.md) 的 P0（探活 NameError / 部署路径硬编码）与 V6.5 三批（S1/S4~S9/S11/S12/S3a-c/S7）**已全部修复**；剩余 = 死代码清理（审计 §C）、静默 except 收窄（§E）、迁移机制收敛（已拍板 V6.5 后做轻方案 A）与决策项（本地限流/账号配额接线），排期见 [dev/next-stage-research.md](dev/next-stage-research.md)
 - **V4.9 新功能**：Dashboard **🔴 待处理 (N)** tab（余额不足 / Key 失效 / 智能探活状态），见 [user/dashboard.md](user/dashboard.md)

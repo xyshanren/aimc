@@ -136,10 +136,9 @@ async def chat_completions(request: Request):
     #       mark_failure (proxy 层) 后 router 会跳过 cooldown account,
     #       重新 select_channel 得到下一个候选, 重试
     # 限制:
-    # - 只对非流式重试 (流式 SSE 已开始不能安全重发)
     # - 最多 max_fallback_retries 次 (config.py, 默认 2)
     # - 精确模型路由 (非 tier:) 只试 1 次 (fallback 到聚合平台由 router 内部处理)
-    is_stream = bool(body_json.get("stream", False))
+    # V6.7: 流式请求同样 failover (proxy 层错误体已缓冲, 见下方 retryable 分支)
     max_retries = settings.max_fallback_retries if model.startswith(("tier:", "scene:")) else 0
 
     # V4.8.7 P7: 收集重试链中每个失败的渠道, 最终注入响应头让调用方定位余额不足渠道
@@ -291,15 +290,19 @@ async def chat_completions(request: Request):
             caller_key_id=caller_key_id,
         )
 
-        # P1-15: 非流式 + 429/5xx + 还有重试机会 -> 继续下一候选
+        # P1-15: 429/5xx + 还有重试机会 -> 继续下一候选
         # P2-A: 组路由 (tier:/scene:) 的上游 400 也参与 failover
         # (场景: 选了不兼容的 member 导致 400, 换下一候选可能成功;
         #  精确模型路由的 400 是客户端请求格式错误, 重试无意义, 不 failover)
+        # V6.7 (2026-09-17): 流式请求同样参与 failover — proxy._forward_stream
+        # 对上游 status>=400 已改为缓冲普通 Response (客户端尚未收到任何字节),
+        # 旧 `not is_stream` 门使流式请求零 failover, 上游限流直接打穿到客户端
+        # (生产 2026-09-17 双 429 实证, ZCode 全流量为流式)。
         is_group_route = model.startswith(("tier:", "scene:"))
         retryable_status = response.status_code in (429, 500, 502, 503, 504)
         if is_group_route and response.status_code == 400:
             retryable_status = True
-        if (not is_stream) and retryable_status and attempt < max_retries:
+        if retryable_status and attempt < max_retries:
             from gateway.error_classifier import classify
             # V4.9: 用 error_classifier 拿到 error_type/error_msg/needs_human
             # V6.4.x: 这里不再 mark_failure — proxy.forward_request 内部的
@@ -329,7 +332,9 @@ async def chat_completions(request: Request):
             continue
 
         # V4.8.7 P7: 最后一次也失败 (或非 retryable), 把失败链注入响应头
-        if failed_channels:
+        # V6.7: 只对缓冲型响应注入 — 流式成功 (StreamingResponse) 走到这里
+        # 说明前面候选失败过、本次成功, 不能包成错误 JSON。
+        if failed_channels and not hasattr(response, "body_iterator"):
             try:
                 content = response.body
                 parsed = json.loads(content)
@@ -337,6 +342,23 @@ async def chat_completions(request: Request):
                 parsed = {"error": {"message": "Upstream error", "type": "upstream_error"}}
             if isinstance(parsed, dict) and "error" in parsed:
                 parsed["error"]["failed_channels"] = failed_channels
+            # V6.7 (2026-09-17): 终态 429 语义改写 — 上游把共享池 TPM 限流标成
+            # code=insufficient_quota (sensenova/modelscope 实证) 时, 客户端
+            # (ZCode) 会判 retryable=false 直接终止回合。语义是限流的错误体
+            # 改写成 rate_limit_error (保留原始 message 供诊断), 让客户端走
+            # 正常重试; Retry-After 给出建议等待秒数。
+            _rewrote_rate_limit = False
+            if response.status_code == 429 and isinstance(parsed, dict) and isinstance(parsed.get("error"), dict):
+                from gateway.error_classifier import _RATE_LIMIT_HINT
+                _err = parsed["error"]
+                _hay = (
+                    f"{_err.get('code') or ''} {_err.get('type') or ''} "
+                    f"{_err.get('message') or ''}"
+                )
+                if str(_err.get("code")) == "insufficient_quota" and _RATE_LIMIT_HINT.search(_hay):
+                    _err["code"] = "rate_limit_exceeded"
+                    _err["type"] = "rate_limit_error"
+                    _rewrote_rate_limit = True
             new_headers = dict(response.headers)
             # V6.5 (production-review S1): 复制的 headers 带原响应的 content-length
             # (及 hop-by-hop 头), 注入 failed_channels 后 body 变长而 starlette 检测到
@@ -354,6 +376,8 @@ async def chat_completions(request: Request):
                 # 如果最后失败 needs_human, 加 Retry-After 提示人工
                 if last.get("needs_human"):
                     new_headers["Retry-After"] = "3600"
+            if _rewrote_rate_limit:
+                new_headers.setdefault("Retry-After", "30")
             return JSONResponse(
                 status_code=response.status_code,
                 content=parsed,

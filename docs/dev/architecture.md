@@ -183,8 +183,10 @@ forward_request(channel, body, headers, requested_model, actual_model)
 │   │    caller 已传 key 时不覆盖; 无 system fallback 首条 user)
 │   └── Anthropic 风格: system + 第一条 user 加 cache_control (role 校验)
 ├── _forward_stream()             流式
-│   ├── 正常: aiter_raw 原样透传
-│   └── status>=400: 已 aread() 的缓冲直通 (StreamConsumed 修复 6069281)
+│   ├── 正常 (status<400): aiter_raw 原样透传 (StreamingResponse)
+│   └── status>=400: 错误体缓冲 → 普通 Response 直返 [V6.7]
+│       (客户端尚未收到任何字节 → routes 可安全 failover;
+│        旧 prebuffered/StreamConsumed 机制随之移除)
 └── _forward_normal()             非流式
     ├── httpx post
     ├── _update_cooldown()        mark_failure/mark_success + classify
@@ -509,3 +511,6 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
 | 2026-09-16 | 规范名匹配键与上游模型名分离 | 价行 `model` 只做匹配键，`_channel_model` 优先 `raw_model_id`（modelscope `deepseek-ai/*` 规范价行接入的前提）；同渠道"规范名行+raw 行"并存是设计内形态（raw 行=直连入口勿删），见 §3 router 小节 |
 | 2026-09-16 | 删 glm/stepfun tpm 假门，metering 立项未实现 | `increment_usage` 零调用点 → account_quotas 预检=纯静态门 `max_tokens×2>limit`；删假阳性行止血（deepseek_01 先例），token 维改 usage_logs SUM 真实测量单独立项 |
 | 2026-09-16 (V6.6) | 账号配额改纯真实测量（metering 重设计落地） | token 维=usage_logs 按账号+窗口 SUM（tpm 60s/daily 零点/weekly/5h rolling）、rpm=近 60s COUNT、concurrent=内存 in-flight（proxy acquire/release，重启归零属预期）；预检不再收 estimated_tokens——吞吐门不能预押，结算半边（increment_usage）连同窗口状态行一并废除；balance_cny 语义不变 |
+| 2026-09-17 (V6.7) | 流式请求参与 failover | 旧 `not is_stream` 门使流式请求零 failover（ZCode 全流量流式）→ 上游 429 直接打穿到客户端（2026-09-17 生产双 429 实证）；`_forward_stream` status>=400 改缓冲普通 Response 直返（客户端尚未收到字节，换候选安全），routes 重试分支对流式/非流式统一 |
+| 2026-09-17 (V6.7) | 限流语义兜底先于 error.code 精确匹配 | sensenova 同端点对不同账号对同一 TPM 限流返回不同 code（429001 / insufficient_quota，type 均为 rate_limit_error）、modelscope 免费层 token-limit 429 也是 insufficient_quota——按 code 误判 quota_exhausted（3600s 冷却 + 假"需人工干预"告警）；429 + 文案/type 带限流语义（rate_limit/tpm/rpm/token-limit）→ RATE_LIMITED 300s，真计费耗尽 message 不含这些词不受影响 |
+| 2026-09-17 (V6.7) | 终态 429 insufficient_quota 改写 rate_limit_error | 所有候选耗尽仍返回 429 时，语义是限流的错误体改写 code=rate_limit_exceeded/type=rate_limit_error（保留原始 message + Retry-After: 30）——客户端（ZCode）对 insufficient_quota 判 retryable=false 直接终止回合不再重试 |

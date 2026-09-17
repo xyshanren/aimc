@@ -12,6 +12,7 @@ class _MockFastAPI:
     class responses:
         class StreamingResponse: pass
         class JSONResponse: pass
+        class Response: pass
 class _MockStarlette:
     class datastructures:
         class Headers: pass

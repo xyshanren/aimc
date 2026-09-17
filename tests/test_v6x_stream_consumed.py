@@ -114,9 +114,14 @@ async def _run_forward(fake_response, channel):
                 start_time=0.0,
                 requested_model="test-model",
             )
+        # V6.7: 错误体 (status>=400) 改为缓冲普通 Response 直返 (流式 failover
+        # 前置条件); 成功流仍是 StreamingResponse。两种形态都读出完整 body。
         chunks = []
-        async for chunk in resp.body_iterator:
-            chunks.append(chunk)
+        if hasattr(resp, "body_iterator"):
+            async for chunk in resp.body_iterator:
+                chunks.append(chunk)
+        else:
+            chunks = [resp.body]
         return resp, chunks, captured
     finally:
         proxy._schedule_stream_usage_log = orig_usage_log

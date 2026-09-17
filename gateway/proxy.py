@@ -41,7 +41,7 @@ from datetime import datetime
 from typing import Optional
 
 import httpx
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.datastructures import Headers
 
 from config import settings
@@ -818,16 +818,44 @@ async def _forward_stream(
                 except RuntimeError:
                     pass
 
-        # V6.x 修复: 上方 aread() 已消费流时, stream_generator 里的 aiter_raw()
-        # 会抛 httpx.StreamConsumed — 客户端只收到错误 status 而 body 为空,
-        # tail/full 缓冲也是空的 (错误体完全丢失)。此处捕获已缓冲的错误体,
-        # generator 改为直接 yield 缓冲字节, tail/full 缓冲语义与正常路径一致。
-        prebuffered: bytes | None = None
-        if response.is_stream_consumed:
+        # V6.7 (2026-09-17): 流式错误体缓冲返回 — 上游 status>=400 时客户端
+        # 尚未收到任何字节 (错误体已 aread() 缓冲), 用普通 Response 返回,
+        # 让 routes 的 failover 循环 / failed_channels 注入对流式与非流式一视同仁。
+        # 旧行为: 包成 StreamingResponse(429) 原样透传 → 流式请求零 failover
+        # (生产 2026-09-17 双 429 实证: sensenova/modelscope 限流直接打穿到
+        #  ZCode, provider_code=insufficient_quota 还让客户端判 retryable=false)。
+        if response.status_code >= 400:
+            error_body = b""
             try:
-                prebuffered = response.content
+                error_body = response.content or b""
             except Exception:
-                prebuffered = None
+                pass
+            _release_concurrent_once()
+            await response.aclose()
+            await client.aclose()
+            latency_ms = int((time.time() - start_time) * 1000)
+            logger.info(
+                f"[Stream] {channel['name']} -> {response.status_code} ({latency_ms}ms)"
+            )
+            _schedule_stream_usage_log(
+                channel, response.status_code, latency_ms,
+                requested_model, error_body, caller_id, caller_key_id,
+            )
+            if settings.transcript_log_enabled:
+                try:
+                    _schedule_transcript_log(
+                        channel, body, None, requested_model,
+                        caller_id, caller_key_id,
+                        stream_status=response.status_code,
+                        stream_body=error_body,
+                    )
+                except Exception as e:
+                    logger.debug(f"[V4.9.3] stream 转录记录失败 (非致命): {e}")
+            return Response(
+                content=error_body,
+                status_code=response.status_code,
+                media_type=response.headers.get("content-type", "application/json"),
+            )
     except Exception:
         # 发送后的预处理若抛异常, generator 不会运行 — 在此释放并发计数
         _release_concurrent_once()
@@ -847,27 +875,19 @@ async def _forward_stream(
         # V4.9.3: 转录用全量缓冲 (不做滑动窗口, 但受 transcript_log_max_body 截断)
         full_buffer = bytearray() if settings.transcript_log_enabled else None
         try:
-            if prebuffered is not None:
-                # V6.x: 流已被 aread() 消费, 直接 yield 缓冲的错误体
-                # (缓冲可能超过 TAIL_LIMIT, tail_buffer 与正常路径一样只留末尾)
-                yield prebuffered
-                tail_buffer.extend(prebuffered)
+            # V6.7: status>=400 的错误已在上方缓冲返回, 走到这里的流一律 2xx/3xx,
+            # aread()/StreamConsumed 防护随 prebuffered 机制一并移除。
+            async for chunk in response.aiter_raw():
+                # 透传给客户端 (原样, 不修改)
+                yield chunk
+                # 累积到尾部缓冲用于事后提取 usage
+                tail_buffer.extend(chunk)
                 if len(tail_buffer) > TAIL_LIMIT:
+                    # 只保留末尾 TAIL_LIMIT 字节 (滑动窗口)
                     del tail_buffer[: len(tail_buffer) - TAIL_LIMIT]
+                # V4.9.3: 转录全量累积 (截断上限内)
                 if full_buffer is not None:
-                    full_buffer.extend(prebuffered)
-            else:
-                async for chunk in response.aiter_raw():
-                    # 透传给客户端 (原样, 不修改)
-                    yield chunk
-                    # 累积到尾部缓冲用于事后提取 usage
-                    tail_buffer.extend(chunk)
-                    if len(tail_buffer) > TAIL_LIMIT:
-                        # 只保留末尾 TAIL_LIMIT 字节 (滑动窗口)
-                        del tail_buffer[: len(tail_buffer) - TAIL_LIMIT]
-                    # V4.9.3: 转录全量累积 (截断上限内)
-                    if full_buffer is not None:
-                        full_buffer.extend(chunk)
+                    full_buffer.extend(chunk)
         finally:
             _release_concurrent_once()
             await response.aclose()
