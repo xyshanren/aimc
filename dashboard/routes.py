@@ -169,26 +169,68 @@ async def dashboard_auth_status():
     }
 
 
+# P2 (2026-09-18): Login 暴力破解防护 — 同 IP 5 次错误 / 5 分钟锁定
+# 用内存 dict 存 {ip: [timestamp, ...]}，重启清零可接受 (token 够强, 这层是纵深防御)
+_LOGIN_FAILS: dict[str, list[float]] = {}
+_LOGIN_FAIL_WINDOW = 300          # 5 分钟窗口
+_LOGIN_FAIL_MAX = 5               # 最多允许 5 次错误
+_LOGIN_FAIL_LOCKOUT_SEC = 300     # 超出后锁定 5 分钟
+
+
+def _get_client_ip(request: Request) -> str:
+    """取客户端真实 IP。Cloudflare Tunnel 注入 CF-Connecting-IP 头，
+    X-Forwarded-For 链里的第一个 public IP 作为 fallback。"""
+    cf_ip = request.headers.get("CF-Connecting-IP", "").strip()
+    if cf_ip:
+        return cf_ip
+    xff = request.headers.get("X-Forwarded-For", "").strip()
+    if xff:
+        return xff.split(",")[0].strip()
+    host = getattr(request.client, "host", None) if request.client else None
+    return host or "unknown"
+
+
 @router.post("/api/auth/login")
 async def dashboard_auth_login(request: Request):
     """P1-7: dashboard 登录端点 (备选 — 浏览器可用 fetch 提交而非 URL query)
 
     Body: {"token": "<token>"}
     Returns:
-    - 200 + Set-Cookie: aimc_dashboard_token=<token>; HttpOnly (浏览器场景)
+    - 200 + Set-Cookie: aimc_dashboard_token=<token>; Secure; HttpOnly; SameSite=Lax (浏览器场景)
     - 401: 错误 token
+    - 429: 频繁错误尝试 (5 次/5 分钟/IP, P2 防护)
     """
     from starlette.responses import JSONResponse
     from config import settings
-    import hmac
+    import hmac, time as _time
+
+    ip = _get_client_ip(request)
+    now = _time.time()
+
+    # 检查是否被锁定
+    fails = _LOGIN_FAILS.get(ip, [])
+    fails = [ts for ts in fails if now - ts < _LOGIN_FAIL_WINDOW]
+    _LOGIN_FAILS[ip] = fails
+    if len(fails) >= _LOGIN_FAIL_MAX:
+        return JSONResponse(
+            status_code=429,
+            content={"error": {
+                "message": f"Too many login attempts. Retry after {_LOGIN_FAIL_LOCKOUT_SEC}s.",
+                "type": "rate_limit_error",
+            }},
+        )
 
     body = await request.json()
     provided = body.get("token", "").strip()
     if not hmac.compare_digest(provided, settings.dashboard_token):
+        fails.append(now)
+        _LOGIN_FAILS[ip] = fails
         return JSONResponse(
             status_code=401,
             content={"error": {"message": "Invalid token", "type": "authentication_error"}},
         )
+    # 登录成功 — 清除该 IP 的失败记录
+    _LOGIN_FAILS.pop(ip, None)
     # 设 cookie (浏览器场景)
     response = JSONResponse(content={"ok": True})
     response.set_cookie(
@@ -196,7 +238,8 @@ async def dashboard_auth_login(request: Request):
         value=provided,
         httponly=True,
         samesite="lax",
-        max_age=86400 * 7,  # 7 天
+        secure=True,               # P2: 仅 HTTPS 下发送 (Cloudflare Tunnel 提供 TLS)
+        max_age=86400 * 7,         # 7 天
     )
     return response
 
