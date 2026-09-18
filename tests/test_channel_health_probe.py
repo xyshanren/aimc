@@ -157,9 +157,50 @@ def test_cleanup_task_cleans_expired():
     asyncio.run(_run())
 
 
+def test_probe_no_detached_error_after_session_close():
+    """V6.9 regression: 旧 acc.channel 懒加载在 session 关闭后抛 DetachedInstanceError
+    (生产探活 job 每分钟全失败); 新实现直读实例 dict, channel 未预载时走现查分支。
+
+    用真实 sqlite 内存库跑 channel_health_probe 全流程 (account/channel/health_log
+    三张表真实建表), 仅 _probe_one 打桩避免真实网络.
+    """
+    import intelligence.channel_health as ch_mod
+    from db.models import Account, Base, Channel
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    mock_probe = AsyncMock(return_value={
+        "account_id": 1, "success": True, "status_code": 200, "latency_ms": 5,
+        "error_type": "unknown", "error_code": None, "error_msg": "",
+    })
+
+    async def _run():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        TestSession = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with TestSession() as s:
+            s.add(Channel(id=5, name="ch5", provider="x", base_url="https://api.example.com/v1"))
+            s.add(Account(id=1, account_name="acc1", channel_id=5,
+                          api_key="sk-test", api_key_ciphertext=None))
+            await s.commit()
+        with (
+            patch.object(ch_mod, "async_session_factory", TestSession),
+            patch.object(ch_mod, "_probe_one", mock_probe),
+            patch.object(ch_mod.cooldown_manager, "accounts_due_for_probe", lambda: [1]),
+        ):
+            ok = await ch_mod.channel_health_probe()
+        await engine.dispose()
+        check("探活 1 ok", ok, 1)
+
+    asyncio.run(_run())
+    check("以 channel.base_url 发起探活", mock_probe.call_args[0][1], "https://api.example.com/v1")
+    check("探活账号 id", mock_probe.call_args[0][0], 1)
+
+
 def main():
     tests = [
         test_probe_one_success,
+        test_probe_no_detached_error_after_session_close,
         test_probe_one_auth_failed,
         test_probe_one_quota_exhausted,
         test_probe_one_5xx,

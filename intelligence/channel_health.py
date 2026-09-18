@@ -211,7 +211,7 @@ async def channel_health_probe() -> int:
         except Exception as e:
             logger.debug(f"探活: account #{acc.id} key 解密失败: {e}")
         # 取 channel base_url (channel 走 router cache 或现查)
-        ch = acc.channel if hasattr(acc, 'channel') and acc.channel else None
+        ch = acc.__dict__.get("channel")  # V6.9: 直读实例 dict, 避免懒加载曾在 session 关闭后抛 DetachedInstanceError
         if ch is None:
             # channel 没预加载, 重新查
             async with async_session_factory() as s2:
