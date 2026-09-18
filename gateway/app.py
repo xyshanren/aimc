@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import Request
 from pathlib import Path
 
 from config import settings
@@ -177,9 +178,20 @@ def create_app() -> FastAPI:
     app.include_router(dashboard_router)
 
     # 挂载 Dashboard 静态文件
+    # V6.8/公网部署 (2026-09-18): 静态资源 7 天强缓存 — 经 CF 隧道/慢链路时
+    # 消除每次体检式的 304 往返 (ETag 仍保留供 max-age 过期后协商)。文件名
+    # 带内容哈希由前端构建保证, 此处无需 immutable。
     static_dir = Path(__file__).parent.parent / "dashboard" / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    # 静态资源 Cache-Control (中间件方式, 兼容各版本 starlette StaticFiles)
+    @app.middleware("http")
+    async def _static_cache_headers(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "public, max-age=604800"
+        return response
 
     # 注册中间件
     from gateway.middleware import RequestLoggingMiddleware
