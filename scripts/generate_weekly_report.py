@@ -20,8 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from db import crud
 from db.engine import async_session_factory
 from db.init_db import init_db
-from db.models import ModelFeedbackSummary
-from sqlalchemy import select
+from db.models import ModelFeedbackSummary, UsageLog
+from sqlalchemy import func, select
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,11 @@ def format_pct(value: float) -> str:
     return f"{value * 100:.1f}%"
 
 
-def render_overview(this_week: WeekStats, last_week: WeekStats) -> list[str]:
+def render_overview(
+    this_week: WeekStats,
+    last_week: WeekStats,
+    rag_embed_rerank: Optional[tuple[int, int]] = None,
+) -> list[str]:
     lines = [
         "## 📊 本周总览",
         "",
@@ -123,6 +127,14 @@ def render_overview(this_week: WeekStats, last_week: WeekStats) -> list[str]:
         f"- **平均反馈分**: {this_week.avg_feedback_score:.1f}（上周 {last_week.avg_feedback_score:.1f}）",
         "",
     ]
+    if rag_embed_rerank is not None:
+        rag_now, rag_last = rag_embed_rerank
+        lines.insert(
+            4,
+            f"- **其中 rag_demo embedding/rerank**: {rag_now:,} 次（上周 {rag_last:,}）"
+            "— 非 LLM 计量面（/v1/embeddings、/v1/rerank，2026-09-09 起直连 aimc），"
+            "对比 LLM 调量曲线时请扣除",
+        )
     return lines
 
 
@@ -400,6 +412,23 @@ async def generate(
         # 方案A (2026-08-14): 加载 pending/approved 建议
         sugs = await _load_pending_suggestions(session, days=7)
 
+        # rag_demo embedding/rerank 流量单列 (2026-09-09 起直连 aimc):
+        # usage_logs.model 存上游 raw 名, 非 LLM 计量面, 周报总览单列避免混入 LLM 调量曲线
+        rag_bge_names = ["BAAI/bge-m3", "BAAI/bge-reranker-v2-m3"]
+
+        async def _rag_bge_count(window_start: datetime) -> int:
+            return (
+                await session.execute(
+                    select(func.count(UsageLog.id))
+                    .where(UsageLog.created_at >= window_start)
+                    .where(UsageLog.created_at < window_start + timedelta(days=7))
+                    .where(UsageLog.model.in_(rag_bge_names))
+                )
+            ).scalar() or 0
+
+        rag_now = await _rag_bge_count(period_start)
+        rag_last = await _rag_bge_count(last_week_start)
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     sections: list[str] = [
@@ -408,7 +437,7 @@ async def generate(
         f"_生成时间: {datetime.now():%Y-%m-%d %H:%M:%S}_",
         "",
     ]
-    sections.extend(render_overview(this_week, last_week))
+    sections.extend(render_overview(this_week, last_week, rag_embed_rerank=(rag_now, rag_last)))
     sections.extend(render_top_models(this_week))
     sections.extend(render_trends(this_week, last_week))
     sections.extend(render_alerts(this_week))
