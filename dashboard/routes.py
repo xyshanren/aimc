@@ -761,8 +761,12 @@ async def get_data_freshness(session: AsyncSession = Depends(get_session)):
     from db.models import JobHealth
 
     now = datetime.now()
+    # aliy-hy 生产 SQLite 3.26 (<3.30) 不支持 NULLS LAST 语法 → 用 IS NULL 布尔列模拟 (NULL 排最后)
     rows = (await session.execute(
-        select(JobHealth).order_by(JobHealth.last_success_at.desc().nulls_last())
+        select(JobHealth).order_by(
+            JobHealth.last_success_at.is_(None),
+            JobHealth.last_success_at.desc(),
+        )
     )).scalars().all()
 
     def time_ago(dt: Optional[datetime]) -> Optional[str]:
