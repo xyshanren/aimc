@@ -142,6 +142,11 @@ class RouteEngine:
         # V4.6.1: least-used tie-break (同 channel 多账号轮询)
         # account_id → 最近路由选中的时间戳 (time.time())
         self._account_last_used: dict[int, float] = {}
+        # V6.10 (2026-09-20): taotoken 双模型桶 LRU 轮换状态
+        # (account_id, model_id) → 最近被组路由选中的时间戳; 大请求下
+        # deepseek_for_coding / glm_for_coding 两个配额桶共同承担, 避免
+        # 单桶每 ~3h 触顶 429 (9/20 实证) 且账号级冷却拖死另一桶。
+        self._taotoken_bucket_lru: dict[tuple[int, str], float] = {}
         # P0-7 (2026-08-14): score weights 缓存, 从 settings_runtime 表读
         # 后续 dashboard 可调, 不需改代码
         self._score_weights: dict = {
@@ -721,9 +726,12 @@ class RouteEngine:
         from gateway.limiter import rate_limiter
         from gateway.cooldown import cooldown_manager
         # V4.6.1: 同时过滤 cooldown (单次失败就冷却, 避免反复撞死 key)
+        # V6.10: 带 model 查询 — 上游按模型拆分配额桶 (taotoken deepseek_for_coding /
+        # glm_for_coding) 时, 桶级隔离只挡本桶; 账号级冷却仍整账号生效。
         candidates = [
             (ch, price) for ch, price in candidates
-            if not cooldown_manager.is_in_cooldown(ch["account_id"])
+            if not cooldown_manager.is_in_cooldown(
+                ch["account_id"], ch.get("_channel_model") or model)
             and not rate_limiter.is_limited(ch["account_id"], ch["quotas"])
         ]
 
@@ -770,6 +778,32 @@ class RouteEngine:
                     f"[V6.6.x 体量准入] est_input_tokens={_est_in} 超出渠道适配窗, "
                     f"剔除 {[p[0]['name'] for p in _out]} (model={model})"
                 )
+
+            # V6.10 (2026-09-20): 大请求 taotoken 优先 — est ≥ taotoken min 窗、
+            # 且 taotoken_coding 存在「价格=最低价」的健康候选时, 候选收敛到
+            # taotoken (deepseek_for_coding / glm_for_coding 双桶共同承担; 用户
+            # 拍板: taotoken 按**次数**计费, 次数留给 sensenova 接不住的大请求,
+            # 直连大请求同样落 taotoken)。taotoken 全不可用 → 保持原候选 (宁试不 503)。
+            _tt_min = _min_map.get("taotoken_coding")
+            if _tt_min is not None and _est_in >= _tt_min:
+                _min_price = min(
+                    (p.get("input_price") for _, p in candidates
+                     if p.get("input_price") is not None),
+                    default=None,
+                )
+                if _min_price is not None:
+                    _tt_at_min = [
+                        (ch, price) for ch, price in candidates
+                        if ch["name"] == "taotoken_coding"
+                        and price.get("input_price") is not None
+                        and price["input_price"] <= _min_price
+                    ]
+                    if _tt_at_min and len(_tt_at_min) < len(candidates):
+                        candidates = _tt_at_min
+                        logger.info(
+                            f"[V6.10 大请求 taotoken 优先] est_input_tokens={_est_in} "
+                            f"候选收敛到 taotoken_coding ({len(candidates)} 个健康账号)"
+                        )
 
         # 阶段3 (2026-08-14): score-based 多维排序
         # 替代原 round-robin + 多 key 排序, 改为单 score (DESC 排序)
@@ -1361,6 +1395,74 @@ class RouteEngine:
         # 精确模型路由 Phase 2.6 不实现偏好 (跟 design §4.5 一致)
         return self.select_best_channel(model, messages=messages)
 
+    def _maybe_rotate_taotoken_buckets(
+        self, candidates: list, messages: Optional[list],
+    ) -> Optional[list]:
+        """V6.10 (2026-09-20): taotoken 双模型桶 LRU 轮换 (deepseek_for_coding / glm_for_coding)
+
+        背景: tier:strong 大请求 (≥ taotoken min 窗, sensenova 已被 max 窗剔除)
+        几乎全部砸在 deepseek@taotoken → 单桶每 ~3h 触顶 429 (9/20 实证),
+        账号级冷却还把 glm 桶一起拖死 → 大请求 fallback 到 glm_bigmodel,
+        taotoken 的 glm_for_coding 配额空转。用户拍板: 大请求主要由 taotoken
+        承担, 两个配额桶共同均匀承担 (次数限额 2000/5h 实际很难达到)。
+
+        机制: 同一 taotoken 账号名下候选出现 ≥2 个不同模型时, 取「最久未被
+        选中」的 (account_id, model) 桶为赢家, 其 member_priority 覆盖为 0
+        (本次 cheapest 排序恒居首); 每次选中刷新该桶时间戳 → 严格交替 1:1。
+        桶在模型级隔离 (quarantine) / 账号级冷却中 → 已不在 candidates,
+        轮换自然只发生在健康桶之间, 恢复后自动回归。
+
+        不适用返回 None (调用方保持原排序逻辑): 非大请求 / messages 缺失 /
+        无 taotoken 候选 / 无同账号多模型桶。
+        """
+        if not messages:
+            return None
+        _min_map = getattr(settings, "channel_min_input_tokens", None) or {}
+        _tt_min = _min_map.get("taotoken_coding")
+        if _tt_min is None or _estimate_input_tokens(messages) < _tt_min:
+            return None
+
+        bucket_models: dict[int, set] = {}
+        for tup in candidates:
+            ch, model_id = tup[0], tup[1]
+            if ch.get("name") == "taotoken_coding":
+                bucket_models.setdefault(ch["account_id"], set()).add(model_id)
+
+        # 候选桶: 同账号下 ≥2 个不同模型才启用轮换; sorted 保证首轮平手时
+        # deepseek 先于 glm (确定性), 之后 LRU 严格交替
+        winners = [
+            (acc, m) for acc, models in bucket_models.items() if len(models) >= 2
+            for m in sorted(models)
+        ]
+        if not winners:
+            return None
+
+        now = time.time()
+        winner = min(winners, key=lambda w: self._taotoken_bucket_lru.get(w, 0.0))
+
+        new_candidates = []
+        patched = False
+        for tup in candidates:
+            ch, model_id, price, fb, mp, chm = tup
+            if not patched and (ch.get("account_id"), model_id) == winner:
+                tup = (ch, model_id, price, fb, 0, chm)  # member_priority → 0 强制居首
+                patched = True
+            new_candidates.append(tup)
+
+        self._taotoken_bucket_lru[winner] = now
+        # 顺手清理失效账号的轮换状态 (dict 很小, 线性扫可接受)
+        if self._channels_cache:
+            _active_acc = {c.get("account_id") for c in self._channels_cache}
+            for k in list(self._taotoken_bucket_lru):
+                if k[0] not in _active_acc:
+                    self._taotoken_bucket_lru.pop(k, None)
+
+        logger.info(
+            f"[V6.10 taotoken 轮换] 本轮赢家 account={winner[0]} model={winner[1]} "
+            f"(候选桶 {len(winners)} 选 1, candidates={len(candidates)})"
+        )
+        return new_candidates
+
     def _select_by_group(
         self, group_id: str, prefs: Optional[dict] = None,
         messages: Optional[list] = None,
@@ -1548,6 +1650,12 @@ class RouteEngine:
                 )
                 current = group.fallback_group
                 continue
+
+            # V6.10: taotoken 双模型桶轮换 (大请求 deepseek_for_coding /
+            # glm_for_coding 共同承担, 避免单桶触顶 429 后账号级冷却拖死另一桶)
+            _rotated = self._maybe_rotate_taotoken_buckets(candidates, messages)
+            if _rotated is not None:
+                candidates = _rotated
 
             # 3) 跨 member 排序 (按组策略)
             strategy = group.strategy or "cheapest"

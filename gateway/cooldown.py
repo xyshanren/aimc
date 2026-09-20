@@ -83,11 +83,30 @@ class CooldownManager:
         self.max_probe_backoff_seconds = max_probe_backoff_seconds
         # account_id → state dict (V4.9 扩展)
         self._state: dict[int, dict] = {}
+        # V6.10 (2026-09-20): 模型桶级隔离 — (account_id, model) → 冷却截止时间戳.
+        # 上游按模型拆分配额桶 (e.g. taotoken deepseek_for_coding/glm_for_coding) 时,
+        # 桶 A quota 耗尽只封 A, 桶 B 继续可用 — 账号级冷却会把 B 一起拖死 (9/20
+        # 实证: deepseek 桶 429 后 glm 本可承接, 却 fallback 到 glm_bigmodel).
+        # 仅 QUOTA_EXHAUSTED 且携带 model 的失败进入这里; 其余错误仍账号级.
+        # 与 _state 同生命周期 (内存, 重启清零).
+        self._quarantine: dict[tuple[int, str], float] = {}
 
     # ============ 状态查询 ============
 
-    def is_in_cooldown(self, account_id: int) -> bool:
-        """是否处于冷却期 (cooldown_until > now)."""
+    def is_in_cooldown(self, account_id: int, model: Optional[str] = None) -> bool:
+        """是否处于冷却期 (cooldown_until > now).
+
+        V6.10: model 给定时先查该 (account, model) 配额桶隔离, 未命中再落回
+        账号级检查; model 缺省时纯账号级 (旧语义不变).
+        """
+        if model:
+            until = self._quarantine.get((account_id, model))
+            if until is not None:
+                if time.time() >= until:
+                    # 桶隔离过期即移除 (配额桶无指数退避序列, 不需要保留 count)
+                    self._quarantine.pop((account_id, model), None)
+                    return False
+                return True
         s = self._state.get(account_id)
         if not s or s.get("cooldown_until") is None:
             return False
@@ -147,6 +166,7 @@ class CooldownManager:
         reason: str = "",
         error_info=None,  # gateway.error_classifier.ErrorInfo
         sibling_account_ids: Optional[list[int]] = None,
+        model: Optional[str] = None,
     ) -> None:
         """标记一次失败. 失败次数达阈值 → 进入 cooldown.
 
@@ -235,30 +255,48 @@ class CooldownManager:
 
             # 触发条件: 失败次数 >= failure_threshold
             if s["count"] >= self.failure_threshold:
-                s["cooldown_until"] = now + cooldown_secs
-
-                # V6.4.x: 渠道级限流同步 — 只对齐"兄弟也在 rate_limited 冷却中"
-                # 的场景 (共享池饱和信号); 兄弟因 auth/quota 冷却与本账号无关
+                # V6.10: 模型桶级配额隔离 — quota_exhausted 且携带 model 时只封该
+                # 上游配额桶, 不设账号级 cooldown_until (同账号另一模型桶继续路由).
                 if (
-                    error_info.category == ErrorCategory.RATE_LIMITED
-                    and sibling_account_ids
+                    model
+                    and error_info.category == ErrorCategory.QUOTA_EXHAUSTED
+                    and cooldown_secs > 0
                 ):
-                    sibling_until = max(
-                        (
-                            o.get("cooldown_until") or 0
-                            for aid, o in self._state.items()
-                            if aid in sibling_account_ids
-                            and o.get("last_error_type") == "rate_limited"
-                        ),
-                        default=0,
+                    self._quarantine[(account_id, model)] = now + cooldown_secs
+                    s["last_error_model"] = model
+                    logger.warning(
+                        f"CooldownManager: account_id={account_id} model={model} "
+                        f"配额桶隔离冷却 {cooldown_secs:.0f}s "
+                        f"(不封账号, 兄弟模型桶可继续路由)"
                     )
-                    if sibling_until > (s["cooldown_until"] or 0):
-                        s["cooldown_until"] = sibling_until
-                        logger.info(
-                            f"CooldownManager: account_id={account_id} "
-                            f"渠道级限流同步, 冷却对齐兄弟账号 "
-                            f"(remaining={sibling_until - now:.1f}s)"
+                    # 桶级失败不安排账号级探活 (探活 GET /models 无桶语义;
+                    # needs_human 升级后本就清除 next_probe_at)
+                    probe_after = None
+                else:
+                    s["cooldown_until"] = now + cooldown_secs
+
+                    # V6.4.x: 渠道级限流同步 — 只对齐"兄弟也在 rate_limited 冷却中"
+                    # 的场景 (共享池饱和信号); 兄弟因 auth/quota 冷却与本账号无关
+                    if (
+                        error_info.category == ErrorCategory.RATE_LIMITED
+                        and sibling_account_ids
+                    ):
+                        sibling_until = max(
+                            (
+                                o.get("cooldown_until") or 0
+                                for aid, o in self._state.items()
+                                if aid in sibling_account_ids
+                                and o.get("last_error_type") == "rate_limited"
+                            ),
+                            default=0,
                         )
+                        if sibling_until > (s["cooldown_until"] or 0):
+                            s["cooldown_until"] = sibling_until
+                            logger.info(
+                                f"CooldownManager: account_id={account_id} "
+                                f"渠道级限流同步, 冷却对齐兄弟账号 "
+                                f"(remaining={sibling_until - now:.1f}s)"
+                            )
 
             # needs_human 阈值判断 (quota/auth/model)
             threshold = self.needs_human_thresholds.get(error_info.category.value, 999)
@@ -294,7 +332,7 @@ class CooldownManager:
             f"reason={reason!r}, needs_human={s.get('needs_human', False)})"
         )
 
-    def mark_success(self, account_id: int) -> None:
+    def mark_success(self, account_id: int, model: Optional[str] = None) -> None:
         """标记一次成功 → 重置失败计数 + 清 cooldown + 清 needs_human.
 
         V6.4.x: 冷却期内的"迟到成功"不复位 — 长流式请求在冷却设置前路由、
@@ -302,7 +340,13 @@ class CooldownManager:
         完成的在途 200 擦掉, 下一请求立刻重撞). 在途成功不证明账号当前健康:
         只记 last_success_at, 保留 count (指数退避延续) 与 cooldown_until
         (到期自愈). 冷却外的成功仍是全量复位.
+
+        V6.10: model 给定时先清该 (account, model) 配额桶隔离 — glm 桶的 200
+        不应擦掉 deepseek 桶的 1h 冷却 (配额桶独立, 见 _quarantine); 账号级
+        复位逻辑照旧.
         """
+        if model:
+            self._quarantine.pop((account_id, model), None)
         s = self._state.get(account_id)
         if not s:
             return
@@ -438,10 +482,14 @@ class CooldownManager:
             expired.append(aid)
         for aid in expired:
             self._state.pop(aid, None)
-        return len(expired)
+        # V6.10: 清理过期的配额桶隔离 (无保留窗语义, 到期即清)
+        expired_q = [k for k, until in self._quarantine.items() if now >= until]
+        for k in expired_q:
+            self._quarantine.pop(k, None)
+        return len(expired) + len(expired_q)
 
     def snapshot(self) -> dict[int, dict]:
-        """调试用: 当前所有冷却状态快照 (V4.8.7 + V4.9 字段)."""
+        """调试用: 当前所有冷却状态快照 (V4.8.7 + V4.9 字段 + V6.10 配额桶隔离)."""
         now = time.time()
         result = {}
         for aid, s in self._state.items():
@@ -451,6 +499,12 @@ class CooldownManager:
                 remaining = cu - now
             npa = s.get("next_probe_at")
             npa_remaining = max(0.0, npa - now) if npa else None
+            # V6.10: 该账号下的配额桶隔离 (model → 剩余秒)
+            q_remaining = {
+                model: round(until - now, 1)
+                for (acc, model), until in self._quarantine.items()
+                if acc == aid and until > now
+            }
             result[aid] = {
                 "count": s.get("count", 0),
                 "cooldown_until": cu,
@@ -463,11 +517,13 @@ class CooldownManager:
                 "last_error_type": s.get("last_error_type") or "",
                 "last_error_code": s.get("last_error_code"),
                 "last_error_msg": s.get("last_error_msg") or "",
+                "last_error_model": s.get("last_error_model"),
                 "needs_human": bool(s.get("needs_human")),
                 "next_probe_at": npa,
                 "next_probe_in_seconds": round(npa_remaining, 1) if npa_remaining is not None else None,
                 "probe_attempts": s.get("probe_attempts", 0),
                 "manual_disabled": bool(s.get("manual_disabled_at")),
+                "quarantine_models": q_remaining,
             }
         return result
 
