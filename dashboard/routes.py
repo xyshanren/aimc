@@ -65,10 +65,29 @@ def _list_weekly_reports() -> list[dict]:
 
 @router.get("", response_class=HTMLResponse)
 async def dashboard_page():
-    """Dashboard 主页面"""
+    """Dashboard 主页面
+
+    V6.10.1 (2026-09-20): 静态资源 7d 强缓存 (app.py _static_cache_headers,
+    max-age=604800) 会钉住旧 app.js — index.html 每次都是新拉的 (无 Cache-Control),
+    但 /static/app.js / style.css 被浏览器缓存 7 天 → 发版后用户看不到新功能
+    (实证: 性能统计卡有 HTML 骨架无数据、range 选择器不跟随)。
+    app.py 注释假设"文件名带内容哈希", 但前端并无构建哈希 — 这里在 serving 层
+    按资源文件 mtime 注入 ?v= 版本 query 击穿缓存, 每次发版资源变更自动失效。
+    """
     index_file = STATIC_DIR / "index.html"
     if index_file.exists():
-        return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
+        content = index_file.read_text(encoding="utf-8")
+        _v = 0
+        for _f in ("app.js", "style.css"):
+            _p = STATIC_DIR / _f
+            if _p.exists():
+                _v = max(_v, int(_p.stat().st_mtime))
+        if _v:
+            content = content.replace(
+                'src="/static/app.js"', f'src="/static/app.js?v={_v}"')
+            content = content.replace(
+                'href="/static/style.css"', f'href="/static/style.css?v={_v}"')
+        return HTMLResponse(content=content)
     return HTMLResponse(content="<h1>AIMC Dashboard</h1><p>static/index.html not found</p>")
 
 

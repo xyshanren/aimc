@@ -1585,6 +1585,7 @@ function syncRangeLabels() {
         ["top-range-label", lbl + " · 按请求数"],
         ["usage-bucket-label", _timeRange === "1" ? "近 24 小时 · 按小时分桶" : lbl + " · 按日分桶"],
         ["group-overview-label", lbl],
+        ["perf-range-label", "成功请求 · " + lbl], // V6.10 性能统计卡跟随全局 range
     ];
     for (const [id, text] of map) {
         const el = document.getElementById(id);
@@ -2243,8 +2244,7 @@ function renderPerfTable(data) {
     if (!body) return;
     const nd = n => n === null || n === undefined ? '—' : fmtNum(n);
     const items = (data && data.items) || [];
-    const rangeEl = document.getElementById('perf-range-label');
-    if (rangeEl && data) rangeEl.textContent = `成功请求 · 近 ${data.days} 天`;
+    // 副标题由 syncRangeLabels 统一维护 (全局 range 口径: 近 24 小时/近 7 天/近 30 天)
     if (items.length === 0) {
         body.innerHTML = '<p class="meta">窗口内无成功请求</p>';
         return;
