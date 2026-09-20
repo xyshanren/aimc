@@ -273,6 +273,14 @@ MODEL_REGISTRY = [
         ["general"], 8000, "text", 0, "2024-10",
         "阶跃星辰基础"
     ),
+    (
+        # V6.11 (2026-09-20): stepfun 新旗舰, 取代 step-1o (下线)
+        # 规格: https://platform.stepfun.com/docs/zh/guides/models/step-5-preview
+        "step-5-preview", "step", "Step-5 Preview", "T1",
+        ["reasoning", "code", "long_context", "general"], 1000000, "multimodal", 0, "2026-09",
+        "阶跃旗舰 preview: 1M ctx, 文本+图像+视频输入, tools/JSON mode/思考档位 low-medium-high; "
+        "标价 7/20 元每百万tokens (缓存命中 0.35)"
+    ),
 
     # ========== MiniMax (8 个, 对齐 MiniMax 官方 API + minimax_compat 渠道 price_snapshots) ==========
     # Phase 4 fix (2026-08-13): 修复 1005111 commit 的家族错乱

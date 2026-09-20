@@ -234,7 +234,11 @@ CHANNELS = [
         "qpm": 30,
         "prices": [
             ("step-3.5-flash", "normal", "全天", 0.0, 0.0),  # placeholder
-            ("step-1o", "normal", "全天", 0.0, 0.0),  # placeholder
+            # V6.11 (2026-09-20): step-5-preview 新旗舰, 取代 step-1o (过时下线)
+            # 官方规格: 1M ctx / 文本+图像+视频输入 / tools / prompt cache
+            # 官方价格 (platform.stepfun.com/docs/zh/guides/pricing/details):
+            #   输入 7.0 / 缓存命中 0.35 / 输出 20.0 (元/百万tokens)
+            ("step-5-preview", "normal", "全天", 7.0, 20.0, 0.35),
         ],
     },
     {

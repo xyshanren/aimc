@@ -154,7 +154,7 @@ RouteEngine (单例 route_engine)
 | taotoken_coding | 2 | 0 | ✅ 全规范 |
 | sensenova_official | 5 | 2 | ✅ 规范为主；2 行供应商自有名（sensenova-6.7-flash-lite / u1-fast）未注册 = 直连专用 |
 | modelscope_inference | 3 | 5 | ✅ 本规范首例：3 规范行（raw_model_id 指 raw id）+ 3 raw 行（直连入口）+ 2 Qwen 纯直连 |
-| stepfun_official | 0 | 2 | ⚠️ step-1o / step-3.5-flash 即上游真名且未注册 = 仅直连/fallback；要进组须先注册规范名再补规范价行 |
+| stepfun_official | 1 | 1 | ✅ **2026-09-20 step-5-preview 接入**：规范名行+注册表条目（T1/multimodal/1M ctx，标价 7/20 cache 0.35，状态 preview）= 可进组路由；step-3.5-flash 未注册 = 仅直连/fallback；step-1o 已过时下线（价行移除） |
 | siliconflow_aggregator | 13 | 99 | ✅ **2026-09-16 规范化完成**：13 规范名行=<br>（A）deepseek-v3/v3.2 + qwen3-8b/3.5-4b + qwen3-vl-32b-instruct/-thinking/30b-a3b-thinking/8b-instruct = **SF 独供 active 成员从 fallback 黑路径提为一等候选**<br>（B）deepseek-v4-flash / deepseek-v4-pro / glm-5.2 / minimax-m2.5 = 与官方渠道重复，显式付费兜底<br>（C）paddleocr-vl-1.5 = registry 已有规范名，用起来<br>+ glm-4-flash（light 组死成员）移除（glm-4.7-flash 已在组）。**全组 active 成员均有一等候选**，fallback WARN 降至 0。raw 行保留作聚合兜底 + 直连入口；embeddings/rerank 独立直通不受影响 |
 
 **新渠道 / 新模型接入规范（V6.6 起，此后一律照此办理）**
