@@ -74,7 +74,9 @@ pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`）�
 | `test_phase3_5_verification.py` | 4 | 情报采集 → registry/group 闭环验证 | 阶段3-5 |
 | `test_v67_stream_failover.py` | 9 | 流式 failover（429 换候选成功 / 终态改写 rate_limit_error / 真配额不改写 / 流式成功不被包裹）+ classify 限流语义兜底 | V6.7 |
 
-**总计**：91 个 test 文件（+conftest）/ 859 个 test / ~7 分钟跑通（V6.7 基线 2026-09-17 全绿; 表内逐文件数字为历史版本快照）
+**总计**：94 个 test 文件（+conftest）/ 883 个 test / ~7 分钟跑通（V6.10 基线 2026-09-20 全绿; 表内逐文件数字为历史版本快照）
+
+> V6.10 新增：`test_taotoken_balance.py`（9：quarantine 模型桶隔离 / legacy 兼容 / 大请求收敛 taotoken / 组路由 LRU 轮换 / 隔离接棒）、`test_v610_first_token_ms.py`（4：TTFT 落库 / 默认 NULL / 透传 / 错误流）、`test_v610_perf_endpoint.py`（2：perf 分位与 eff tok/s / 渠道聚合与状态过滤）。
 
 ## 3. 写新测试
 
