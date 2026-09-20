@@ -144,10 +144,23 @@
                     </div>
                 </div>
             </div>
-            <div class="card">
-                <div class="card-title"><span class="card-title-main" title="按分组路由的匹配情况 (Agent 视角)，非 Cache 命中率">路由成功率</span><span class="card-title-sub" id="group-routing-range-label">Agent 视角 · 近 7 天</span></div>
+<div class="card">
+                <div class="card-title"><span class="card-title-main">路由成功率</span><span class="card-title-sub" id="group-routing-range-label">Agent 视角 · 近 7 天</span></div>
                 <div class="card-body">
                     <div id="group-routing-list"><div class="loading">加载中…</div></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">性能统计</span><span class="card-title-sub" id="perf-range-label">成功请求 · 近 7 天</span></div>
+                <div class="card-body">
+                    <div class="toolbar mt-sm" id="perf-tabs">
+                        <button class="btn btn-sm" id="perf-tab-model" onclick="switchPerfTab('model')">按模型</button>
+                        <button class="btn btn-sm" id="perf-tab-channel" onclick="switchPerfTab('channel')">按渠道</button>
+                        <button class="btn btn-sm" id="perf-tab-account" onclick="switchPerfTab('account')">按账号</button>
+                    </div>
+                    <div id="perf-body">
+                        <div class="loading">加载中…</div>
+                    </div>
                 </div>
             </div>
             <div class="card">

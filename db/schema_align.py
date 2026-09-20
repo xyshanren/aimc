@@ -504,6 +504,9 @@ _ALIGN_DDL = {
         "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:usage_logs.cache_creation_input_tokens', 'orm-align')"),
     "ALTER TABLE usage_logs ADD COLUMN reasoning_tokens INTEGER": ("usage_logs", "reasoning_tokens",
         "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:usage_logs.reasoning_tokens', 'orm-align')"),
+    # V6.10 (2026-09-20): 流式首 token 到达延迟 (TTFT)
+    "ALTER TABLE usage_logs ADD COLUMN first_token_ms INTEGER": ("usage_logs", "first_token_ms",
+        "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:usage_logs.first_token_ms', 'orm-align')"),
     "ALTER TABLE usage_logs ADD COLUMN created_at DATETIME": ("usage_logs", "created_at",
         "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:usage_logs.created_at', 'orm-align')"),
     "ALTER TABLE usage_logs ADD COLUMN error_msg TEXT": ("usage_logs", "error_msg",

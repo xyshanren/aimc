@@ -1513,6 +1513,12 @@ const METRIC_DEFS = {
     coverage:     { label: '标价覆盖率',  desc: '标价已知请求 / 总请求，覆盖率低时标价节省偏保守' },
     routeSuccess: { label: '路由成功率',  desc: '按分组路由的匹配情况 (Agent 视角)，非 Cache 命中率' },
     latency:      { label: '平均延迟',    desc: '请求端到端耗时的日均值' },
+    // V6.10 性能统计卡 (用量页)
+    p50Latency:   { label: 'P50 延迟',    desc: '近窗口内成功请求延迟的中位数 (nearest-rank, 秒)' },
+    p95Latency:   { label: 'P95 延迟',    desc: '近窗口内成功请求延迟的 95 分位 (nearest-rank, 秒)' },
+    effTokPerS:   { label: '有效 tok/s',  desc: 'Σ输出token / Σ总耗时(秒); 含 prefill 时长, 大上下文请求会被稀释, 需结合平均输入对比' },
+    ttft:         { label: 'TTFT',        desc: '首 token 到达延迟均值 (V6.10 新采集列, 部署初期覆盖 0 显示 —); NULL=非流式/错误流' },
+    cacheReadPct: { label: '缓存命中',    desc: '缓存读取 tokens / 总输入 tokens (按成功请求聚合)' },
 };
 
 // 生成 <th> 的 title tooltip 属性
@@ -2197,6 +2203,83 @@ for (const t of ['model', 'group', 'user']) {
 }
 
 // ============================================================
+// V6.10 (2026-09-20): 性能统计卡 (用量页) — latency 分位 / 有效 tok/s / TTFT
+// /dashboard/api/usage/perf?days=&dim=model|channel|account
+// ============================================================
+let _perfTab = 'model';
+
+function switchPerfTab(tab) {
+    _perfTab = tab;
+    for (const t of ['model', 'channel', 'account']) {
+        const btn = document.getElementById('perf-tab-' + t);
+        if (btn) btn.classList.toggle('btn-primary', t === tab);
+    }
+    loadPerf();
+}
+
+// 初始 tab 高亮 (数据由用量页调度器负责)
+for (const t of ['model', 'channel', 'account']) {
+    const btn = document.getElementById('perf-tab-' + t);
+    if (btn) btn.classList.toggle('btn-primary', t === 'model');
+}
+
+async function loadPerf() {
+    const body = document.getElementById('perf-body');
+    if (!body) return;
+    try {
+        const resp = await authFetch(`/dashboard/api/usage/perf?days=${fmtDays()}&dim=${_perfTab}`);
+        if (!resp.ok) {
+            body.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
+            return;
+        }
+        renderPerfTable(await resp.json());
+    } catch (e) {
+        body.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+function renderPerfTable(data) {
+    const body = document.getElementById('perf-body');
+    if (!body) return;
+    const nd = n => n === null || n === undefined ? '—' : fmtNum(n);
+    const items = (data && data.items) || [];
+    const rangeEl = document.getElementById('perf-range-label');
+    if (rangeEl && data) rangeEl.textContent = `成功请求 · 近 ${data.days} 天`;
+    if (items.length === 0) {
+        body.innerHTML = '<p class="meta">窗口内无成功请求</p>';
+        return;
+    }
+    let html = '<table class="table table-sm"><thead><tr>' +
+        '<th>' + ({ model: '模型', channel: '渠道', account: '账号' }[_perfTab] || '模型') + '</th>' +
+        '<th' + mdTitle('requests') + '>请求数</th>' +
+        '<th' + mdTitle('latency') + '>平均延迟</th>' +
+        '<th' + mdTitle('p50Latency') + '>P50</th>' +
+        '<th' + mdTitle('p95Latency') + '>P95</th>' +
+        '<th>平均输入</th><th>平均输出</th>' +
+        '<th' + mdTitle('effTokPerS') + '>有效 tok/s</th>' +
+        '<th' + mdTitle('ttft') + '>TTFT<span class="meta">(覆盖)</span></th>' +
+        '<th' + mdTitle('cacheReadPct') + '>缓存命中</th>' +
+        '</tr></thead><tbody>';
+    for (const it of items) {
+        const ttftCov = it.ttft_n ? ` ${it.ttft_n}/${it.n}` : '';
+        html += '<tr>' +
+            `<td>${esc(it.key)}</td>` +
+            `<td>${nd(it.n)}</td>` +
+            `<td>${fmtLatency(it.avg_latency_ms)}</td>` +
+            `<td>${fmtLatency(it.p50_latency_ms)}</td>` +
+            `<td>${fmtLatency(it.p95_latency_ms)}</td>` +
+            `<td>${fmtTokens(it.avg_input_tokens)}</td>` +
+            `<td>${fmtTokens(it.avg_output_tokens)}</td>` +
+            `<td>${nd(it.eff_tok_per_s)}</td>` +
+            `<td>${it.ttft_ms === null || it.ttft_ms === undefined ? '—' : fmtLatency(it.ttft_ms) + '<span class="meta">' + ttftCov + '</span>'}</td>` +
+            `<td>${fmtPct(it.cache_pct, it.n > 0)}</td>` +
+            '</tr>';
+    }
+    html += '</tbody></table>';
+    body.innerHTML = html;
+}
+
+// ============================================================
 // Phase 3a (2026-09-05): 页面调度器 — docs/dashboard-phase3-design.md §2.3
 // - 侧边栏 6 页哈希路由, 只轮询当前页 (切页停旧定时器)
 // - 原 htmx 轮询卡全部转 JS loader (loadJsonCard + 既有 renderXxx)
@@ -2385,7 +2468,7 @@ async function refreshBadges() {
 const PAGE_ROUTES = {
     overview: { title: '概览', ms: 60000, loaders: [loadOverviewKPIs, loadOverviewTrend, loadUsageTop, loadGroupOverview, loadTodaySummary] },
     cost:     { title: '成本', ms: 60000, loaders: [loadCostAudit, loadCacheStatsList] },
-    usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadRequests], once: [loadRequestFilterOptions] },
+    usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadPerf, loadRequests], once: [loadRequestFilterOptions] },
     // channels: 渠道状态会随冷却自愈与上下架变动, 保留 30s 轮询;
     // 价格表 / registry 模型/分组/用户 Key/采集源是配置类数据 (仅人为或脚本操作才变, 进页即新),
     // 周报周级生成 — 以上均只在进页时加载一次 (once).

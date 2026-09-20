@@ -874,10 +874,16 @@ async def _forward_stream(
         TAIL_LIMIT = 65536
         # V4.9.3: 转录用全量缓冲 (不做滑动窗口, 但受 transcript_log_max_body 截断)
         full_buffer = bytearray() if settings.transcript_log_enabled else None
+        # V6.10 (2026-09-20): 流式首 token 到达延迟 (TTFT) — 首个数据 chunk
+        # 到达时刻相对请求开始 (proxy.py forward_request 的 start_time)。
+        # 非流式/错误流保持 None; 只记一次。
+        first_token_ms: Optional[int] = None
         try:
             # V6.7: status>=400 的错误已在上方缓冲返回, 走到这里的流一律 2xx/3xx,
             # aread()/StreamConsumed 防护随 prebuffered 机制一并移除。
             async for chunk in response.aiter_raw():
+                if first_token_ms is None and chunk:
+                    first_token_ms = int((time.time() - start_time) * 1000)
                 # 透传给客户端 (原样, 不修改)
                 yield chunk
                 # 累积到尾部缓冲用于事后提取 usage
@@ -901,6 +907,7 @@ async def _forward_stream(
                 _schedule_stream_usage_log(
                     channel, response.status_code, latency_ms,
                     requested_model, bytes(tail_buffer), caller_id, caller_key_id,
+                    first_token_ms=first_token_ms,
                 )
             except Exception as e:
                 logger.debug(f"[P0-1] stream usage 记录失败 (非致命): {e}")
@@ -1022,6 +1029,14 @@ def _update_cooldown(channel: dict, status_code_or_response) -> None:
     account_id = channel.get("account_id")
     if not account_id:
         return
+    # V6.10: 模型桶级隔离的上游模型名 — 与 router 候选过滤的
+    # ch.get("_channel_model") or model 保持同键 (taotoken 两桶即各自 canonical 名)
+    cooldown_model = (
+        channel.get("_channel_model")
+        or channel.get("_registry_model")
+        or channel.get("_actual_model")
+        or ""
+    )
     try:
         import httpx as _httpx
         from gateway.cooldown import cooldown_manager
@@ -1040,7 +1055,7 @@ def _update_cooldown(channel: dict, status_code_or_response) -> None:
                 response_body = None
 
         if status_code == 200:
-            cooldown_manager.mark_success(account_id)
+            cooldown_manager.mark_success(account_id, model=cooldown_model or None)
             return
 
         info = classify(status_code, response_body, None)
@@ -1061,7 +1076,8 @@ def _update_cooldown(channel: dict, status_code_or_response) -> None:
         except Exception:
             _siblings = []
         cooldown_manager.mark_failure(
-            account_id, error_info=info, sibling_account_ids=_siblings
+            account_id, error_info=info, sibling_account_ids=_siblings,
+            model=cooldown_model or None,
         )
 
         # V4.9: needs_human=True 的错误触发专门告警 (quota/auth/model_unsupported)
@@ -1280,6 +1296,7 @@ async def _write_usage_log(
     error_type: Optional[str] = None,
     error_code: Optional[str] = None,
     needs_human: Optional[bool] = None,
+    first_token_ms: Optional[int] = None,
 ):
     """写入用量日志到数据库
 
@@ -1336,6 +1353,8 @@ async def _write_usage_log(
                         cache_creation_input_tokens=cache_creation_input_tokens,
                         # V6.x: 思考 token (观察关思考评估)
                         reasoning_tokens=reasoning_tokens,
+                        # V6.10: 流式首 token 到达延迟 (TTFT), NULL=非流式/错误流/旧数据
+                        first_token_ms=first_token_ms,
                         # V4.8.5: 估算费用 (激活成本告警 / 周报 / 看板省钱量化)
                         cost_estimate=cost_estimate,
                         # V6.0 Phase 2: 官方标价口径 (成本审计, 节省 = 标价 - 实付)
@@ -1475,12 +1494,14 @@ def _schedule_stream_usage_log(
     requested_model: str, tail_bytes: bytes,
     caller_id: Optional[int] = None,
     caller_key_id: Optional[int] = None,
+    first_token_ms: Optional[int] = None,
 ):
     """P0-1: 从 streaming 尾部缓冲提取 usage 并记录 (fire-and-forget)
 
     与 _schedule_usage_log 对应, 但输入是原始 SSE 尾部字节而非完整 response。
     V4.8: caller_id 透传到 _write_usage_log
     V4.8.1: caller_key_id 透传到 _write_usage_log
+    V6.10: first_token_ms (TTFT) 透传; 错误流/未捕获为 None
     """
     try:
         usage = _extract_stream_usage(tail_bytes)
@@ -1508,6 +1529,7 @@ def _schedule_stream_usage_log(
                             group_id=group_id,
                             caller_id=caller_id,
                             caller_key_id=caller_key_id,
+                            first_token_ms=first_token_ms,
                             error_msg=info.error_msg,
                             error_type=info.category.value,
                             error_code=info.error_code,
@@ -1576,6 +1598,7 @@ def _schedule_stream_usage_log(
                     reasoning_tokens=reasoning_tokens,
                     caller_id=caller_id,
                     caller_key_id=caller_key_id,
+                    first_token_ms=first_token_ms,
                     cost_estimate=cost_estimate,
                     # V6.0 Phase 2: 标价轨 (官方标价口径, 量化免费/订阅渠道节省)
                     list_cost_estimate=list_cost_estimate,

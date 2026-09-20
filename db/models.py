@@ -394,6 +394,13 @@ class UsageLog(Base):
         Integer, nullable=True,
         comment="思考 token 数 (usage.completion_tokens_details.reasoning_tokens), NULL=上游未返回",
     )
+    # V6.10 (2026-09-20): 流式首 token 到达延迟 (TTFT) — proxy 首块到达时刻
+    # 相对请求开始的毫秒数。NULL=非流式 / 错误流 / 旧数据 (性能统计卡消费,
+    # 配合 latency_ms 可算纯 decode 速度: output_tokens / (latency - first_token))
+    first_token_ms = Column(
+        Integer, nullable=True,
+        comment="上游首 token 到达延迟（毫秒），NULL=未采集/非流式/错误流",
+    )
     # V6.4.1 (2026-09-12) 时区统一: 全库 DATETIME 列默认从 func.now()
     # (SQLite CURRENT_TIMESTAMP=UTC) 改为 Python 侧本地时间 — 全仓读取方
     # (quota.py / dashboard / 周报 / intel) 统一用本地 datetime.now() 做窗口过滤,

@@ -456,6 +456,99 @@ async def get_usage_summary(days: int = 7, session: AsyncSession = Depends(get_s
     ]
 
 
+def _nearest_rank_percentile(values: list, ratio: float) -> float:
+    """Python 侧 percentile (SQLite 无 percentile 聚合) — nearest-rank。
+
+    同 scripts/aggregate_weekly_feedback.py 口径 (p50/p95 沉淀 feedback_summary).
+    """
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    idx = int(len(ordered) * ratio)
+    return float(ordered[min(idx, len(ordered) - 1)])
+
+
+@router.get("/api/usage/perf")
+async def get_usage_perf(
+    days: int = Query(7, ge=1, le=90),
+    dim: str = Query("model"),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.10 (2026-09-20): 性能统计 — 成功请求 (2xx/3xx) 的延迟分位 / 有效吞吐 / TTFT。
+
+    dim: model | channel | account (单维度聚合, 前端三 tab 复用)
+    口径:
+    - p50/p95 latency: nearest-rank (Python 侧, 配合 avg 看分布)
+    - eff_tok_per_s: Σ output_tokens / Σ latency(秒) — 「有效吞吐」, 含 prefill
+      时长, 大上下文请求会被 prefill 稀释, 横向对比需结合 avg_input_tokens
+    - ttft_ms: avg(first_token_ms) 非空行均值, ttft_n 为采集覆盖数
+      (first_token_ms 为 V6.10 新采集列, 部署初期覆盖率为 0, 列显示「—」)
+    - cache_pct: 缓存读取 tokens / 总输入 (0 输入防护)
+    """
+    cutoff = datetime.now() - timedelta(days=days)
+    dim_col = {
+        "model": UsageLog.model,
+        "channel": Channel.name,
+        "account": Account.account_name,
+    }
+    col = dim_col.get(dim, UsageLog.model)
+    rows = (
+        await session.execute(
+            select(
+                col.label("key"),
+                UsageLog.latency_ms,
+                UsageLog.input_tokens,
+                UsageLog.output_tokens,
+                UsageLog.cache_read_input_tokens,
+                UsageLog.first_token_ms,
+            )
+            .join(Channel, UsageLog.channel_id == Channel.id, isouter=True)
+            .join(Account, UsageLog.account_id == Account.id, isouter=True)
+            .where(
+                UsageLog.created_at >= cutoff,
+                UsageLog.status_code >= 200,
+                UsageLog.status_code < 400,
+            )
+        )
+    ).all()
+
+    groups: dict = {}
+    for r in rows:
+        key = r.key or "(未知)"
+        g = groups.setdefault(
+            key,
+            {"n": 0, "lats": [], "tot_in": 0, "tot_out": 0,
+             "cache_read": 0, "ttft": []},
+        )
+        g["n"] += 1
+        if r.latency_ms is not None:
+            g["lats"].append(r.latency_ms)
+        g["tot_in"] += r.input_tokens or 0
+        g["tot_out"] += r.output_tokens or 0
+        g["cache_read"] += r.cache_read_input_tokens or 0
+        if r.first_token_ms is not None:
+            g["ttft"].append(r.first_token_ms)
+
+    items = []
+    for key, g in groups.items():
+        tot_lat_s = sum(g["lats"]) / 1000.0
+        items.append({
+            "key": key,
+            "n": g["n"],
+            "avg_latency_ms": round(sum(g["lats"]) / len(g["lats"]), 1) if g["lats"] else None,
+            "p50_latency_ms": _nearest_rank_percentile(g["lats"], 0.50),
+            "p95_latency_ms": _nearest_rank_percentile(g["lats"], 0.95),
+            "avg_input_tokens": round(g["tot_in"] / g["n"], 1),
+            "avg_output_tokens": round(g["tot_out"] / g["n"], 1),
+            "eff_tok_per_s": round(g["tot_out"] / tot_lat_s, 2) if tot_lat_s > 0 else 0.0,
+            "cache_pct": round(100.0 * g["cache_read"] / g["tot_in"], 1) if g["tot_in"] else 0.0,
+            "ttft_ms": round(sum(g["ttft"]) / len(g["ttft"]), 1) if g["ttft"] else None,
+            "ttft_n": len(g["ttft"]),
+        })
+    items.sort(key=lambda it: it["n"], reverse=True)
+    return {"days": days, "dim": dim, "items": items}
+
+
 # ============================================================
 # V6.0 Phase 2 (2026-09-03): 成本审计 — 标价双轨
 # docs/next-major-v6-plan.md §2.3 Phase B
@@ -2095,6 +2188,7 @@ async def list_requests(
                 "output_tokens": r.output_tokens or 0,
                 "cached_tokens": r.cached_input_tokens or 0,
                 "reasoning_tokens": r.reasoning_tokens,  # V6.x: None=上游未返回
+                "first_token_ms": r.first_token_ms,  # V6.10: TTFT, None=未采集/非流式/错误流
                 "cost_yuan": r.cost_estimate,
                 "list_cost_yuan": r.list_cost_estimate,
                 "error_code": r.error_code,
