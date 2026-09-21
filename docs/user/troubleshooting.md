@@ -58,6 +58,22 @@ echo "AIMC_DASHBOARD_TOKEN=$(openssl rand -hex 32)" >> .env
 systemctl --user restart aimc
 ```
 
+### 症状：key 明明对，客户端侧却 401 —— 先端到端验证
+
+`scripts/tmp_verify_hermes_key.sh` 从客户端视角验证 key + 组路由（读 .env 进变量再引用，**命令面不出现明文 key**）：
+
+```bash
+# Windows Git Bash → WSL 执行（hermes 等 WSL 侧客户端的场景）
+MSYS_NO_PATHCONV=1 wsl bash /mnt/d/work/workspace/Qoder/aimc/scripts/tmp_verify_hermes_key.sh
+# 传参: 第 1 个 = .env 路径, 第 2 个 = 网关 base_url（默认 http://127.0.0.1:8080/v1）
+```
+
+三条路径全 200 即 key/鉴权/组路由全通：`GET /v1/models`（组列表）+ `POST tier:light` + `POST tier:balanced`（真实路由链）。
+
+⚠️ **别把明文 key 直接写进 `-H 'Authorization: Bearer ...'` 命令行测鉴权**——本机 Agent 安全钩子会把命令里的密钥替换成 `<SECRET_xxx>` 占位符原样执行，产生假 401（2026-09-21 实测踩坑：key 对库 sha256 逐字节匹配却全部 401，verbose 输出里出现占位符才定位）。一律变量间接引用。
+
+WSL 内探 Windows 主机服务（Ollama 等 NAT 隔离场景）用 `scripts/tmp_gw_probe.sh`：打印 WSL 默认网关并探测 11434 可达性；网关 IP 可达后可填 `HERMES_OLLAMA_HOST=http://<gw-ip>:11434` 让 hermes quickstart 识别 Windows 侧 Ollama（网关 IP 随 WSL 重启可能漂移）。
+
 ## 3. 429 错误
 
 ### 症状：429 "Quota exceeded"（P0-6 限额）
