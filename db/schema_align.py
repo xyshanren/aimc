@@ -110,6 +110,8 @@ _ALIGN_DDL = {
         "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:accounts.updated_at', 'orm-align')"),
     "ALTER TABLE api_keys ADD COLUMN label TEXT": ("api_keys", "label",
         "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:api_keys.label', 'orm-align')"),
+    "ALTER TABLE api_keys ADD COLUMN allowed_groups TEXT": ("api_keys", "allowed_groups",
+        "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:api_keys.allowed_groups', 'orm-align')"),
     "ALTER TABLE api_keys ADD COLUMN last_used_at DATETIME": ("api_keys", "last_used_at",
         "INSERT OR IGNORE INTO schema_migrations (migration, note) VALUES ('align:api_keys.last_used_at', 'orm-align')"),
     "ALTER TABLE api_keys ADD COLUMN created_at DATETIME": ("api_keys", "created_at",

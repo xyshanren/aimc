@@ -3380,12 +3380,18 @@ async def get_per_user_usage(
 
 def _api_key_to_dict(k: ApiKey) -> dict:
     """ApiKey 转脱敏 dict (永不返回 key_hash)"""
+    # V6.11: allowed_groups 解析 (坏 JSON 原样透出, 写入口已校验, 正常不会发生)
+    try:
+        allowed_groups = json.loads(k.allowed_groups) if k.allowed_groups else None
+    except (ValueError, TypeError):
+        allowed_groups = k.allowed_groups
     return {
         "id": k.id,
         "key_prefix": k.key_prefix,
         "is_admin": bool(k.is_admin),
         "status": k.status,
         "label": k.label,
+        "allowed_groups": allowed_groups,
         "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
         "created_at": k.created_at.isoformat() if k.created_at else None,
     }
@@ -3461,9 +3467,11 @@ async def create_user_key(payload: dict, session: AsyncSession = Depends(get_ses
         "admin": false,                      # 可选, 发 admin key (可访问 dashboard 全数据)
         "daily_limit": 100000,               # 可选, 每日 token 限额 (NULL=不限)
         "monthly_limit": 1000000,            # 可选, 每月 token 限额 (NULL=不限)
-        "notes": "产品组"                    # 可选, 用户备注
+        "notes": "产品组",                    # 可选, 用户备注
+        "allowed_groups": ["tier:light"]     # 可选, V6.11 组白名单 (数组或逗号分隔
+                                             # 字符串; NULL/空=不限; 组名须存在于 model_groups)
     }
-    返回 201: { user_id, key_id, key_prefix, label, key_plain }
+    返回 201: { user_id, key_id, key_prefix, label, allowed_groups, key_plain }
     """
     import hashlib
     import secrets
@@ -3474,6 +3482,26 @@ async def create_user_key(payload: dict, session: AsyncSession = Depends(get_ses
 
     is_admin = bool(payload.get("admin", False))
     role = payload.get("role") or ("admin" if is_admin else "user")
+
+    # V6.11: 组白名单归一化 + 校验 (组名必须存在于 model_groups, 防 typo 入库)
+    allowed_groups = payload.get("allowed_groups")
+    if allowed_groups is not None:
+        if isinstance(allowed_groups, str):
+            allowed_groups = [g.strip() for g in allowed_groups.split(",") if g.strip()]
+        if not isinstance(allowed_groups, list) or not all(isinstance(g, str) and g for g in allowed_groups):
+            raise HTTPException(status_code=400, detail="allowed_groups 须为组名字符串数组或逗号分隔字符串")
+        if allowed_groups:
+            existing_groups = set((await session.execute(
+                select(ModelGroup.group_id)
+            )).scalars().all())
+            unknown = [g for g in allowed_groups if g not in existing_groups]
+            if unknown:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"未知组: {sorted(set(unknown))} (合法组: {sorted(existing_groups)})",
+                )
+        else:
+            allowed_groups = None  # 空数组归一为不限
 
     # 查或建 user (与 add_user_key.py 语义一致)
     user = (await session.execute(
@@ -3503,17 +3531,19 @@ async def create_user_key(payload: dict, session: AsyncSession = Depends(get_ses
         is_admin=1 if is_admin else 0,
         status="active",
         label=payload.get("label"),
+        allowed_groups=json.dumps(allowed_groups) if allowed_groups else None,
     )
     session.add(api_key)
     await session.commit()
-    logger.info("V6.1 dashboard create key: user_id=%s username=%s key_id=%s admin=%s",
-                user.id, username, api_key.id, is_admin)
+    logger.info("V6.1 dashboard create key: user_id=%s username=%s key_id=%s admin=%s allowed_groups=%s",
+                user.id, username, api_key.id, is_admin, allowed_groups)
 
     return {
         "user_id": user.id,
         "key_id": api_key.id,
         "key_prefix": api_key.key_prefix,
         "label": api_key.label,
+        "allowed_groups": allowed_groups,
         "key_plain": key_plain,
     }
 

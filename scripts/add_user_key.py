@@ -18,6 +18,7 @@
 import argparse
 import asyncio
 import hashlib
+import json
 import secrets
 import sys
 from datetime import datetime
@@ -42,6 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--monthly-limit", type=int, default=None,
                         help="每月 token 限额 (NULL=不限, 0=禁用)")
     parser.add_argument("--notes", default=None, help="用户备注 (e.g. 产品组)")
+    parser.add_argument("--allowed-groups", default=None, dest="allowed_groups",
+                        help="V6.11 组白名单, 逗号分隔 (e.g. tier:light,tier:balanced); "
+                             "不传=不限。组名须存在于 model_groups, 无组成员裸模型默认拒绝")
     parser.add_argument("--role", default=None, choices=["admin", "user"],
                         help="用户角色 (仅新建 user 时生效, 默认 admin key → admin, 否则 user)")
     return parser
@@ -59,6 +63,20 @@ async def add_user_key(args: argparse.Namespace) -> tuple[int, int, str]:
     """
     await init_db()
     async with async_session_factory() as session:
+        # V6.11: 组白名单校验 (组名必须存在于 model_groups, 防 tier:balance 式 typo 入库)
+        allowed_groups = None
+        if args.allowed_groups:
+            allowed_groups = [g.strip() for g in args.allowed_groups.split(",") if g.strip()]
+        if allowed_groups:
+            from db.models import ModelGroup
+            existing_groups = set((await session.execute(
+                select(ModelGroup.group_id)
+            )).scalars().all())
+            unknown = [g for g in allowed_groups if g not in existing_groups]
+            if unknown:
+                print(f"错误: 未知组 {unknown} (合法组: {sorted(existing_groups)})", file=sys.stderr)
+                sys.exit(2)
+
         # 查或建 user
         user = (await session.execute(
             select(User).where(User.username == args.username)
@@ -108,6 +126,7 @@ async def add_user_key(args: argparse.Namespace) -> tuple[int, int, str]:
             is_admin=1 if args.admin else 0,
             status="active",
             label=args.label,
+            allowed_groups=json.dumps(allowed_groups) if allowed_groups else None,
         )
         session.add(api_key)
         await session.commit()
@@ -121,6 +140,7 @@ async def add_user_key(args: argparse.Namespace) -> tuple[int, int, str]:
         print(f"  前缀:   {key_prefix}...")
         print(f"  Admin:  {'是' if api_key.is_admin else '否'}")
         print(f"  标签:   {args.label or '-'}")
+        print(f"  组白名单: {', '.join(allowed_groups) if allowed_groups else '不限'}")
         print()
         print(f"  明文:   {key_plain}")
         print()

@@ -1070,6 +1070,11 @@ class ApiKey(Base):
     )
     status = Column(Text, nullable=False, default="active", comment="active / revoked")
     label = Column(Text, nullable=True, comment="key 标签 (e.g. '工作机' / '笔记本')")
+    allowed_groups = Column(
+        Text, nullable=True,
+        comment="V6.11: 组白名单 JSON 数组 (e.g. '[\"tier:light\"]'); NULL/空=不限。"
+                "门禁只挂 /v1/chat/completions, 无组成员裸模型默认拒绝",
+    )
     last_used_at = Column(DateTime, nullable=True, comment="最后使用时间")
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)

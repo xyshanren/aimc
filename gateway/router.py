@@ -646,6 +646,17 @@ class RouteEngine:
             return False
         return True
 
+    def is_known_group(self, name: str) -> bool:
+        """V6.11: name 是否是已知组名 (tier:/scene: 等以 model_groups 为准, 不硬编码前缀)"""
+        return name in self._groups_cache
+
+    def groups_containing_model(self, model: str) -> list[str]:
+        """V6.11: 该模型所属的组 id 列表 (组白名单门禁用; 空列表=无组成员归属)"""
+        return [
+            gid for gid, members in self._group_members_cache.items()
+            if model in members
+        ]
+
     def select_best_channel(self, model: str, messages: Optional[list] = None) -> Optional[dict]:
         """核心决策：为指定模型选择最优渠道
 

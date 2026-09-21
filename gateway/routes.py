@@ -82,6 +82,35 @@ async def get_model(model_id: str):
     )
 
 
+def check_key_group_allowed(model: str, allowed_groups, engine) -> str | None:
+    """V6.11: key 级组白名单门禁。返回拒绝原因 (str) 或 None=放行。
+
+    语义 (2026-09-22 拍板):
+    - allowed_groups 为 None/空 → 不限 (存量 key 天然不受影响)
+    - model 是已知组名 (tier:/scene: 以 model_groups 为准) → 必须在白名单内
+    - 裸模型名 → 须属于 ≥1 个白名单组; 无组成员归属的模型默认拒绝
+    - fallback 穿透不在此拦: 生产 7 组 fallback 链全沿成本阶梯向下且
+      flagship/strong/vision 无入边 (2026-09-21 实证), 高成本组不可能被
+      fallback 触达, 入口门禁即完备
+    """
+    if not allowed_groups:
+        return None
+    allowed_set = set(allowed_groups)
+    if engine.is_known_group(model):
+        if model in allowed_set:
+            return None
+        return f"key 无权使用组 {model} (允许的组: {sorted(allowed_set)})"
+    member_groups = engine.groups_containing_model(model)
+    if any(g in allowed_set for g in member_groups):
+        return None
+    if member_groups:
+        return (
+            f"模型 {model} 不属于任何允许的组 (所属组: {sorted(member_groups)}, "
+            f"允许的组: {sorted(allowed_set)})"
+        )
+    return f"模型 {model} 无组成员归属, 白名单 key 默认拒绝 (允许的组: {sorted(allowed_set)})"
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """OpenAI 兼容的 chat completions 端点
@@ -109,6 +138,26 @@ async def chat_completions(request: Request):
         return JSONResponse(
             status_code=400,
             content={"error": {"message": "model field is required", "type": "invalid_request_error"}},
+        )
+
+    # V6.11: key 级组白名单门禁 (api_keys.allowed_groups; NULL/空=不限)
+    # - admin key 与 legacy 单 key 不受限 (allowed_groups 均为 None)
+    # - 30s key 缓存语义与 revoke 一致, 白名单变更最迟 30s 生效
+    _deny_reason = check_key_group_allowed(
+        model,
+        getattr(request.state, "caller_allowed_groups", None),
+        route_engine,
+    )
+    if _deny_reason:
+        logger.info("V6.11 key 组门禁拒绝: model=%s key_id=%s (%s)",
+                    model, getattr(request.state, "caller_key_id", None), _deny_reason)
+        return JSONResponse(
+            status_code=403,
+            content={"error": {
+                "message": _deny_reason,
+                "type": "permission_error",
+                "code": "key_group_not_allowed",
+            }},
         )
 
     # Phase 2.6: 解析 Agent 偏好 (extra_body.aimc_preferences)

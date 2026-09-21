@@ -66,7 +66,7 @@ python scripts/aimc.py status          # 全部子命令 --help 可查
 | `POST /dashboard/api/accounts/{id}/enable` / `disable` | 启停账号 | 否 |
 | `POST /dashboard/api/accounts/{id}/rotate` | 轮换账号 key | 否 |
 | `POST /dashboard/api/accounts/expire-check` | 扫描过期账号 | 否 |
-| `POST /dashboard/api/keys` | 创建/复用 user + 发 key（明文只回一次，V6.1 新增） | 否 |
+| `POST /dashboard/api/keys` | 创建/复用 user + 发 key（明文只回一次，V6.1 新增；V6.11 支持可选 `allowed_groups` 组白名单——数组或逗号分隔字符串，NULL/空=不限，组名须存在于 model_groups，写入时校验） | 否 |
 | `POST /dashboard/api/keys/{id}/revoke` | 吊销 key（立即失效） | 否 |
 | `POST /dashboard/api/cache/refresh` | 立即刷新路由缓存 | 否 |
 | `POST /dashboard/api/cooldown/{id}/ack-recover` | 人工确认账号恢复 | 否 |

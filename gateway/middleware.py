@@ -10,6 +10,7 @@ V4.8 (2026-08-19): 多用户鉴权改造
 import asyncio
 import hashlib
 import hmac
+import json
 import time
 import logging
 from dataclasses import dataclass
@@ -48,6 +49,8 @@ class ApiKeyInfo:
     username: str
     is_admin: bool
     key_id: int
+    # V6.11: 组白名单 (api_keys.allowed_groups JSON 已解析; None=不限)
+    allowed_groups: list[str] | None = None
 
 
 def _extract_dashboard_token(request: Request) -> str:
@@ -136,11 +139,25 @@ async def _query_api_key(key_hash: str) -> ApiKeyInfo | None:
 
             api_key: ApiKey = row[0]
             user: User = row[1]
+            # V6.11: 解析组白名单 (NULL/空=不限; 坏 JSON 按不限处理并告警 —
+            # 拒绝所有请求比放行更伤, 且写入口已校验, 坏值只可能是手改库)
+            allowed_groups: list[str] | None = None
+            if api_key.allowed_groups:
+                try:
+                    parsed = json.loads(api_key.allowed_groups)
+                    if isinstance(parsed, list) and parsed:
+                        allowed_groups = [g for g in parsed if isinstance(g, str)]
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "api_keys.id=%s allowed_groups 坏 JSON, 按不限处理: %r",
+                        api_key.id, api_key.allowed_groups,
+                    )
             return ApiKeyInfo(
                 user_id=user.id,
                 username=user.username,
                 is_admin=bool(api_key.is_admin) or user.role == "admin",
                 key_id=api_key.id,
+                allowed_groups=allowed_groups,
             )
     except OperationalError as e:
         # V4.8 前老库 api_keys 表未建 — 预期场景, 降级 legacy 鉴权
@@ -224,6 +241,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             request.state.caller_is_admin = False
             request.state.caller_username = None
             request.state.caller_key_id = None
+            # V6.11: 组白名单 (legacy 单 key / 未命中时保持 None=不限)
+            request.state.caller_allowed_groups = None
 
             if settings.auth_enabled:
                 auth_header = request.headers.get("Authorization", "")
@@ -245,6 +264,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     request.state.caller_username = key_info.username
                     # V4.8.1: 透传 key_id 到 request.state → usage_logs.key_id (多 key label 下钻)
                     request.state.caller_key_id = key_info.key_id
+                    # V6.11: 组白名单透传 (routes 层 /v1/chat/completions 门禁消费)
+                    request.state.caller_allowed_groups = key_info.allowed_groups
                     # 异步更新 last_used_at (不阻塞)
                     try:
                         loop = asyncio.get_running_loop()
