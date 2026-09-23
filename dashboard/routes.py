@@ -1043,6 +1043,199 @@ async def get_cost_by_group(
     return {"days": days, "totals": _cost_audit_totals(items), "items": items}
 
 
+@router.get("/api/usage/cost-by-channel")
+async def get_cost_by_channel(
+    days: int = Query(7, ge=1, le=90),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.13 (2026-09-23): 按渠道拆成本 — 补成本页缺失的「渠道」维度。
+
+    与另外三个维度同构: 回答"哪个渠道在花钱、免费渠道省了多少"。
+    channel_id NULL (legacy) → "(未知渠道)"。
+    """
+    cutoff = datetime.now() - timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(
+                UsageLog.channel_id,
+                Channel.name.label("channel_name"),
+                func.count(UsageLog.id).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan"),
+                func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).label("list_cost_yuan"),
+                func.count(UsageLog.list_cost_estimate).label("list_known_requests"),
+            )
+            .outerjoin(Channel, UsageLog.channel_id == Channel.id)
+            .where(UsageLog.created_at >= cutoff)
+            .group_by(UsageLog.channel_id, Channel.name)
+            .order_by(func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).desc())
+        )
+    ).all()
+
+    priced = {
+        r.channel_id: float(r.cost_yuan_priced or 0)
+        for r in (
+            await session.execute(
+                select(
+                    UsageLog.channel_id,
+                    func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan_priced"),
+                )
+                .where(UsageLog.created_at >= cutoff)
+                .where(UsageLog.list_cost_estimate.isnot(None))
+                .group_by(UsageLog.channel_id)
+            )
+        ).all()
+    }
+
+    items = []
+    for row in rows:
+        item = {
+            "channel_id": row.channel_id,
+            "channel_name": row.channel_name or "(未知渠道)",
+        }
+        item.update(_cost_audit_row_dict(row, priced.get(row.channel_id, 0.0)))
+        items.append(item)
+    return {"days": days, "totals": _cost_audit_totals(items), "items": items}
+
+
+@router.get("/api/usage/cost-by-model-channels")
+async def get_cost_by_model_channels(
+    days: int = Query(7, ge=1, le=90),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.13 (2026-09-23): 模型 × 渠道 交叉成本 — 供成本页「按模型」tab 展开下钻。
+
+    同一模型可能挂多渠道 (如 glm-5.2 在免费渠道 vs 付费渠道), 单看模型行只是混合均价;
+    展开到渠道才能回答"这个模型在哪买最便宜"。结构镜像 /api/stats/per-user 的 keys 下钻。
+
+    响应: items[].channels[] (该模型的渠道明细, 按标价降序); totals 与 cost-by-model 一致。
+    """
+    cutoff = datetime.now() - timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(
+                UsageLog.model,
+                UsageLog.channel_id,
+                Channel.name.label("channel_name"),
+                func.count(UsageLog.id).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan"),
+                func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).label("list_cost_yuan"),
+                func.count(UsageLog.list_cost_estimate).label("list_known_requests"),
+            )
+            .outerjoin(Channel, UsageLog.channel_id == Channel.id)
+            .where(UsageLog.created_at >= cutoff)
+            .group_by(UsageLog.model, UsageLog.channel_id, Channel.name)
+            .order_by(func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).desc())
+        )
+    ).all()
+
+    # 标价已知行的实付 (按 model+channel 二趟, 同成本审计口径)
+    priced = {
+        (r.model, r.channel_id): float(r.cost_yuan_priced or 0)
+        for r in (
+            await session.execute(
+                select(
+                    UsageLog.model,
+                    UsageLog.channel_id,
+                    func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan_priced"),
+                )
+                .where(UsageLog.created_at >= cutoff)
+                .where(UsageLog.list_cost_estimate.isnot(None))
+                .group_by(UsageLog.model, UsageLog.channel_id)
+            )
+        ).all()
+    }
+
+    # 先按 model+channel 造行, 再聚成 model 级 items (含 channels[] 下钻)
+    by_model: dict = {}
+    for row in rows:
+        child = {
+            "channel_id": row.channel_id,
+            "channel_name": row.channel_name or "(未知渠道)",
+        }
+        child.update(_cost_audit_row_dict(row, priced.get((row.model, row.channel_id), 0.0)))
+        key = row.model
+        if key not in by_model:
+            by_model[key] = {"model": row.model or "(未知模型)", "channels": []}
+        by_model[key]["channels"].append(child)
+
+    items = []
+    for item in by_model.values():
+        children = item["channels"]
+        items.append({
+            "model": item["model"],
+            # 模型级聚合 = 其渠道行求和 (与 cost-by-model 同值)
+            "request_count": sum(c["request_count"] for c in children),
+            "input_tokens": sum(c["input_tokens"] for c in children),
+            "output_tokens": sum(c["output_tokens"] for c in children),
+            "cost_yuan": round(sum(c["cost_yuan"] for c in children), 4),
+            "list_cost_yuan": round(sum(c["list_cost_yuan"] for c in children), 4),
+            "saved_yuan": round(sum(c["saved_yuan"] for c in children), 4),
+            "list_known_requests": sum(c["list_known_requests"] for c in children),
+            "channels": children,
+        })
+    items.sort(key=lambda it: it["list_cost_yuan"], reverse=True)
+    return {"days": days, "totals": _cost_audit_totals(items), "items": items}
+
+
+@router.get("/api/usage/cost-compare")
+async def get_cost_compare(
+    days: int = Query(7, ge=1, le=90),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.13 (2026-09-23): 成本环比 — 当前窗口 vs 等长上一窗口 (KPI 环比箭头数据源)。
+
+    维度无关 (全窗口聚合, 不做分组), 故成本页 4 个 tab 共用一份, 切 tab 不闪。
+    窗口口径: current = [now-N, now], previous = [now-2N, now-N] (滚动, 非自然日)。
+    """
+    now = datetime.now()
+    cur_start = now - timedelta(days=days)
+    prev_start = now - timedelta(days=2 * days)
+
+    async def _window_totals(start: datetime, end: datetime) -> dict:
+        """窗口内 totals: 一次聚合 + 一次"标价已知行的实付"二趟 (同成本审计口径)"""
+        row = (await session.execute(
+            select(
+                func.count(UsageLog.id).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan"),
+                func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).label("list_cost_yuan"),
+                func.count(UsageLog.list_cost_estimate).label("list_known_requests"),
+            )
+            .where(UsageLog.created_at >= start)
+            .where(UsageLog.created_at < end)
+        )).one()
+        priced = float((await session.execute(
+            select(func.coalesce(func.sum(UsageLog.cost_estimate), 0))
+            .where(UsageLog.created_at >= start)
+            .where(UsageLog.created_at < end)
+            .where(UsageLog.list_cost_estimate.isnot(None))
+        )).scalar() or 0)
+        req = int(row.request_count)
+        known = int(row.list_known_requests or 0)
+        list_cost = float(row.list_cost_yuan or 0)
+        return {
+            "request_count": req,
+            "input_tokens": int(row.input_tokens or 0),
+            "output_tokens": int(row.output_tokens or 0),
+            "cost_yuan": round(float(row.cost_yuan or 0), 4),
+            "list_cost_yuan": round(list_cost, 4),
+            "saved_yuan": round(list_cost - priced, 4),
+            "list_known_requests": known,
+            "list_coverage_pct": round(known / req * 100, 1) if req else 0.0,
+        }
+
+    return {
+        "days": days,
+        "current": await _window_totals(cur_start, now),
+        "previous": await _window_totals(prev_start, cur_start),
+    }
+
+
 @router.get("/api/usage/cost-by-user")
 async def get_cost_by_user(
     days: int = Query(7, ge=1, le=90),
@@ -1059,6 +1252,8 @@ async def get_cost_by_user(
                 func.count(UsageLog.id).label("request_count"),
                 func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
                 func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                # V6.13 fix: 前端用户 tab 有「思考」列, 此前该端点不返回此字段 → 永远显示 —
+                func.coalesce(func.sum(UsageLog.reasoning_tokens), 0).label("reasoning_tokens"),
                 func.coalesce(func.sum(UsageLog.cost_estimate), 0).label("cost_yuan"),
                 func.coalesce(func.sum(UsageLog.list_cost_estimate), 0).label("list_cost_yuan"),
                 func.count(UsageLog.list_cost_estimate).label("list_known_requests"),
@@ -1093,6 +1288,8 @@ async def get_cost_by_user(
             "display_name": row.display_name,
         }
         item.update(_cost_audit_row_dict(row, priced.get(row.caller_id, 0.0)))
+        # V6.13: 思考 token 仅 user tab 展示 (model/group 端点不查该列, 故不进共享行字典)
+        item["reasoning_tokens"] = int(row.reasoning_tokens or 0)
         items.append(item)
     return {"days": days, "totals": _cost_audit_totals(items), "items": items}
 
@@ -1177,21 +1374,60 @@ async def get_cost_trend(
     return {"days": days, "totals": _cost_audit_totals(items), "items": items}
 
 
-def _approx_channel_saved(channel_id: int, cached_t: int, cache_price_map: dict) -> float:
-    """阶段1 (2026-08-14): 按 channel 估算节省金额 (fallback 简化版)
+def _build_cache_price_maps(price_rows) -> tuple[dict, dict]:
+    """V6.13: 从 price_snapshots 行构建缓存价查找表 (按渠道×模型 + 模型兜底)。
 
-    当前简化: 因为价格表是按 model 维度, 不能精确按 channel 聚合,
-    这里用 cache_price_map 平均 cached_input_price * 9 估算节省.
+    返回 (by_ch_model, by_model), 值形如 {"input": float|None, "cached": float|None}。
 
-    TODO: 后续改进 — 用 LEFT JOIN price_snapshots WHERE channel_id=X
-    按 channel_id 过滤聚合, 给出精确节省
+    取价规则 (与 gateway.proxy._estimate_cost 计费口径对齐):
+    - 价格存在 normal/peak/cache_hit 等多种 price_type 行里, 缓存价在
+      cached_input_price 列 (生产实测 149 行 normal 中 78 行有值; 无 cache_hit 行)
+    - 同一键多行时以 effective_from 最新且该字段非空者为准 (调用方已按
+      effective_from 升序传入 → 非空值后写覆盖前写)
+    """
+    by_ch_model: dict = {}
+    by_model: dict = {}
+
+    def _fill(target: dict, key, row) -> None:
+        slot = target.setdefault(key, {"input": None, "cached": None})
+        if row.input_price is not None:
+            slot["input"] = float(row.input_price)
+        if row.cached_input_price is not None:
+            slot["cached"] = float(row.cached_input_price)
+
+    for r in price_rows:
+        _fill(by_ch_model, (r.channel_id, r.model), r)
+        _fill(by_model, r.model, r)
+    return by_ch_model, by_model
+
+
+def _cache_saved_yuan(ch_model_prices: dict, model_prices: dict,
+                      channel_id, model: str, cached_t: int) -> tuple[float, bool]:
+    """V6.13: 缓存节省 (元) — 计费一致口径。
+
+    节省 = 命中 token × (input_price − cached_input_price) / 1e6,
+    与 gateway.proxy._estimate_cost 的计费公式互为镜像:
+    - 有 cached_input_price → 命中部分按 cached 价计费, 差额即节省
+    - 无 cached_input_price → 计费侧按 input_price 兜底 (无优惠) → 节省 0
+      (V6.13 前此处用其他渠道/模型的均价 ×9 估算, 会把免费/按次计费渠道的
+       命中 token 按付费渠道单价计价, 严重高估)
+
+    返回 (saved_yuan, priced) — priced=False 表示该 (渠道,模型) 无可用缓存价,
+    其命中 token 计入"未覆盖", 供前端提示口径可信度。
     """
     if cached_t <= 0:
-        return 0.0
-    if not cache_price_map:
-        return cached_t * 0.1 / 1_000_000
-    avg_cip = sum(cache_price_map.values()) / len(cache_price_map)
-    return cached_t * avg_cip * 9 / 1_000_000
+        return 0.0, True
+    slot = ch_model_prices.get((channel_id, model)) or {}
+    cached_price = slot.get("cached")
+    input_price = slot.get("input")
+    if cached_price is None:
+        # 该渠道无缓存价 (或无该模型价格行): 保守判为无节省, 不做跨渠道外推
+        return 0.0, False
+    if input_price is None:
+        # 有缓存价但无常规输入价 → 无法算差额, 按 cache 10% 惯例保守估差额
+        input_price = cached_price * 10
+    diff = max(input_price - cached_price, 0.0)
+    return cached_t * diff / 1_000_000, True
 
 
 @router.get("/api/data-freshness")
@@ -1700,120 +1936,110 @@ async def get_cache_stats(days: int = 7, session: AsyncSession = Depends(get_ses
         + func.coalesce(UsageLog.cache_read_input_tokens, 0),
         0,
     )
-    # 1. 按 channel 聚合 (用 COALESCE 处理 NULL)
-    channel_stmt = (
-        select(
-            UsageLog.channel_id,
-            Channel.name.label("channel_name"),
-            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(cache_tokens_expr), 0).label("cached_tokens"),
+    # V6.13: 按 (channel, model) 聚合 — 原子粒度, 渠道级/模型级都从它汇总
+    detail_rows = (
+        await session.execute(
+            select(
+                UsageLog.channel_id,
+                Channel.name.label("channel_name"),
+                UsageLog.model,
+                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(cache_tokens_expr), 0).label("cached_tokens"),
+            )
+            .outerjoin(Channel, UsageLog.channel_id == Channel.id)
+            .where(UsageLog.created_at >= cutoff)
+            .group_by(UsageLog.channel_id, Channel.name, UsageLog.model)
         )
-        .join(Channel, UsageLog.channel_id == Channel.id)
-        .where(UsageLog.created_at >= cutoff)
-        .group_by(UsageLog.channel_id, Channel.name)
-        .order_by(func.sum(cache_tokens_expr).desc())
-    )
-    channel_rows = (await session.execute(channel_stmt)).all()
+    ).all()
 
-    # 2. 按 model 聚合
-    model_stmt = (
-        select(
-            UsageLog.model,
-            func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
-            func.coalesce(func.sum(cache_tokens_expr), 0).label("cached_tokens"),
+    # 价格表 → (渠道,模型) 缓存价查找表 (effective_from 升序: 新价后写覆盖旧价)
+    price_rows = (
+        await session.execute(
+            select(
+                PriceSnapshot.channel_id,
+                PriceSnapshot.model,
+                PriceSnapshot.input_price,
+                PriceSnapshot.cached_input_price,
+            ).order_by(PriceSnapshot.effective_from.asc(), PriceSnapshot.id.asc())
         )
-        .where(UsageLog.created_at >= cutoff)
-        .group_by(UsageLog.model)
-        .order_by(func.sum(cache_tokens_expr).desc())
-        .limit(10)  # TOP 10 model
-    )
-    model_rows = (await session.execute(model_stmt)).all()
+    ).all()
+    ch_model_prices, model_prices = _build_cache_price_maps(price_rows)
 
-    # 3. 算节省金额: cached_tokens * (input_price - cached_input_price) / 1e6
-    #    从 price_snapshots 读真实 cache 价; input_price 通常 SF 聚合平台未公开
-    #    估算: 假设 input_price = cached_input_price * 10 (cache 是 10% off, 节省 90%)
-    #    如果有 input_price, 用真实差额
-    price_map_stmt = select(
-        PriceSnapshot.model,
-        PriceSnapshot.input_price,
-        PriceSnapshot.cached_input_price,
-    )
-    price_rows = (await session.execute(price_map_stmt)).all()
-    # model -> cached_input_price (元/百万 tokens)
-    cache_price_map = {}
-    for p in price_rows:
-        if p.cached_input_price is None:
-            continue
-        cache_price_map[p.model] = p.cached_input_price
-        # 如果有真实 input_price, 也存 (按 model 维度算差额)
-    input_price_map = {}
-    for p in price_rows:
-        if p.input_price is not None:
-            input_price_map[p.model] = p.input_price
+    # 逐 (渠道,模型) 算节省 (计费一致口径), 再向上汇总到渠道/模型
+    ch_agg: dict = {}
+    model_agg: dict = {}
+    for row in detail_rows:
+        cached_t = int(row.cached_tokens or 0)
+        input_t = int(row.input_tokens or 0)
+        saved, priced = _cache_saved_yuan(
+            ch_model_prices, model_prices, row.channel_id, row.model, cached_t)
 
-    def saved_for(model: str, cached_t: int) -> float:
-        """算单个 model 的节省金额 (元)
+        c = ch_agg.setdefault(row.channel_id, {
+            "channel_id": row.channel_id,
+            "channel_name": row.channel_name or "(未知渠道)",
+            "input_tokens": 0, "cached_tokens": 0,
+            "saved_cost_cny": 0.0, "priced_cached_tokens": 0,
+        })
+        c["input_tokens"] += input_t
+        c["cached_tokens"] += cached_t
+        c["saved_cost_cny"] += saved
+        if priced:
+            c["priced_cached_tokens"] += cached_t
 
-        算法:
-        - 如果有真实 input_price + cached_input_price: 用真实差额
-        - 否则用 cached_input_price * 9 (假设 cache 是 10% off, 节省 90%)
-        - 完全没价格: 用 0.1 元/百万的兜底
-        """
-        if cached_t <= 0:
-            return 0.0
-        cip = cache_price_map.get(model)
-        if cip is None:
-            return cached_t * 0.1 / 1_000_000  # 兜底
-        iip = input_price_map.get(model)
-        if iip is not None:
-            diff = max(iip - cip, 0)
-            return cached_t * diff / 1_000_000
-        # 用 cached_price * 9 估算 (cache 省 90%)
-        return cached_t * cip * 9 / 1_000_000
+        m = model_agg.setdefault(row.model, {
+            "model": row.model or "(未知模型)",
+            "input_tokens": 0, "cached_tokens": 0,
+            "saved_cost_cny": 0.0, "priced_cached_tokens": 0,
+        })
+        m["input_tokens"] += input_t
+        m["cached_tokens"] += cached_t
+        m["saved_cost_cny"] += saved
+        if priced:
+            m["priced_cached_tokens"] += cached_t
+
+    def _pct(part: float, whole: float) -> float:
+        """百分比 (分母 0 防护)"""
+        return round(part / whole * 100, 1) if whole > 0 else 0.0
 
     by_channel = []
-    for row in channel_rows:
-        input_t = int(row.input_tokens or 0)
-        cached_t = int(row.cached_tokens or 0)
-        hit_rate = (cached_t / input_t * 100) if input_t > 0 else 0.0
-        # by_channel 节省金额需要按 channel 算 (channel_id -> models -> 价格), 简化用 model 价
-        # 真实算需要 JOIN price_snapshots WHERE channel_id=..., 先用 model 价格近似
+    for k in sorted(ch_agg.keys(), key=lambda x: -ch_agg[x]["cached_tokens"]):
+        agg = ch_agg[k]
         by_channel.append({
-            "channel_id": row.channel_id,
-            "channel_name": row.channel_name,
-            "input_tokens": input_t,
-            "cached_tokens": cached_t,
-            "hit_rate_pct": round(hit_rate, 1),
-            # TODO: 按 channel_id 过滤 price_snapshots 算精确节省
-            "saved_cost_cny": round(_approx_channel_saved(row.channel_id, cached_t, cache_price_map), 4),
+            "channel_id": k,
+            "channel_name": agg["channel_name"],
+            "input_tokens": agg["input_tokens"],
+            "cached_tokens": agg["cached_tokens"],
+            "hit_rate_pct": _pct(agg["cached_tokens"], agg["input_tokens"]),
+            "saved_cost_cny": round(agg["saved_cost_cny"], 4),
+            "priced_pct": _pct(agg["priced_cached_tokens"], agg["cached_tokens"]),
         })
 
     by_model = []
-    for row in model_rows:
-        input_t = int(row.input_tokens or 0)
-        cached_t = int(row.cached_tokens or 0)
-        hit_rate = (cached_t / input_t * 100) if input_t > 0 else 0.0
-        saved = saved_for(row.model, cached_t)
+    for k in sorted(model_agg.keys(), key=lambda x: -model_agg[x]["cached_tokens"])[:10]:
+        agg = model_agg[k]
         by_model.append({
-            "model": row.model,
-            "input_tokens": input_t,
-            "cached_tokens": cached_t,
-            "hit_rate_pct": round(hit_rate, 1),
-            "saved_cost_cny": round(saved, 4),
+            "model": k,
+            "input_tokens": agg["input_tokens"],
+            "cached_tokens": agg["cached_tokens"],
+            "hit_rate_pct": _pct(agg["cached_tokens"], agg["input_tokens"]),
+            "saved_cost_cny": round(agg["saved_cost_cny"], 4),
+            "priced_pct": _pct(agg["priced_cached_tokens"], agg["cached_tokens"]),
         })
 
-    # 4. 总计
-    total_input = sum(c["input_tokens"] for c in by_channel)
-    total_cached = sum(c["cached_tokens"] for c in by_channel)
-    total_hit_rate = (total_cached / total_input * 100) if total_input > 0 else 0.0
-    total_saved = sum(c["saved_cost_cny"] for c in by_channel)
+    # 总计 (节省 = 各渠道各模型计费差额之和; 只统计有缓存价的命中 token)
+    total_input = sum(v["input_tokens"] for v in ch_agg.values())
+    total_cached = sum(v["cached_tokens"] for v in ch_agg.values())
+    priced_cached = sum(v["priced_cached_tokens"] for v in ch_agg.values())
+    total_saved = sum(v["saved_cost_cny"] for v in ch_agg.values())
 
     return {
         "period_days": days,
         "total_input_tokens": total_input,
         "total_cached_tokens": total_cached,
-        "hit_rate_pct": round(total_hit_rate, 1),
+        "hit_rate_pct": _pct(total_cached, total_input),
         "saved_cost_cny": round(total_saved, 4),
+        "priced_pct": _pct(priced_cached, total_cached),
+        "priced_cached_tokens": priced_cached,
         "by_channel": by_channel,
         "by_model": by_model,
     }

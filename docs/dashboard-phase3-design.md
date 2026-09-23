@@ -179,6 +179,53 @@ GET /dashboard/api/requests?caller_id=N                            (扩)
 - 用户筛选下拉从既有 `/api/keys` 响应顺带填充 (含零用量用户, 不加请求)。
 - 测试: tests/test_v612_usage_by_user.py (9 用例)。
 
+## 3.6 V6.13 (2026-09-23) — 成本页整体设计 + Cache 收益精确化
+
+> 背景: 成本页此前仅 2 卡 (成本审计 KPI+3 tab / Cache 节省明细), 缺「按渠道」维度 (系统最核心决策轴)、无时间趋势、无单价与环比; 且 Cache 收益用近似算法严重高估。
+
+### 3.6.1 成本页布局 (变更后)
+
+| # | 卡片 | 变更 |
+|---|------|------|
+| 1 | 成本审计 KPI | 实付 / 官方标价 / 标价节省(**覆盖率降级为徽章**) / **平均单价 ¥/M tok**; 每格带**环比** (复用既有 `.kpi-trend-up/down` CSS) |
+| 2 | 成本明细 | tabs 扩为 按模型(**可展开到渠道**) / **按渠道(新)** / 按分组 / 按用户(修「思考」死列) |
+| 3 | Cache 收益 | 卡内 KPI (命中率/收益/可算价覆盖) + **口径声明** + 明细加「可算价」列 |
+
+### 3.6.2 API (routes.py, 只读)
+
+```
+GET /api/usage/cost-by-channel?days=N            (新) — 渠道维, NULL → "(未知渠道)"
+GET /api/usage/cost-by-model-channels?days=N     (新) — 模型→渠道交叉, items[].channels[] 下钻
+GET /api/usage/cost-compare?days=N               (新) — 环比: current vs 等长上一窗口同级 totals
+                                                       (维度无关, 4 个 tab 共用一份 → 切 tab KPI 不闪)
+GET /api/usage/cost-by-user                      (修) — 补 reasoning_tokens (前端「思考」列此前恒为 —)
+GET /api/cache/stats                             (重写) — 见 3.6.3
+```
+
+### 3.6.3 Cache 收益精确化 (口径变更, 数字大幅下调)
+
+**旧算法**: `cached_tokens × cached_input_price × 9`, 价格查找表**按 model 键**（跨渠道取最后一行）→ 把免费/按次计费渠道的命中 token 按**别的付费渠道**单价计价。
+
+**实测影响** (生产 7d): 旧值 ¥1644.75 → 新值 ¥25.1 量级 (taotoken_coding 按次计费、token 价全 0, 却贡献了旧值的 89%; 而 stepfun 有真实缓存价反被低估)。
+
+**新算法** (与 `gateway/proxy.py _estimate_cost` 计费公式互为镜像, 逐「渠道×模型」取该渠道自身价):
+
+```
+saved = 命中token × max(输入价 − 缓存价, 0) / 1e6     # 有缓存价
+saved = 0                                            # 无缓存价 → 计费侧本就按输入价兜底, 无折扣
+```
+
+- 价格来源: `price_snapshots` 以 `(channel_id, model)` 为键 (按 `effective_from asc, id asc` 逐行覆盖非空值, 新价胜)
+- 新增 `priced_pct` / `priced_cached_tokens`: 有可用缓存价的命中 token 占比 — **可算价覆盖**, 低则收益偏保守; 卡片同时列出未覆盖 token 量, 避免数字被误解为"总节省"
+- 聚合粒度改为 `(channel, model)` 原子表, 再向上汇总到渠道/模型 (两级自洽)
+- **与「标价节省」的关系**: 前者=缓存折扣 (同渠道内 input→cached 差价), 后者=免费/优惠渠道相对官方标价的差; 同页并存故 UI 改名「Cache 收益」并写明口径
+
+### 3.6.4 其他
+
+- 覆盖率徽章: 标价覆盖率从独立 KPI 降为「标价节省」的副标签 (数据质量提示, <50% 转警示色)
+- 环比方向: 实付/标价/单价「涨=坏」用 `.kpi-trend-down`, 标价节省「涨=好」用 `.kpi-trend-up` (CSS 语义固定, 由 `lowerIsBetter` 决定挂哪个类)
+- 测试: tests/test_v613_cost_page.py (6 用例, 含"免费渠道不得虚增收益"回归守卫)
+
 ## 4. Phase 3c — UI 视觉刷新 (皮肤后置)
 
 ### 4.1 设计 tokens (在现有 CSS 变量体系上改值, 不换体系)

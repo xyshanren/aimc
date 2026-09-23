@@ -1337,11 +1337,29 @@ async function loadCacheStatsList() {
             _cacheDonutChart.destroy();
             _cacheDonutChart = null;
         }
+        // V6.13: 卡内 KPI (此前只有明细表, 总量被概览页消费) + 口径声明
+        // 注意: ID 与概览页 KPI (kpi-cache-rate/kpi-saved) 刻意区分, 避免跨页 getElementById 撞车
+        const setTxt = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        setTxt('kpi-cache-hit', (data.hit_rate_pct || 0) + '%');
+        setTxt('kpi-cache-money', fmtCNY(data.saved_cost_cny));
+        setTxt('kpi-cache-priced', (data.priced_pct || 0) + '%');
+        const basisEl = document.getElementById('cache-basis');
+        if (basisEl) {
+            const pricedTok = data.priced_cached_tokens || 0;
+            const totalCached = data.total_cached_tokens || 0;
+            const uncovered = Math.max(totalCached - pricedTok, 0);
+            basisEl.textContent = '口径: 命中 token × (输入价 − 缓存价), 逐「渠道×模型」取该渠道自身价; '
+                + '与「标价节省」(免费/优惠渠道的标价差) 口径不同。'
+                + (uncovered > 0
+                    ? ' 本期 ' + fmtTokens(uncovered) + ' 命中 token 所在渠道无缓存价(免费/按次计费渠道本无缓存折扣), 不计收益。'
+                    : '');
+        }
+
         let html = '';
         // 按渠道
         if (data.by_channel && data.by_channel.length > 0) {
             html += '<h3 style="font-size:11px;color:var(--text-muted);text-transform:uppercase;margin-bottom:8px;">按渠道</h3>';
-            html += '<table><thead><tr><th>渠道</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono"' + mdTitle('cacheHit') + '>Cache 命中率</th><th class="mono"' + mdTitle('cacheSaved') + '>Cache 节省</th></tr></thead><tbody>';
+            html += '<table><thead><tr><th>渠道</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono"' + mdTitle('cacheHit') + '>Cache 命中率</th><th class="mono"' + mdTitle('cacheSaved') + '>Cache 收益</th><th class="mono" title="有可用缓存价的命中 token 占比 — 低表示该渠道命中 token 无法折价">可算价</th></tr></thead><tbody>';
             for (const c of data.by_channel) {
                 html += '<tr>';
                 html += `<td>${esc(c.channel_name || '—')}</td>`;
@@ -1349,6 +1367,7 @@ async function loadCacheStatsList() {
                 html += `<td class="mono">${fmtTokens(c.cached_tokens || 0)}</td>`;
                 html += `<td class="mono">${fmtPct(c.hit_rate_pct, (c.input_tokens || 0) > 0)}</td>`;
                 html += `<td class="mono">${fmtCNY(c.saved_cost_cny)}</td>`;
+                html += `<td class="mono${(c.priced_pct || 0) === 0 ? ' text-muted' : ''}">${(c.priced_pct || 0) === 0 ? '无价' : c.priced_pct + '%'}</td>`;
                 html += '</tr>';
             }
             html += '</tbody></table>';
@@ -1356,7 +1375,7 @@ async function loadCacheStatsList() {
         // TOP 10 model
         if (data.by_model && data.by_model.length > 0) {
             html += '<h3 style="font-size:11px;color:var(--text-muted);text-transform:uppercase;margin:16px 0 8px;">TOP 10 Model</h3>';
-            html += '<div class="scroll-y-260"><table><thead><tr><th>Model</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono"' + mdTitle('cacheHit') + '>Cache 命中率</th><th class="mono"' + mdTitle('cacheSaved') + '>Cache 节省</th></tr></thead><tbody>';
+            html += '<div class="scroll-y-260"><table><thead><tr><th>Model</th><th class="mono">Input</th><th class="mono">Cached</th><th class="mono"' + mdTitle('cacheHit') + '>Cache 命中率</th><th class="mono"' + mdTitle('cacheSaved') + '>Cache 收益</th><th class="mono" title="有可用缓存价的命中 token 占比">可算价</th></tr></thead><tbody>';
             for (const m of data.by_model.slice(0, 10)) {
                 html += '<tr>';
                 html += `<td><code class="text-mono">${esc(m.model || '—')}</code></td>`;
@@ -1364,6 +1383,7 @@ async function loadCacheStatsList() {
                 html += `<td class="mono">${fmtTokens(m.cached_tokens || 0)}</td>`;
                 html += `<td class="mono">${fmtPct(m.hit_rate_pct, (m.input_tokens || 0) > 0)}</td>`;
                 html += `<td class="mono">${fmtCNY(m.saved_cost_cny)}</td>`;
+                html += `<td class="mono${(m.priced_pct || 0) === 0 ? ' text-muted' : ''}">${(m.priced_pct || 0) === 0 ? '无价' : m.priced_pct + '%'}</td>`;
                 html += '</tr>';
             }
             html += '</tbody></table>';
@@ -1506,7 +1526,8 @@ const METRIC_DEFS = {
     tokens:       { label: 'Token',       desc: '模型输入+输出 token 总量' },
     requests:     { label: '请求数',      desc: '计入统计的请求次数' },
     cacheHit:     { label: 'Cache 命中率', desc: 'cached_tokens / input_tokens，按当前统计窗口聚合' },
-    cacheSaved:   { label: 'Cache 节省',  desc: '缓存命中相对未缓存标价省下的金额 (saved_cost_cny)，与成本审计的「标价节省」口径不同' },
+    cacheSaved:   { label: 'Cache 收益',  desc: '缓存命中相对未命中省下的钱 = 命中 token × (输入价 − 缓存价), 逐「渠道×模型」取该渠道自身价; 无缓存价的渠道 (免费/按次计费) 不计收益; 与成本审计的「标价节省」口径不同' },
+    cachePriced:  { label: '可算价覆盖',  desc: '有可用缓存价的命中 token 占比 — 低表示大部分命中 token 落在无缓存价的渠道, 收益数字偏保守' },
     paid:         { label: '实付',        desc: '实际计费成本 (cost_yuan)' },
     listPrice:    { label: '官方标价',    desc: '按厂商公开标价估算的成本 (list_cost_yuan)' },
     listSaved:    { label: '标价节省',    desc: '官方标价 − 实付，只统计标价已知的请求；与 Cache 节省口径不同' },
@@ -2054,48 +2075,54 @@ function _costFmt(n) {
 }
 
 function _costKeyLabel(key) {
-    return { model: '模型', group_id: '分组', username: '用户' }[key] || key;
+    return { model: '模型', channel_name: '渠道', group_id: '分组', username: '用户' }[key] || key;
 }
 
-// UI-3 (2026-09-04): 图表颜色读 CSS 变量 — 浅色主题 (style.css @media prefers-color-scheme: light)
-// 下轴线/网格/数据线自动跟随, 不再硬编码深色配色. fill 需要 alpha 通道, 6 位 hex 变量手动转 rgba.
-function _cssVar(name) {
-    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-function _cssColor(name, alpha) {
-    const hex = _cssVar(name);
-    if (/^#[0-9a-fA-F]{6}$/.test(hex)) {
-        const n = parseInt(hex.slice(1), 16);
-        return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
-    }
-    return hex || '#71767b';
+// V6.13: KPI 环比单元格 (本窗口 vs 等长上一窗口)
+// CSS 语义固定 up=绿/down=红, 故"涨了是好事还是坏事"由 lowerIsBetter 决定用哪个类。
+function _costTrendCell(cur, prev, lowerIsBetter) {
+    if (prev === null || prev === undefined) return '<span class="meta">—</span>';
+    const c = Number(cur) || 0, p = Number(prev) || 0;
+    if (p === 0) return c ? '<span class="meta">上期 0</span>' : '<span class="meta">持平</span>';
+    const pct = (c - p) / Math.abs(p) * 100;
+    if (Math.abs(pct) < 0.5) return '<span class="meta">持平</span>';
+    const rising = pct > 0;
+    const good = lowerIsBetter ? !rising : rising;
+    const cls = good ? 'kpi-trend-up' : 'kpi-trend-down';
+    return '<span class="' + cls + '">' + (rising ? '▲' : '▼') + ' '
+        + Math.abs(pct).toFixed(1) + '%</span><span class="meta"> vs 上期</span>';
 }
 
 async function loadCostAudit() {
     const table = document.getElementById('cost-audit-table');
     if (!table) return;
     try {
-        // Phase 3 指标重组: 趋势图收敛到概览页, 此处只拉当前 tab 明细 (KPI 取 totals)
+        // 明细: 模型 tab 用 model×channel 交叉端点 (供展开下钻), 其余维度同构
+        const dimUrl = _costTab === 'model'
+            ? `/dashboard/api/usage/cost-by-model-channels?days=${fmtDays()}`
+            : `/dashboard/api/usage/cost-by-${_costTab}?days=${fmtDays()}`;
+        // 环比: 全窗口聚合 (维度无关) — KPI 取自它, 切 tab 不闪
         const fetches = [
-            authFetch(`/dashboard/api/usage/cost-by-${_costTab}?days=${fmtDays()}`),
+            authFetch(dimUrl),
+            authFetch(`/dashboard/api/usage/cost-compare?days=${fmtDays()}`),
         ];
         if (_costTab === 'user') {
             fetches.push(authFetch(`/dashboard/api/stats/per-user?days=${fmtDays()}`));
         }
         const resps = await Promise.all(fetches);
-        const dimResp = resps[0];
         for (const r of resps) {
             if (!r.ok) {
                 table.innerHTML = '<p class="error">加载失败: HTTP ' + r.status + '</p>';
                 return;
             }
         }
-        const dim = await dimResp.json();
+        const dim = await resps[0].json();
+        const cmp = await resps[1].json();
 
         // key 下钻: caller_id -> keys[] (仅 user tab)
         let userKeyMap = null;
         if (_costTab === 'user') {
-            const perUser = await resps[1].json();
+            const perUser = await resps[2].json();
             userKeyMap = {};
             for (const item of (perUser.items || [])) {
                 userKeyMap[item.caller_id === null ? 'null' : String(item.caller_id)] =
@@ -2103,15 +2130,31 @@ async function loadCostAudit() {
             }
         }
 
-        // --- KPI ---
-        const t = dim.totals || {};
+        // --- KPI (窗口总计 + 环比, 与 tab 无关) ---
+        const t = cmp.current || {};
+        const p = cmp.previous || {};
         const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        const setTrend = (id, cell) => { const e = document.getElementById(id); if (e) e.innerHTML = cell; };
         set('kpi-cost-paid', _costFmt(t.cost_yuan));
         set('kpi-cost-list', _costFmt(t.list_cost_yuan));
         set('kpi-cost-saved', _costFmt(t.saved_yuan));
-        set('kpi-cost-coverage', (t.list_coverage_pct || 0) + '%');
-        const covEl = document.getElementById('kpi-cost-coverage');
-        if (covEl) covEl.style.color = (t.list_coverage_pct || 0) < 50 ? 'var(--color-warning, #f0b132)' : '';
+        // 平均单价: 实付 ÷ 总 token × 1e6 (窗口总计, 与免费渠道摊薄后的真实单位成本)
+        const tok = (t.input_tokens || 0) + (t.output_tokens || 0);
+        const pTok = (p.input_tokens || 0) + (p.output_tokens || 0);
+        const unit = tok ? (t.cost_yuan || 0) / tok * 1e6 : 0;
+        const prevUnit = pTok ? (p.cost_yuan || 0) / pTok * 1e6 : 0;
+        set('kpi-cost-unit', '¥' + unit.toFixed(2));
+        setTrend('kpi-trend-paid', _costTrendCell(t.cost_yuan, p.cost_yuan, true));
+        setTrend('kpi-trend-list', _costTrendCell(t.list_cost_yuan, p.list_cost_yuan, true));
+        setTrend('kpi-trend-saved', _costTrendCell(t.saved_yuan, p.saved_yuan, false));
+        setTrend('kpi-trend-unit', _costTrendCell(unit, prevUnit, true));
+        // 覆盖率降级为徽章 (数据质量提示, 不占 KPI 格)
+        const cov = t.list_coverage_pct || 0;
+        const covEl = document.getElementById('kpi-cost-cov');
+        if (covEl) {
+            covEl.textContent = '覆盖率 ' + cov + '%';
+            covEl.style.color = cov < 50 ? 'var(--color-warning, #f0b132)' : '';
+        }
 
         // --- 下钻表 ---
         renderCostTable(dim, userKeyMap);
@@ -2124,13 +2167,13 @@ function renderCostTable(dim, userKeyMap) {
     const table = document.getElementById('cost-audit-table');
     if (!table) return;
     const items = dim.items || [];
-    const key = { model: 'model', group: 'group_id', user: 'username' }[_costTab];
+    const key = { model: 'model', channel: 'channel_name', group: 'group_id', user: 'username' }[_costTab];
     if (items.length === 0) {
         table.innerHTML = '<p class="empty">近 ' + (dim.days || fmtDays()) + ' 天无用量数据</p>';
         return;
     }
-    // V6.1+: 按用户 tab = 原右栏"按人用量"卡并入 (key 下钻 + 双轨成本列)
     const isUserTab = _costTab === 'user';
+    const isModelTab = _costTab === 'model';
     let html = '<div class="scroll-y-300"><table><thead><tr>'
         + '<th>' + _costKeyLabel(key) + '</th>'
         + (isUserTab ? '<th>Input</th><th>Output</th><th' + mdTitle('reasoning') + '>思考</th>' : '')
@@ -2139,18 +2182,19 @@ function renderCostTable(dim, userKeyMap) {
         + '<th' + mdTitle('listSaved') + '>标价节省</th><th' + mdTitle('coverage') + '>标价覆盖率</th>'
         + '</tr></thead><tbody>';
     for (const it of items) {
-        const name = it.model || it.group_id || it.username || '-';
+        const name = it.model || it.channel_name || it.group_id || it.username || '-';
         const label = it.display_name ? esc(name) + ' (' + esc(it.display_name) + ')' : esc(name);
         const cov = it.request_count ? Math.round((it.list_known_requests || 0) / it.request_count * 100) : 0;
         const savedTxt = it.list_known_requests === 0
             ? '<span class="text-muted">标价未知</span>'
             : '<span class="text-success">' + _costFmt(it.saved_yuan) + '</span>';
 
-        // user tab: key 下钻 (V6.1+ 从按人用量卡并入)
+        // 展开下钻: user tab → key 列表 (/api/stats/per-user); model tab → 渠道列表 (交叉端点内嵌)
         const keys = isUserTab && userKeyMap
             ? (userKeyMap[it.caller_id === null ? 'null' : String(it.caller_id)] || [])
             : [];
-        const expandable = isUserTab && keys.length > 0;
+        const channels = isModelTab ? (it.channels || []) : [];
+        const expandable = (isUserTab && keys.length > 0) || (isModelTab && channels.length > 0);
 
         html += '<tr class="' + (expandable ? 'expandable-row' : '') + '"'
             + (expandable ? ' onclick="toggleKeyDetail(this)"' : '') + '>'
@@ -2171,19 +2215,41 @@ function renderCostTable(dim, userKeyMap) {
 
         if (expandable) {
             html += '<tr class="key-detail-row" style="display:none;">'
-                + '<td colspan="' + (isUserTab ? 10 : 7) + '">'
-                + '<table class="sub-table"><thead><tr>'
-                + '<th>Key Label</th><th>请求</th><th>Input</th><th>Output</th><th>Token</th><th>实付</th>'
-                + '</tr></thead><tbody>';
-            for (const k of keys) {
-                html += '<tr>'
-                    + '<td>' + esc(k.label) + '</td>'
-                    + '<td>' + fmtNum(k.request_count) + '</td>'
-                    + '<td>' + fmtNum(k.input_tokens) + '</td>'
-                    + '<td>' + fmtNum(k.output_tokens) + '</td>'
-                    + '<td>' + fmtNum(k.total_tokens) + (k.reasoning_tokens ? ' <span class="text-muted">🧠' + fmtNum(k.reasoning_tokens) + '</span>' : '') + '</td>'
-                    + '<td>' + _costFmt(k.total_cost) + '</td>'
-                    + '</tr>';
+                + '<td colspan="' + (isUserTab ? 10 : 7) + '">';
+            if (isModelTab) {
+                // 模型 → 渠道: 同一模型在各渠道的单价差 (回答"这个模型在哪买最便宜")
+                html += '<table class="sub-table"><thead><tr>'
+                    + '<th>渠道</th><th>请求</th><th>Token</th><th>实付</th>'
+                    + '<th>官方标价</th><th>标价节省</th><th>覆盖率</th>'
+                    + '</tr></thead><tbody>';
+                for (const c of channels) {
+                    const ccov = c.request_count ? Math.round((c.list_known_requests || 0) / c.request_count * 100) : 0;
+                    html += '<tr>'
+                        + '<td>' + esc(c.channel_name) + '</td>'
+                        + '<td>' + fmtNum(c.request_count) + '</td>'
+                        + '<td>' + fmtNum((c.input_tokens || 0) + (c.output_tokens || 0)) + '</td>'
+                        + '<td>' + _costFmt(c.cost_yuan) + '</td>'
+                        + '<td>' + _costFmt(c.list_cost_yuan) + '</td>'
+                        + '<td>' + (c.list_known_requests === 0
+                            ? '<span class="text-muted">标价未知</span>'
+                            : '<span class="text-success">' + _costFmt(c.saved_yuan) + '</span>') + '</td>'
+                        + '<td>' + ccov + '%</td>'
+                        + '</tr>';
+                }
+            } else {
+                html += '<table class="sub-table"><thead><tr>'
+                    + '<th>Key Label</th><th>请求</th><th>Input</th><th>Output</th><th>Token</th><th>实付</th>'
+                    + '</tr></thead><tbody>';
+                for (const k of keys) {
+                    html += '<tr>'
+                        + '<td>' + esc(k.label) + '</td>'
+                        + '<td>' + fmtNum(k.request_count) + '</td>'
+                        + '<td>' + fmtNum(k.input_tokens) + '</td>'
+                        + '<td>' + fmtNum(k.output_tokens) + '</td>'
+                        + '<td>' + fmtNum(k.total_tokens) + (k.reasoning_tokens ? ' <span class="text-muted">🧠' + fmtNum(k.reasoning_tokens) + '</span>' : '') + '</td>'
+                        + '<td>' + _costFmt(k.total_cost) + '</td>'
+                        + '</tr>';
+                }
             }
             html += '</tbody></table></td></tr>';
         }
@@ -2195,7 +2261,7 @@ function renderCostTable(dim, userKeyMap) {
 function switchCostTab(tab) {
     _costTab = tab;
     // tab 高亮 (btn-primary 只有当前 tab)
-    for (const t of ['model', 'group', 'user']) {
+    for (const t of ['model', 'channel', 'group', 'user']) {
         const btn = document.getElementById('cost-tab-' + t);
         if (btn) btn.classList.toggle('btn-primary', t === tab);
     }
@@ -2203,10 +2269,26 @@ function switchCostTab(tab) {
 }
 
 // 初始 tab 高亮 (数据加载由成本页调度器负责, 不在此触发请求)
-for (const t of ['model', 'group', 'user']) {
+for (const t of ['model', 'channel', 'group', 'user']) {
     const btn = document.getElementById('cost-tab-' + t);
     if (btn) btn.classList.toggle('btn-primary', t === 'model');
 }
+
+// UI-3 (2026-09-04): 图表颜色读 CSS 变量 — 浅色主题 (style.css @media prefers-color-scheme: light)
+// 下轴线/网格/数据线自动跟随, 不再硬编码深色配色. fill 需要 alpha 通道, 6 位 hex 变量手动转 rgba.
+function _cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+function _cssColor(name, alpha) {
+    const hex = _cssVar(name);
+    if (/^#[0-9a-fA-F]{6}$/.test(hex)) {
+        const n = parseInt(hex.slice(1), 16);
+        return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+    }
+    return hex || '#71767b';
+}
+
+// (V6.13 前的成本页 loader/renderer 已由上方新版取代 — 见 loadCostAudit/renderCostTable)
 
 // ============================================================
 // V6.10 (2026-09-20): 性能统计卡 (用量页) — latency 分位 / 有效 tok/s / TTFT

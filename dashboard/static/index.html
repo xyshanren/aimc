@@ -74,7 +74,7 @@
                         <div class="kpi"><div class="kpi-value" id="kpi-tokens">--</div><div class="kpi-label" title="模型输入+输出 token 总量（大数 K/M 缩写）">总 Token</div></div>
                         <div class="kpi"><div class="kpi-value" id="kpi-requests">--</div><div class="kpi-label">请求数</div></div>
                         <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cache-rate">--%</div><div class="kpi-label" title="cached_tokens / input_tokens，按当前统计窗口聚合">Cache 命中率</div></div>
-                        <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-saved">¥--</div><div class="kpi-label" title="缓存命中相对未缓存标价省下的金额；与成本审计的「标价节省」口径不同">Cache 节省</div></div>
+                        <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-saved">¥--</div><div class="kpi-label" title="缓存命中相对未命中省下的钱 (命中 token × (输入价 − 缓存价), 逐渠道取自身价)；与成本审计的「标价节省」口径不同">Cache 收益</div></div>
                     </div>
                 </div>
             </div>
@@ -102,14 +102,31 @@
                 <div class="card-title"><span class="card-title-main">成本审计 <span class="card-title-sub" id="cost-range-label">标价 vs 实付 · 近 7 天</span></span></div>
                 <div class="card-body">
                     <div class="kpi-grid" id="cost-kpis">
-                        <div class="kpi"><div class="kpi-value" id="kpi-cost-paid">¥--</div><div class="kpi-label" title="实际计费成本 (cost_yuan)">实付</div></div>
-                        <div class="kpi"><div class="kpi-value" id="kpi-cost-list">¥--</div><div class="kpi-label" title="按厂商公开标价估算的成本 (list_cost_yuan)">官方标价</div></div>
-                        <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cost-saved">¥--</div><div class="kpi-label" title="官方标价 − 实付，只统计标价已知的请求；与 Cache 节省口径不同">标价节省</div></div>
-                        <div class="kpi"><div class="kpi-value" id="kpi-cost-coverage">--%</div><div class="kpi-label" title="标价已知请求 / 总请求，覆盖率低时标价节省偏保守">标价覆盖率</div></div>
+                        <div class="kpi">
+                            <div class="kpi-value" id="kpi-cost-paid">¥--</div>
+                            <div class="kpi-label" title="实际计费成本 (cost_yuan)">实付</div>
+                            <div class="kpi-trend" id="kpi-trend-paid"></div>
+                        </div>
+                        <div class="kpi">
+                            <div class="kpi-value" id="kpi-cost-list">¥--</div>
+                            <div class="kpi-label" title="按厂商公开标价估算的成本 (list_cost_yuan)">官方标价</div>
+                            <div class="kpi-trend" id="kpi-trend-list"></div>
+                        </div>
+                        <div class="kpi">
+                            <div class="kpi-value kpi-value-success" id="kpi-cost-saved">¥--</div>
+                            <div class="kpi-label" title="官方标价 − 实付，只统计标价已知的请求；与 Cache 节省口径不同">标价节省 <span class="meta" id="kpi-cost-cov">--</span></div>
+                            <div class="kpi-trend" id="kpi-trend-saved"></div>
+                        </div>
+                        <div class="kpi">
+                            <div class="kpi-value" id="kpi-cost-unit">¥--</div>
+                            <div class="kpi-label" title="实付 ÷ 总 token (输入+输出) × 1e6 — 整体单位成本, 判断是否买贵">平均单价 <span class="meta">¥/M tok</span></div>
+                            <div class="kpi-trend" id="kpi-trend-unit"></div>
+                        </div>
                     </div>
                     <!-- 趋势图已收敛到概览页 (Phase 3 指标重组), 此处聚焦 KPI + 明细 -->
                     <div class="toolbar mt-sm" id="cost-tabs">
                         <button class="btn btn-sm" id="cost-tab-model" onclick="switchCostTab('model')">按模型</button>
+                        <button class="btn btn-sm" id="cost-tab-channel" onclick="switchCostTab('channel')">按渠道</button>
                         <button class="btn btn-sm" id="cost-tab-group" onclick="switchCostTab('group')">按分组</button>
                         <button class="btn btn-sm" id="cost-tab-user" onclick="switchCostTab('user')">按用户</button>
                     </div>
@@ -119,8 +136,14 @@
                 </div>
             </div>
             <div class="card">
-                <div class="card-title"><span class="card-title-main">Cache 节省明细 <span class="card-title-sub" id="cache-range-label">近 7 天</span></span></div>
+                <div class="card-title"><span class="card-title-main">Cache 收益 <span class="card-title-sub" id="cache-range-label">近 7 天</span></span></div>
                 <div class="card-body">
+                    <div class="kpi-grid" id="cache-kpis">
+                        <div class="kpi"><div class="kpi-value" id="kpi-cache-hit">--%</div><div class="kpi-label" title="cached_tokens / input_tokens，按当前统计窗口聚合">缓存命中率</div></div>
+                        <div class="kpi"><div class="kpi-value kpi-value-success" id="kpi-cache-money">¥--</div><div class="kpi-label" title="缓存命中相对未命中省下的钱 (命中 token × (输入价 − 缓存价))；与「标价节省」口径不同，前者是缓存折扣、后者是免费/优惠渠道">缓存收益</div></div>
+                        <div class="kpi"><div class="kpi-value" id="kpi-cache-priced">--%</div><div class="kpi-label" title="有可用缓存价的命中 token 占比 — 免费/按次计费渠道的命中 token 本就不产生缓存折扣，不计收益">可算价覆盖</div></div>
+                    </div>
+                    <p class="meta" id="cache-basis">加载中…</p>
                     <div class="chart-box" style="height:200px;">
                         <canvas id="cache-donut-chart"></canvas>
                     </div>
