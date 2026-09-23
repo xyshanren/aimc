@@ -133,6 +133,52 @@ GET /dashboard/api/requests/{id}/transcript
 - 行点击 → 右侧抽屉 (drawer) 显示 request/response body: `<pre>` + JSON 缩进, 顶部显示截断标记; 抽屉非折叠交互, Esc/遮罩关闭。
 - 全部走 authFetch。
 
+## 3.5 V6.12 (2026-09-23) — 用量页用户/Key 维度补齐
+
+> 背景: 2 号用户即将接入 (目标 4 人), 用量页原有 4 卡全是全局/模型/渠道/账号维度, 缺用户与 Key 视角。
+> 与成本页「按用户」tab 差异化: 用量页管「量与占比」, 成本页管「钱」— 用量卡不放成本列。
+
+### 3.5.1 用量页卡片布局 (变更后)
+
+| # | 卡片 | 来源 |
+|---|------|------|
+| 1 | 用量统计 (全局时间桶) | 原有 |
+| 2 | **用户与 Key 用量** (tabs 按用户/按Key, 占比条 + key 下钻) | 新增 |
+| 3 | **用户用量趋势** (stacked bar, dim 用户/Key × metric Token/请求) | 新增 |
+| 4 | 路由成功率 | 原有 |
+| 5 | 性能统计 (tabs 扩为 模型/渠道/账号/**用户/Key**) | 扩展 |
+| 6 | 请求日志 (筛选条加 **按用户**) | 扩展 |
+
+### 3.5.2 API (routes.py, 只读)
+
+```
+GET /dashboard/api/usage/by-user?days=N
+  → { days, totals: {request_count, input/output/reasoning/total_tokens},
+      users: [{caller_id, username, display_name, request_count, ...tokens, keys: [...]}] }
+  · key 级含 legacy 行 (key_id NULL → "(legacy/env)"), 下钻 100% 对账
+  · 同名 label 跨用户追加 (username) 消歧 (同 /api/requests 口径)
+  · 与 /api/stats/per-user 分开维护: 后者服务成本页 (过滤 legacy + 成本列)
+
+GET /dashboard/api/usage/perf?dim=model|channel|account|user|key   (扩)
+  · dim=user: coalesce(display_name, username, "(未鉴权/legacy)")
+  · dim=key: key_id 分组, NULL → "(legacy/env)", label 消歧
+
+GET /dashboard/api/usage/user-trend?days=N&dim=user|key
+  → { days, dim, buckets: [...], series: [{key, requests: [...], tokens: [...]}] }
+  · 桶轴 Python 侧生成补零; days=1 小时桶 (同 usage/summary 口径)
+  · dim=key: top-8 系列 + 其余归 "其他"; dim=user 全保留
+  · 双 metric (requests + tokens) 均返回, 前端 metric toggle 切换
+
+GET /dashboard/api/requests?caller_id=N                            (扩)
+```
+
+### 3.5.3 其他
+
+- METRIC_DEFS 新增 `share` / `shareOfUser` (占比口径, 表头 tooltip 与速查卡同源)。
+- 占比条复用组路由分布的 `.bar-track`/`.bar-fill`; 趋势图为 Chart.js 首个 stacked bar (调色板走 `_CHART_PALETTE` 轮转)。
+- 用户筛选下拉从既有 `/api/keys` 响应顺带填充 (含零用量用户, 不加请求)。
+- 测试: tests/test_v612_usage_by_user.py (9 用例)。
+
 ## 4. Phase 3c — UI 视觉刷新 (皮肤后置)
 
 ### 4.1 设计 tokens (在现有 CSS 变量体系上改值, 不换体系)

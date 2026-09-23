@@ -487,6 +487,27 @@ def _nearest_rank_percentile(values: list, ratio: float) -> float:
     return float(ordered[min(idx, len(ordered) - 1)])
 
 
+def _resolve_key_label_map(key_rows) -> dict:
+    """key 显示名消歧 (复用于 by-user / perf / user-trend)。
+
+    key_rows: 每行含 .key_id (None=legacy) / .label / .username (key 所属用户)
+    同名 label 跨用户时返回 f"{label} ({username})", key_id=None → "(legacy/env)"。
+    """
+    label_owners: dict[str, set] = {}
+    for r in key_rows:
+        if r.label and r.username:
+            label_owners.setdefault(r.label, set()).add(r.username)
+    out: dict = {None: "(legacy/env)"}
+    for r in key_rows:
+        if r.key_id is None or r.key_id in out:
+            continue
+        lbl = r.label or "(无标签)"
+        if r.label and r.username and len(label_owners.get(r.label, set())) > 1:
+            lbl = f"{r.label} ({r.username})"
+        out[r.key_id] = lbl
+    return out
+
+
 @router.get("/api/usage/perf")
 async def get_usage_perf(
     days: int = Query(7, ge=1, le=90),
@@ -495,8 +516,10 @@ async def get_usage_perf(
 ):
     """V6.10 (2026-09-20): 性能统计 — 成功请求 (2xx/3xx) 的延迟分位 / 有效吞吐 / TTFT。
 
-    dim: model | channel | account (单维度聚合, 前端三 tab 复用)
+    V6.12 (2026-09-23): dim 扩 user | key (原 model | channel | account)。
     口径:
+    - dim=user: caller 维 (NULL → "(未鉴权/legacy)")
+    - dim=key: key 维 (key_id NULL → "(legacy/env)"; 同名 label 跨用户追加 username 消歧)
     - p50/p95 latency: nearest-rank (Python 侧, 配合 avg 看分布)
     - eff_tok_per_s: Σ output_tokens / Σ latency(秒) — 「有效吞吐」, 含 prefill
       时长, 大上下文请求会被 prefill 稀释, 横向对比需结合 avg_input_tokens
@@ -505,31 +528,114 @@ async def get_usage_perf(
     - cache_pct: 缓存读取 tokens / 总输入 (0 输入防护)
     """
     cutoff = datetime.now() - timedelta(days=days)
-    dim_col = {
-        "model": UsageLog.model,
-        "channel": Channel.name,
-        "account": Account.account_name,
-    }
-    col = dim_col.get(dim, UsageLog.model)
-    rows = (
-        await session.execute(
-            select(
-                col.label("key"),
-                UsageLog.latency_ms,
-                UsageLog.input_tokens,
-                UsageLog.output_tokens,
-                UsageLog.cache_read_input_tokens,
-                UsageLog.first_token_ms,
-            )
-            .join(Channel, UsageLog.channel_id == Channel.id, isouter=True)
-            .join(Account, UsageLog.account_id == Account.id, isouter=True)
-            .where(
-                UsageLog.created_at >= cutoff,
-                UsageLog.status_code >= 200,
-                UsageLog.status_code < 400,
-            )
+
+    if dim == "user":
+        # caller 维: display_name 优先 (与成本页用户列一致)
+        key_expr = func.coalesce(
+            func.nullif(User.display_name, ""), User.username, "(未鉴权/legacy)"
         )
-    ).all()
+        rows = (
+            await session.execute(
+                select(
+                    key_expr.label("key"),
+                    UsageLog.latency_ms,
+                    UsageLog.input_tokens,
+                    UsageLog.output_tokens,
+                    UsageLog.cache_read_input_tokens,
+                    UsageLog.first_token_ms,
+                )
+                .join(User, UsageLog.caller_id == User.id, isouter=True)
+                .where(
+                    UsageLog.created_at >= cutoff,
+                    UsageLog.status_code >= 200,
+                    UsageLog.status_code < 400,
+                )
+            )
+        ).all()
+    elif dim == "key":
+        # key 维: key_id 分组 + Python 侧 label 消歧 (含 legacy NULL key)
+        key_rows = (
+            await session.execute(
+                select(
+                    UsageLog.key_id,
+                    ApiKey.label,
+                    User.username,
+                    UsageLog.latency_ms,
+                    UsageLog.input_tokens,
+                    UsageLog.output_tokens,
+                    UsageLog.cache_read_input_tokens,
+                    UsageLog.first_token_ms,
+                )
+                .join(ApiKey, UsageLog.key_id == ApiKey.id, isouter=True)
+                .join(User, ApiKey.user_id == User.id, isouter=True)
+                .where(
+                    UsageLog.created_at >= cutoff,
+                    UsageLog.status_code >= 200,
+                    UsageLog.status_code < 400,
+                )
+            )
+        ).all()
+        label_map = _resolve_key_label_map(key_rows)
+        groups: dict = {}
+        for r in key_rows:
+            key = label_map.get(r.key_id, "(legacy/env)")
+            g = groups.setdefault(
+                key,
+                {"n": 0, "lats": [], "tot_in": 0, "tot_out": 0,
+                 "cache_read": 0, "ttft": []},
+            )
+            g["n"] += 1
+            if r.latency_ms is not None:
+                g["lats"].append(r.latency_ms)
+            g["tot_in"] += r.input_tokens or 0
+            g["tot_out"] += r.output_tokens or 0
+            g["cache_read"] += r.cache_read_input_tokens or 0
+            if r.first_token_ms is not None:
+                g["ttft"].append(r.first_token_ms)
+        items = []
+        for key, g in groups.items():
+            tot_lat_s = sum(g["lats"]) / 1000.0
+            items.append({
+                "key": key,
+                "n": g["n"],
+                "avg_latency_ms": round(sum(g["lats"]) / len(g["lats"]), 1) if g["lats"] else None,
+                "p50_latency_ms": _nearest_rank_percentile(g["lats"], 0.50),
+                "p95_latency_ms": _nearest_rank_percentile(g["lats"], 0.95),
+                "avg_input_tokens": round(g["tot_in"] / g["n"], 1),
+                "avg_output_tokens": round(g["tot_out"] / g["n"], 1),
+                "eff_tok_per_s": round(g["tot_out"] / tot_lat_s, 2) if tot_lat_s > 0 else 0.0,
+                "cache_pct": round(100.0 * g["cache_read"] / g["tot_in"], 1) if g["tot_in"] else 0.0,
+                "ttft_ms": round(sum(g["ttft"]) / len(g["ttft"]), 1) if g["ttft"] else None,
+                "ttft_n": len(g["ttft"]),
+            })
+        items.sort(key=lambda it: it["n"], reverse=True)
+        return {"days": days, "dim": dim, "items": items}
+    else:
+        dim_col = {
+            "model": UsageLog.model,
+            "channel": Channel.name,
+            "account": Account.account_name,
+        }
+        col = dim_col.get(dim, UsageLog.model)
+        rows = (
+            await session.execute(
+                select(
+                    col.label("key"),
+                    UsageLog.latency_ms,
+                    UsageLog.input_tokens,
+                    UsageLog.output_tokens,
+                    UsageLog.cache_read_input_tokens,
+                    UsageLog.first_token_ms,
+                )
+                .join(Channel, UsageLog.channel_id == Channel.id, isouter=True)
+                .join(Account, UsageLog.account_id == Account.id, isouter=True)
+                .where(
+                    UsageLog.created_at >= cutoff,
+                    UsageLog.status_code >= 200,
+                    UsageLog.status_code < 400,
+                )
+            )
+        ).all()
 
     groups: dict = {}
     for r in rows:
@@ -566,6 +672,236 @@ async def get_usage_perf(
         })
     items.sort(key=lambda it: it["n"], reverse=True)
     return {"days": days, "dim": dim, "items": items}
+
+
+@router.get("/api/usage/by-user")
+async def get_usage_by_user(
+    days: int = Query(7, ge=1, le=90),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.12 (2026-09-23): 按用户/Key 聚合用量 — 量视角 (用量页「用户与 Key 用量」卡数据源)。
+
+    与成本页 /api/stats/per-user 分开维护:
+    - 后者服务成本页按用户 tab (key 下钻过滤 legacy, 带成本列)
+    - 此端点服务用量页 (key 级含 legacy/env 行 + totals, 不含成本列)
+
+    key 级: key_id NULL → "(legacy/env)" (legacy/env key 流量单列, 不丢失);
+    同名 label 跨用户时追加 (username) 消歧 (同 /api/requests 口径)。
+    """
+    cutoff = datetime.now() - timedelta(days=days)
+
+    # 1) user 级聚合 (caller_id GROUP BY)
+    user_rows = (
+        await session.execute(
+            select(
+                UsageLog.caller_id,
+                User.username,
+                User.display_name,
+                func.coalesce(func.count(UsageLog.id), 0).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageLog.reasoning_tokens), 0).label("reasoning_tokens"),
+            )
+            .outerjoin(User, UsageLog.caller_id == User.id)
+            .where(UsageLog.created_at >= cutoff)
+            .group_by(UsageLog.caller_id, User.username, User.display_name)
+            .order_by(
+                (func.sum(UsageLog.input_tokens) + func.sum(UsageLog.output_tokens)).desc()
+            )
+        )
+    ).all()
+
+    # 2) key 级聚合 (caller_id + key_id GROUP BY, 含 legacy: 不加 key_id isnot(None) 过滤)
+    key_rows = (
+        await session.execute(
+            select(
+                UsageLog.caller_id,
+                UsageLog.key_id,
+                ApiKey.label,
+                User.username,
+                func.coalesce(func.count(UsageLog.id), 0).label("request_count"),
+                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageLog.reasoning_tokens), 0).label("reasoning_tokens"),
+            )
+            .outerjoin(ApiKey, UsageLog.key_id == ApiKey.id)
+            .outerjoin(User, ApiKey.user_id == User.id)
+            .where(UsageLog.created_at >= cutoff)
+            .group_by(UsageLog.caller_id, UsageLog.key_id, ApiKey.label, User.username)
+        )
+    ).all()
+    key_label_map = _resolve_key_label_map(key_rows)
+
+    # 3) 组装: key_map[caller_id] = [key_detail, ...]
+    key_map: dict = {}
+    for r in key_rows:
+        cid = r.caller_id
+        if cid not in key_map:
+            key_map[cid] = []
+        key_map[cid].append({
+            "key_id": r.key_id,
+            "label": key_label_map.get(r.key_id, "(legacy/env)"),
+            "username": r.username,
+            "request_count": r.request_count,
+            "input_tokens": int(r.input_tokens or 0),
+            "output_tokens": int(r.output_tokens or 0),
+            "reasoning_tokens": int(r.reasoning_tokens or 0),
+            "total_tokens": int((r.input_tokens or 0) + (r.output_tokens or 0)),
+        })
+    for keys in key_map.values():
+        keys.sort(key=lambda k: k["total_tokens"], reverse=True)
+
+    items = []
+    for row in user_rows:
+        items.append({
+            "caller_id": row.caller_id,
+            "username": row.username or "(未鉴权/legacy)",
+            "display_name": row.display_name,
+            "request_count": row.request_count,
+            "input_tokens": int(row.input_tokens or 0),
+            "output_tokens": int(row.output_tokens or 0),
+            "reasoning_tokens": int(row.reasoning_tokens or 0),
+            "total_tokens": int((row.input_tokens or 0) + (row.output_tokens or 0)),
+            "keys": key_map.get(row.caller_id, []),
+        })
+
+    totals = {
+        "request_count": sum(i["request_count"] for i in items),
+        "input_tokens": sum(i["input_tokens"] for i in items),
+        "output_tokens": sum(i["output_tokens"] for i in items),
+        "reasoning_tokens": sum(i["reasoning_tokens"] for i in items),
+        "total_tokens": sum(i["total_tokens"] for i in items),
+    }
+    return {"days": days, "totals": totals, "users": items}
+
+
+@router.get("/api/usage/user-trend")
+async def get_usage_user_trend(
+    days: int = Query(7, ge=1, le=90),
+    dim: str = Query("user", pattern="^(user|key)$"),
+    session: AsyncSession = Depends(get_session),
+):
+    """V6.12 (2026-09-23): 按用户/Key 的用量趋势 (用量页 stacked bar 数据源)。
+
+    - dim=user: 按 caller_id GROUP BY, 全保留 (≤ 少数几人)
+    - dim=key: 按 key_id GROUP BY, top 8 系列 + 其余归 "其他" (series 过多不可读)
+    - days=1 按小时分桶, 其余按日分桶 (同 usage/summary 口径);
+      桶轴 Python 侧生成缺桶补零 (图表不断轴)
+    - 双 metric 均返回: requests (请求数) + tokens (input+output)
+    - series 按窗口内总 token 降序
+    """
+    cutoff = datetime.now() - timedelta(days=days)
+    hourly = days == 1
+    bucket = (
+        func.strftime("%Y-%m-%d %H:00", UsageLog.created_at)
+        if hourly else func.date(UsageLog.created_at)
+    )
+
+    if dim == "key":
+        group_col = UsageLog.key_id
+        rows = (
+            await session.execute(
+                select(
+                    bucket.label("bucket"),
+                    UsageLog.key_id,
+                    func.count(UsageLog.id).label("request_count"),
+                    func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                    func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                )
+                .where(UsageLog.created_at >= cutoff)
+                .group_by(bucket, UsageLog.key_id)
+            )
+        ).all()
+        # key 显示名: key 表很小, 全表查一次 (同 /api/requests 口径)
+        all_keys = (await session.execute(
+            select(ApiKey.id.label("key_id"), ApiKey.label, User.username)
+            .join(User, ApiKey.user_id == User.id, isouter=True)
+        )).all()
+        label_map = _resolve_key_label_map(all_keys)
+    else:
+        group_col = UsageLog.caller_id
+        rows = (
+            await session.execute(
+                select(
+                    bucket.label("bucket"),
+                    UsageLog.caller_id,
+                    func.count(UsageLog.id).label("request_count"),
+                    func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                    func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                )
+                .where(UsageLog.created_at >= cutoff)
+                .group_by(bucket, UsageLog.caller_id)
+            )
+        ).all()
+        # user 显示名: display_name 优先, NULL → "(未鉴权/legacy)"
+        all_users = (await session.execute(
+            select(User.id, User.username, User.display_name).order_by(User.id)
+        )).all()
+        label_map = {u.id: (u.display_name or u.username) for u in all_users}
+        label_map[None] = "(未鉴权/legacy)"
+
+    # 聚合原始数据: raw[(bucket, dim_id)] = {requests, tokens}
+    raw: dict[tuple, dict] = {}
+    dim_totals: dict = {}
+    for r in rows:
+        dim_id = r.key_id if dim == "key" else r.caller_id
+        tot = int((r.input_tokens or 0) + (r.output_tokens or 0))
+        k = (r.bucket, dim_id)
+        if k not in raw:
+            raw[k] = {"requests": 0, "tokens": 0}
+        raw[k]["requests"] += r.request_count
+        raw[k]["tokens"] += tot
+        dim_totals[dim_id] = dim_totals.get(dim_id, 0) + tot
+
+    # dim=key: top 8 系列 + 其余归 "其他"
+    if dim == "key" and len(dim_totals) > 8:
+        sorted_dims = sorted(dim_totals.items(), key=lambda x: x[1], reverse=True)
+        top_ids = {d for d, _ in sorted_dims[:8]}
+        merged: dict[tuple, dict] = {}
+        for (b, did), m in raw.items():
+            nid = did if did in top_ids else "__other__"
+            nk = (b, nid)
+            if nk not in merged:
+                merged[nk] = {"requests": 0, "tokens": 0}
+            merged[nk]["requests"] += m["requests"]
+            merged[nk]["tokens"] += m["tokens"]
+        raw = merged
+        label_map["__other__"] = "其他"
+
+    # 完整桶轴 (含两端截段桶), 时间升序 (画图用)
+    now = datetime.now()
+    buckets: list[str] = []
+    if hourly:
+        slot = cutoff.replace(minute=0, second=0, microsecond=0)
+        while slot <= now:
+            buckets.append(slot.strftime("%Y-%m-%d %H:00"))
+            slot += timedelta(hours=1)
+    else:
+        day, today = cutoff.date(), now.date()
+        while day <= today:
+            buckets.append(day.isoformat())
+            day += timedelta(days=1)
+    bucket_idx = {b: i for i, b in enumerate(buckets)}
+
+    # series 组装: 按 dim 总量降序, 桶内缺数据补零
+    series_ids = sorted(dim_totals.keys(), key=lambda d: dim_totals[d], reverse=True)
+    if dim == "key" and len(dim_totals) > 8:
+        series_ids = series_ids[:8] + ["__other__"]
+    series = []
+    for sid in series_ids:
+        req = [0] * len(buckets)
+        tok = [0] * len(buckets)
+        for (b, did), m in raw.items():
+            if did == sid and b in bucket_idx:
+                req[bucket_idx[b]] += m["requests"]
+                tok[bucket_idx[b]] += m["tokens"]
+        series.append({
+            "key": label_map.get(sid, "(未知)"),
+            "requests": req,
+            "tokens": tok,
+        })
+
+    return {"days": days, "dim": dim, "buckets": buckets, "series": series}
 
 
 # ============================================================
@@ -2112,6 +2448,7 @@ async def list_requests(
     model: str = Query(None, max_length=100),
     channel_id: int = Query(None, ge=1),
     key_id: int = Query(None, ge=1),
+    caller_id: int = Query(None, ge=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
@@ -2119,6 +2456,7 @@ async def list_requests(
     """请求日志明细 (usage_logs), 状态/model/渠道/key 过滤 + 分页, 时间倒序。
 
     V6.3 F2: model 支持模糊匹配 (LIKE %model%), 如 model=glm 收窄到 glm 系。
+    V6.12: caller_id 按用户过滤 (用量页用户维度下钻联动)。
     """
     # usage_logs.created_at 存本地时间 (V6.4.1 全库统一), cutoff 须用本地 now 匹配
     cutoff = datetime.now() - timedelta(days=days)
@@ -2133,6 +2471,8 @@ async def list_requests(
         conds.append(UsageLog.channel_id == channel_id)
     if key_id:
         conds.append(UsageLog.key_id == key_id)
+    if caller_id:
+        conds.append(UsageLog.caller_id == caller_id)
 
     base = select(UsageLog).where(*conds)
     total = (await session.execute(
@@ -2192,6 +2532,7 @@ async def list_requests(
         "model": model,
         "channel_id": channel_id,
         "key_id": key_id,
+        "caller_id": caller_id,
         "items": [
             {
                 "id": r.id,

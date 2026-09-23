@@ -144,6 +144,33 @@
                     </div>
                 </div>
             </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">用户与 Key 用量</span><span class="card-title-sub" id="user-usage-range-label">近 7 天</span></div>
+                <div class="card-body">
+                    <div class="toolbar mt-sm" id="user-usage-tabs">
+                        <button class="btn btn-sm" id="user-usage-tab-user" onclick="switchUserUsageTab('user')">按用户</button>
+                        <button class="btn btn-sm" id="user-usage-tab-key" onclick="switchUserUsageTab('key')">按Key</button>
+                    </div>
+                    <div id="user-usage-body">
+                        <div class="loading">加载中…</div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">用户用量趋势</span><span class="card-title-sub" id="user-trend-range-label">近 7 天 · 按 Token 堆叠</span></div>
+                <div class="card-body">
+                    <div class="toolbar mt-sm" id="user-trend-toolbar">
+                        <button class="btn btn-sm" id="user-trend-tab-user" onclick="switchUserTrendDim('user')">按用户</button>
+                        <button class="btn btn-sm" id="user-trend-tab-key" onclick="switchUserTrendDim('key')">按Key</button>
+                        <span style="width:8px;"></span>
+                        <button class="btn btn-sm" id="user-trend-metric-tokens" onclick="switchUserTrendMetric('tokens')">Token</button>
+                        <button class="btn btn-sm" id="user-trend-metric-requests" onclick="switchUserTrendMetric('requests')">请求数</button>
+                    </div>
+                    <div class="chart-box" style="height:200px;">
+                        <canvas id="user-trend-chart"></canvas>
+                    </div>
+                </div>
+            </div>
 <div class="card">
                 <div class="card-title"><span class="card-title-main">路由成功率</span><span class="card-title-sub" id="group-routing-range-label">Agent 视角 · 近 7 天</span></div>
                 <div class="card-body">
@@ -157,6 +184,8 @@
                         <button class="btn btn-sm" id="perf-tab-model" onclick="switchPerfTab('model')">按模型</button>
                         <button class="btn btn-sm" id="perf-tab-channel" onclick="switchPerfTab('channel')">按渠道</button>
                         <button class="btn btn-sm" id="perf-tab-account" onclick="switchPerfTab('account')">按账号</button>
+                        <button class="btn btn-sm" id="perf-tab-user" onclick="switchPerfTab('user')">按用户</button>
+                        <button class="btn btn-sm" id="perf-tab-key" onclick="switchPerfTab('key')">按Key</button>
                     </div>
                     <div id="perf-body">
                         <div class="loading">加载中…</div>
@@ -171,6 +200,9 @@
                             <option value="all">全部状态</option>
                             <option value="ok">成功</option>
                             <option value="error">失败</option>
+                        </select>
+                        <select id="req-user" class="toolbar-search" style="width:auto;max-width:140px;" onchange="requestsFilterChanged()">
+                            <option value="">全部用户</option>
                         </select>
                         <select id="req-channel" class="toolbar-search" style="width:auto;max-width:160px;" onchange="requestsFilterChanged()">
                             <option value="">全部渠道</option>

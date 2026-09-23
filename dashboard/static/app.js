@@ -1519,6 +1519,9 @@ const METRIC_DEFS = {
     effTokPerS:   { label: '有效 tok/s',  desc: 'Σ输出token / Σ总耗时(秒); 含 prefill 时长, 大上下文请求会被稀释, 需结合平均输入对比' },
     ttft:         { label: 'TTFT',        desc: '首 token 到达延迟均值 (V6.10 新采集列, 部署初期覆盖 0 显示 —); NULL=非流式/错误流' },
     cacheReadPct: { label: '缓存命中',    desc: '缓存读取 tokens / 总输入 tokens (按成功请求聚合)' },
+    // V6.12 用户与 Key 用量卡 (用量页)
+    share:        { label: '占比',        desc: '该用户/Key 的 Token 量占全池总 Token 的百分比' },
+    shareOfUser:  { label: '占比 (用户内)', desc: '该 Key 的 Token 量占所属用户总 Token 的百分比' },
 };
 
 // 生成 <th> 的 title tooltip 属性
@@ -1586,6 +1589,8 @@ function syncRangeLabels() {
         ["usage-bucket-label", _timeRange === "1" ? "近 24 小时 · 按小时分桶" : lbl + " · 按日分桶"],
         ["group-overview-label", lbl],
         ["perf-range-label", "成功请求 · " + lbl], // V6.10 性能统计卡跟随全局 range
+        ["user-usage-range-label", lbl + " · 按用户聚合"], // V6.12 用户与 Key 用量卡
+        ["user-trend-range-label", _trendMetricLabel()], // V6.12 用户趋势卡 (metric 随切换)
     ];
     for (const [id, text] of map) {
         const el = document.getElementById(id);
@@ -2205,13 +2210,14 @@ for (const t of ['model', 'group', 'user']) {
 
 // ============================================================
 // V6.10 (2026-09-20): 性能统计卡 (用量页) — latency 分位 / 有效 tok/s / TTFT
-// /dashboard/api/usage/perf?days=&dim=model|channel|account
+// /dashboard/api/usage/perf?days=&dim=model|channel|account|user|key
+// V6.12 (2026-09-23): dim 扩 user/key (用户维度性能视角)
 // ============================================================
 let _perfTab = 'model';
 
 function switchPerfTab(tab) {
     _perfTab = tab;
-    for (const t of ['model', 'channel', 'account']) {
+    for (const t of ['model', 'channel', 'account', 'user', 'key']) {
         const btn = document.getElementById('perf-tab-' + t);
         if (btn) btn.classList.toggle('btn-primary', t === tab);
     }
@@ -2219,7 +2225,7 @@ function switchPerfTab(tab) {
 }
 
 // 初始 tab 高亮 (数据由用量页调度器负责)
-for (const t of ['model', 'channel', 'account']) {
+for (const t of ['model', 'channel', 'account', 'user', 'key']) {
     const btn = document.getElementById('perf-tab-' + t);
     if (btn) btn.classList.toggle('btn-primary', t === 'model');
 }
@@ -2250,7 +2256,7 @@ function renderPerfTable(data) {
         return;
     }
     let html = '<table class="table table-sm"><thead><tr>' +
-        '<th>' + ({ model: '模型', channel: '渠道', account: '账号' }[_perfTab] || '模型') + '</th>' +
+        '<th>' + ({ model: '模型', channel: '渠道', account: '账号', user: '用户', key: 'Key' }[_perfTab] || '模型') + '</th>' +
         '<th' + mdTitle('requests') + '>请求数</th>' +
         '<th' + mdTitle('latency') + '>平均延迟</th>' +
         '<th' + mdTitle('p50Latency') + '>P50</th>' +
@@ -2277,6 +2283,227 @@ function renderPerfTable(data) {
     }
     html += '</tbody></table>';
     body.innerHTML = html;
+}
+
+// ============================================================
+// V6.12 (2026-09-23): 用户与 Key 用量 + 用户趋势 (用量页)
+// - 用户与 Key 用量: /dashboard/api/usage/by-user (双 tab: 按用户含 key 下钻 / 按Key 平铺)
+// - 用户趋势: /dashboard/api/usage/user-trend (stacked bar, dim user/key + metric token/请求)
+// 与成本页按用户 tab 差异化: 这里聚焦「量与占比」(不放钱列), 成本页管「钱」。
+// ============================================================
+
+let _userUsageTab = 'user';
+let _userUsageData = null; // 缓存 by-user 响应, tab 切换不重复请求
+
+function switchUserUsageTab(tab) {
+    _userUsageTab = tab;
+    for (const t of ['user', 'key']) {
+        const btn = document.getElementById('user-usage-tab-' + t);
+        if (btn) btn.classList.toggle('btn-primary', t === tab);
+    }
+    if (_userUsageData) renderUserUsage(_userUsageData);
+}
+
+for (const t of ['user', 'key']) {
+    const btn = document.getElementById('user-usage-tab-' + t);
+    if (btn) btn.classList.toggle('btn-primary', t === 'user');
+}
+
+async function loadUserUsage() {
+    const body = document.getElementById('user-usage-body');
+    if (!body) return;
+    try {
+        const resp = await authFetch(`/dashboard/api/usage/by-user?days=${fmtDays()}`);
+        if (!resp.ok) {
+            body.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
+            return;
+        }
+        _userUsageData = await resp.json();
+        renderUserUsage(_userUsageData);
+    } catch (e) {
+        body.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+// 占比单元格: 横向条 + 百分比文字 (denominator=0 时显示 —)
+function _shareCell(value, denominator) {
+    if (!denominator) return '<span class="text-muted">—</span>';
+    const pct = Math.round(value / denominator * 1000) / 10;
+    return '<div class="bar-track" style="min-width:80px;">'
+        + '<div class="bar-fill" style="width:' + Math.min(pct, 100) + '%;"></div></div>'
+        + '<span class="meta">' + pct.toFixed(1) + '%</span>';
+}
+
+function renderUserUsage(data) {
+    const body = document.getElementById('user-usage-body');
+    if (!body) return;
+    const users = (data && data.users) || [];
+    const totals = (data && data.totals) || {};
+    if (users.length === 0) {
+        body.innerHTML = '<p class="meta">窗口内无用量数据</p>';
+        return;
+    }
+    const totalTokens = totals.total_tokens || 0;
+    let html = '<div class="scroll-y-300"><table><thead><tr>';
+    if (_userUsageTab === 'user') {
+        html += '<th>用户</th><th' + mdTitle('requests') + '>请求</th>'
+            + '<th class="mono">Input</th><th class="mono">Output</th>'
+            + '<th' + mdTitle('reasoning') + '>思考</th><th' + mdTitle('tokens') + '>Token</th>'
+            + '<th' + mdTitle('share') + '>占比</th></tr></thead><tbody>';
+        for (const u of users) {
+            const name = u.username || '-';
+            const label = u.display_name ? esc(name) + ' (' + esc(u.display_name) + ')' : esc(name);
+            const keys = u.keys || [];
+            const expandable = keys.length > 0;
+            html += '<tr class="' + (expandable ? 'expandable-row' : '') + '"'
+                + (expandable ? ' onclick="toggleKeyDetail(this)"' : '') + '>'
+                + '<td>' + (expandable ? '<span class="expand-icon">▸</span> ' : '')
+                + '<code class="text-mono">' + label + '</code></td>'
+                + '<td>' + fmtNum(u.request_count || 0) + '</td>'
+                + '<td class="mono">' + fmtTokens(u.input_tokens || 0) + '</td>'
+                + '<td class="mono">' + fmtTokens(u.output_tokens || 0) + '</td>'
+                + '<td class="mono">' + (u.reasoning_tokens ? fmtTokens(u.reasoning_tokens) : '<span class="text-muted">—</span>') + '</td>'
+                + '<td class="mono">' + fmtTokens(u.total_tokens || 0) + '</td>'
+                + '<td>' + _shareCell(u.total_tokens || 0, totalTokens) + '</td>'
+                + '</tr>';
+            if (expandable) {
+                const userTotal = u.total_tokens || 0;
+                html += '<tr class="key-detail-row" style="display:none;">'
+                    + '<td colspan="7">'
+                    + '<table class="sub-table"><thead><tr>'
+                    + '<th>Key</th><th>请求</th><th>Input</th><th>Output</th><th>Token</th>'
+                    + '<th' + mdTitle('shareOfUser') + '>占比 (用户内)</th>'
+                    + '</tr></thead><tbody>';
+                for (const k of keys) {
+                    html += '<tr>'
+                        + '<td>' + esc(k.label) + '</td>'
+                        + '<td>' + fmtNum(k.request_count) + '</td>'
+                        + '<td>' + fmtNum(k.input_tokens || 0) + '</td>'
+                        + '<td>' + fmtNum(k.output_tokens || 0) + '</td>'
+                        + '<td>' + fmtNum(k.total_tokens || 0) + (k.reasoning_tokens ? ' <span class="text-muted">🧠' + fmtNum(k.reasoning_tokens) + '</span>' : '') + '</td>'
+                        + '<td>' + _shareCell(k.total_tokens || 0, userTotal) + '</td>'
+                        + '</tr>';
+                }
+                html += '</tbody></table></td></tr>';
+            }
+        }
+    } else { // key tab: 扁平化所有用户的 keys
+        html += '<th>Key</th><th>所属用户</th><th' + mdTitle('requests') + '>请求</th>'
+            + '<th class="mono">Input</th><th class="mono">Output</th>'
+            + '<th' + mdTitle('reasoning') + '>思考</th><th' + mdTitle('tokens') + '>Token</th>'
+            + '<th' + mdTitle('share') + '>占比</th></tr></thead><tbody>';
+        const flat = [];
+        for (const u of users) {
+            for (const k of (u.keys || [])) {
+                flat.push({ ...k, owner: u.display_name ? u.username + ' (' + u.display_name + ')' : (u.username || '-') });
+            }
+        }
+        flat.sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0));
+        for (const k of flat) {
+            html += '<tr>'
+                + '<td><code class="text-mono">' + esc(k.label) + '</code></td>'
+                + '<td>' + esc(k.owner) + '</td>'
+                + '<td>' + fmtNum(k.request_count) + '</td>'
+                + '<td class="mono">' + fmtTokens(k.input_tokens || 0) + '</td>'
+                + '<td class="mono">' + fmtTokens(k.output_tokens || 0) + '</td>'
+                + '<td class="mono">' + (k.reasoning_tokens ? fmtTokens(k.reasoning_tokens) : '<span class="text-muted">—</span>') + '</td>'
+                + '<td class="mono">' + fmtTokens(k.total_tokens || 0) + '</td>'
+                + '<td>' + _shareCell(k.total_tokens || 0, totalTokens) + '</td>'
+                + '</tr>';
+        }
+    }
+    html += '</tbody></table></div>';
+    body.innerHTML = html;
+}
+
+// ---- 用户用量趋势 (stacked bar) ----
+
+let _userTrendDim = 'user';
+let _userTrendMetric = 'tokens'; // 'tokens' | 'requests'
+let _userTrendChart = null;
+let _userTrendData = null; // 缓存响应, dim/metric 切换不重复请求
+
+function _trendMetricLabel() {
+    const m = _userTrendMetric === 'requests' ? '按请求数堆叠' : '按 Token 堆叠';
+    const lbl = { "1": "近 24 小时", "7": "近 7 天", "30": "近 30 天" }[_timeRange] || "近 7 天";
+    return lbl + ' · ' + m;
+}
+
+function switchUserTrendDim(dim) {
+    _userTrendDim = dim;
+    _userTrendData = null; // dim 变了须重新拉
+    for (const t of ['user', 'key']) {
+        const btn = document.getElementById('user-trend-tab-' + t);
+        if (btn) btn.classList.toggle('btn-primary', t === dim);
+    }
+    loadUserTrend();
+}
+
+function switchUserTrendMetric(metric) {
+    _userTrendMetric = metric;
+    for (const t of ['tokens', 'requests']) {
+        const btn = document.getElementById('user-trend-metric-' + t);
+        if (btn) btn.classList.toggle('btn-primary', t === metric);
+    }
+    if (_userTrendData) renderUserTrend(_userTrendData);
+    syncRangeLabels(); // 副标题随 metric 变
+}
+
+for (const t of ['user', 'key']) {
+    const btn = document.getElementById('user-trend-tab-' + t);
+    if (btn) btn.classList.toggle('btn-primary', t === 'user');
+}
+for (const t of ['tokens', 'requests']) {
+    const btn = document.getElementById('user-trend-metric-' + t);
+    if (btn) btn.classList.toggle('btn-primary', t === 'tokens');
+}
+
+async function loadUserTrend() {
+    const canvas = document.getElementById('user-trend-chart');
+    if (!canvas) return;
+    try {
+        const resp = await authFetch(`/dashboard/api/usage/user-trend?days=${fmtDays()}&dim=${_userTrendDim}`);
+        if (!resp.ok) return;
+        _userTrendData = await resp.json();
+        renderUserTrend(_userTrendData);
+    } catch (e) { console.warn('user trend failed:', e); }
+}
+
+function renderUserTrend(data) {
+    const canvas = document.getElementById('user-trend-chart');
+    if (!canvas) return;
+    const buckets = (data && data.buckets) || [];
+    const series = (data && data.series) || [];
+    const hourly = fmtDays() === 1;
+    const tick = b => hourly ? String(b).slice(11, 16) : b;
+    if (_userTrendChart) { _userTrendChart.destroy(); _userTrendChart = null; }
+    if (buckets.length === 0 || series.length === 0) return;
+    const metricLabel = _userTrendMetric === 'requests' ? '请求数' : 'Token';
+    _userTrendChart = new Chart(canvas, {
+        type: 'bar',
+        data: {
+            labels: buckets.map(tick),
+            datasets: series.map((s, i) => ({
+                label: s.key,
+                data: s[_userTrendMetric] || [],
+                backgroundColor: _paletteColor(i, 0.75),
+                borderRadius: 2,
+            })),
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: _cssVar('--text-secondary'), boxWidth: 12 } },
+                tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + fmtNum(ctx.parsed.y) + ' ' + (_userTrendMetric === 'requests' ? '次' : 'tok') } },
+            },
+            scales: {
+                x: { stacked: true, ticks: { color: _cssVar('--text-muted'), maxRotation: 0, autoSkipPadding: 12 }, grid: { display: false } },
+                y: { stacked: true, ticks: { color: _cssVar('--text-muted') }, grid: { color: _cssVar('--border-muted') }, beginAtZero: true,
+                     title: { display: true, text: metricLabel, color: _cssVar('--text-muted') } },
+            },
+        },
+    });
 }
 
 // ============================================================
@@ -2468,7 +2695,7 @@ async function refreshBadges() {
 const PAGE_ROUTES = {
     overview: { title: '概览', ms: 60000, loaders: [loadOverviewKPIs, loadOverviewTrend, loadUsageTop, loadGroupOverview, loadTodaySummary] },
     cost:     { title: '成本', ms: 60000, loaders: [loadCostAudit, loadCacheStatsList] },
-    usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadGroupRouting, loadPerf, loadRequests], once: [loadRequestFilterOptions] },
+    usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadUserUsage, loadUserTrend, loadGroupRouting, loadPerf, loadRequests], once: [loadRequestFilterOptions] },
     // channels: 渠道状态会随冷却自愈与上下架变动, 保留 30s 轮询;
     // 价格表 / registry 模型/分组/用户 Key/采集源是配置类数据 (仅人为或脚本操作才变, 进页即新),
     // 周报周级生成 — 以上均只在进页时加载一次 (once).
@@ -2521,17 +2748,19 @@ function initNav() {
 // 后端按 model+时间窗 best-effort 匹配, 仅 admin key 可见 (中间件保证)。
 // ============================================================
 
-let _reqPage = 1, _reqStatus = 'all', _reqModel = '', _reqChannel = '', _reqKey = '', _reqDebounce = null;
+let _reqPage = 1, _reqStatus = 'all', _reqModel = '', _reqChannel = '', _reqKey = '', _reqUser = '', _reqDebounce = null;
 
 function requestsFilterChanged() {
     const s = document.getElementById('req-status');
     const m = document.getElementById('req-model');
     const c = document.getElementById('req-channel');
     const k = document.getElementById('req-key');
+    const u = document.getElementById('req-user');
     _reqStatus = s ? s.value : 'all';
     _reqModel = m ? m.value.trim() : '';
     _reqChannel = c ? c.value : '';
     _reqKey = k ? k.value : '';
+    _reqUser = u ? u.value : '';
     _reqPage = 1;
     clearTimeout(_reqDebounce);
     _reqDebounce = setTimeout(loadRequests, 300);
@@ -2543,6 +2772,7 @@ function requestsFilterChanged() {
 async function loadRequestFilterOptions() {
     const cSel = document.getElementById('req-channel');
     const kSel = document.getElementById('req-key');
+    const uSel = document.getElementById('req-user');
     if (!cSel || !kSel) return;
     try {
         const [chResp, keyResp] = await Promise.all([
@@ -2576,6 +2806,14 @@ async function loadRequestFilterOptions() {
                 return '<option value="' + e.id + '">' + esc(text) + '</option>';
             }).join('');
             if ([...kSel.options].some(o => o.value === cur)) kSel.value = cur;
+            // V6.12: 用户筛选下拉 — 同一 /api/keys 响应顺带填充 (含零用量用户)
+            if (uSel) {
+                const curU = uSel.value;
+                uSel.innerHTML = '<option value="">全部用户</option>' + (data.users || []).map(u =>
+                    '<option value="' + u.id + '">' + esc(u.display_name ? u.username + ' (' + u.display_name + ')' : u.username) + '</option>'
+                ).join('');
+                if ([...uSel.options].some(o => o.value === curU)) uSel.value = curU;
+            }
         }
     } catch (e) { /* 选项加载失败不阻塞日志主列表, 下拉退化为只有"全部" */ }
 }
@@ -2596,6 +2834,7 @@ async function loadRequests() {
         if (_reqModel) params.set('model', _reqModel);
         if (_reqChannel) params.set('channel_id', _reqChannel);
         if (_reqKey) params.set('key_id', _reqKey);
+        if (_reqUser) params.set('caller_id', _reqUser);
         const resp = await authFetch(`/dashboard/api/requests?${params}`);
         if (!resp.ok) {
             list.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
