@@ -1310,16 +1310,28 @@ async function loadCacheStatsList() {
         const container = document.getElementById("cache-by-channel");
         if (!container) return;
         // 节省分布环图 (Phase 3 数据表现形式: 构成占比用环图)
+        // 收益全 0 时 Chart.js 不画任何弧段, 只剩悬空图例 — 改渲染空态 (空态文案区分无流量/全在无缓存价渠道)
         const donutCanvas = document.getElementById("cache-donut-chart");
+        const donutEmpty = document.getElementById("cache-donut-empty");
         const byChannel = data.by_channel || [];
-        if (donutCanvas && byChannel.length > 0) {
+        const donutValues = byChannel.map(c => Math.round((c.saved_cost_cny || 0) * 100) / 100);
+        const showDonut = donutCanvas && byChannel.length > 0 && donutValues.some(v => v > 0);
+        if (donutEmpty) {
+            donutEmpty.textContent = byChannel.length > 0
+                ? '本期命中 token 均在无缓存价渠道 (免费/按次计费)，无可折算 Cache 收益'
+                : '暂无 Cache 收益数据';
+            donutEmpty.style.display = showDonut ? 'none' : '';
+        }
+        const donutBox = donutCanvas ? donutCanvas.closest('.chart-box') : null;
+        if (donutBox) donutBox.style.display = showDonut ? '' : 'none';
+        if (showDonut) {
             if (_cacheDonutChart) _cacheDonutChart.destroy();
             _cacheDonutChart = new Chart(donutCanvas, {
                 type: 'doughnut',
                 data: {
                     labels: byChannel.map(c => c.channel_name || '—'),
                     datasets: [{
-                        data: byChannel.map(c => Math.round((c.saved_cost_cny || 0) * 100) / 100),
+                        data: donutValues,
                         backgroundColor: byChannel.map((c, i) => _paletteColor(i, 0.75)),
                         borderWidth: 0,
                     }]
@@ -1333,7 +1345,7 @@ async function loadCacheStatsList() {
                     }
                 }
             });
-        } else if (donutCanvas && _cacheDonutChart) {
+        } else if (_cacheDonutChart) {
             _cacheDonutChart.destroy();
             _cacheDonutChart = null;
         }
