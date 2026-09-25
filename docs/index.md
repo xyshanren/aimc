@@ -69,6 +69,7 @@
 | 了解架构 / 数据流 | [dev/architecture.md](dev/architecture.md) |
 | 查模块间结合诊断（断链/死代码/耦合）| [dev/module-integration-audit.md](dev/module-integration-audit.md) |
 | 看生产审查报告（bug/指标口径/安全）| [dev/production-review-2026-09-13.md](dev/production-review-2026-09-13.md) |
+| 查已知路由行为：flagship glm-5.3 经 taotoken 降级为 flash（已拍板保持现状）| [dev/glm53-taotoken-flash-downgrade.md](dev/glm53-taotoken-flash-downgrade.md) |
 | 看下一阶段规划调研 | [dev/next-stage-research.md](dev/next-stage-research.md) |
 | 看 API 端点（OpenAI + Dashboard）| [dev/api.md](dev/api.md) |
 | **Agent 编程接入（REST/CLI 契约, V6.1）** | [agent-api.md](agent-api.md) |
