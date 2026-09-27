@@ -105,21 +105,28 @@ def test_seed_registry_vision_validate_namespace():
 
 
 def test_seed_groups_vision_members():
-    """seed_model_groups.py 的 tier:vision 组 member (V6.0 重排后 2 个旗舰)
+    """seed_model_groups.py 的 tier:vision 组 member (V6.14 minimax 双成员)
 
-    V6.0 (docs/next-major-v6-plan.md §1.2): glm-4.5v 移除 (上一代付费, 与免费
-    glm-4.6v-flash 孰强存疑), qwen-vl 系列下沉 vision-light; glm-5.3-flash
-    多模态补位。组收缩为双旗舰互备。
+    V6.0: glm-4.5v 移除, qwen-vl 系列下沉 vision-light, 双旗舰互备。
+    V6.14 (2026-09-27): + minimax-m3.1-flash-preview (90, 首选, 用户拍板) +
+    minimax-m3 (100); deepseek-v4-flash-vision-exp 是 V6.0 时代的名字
+    (生产已改名 deepseek-flash, 本 seed 行为意图留档, 生产以 db 为准)。
     """
     from scripts.seed_model_groups import GROUP_MEMBERS
     vision_members = [m for m in GROUP_MEMBERS if m[0] == "tier:vision"]
-    assert len(vision_members) == 2, f"tier:vision 应有 2 个 member, 实际 {len(vision_members)}"
+    assert len(vision_members) == 4, f"tier:vision 应有 4 个 member, 实际 {len(vision_members)}"
     model_ids = {m[1] for m in vision_members}
     expected = {
+        "minimax-m3.1-flash-preview",
+        "minimax-m3",
         "deepseek-v4-flash-vision-exp",
         "glm-5.3-flash",
     }
     assert model_ids == expected, f"tier:vision 成员不匹配: {model_ids ^ expected}"
+    # m3.1 首选: priority 必须严格小于 m3 (越小越优先, 同价 0 元由它决位)
+    pri = {m[1]: m[2] for m in vision_members}
+    assert pri["minimax-m3.1-flash-preview"] < pri["minimax-m3"], \
+        f"m3.1 priority ({pri['minimax-m3.1-flash-preview']}) 应小于 m3 ({pri['minimax-m3']})"
 
 
 def test_seed_groups_vision_null_tier_fallback_vision_light():

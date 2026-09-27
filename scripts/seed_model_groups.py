@@ -163,6 +163,12 @@ GROUP_MEMBERS = [
     # - glm-4.5v 移除: 上一代付费视觉, 与免费 glm-4.6v-flash 孰强存疑,
     #   不再进任何分组 (registry/price_snapshots 保留, 硅基直连不受影响)
     # - qwen-vl 系列下沉 tier:vision-light
+    # V6.14 (2026-09-27): + minimax-m3.1-flash-preview (90, 首选) + minimax-m3 (100);
+    #   注: 生产活跃成员以 2026-09-27 迁移后为准 = m3.1(90)/m3(100)/deepseek-flash(120),
+    #   本文件 vision 块其余行已落后生产 (deepseek-v4-flash-vision-exp 已改名 deepseek-flash,
+    #   glm-5.3-flash 等已软删除), 重跑 seed 会冲掉生产软删史 — 生产以 db 为准
+    ("tier:vision", "minimax-m3.1-flash-preview",   90, 1.0, None, "manual"),
+    ("tier:vision", "minimax-m3",                   100, 1.0, None, "manual"),
     ("tier:vision", "deepseek-v4-flash-vision-exp", 100, 1.0, None, "manual"),
     ("tier:vision", "glm-5.3-flash",                110, 1.0, None, "manual"),
 
