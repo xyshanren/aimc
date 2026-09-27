@@ -194,6 +194,53 @@ def test_manual_disable_then_enable():
     check("clear 后非 manual", cm.is_manual_disabled(1), False)
 
 
+def test_clear_manual_disabled_clears_far_future_cooldown():
+    """V6.14 回归: mark_manual_disabled 埋的 +1 年 cooldown_until 必须随解除清掉.
+
+    旧 clear 只清 manual_disabled_at, 解除后 is_in_cooldown 仍 True 一整年 →
+    路由继续排除 (glm_01 启用后僵死 4 天实证), 待处理栏变成「自动冷却中 31212725s」。
+    """
+    cm = CooldownManager()
+    cm.mark_manual_disabled(1)
+    check("禁用期 is_in_cooldown (远期即时排除)", cm.is_in_cooldown(1), True)
+    cm.clear_manual_disabled(1)
+    check("解除后非 manual", cm.is_manual_disabled(1), False)
+    check("解除后不再 in_cooldown", cm.is_in_cooldown(1), False)
+    check("解除后 snapshot 无冷却", cm.snapshot()[1]["in_cooldown"], False)
+
+
+def test_clear_manual_disabled_noop_keeps_normal_cooldown():
+    """未禁用过 → clear 是 no-op, 不擦正常冷却退避序列"""
+    cm = CooldownManager()
+    cm.mark_failure(2, error_info=make_5xx_error())  # 进入 60s 冷却
+    assert cm.is_in_cooldown(2) is True
+    cm.clear_manual_disabled(2)
+    check("正常冷却未被误清", cm.is_in_cooldown(2), True)
+
+
+def test_reconcile_manual_disabled():
+    """V6.14: DB status 为准对账内存标记 (双向漂移收敛)"""
+    cm = CooldownManager()
+    # 方向 1: DB 禁用、内存无标记 (taotoken_01 重启后) → 补标记
+    d1 = cm.reconcile_manual_disabled({1: "manual_disabled", 2: "active"})
+    check("补标记 marked=1", d1, {"marked": 1, "cleared": 0})
+    check("#1 内存已有标记", cm.is_manual_disabled(1), True)
+    check("#1 被即时排除", cm.is_in_cooldown(1), True)
+    # 方向 2: DB 启用、内存有标记 (glm_01 账号表启用) → 清标记 + 清远期 cooldown
+    cm.mark_manual_disabled(2)
+    d2 = cm.reconcile_manual_disabled({1: "manual_disabled", 2: "active"})
+    check("清标记 cleared=1", d2, {"marked": 0, "cleared": 1})
+    check("#2 非 manual", cm.is_manual_disabled(2), False)
+    check("#2 不再 in_cooldown", cm.is_in_cooldown(2), False)
+    # 一致状态 → no-op (幂等)
+    d3 = cm.reconcile_manual_disabled({1: "manual_disabled", 2: "active"})
+    check("一致时 no-op", d3, {"marked": 0, "cleared": 0})
+    # 已删除账号 (不在 DB 映射) 的残留标记 → 清
+    d4 = cm.reconcile_manual_disabled({2: "active"})
+    check("删除账号残留标记被清", d4, {"marked": 0, "cleared": 1})
+    check("#1 已无标记", cm.is_manual_disabled(1), False)
+
+
 # ===== 6. 探活调度查询 =====
 def test_accounts_due_for_probe():
     """now 跨越 next_probe_at → 加入 due_for_probe 列表"""
@@ -380,6 +427,9 @@ def main():
         test_5xx_never_needs_human,
         test_manual_disable_excludes_from_probe,
         test_manual_disable_then_enable,
+        test_clear_manual_disabled_clears_far_future_cooldown,
+        test_clear_manual_disabled_noop_keeps_normal_cooldown,
+        test_reconcile_manual_disabled,
         test_accounts_due_for_probe,
         test_needs_human_not_due_for_probe,
         test_accounts_needing_human,

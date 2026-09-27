@@ -174,6 +174,22 @@ class RouteEngine:
             await self._load_cards_cache(session)
             # P0-7: 从 settings_runtime 表读 score weights (dashboard 可改)
             await self._load_score_weights(session)
+            # V6.14: 人工禁用对账 — DB accounts.status 为准校正内存标记
+            # (账号表 /enable /disable 与 CLI 只写 DB, 待处理卡两端都写,
+            #  双份真相曾双向漂移, 靠每轮全量刷新收敛; DB 永远赢)
+            try:
+                from db.crud import list_accounts
+                from gateway.cooldown import cooldown_manager
+                pairs = await list_accounts(session)
+                status_map = {a.id: a.status for a, _ch in pairs}
+                diff = cooldown_manager.reconcile_manual_disabled(status_map)
+                if diff["marked"] or diff["cleared"]:
+                    logger.info(
+                        "人工禁用对账 (DB→内存): marked=%s cleared=%s",
+                        diff["marked"], diff["cleared"],
+                    )
+            except Exception as e:
+                logger.warning("人工禁用对账失败 (非致命): %s", e)
 
         self._last_refresh = datetime.now()
         # P0-4: 记录 db 文件 mtime (用于后续 stale 检测)

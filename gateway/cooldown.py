@@ -61,6 +61,7 @@ class CooldownManager:
     - snapshot() -> dict                                              # 调试用快照
     - mark_manual_disabled(account_id) -> None                        # V4.9: 人工禁用
     - clear_manual_disabled(account_id) -> None                       # V4.9: 解除人工禁用
+    - reconcile_manual_disabled(db_status) -> dict                    # V6.14: DB 对账内存禁用标记
     - probe_result(account_id, success, error_info) -> None           # V4.9: 探活结果
     - accounts_needing_human() -> list[int]                           # V4.9: 列出需人工
     - accounts_due_for_probe(now=None) -> list[int]                   # V4.9: 该探活的
@@ -383,11 +384,50 @@ class CooldownManager:
         logger.info(f"CooldownManager: account_id={account_id} 人工禁用")
 
     def clear_manual_disabled(self, account_id: int) -> None:
-        """V4.9: 解除人工禁用."""
+        """V4.9: 解除人工禁用.
+
+        V6.14: 同时清掉 mark_manual_disabled 埋的远期 cooldown_until — 否则
+        解除后 is_in_cooldown 仍为 True 一整年, 路由继续排除 (glm_01 启用后
+        僵死 4 天实证), 待处理栏也会从「人工禁用」变成「自动冷却中 31212725s」。
+        只清人工禁用自身留下的痕迹: 未禁用过 = no-op, 不擦正常冷却退避序列
+        (禁用期间路由排除, 不会有新失败进来, 无被误清的风险)。
+        """
         s = self._state.get(account_id)
-        if s:
-            s["manual_disabled_at"] = None
+        if not s or s.get("manual_disabled_at") is None:
+            return
+        s["manual_disabled_at"] = None
+        s["cooldown_until"] = None
+        s["cooldown_expired_at"] = None
         logger.info(f"CooldownManager: account_id={account_id} 解除人工禁用")
+
+    def reconcile_manual_disabled(self, db_status_by_id: dict[int, str]) -> dict[str, int]:
+        """V6.14: 人工禁用对账 — 以 DB accounts.status 为准校正内存标记.
+
+        人工禁用有两份真相 (DB status+manual_disabled_at / 内存 manual_disabled_at),
+        而写入路径各修一半: 待处理卡两端都写, 账号表 /enable /disable 与
+        rotate_account.py 只写 DB。曾双向漂移: glm_01 DB 已启用但内存仍禁用
+        (路由真排除, 僵死 4 天), taotoken_01 DB 禁用但重启后内存丢标记 (从
+        待处理消失)。refresh_cache 每轮 (启动 / 60s TTL / db mtime 变化) 调用,
+        DB 永远赢。不在 db_status_by_id 里的账号视作已删除, 同样清标记。
+
+        Returns: {"marked": n, "cleared": n} 供日志。
+        """
+        marked = cleared = 0
+        for aid, status in db_status_by_id.items():
+            disabled_in_db = status == "manual_disabled"
+            s = self._state.get(aid)
+            in_memory = bool(s and s.get("manual_disabled_at") is not None)
+            if disabled_in_db and not in_memory:
+                self.mark_manual_disabled(aid)
+                marked += 1
+            elif not disabled_in_db and in_memory:
+                self.clear_manual_disabled(aid)
+                cleared += 1
+        for aid in list(self._state):
+            if aid not in db_status_by_id and self._state[aid].get("manual_disabled_at") is not None:
+                self.clear_manual_disabled(aid)
+                cleared += 1
+        return {"marked": marked, "cleared": cleared}
 
     def probe_result(
         self,

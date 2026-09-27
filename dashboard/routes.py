@@ -1873,6 +1873,14 @@ async def manual_disable_account(account_id: int):
             .values(status="manual_disabled", manual_disabled_at=datetime.now())
         )
         await session.commit()
+    # V6.14: 与 /enable /disable 对齐 — 立即重建路由缓存把账号移出候选
+    # (排除主要靠远期 cooldown + DB status 过滤, 这里消灭最长 60s 的缓存窗口;
+    #  refresh 里的对账兜底会让 DB 永远赢)
+    try:
+        from gateway.router import route_engine
+        await route_engine.refresh_cache()
+    except Exception as e:
+        logger.warning("账号 %s 人工禁用后刷新路由缓存失败: %s", account_id, e)
     return {"status": "ok", "account_id": account_id}
 
 
@@ -1892,6 +1900,13 @@ async def manual_enable_account(account_id: int):
             .values(status="active", manual_disabled_at=None)
         )
         await session.commit()
+    # V6.14: 与 /enable 对齐 — 立即重建路由缓存让账号回到候选 (此前最长 60s
+    # 缓存窗口内不可路由; clear_manual_disabled 已同时清远期 cooldown)
+    try:
+        from gateway.router import route_engine
+        await route_engine.refresh_cache()
+    except Exception as e:
+        logger.warning("账号 %s 解除禁用后刷新路由缓存失败: %s", account_id, e)
     return {"status": "ok", "account_id": account_id}
 
 
@@ -3594,6 +3609,11 @@ def _account_to_dict(account: Account, channel: Channel) -> dict:
         "channel_name": channel.name,
         "account_name": account.account_name,
         "status": account.status,
+        # V6.14: 暴露人工禁用时间 — 此前该列只在 DB 里, 前端/API 都看不到,
+        # 「status 已 active 但 manual_disabled_at 残留」这类脱同步无从排查
+        "manual_disabled_at": (
+            account.manual_disabled_at.isoformat() if account.manual_disabled_at else None
+        ),
         "quota_total": account.quota_total,
         "quota_used": account.quota_used or 0,
         "quota_remaining": account.quota_remaining,
@@ -3762,7 +3782,20 @@ async def _set_account_status(session: AsyncSession, account_id: int, new_status
     account = await crud.update_account_status(session, account_id, new_status)
     if not account:
         raise HTTPException(status_code=404, detail=f"账号不存在: {account_id}")
+    # V6.14: 非人工禁用态一律清 DB 时间戳, 与 /manual-enable 对齐 — 否则出现
+    # status=active 但 manual_disabled_at 残留 (glm_01 生产实证的脱同步形态)
+    if new_status != "manual_disabled":
+        account.manual_disabled_at = None
     await session.commit()
+    # V6.14: 内存冷却态与 DB 同步 — 此前本路径只写 DB, 账号表「启用」后内存
+    # manual_disabled + 远期 cooldown 残留, 待处理仍显示「人工禁用」且路由
+    # 继续排除 (glm_01 启用后僵死 4 天实证)。下面 refresh_cache 里另有对账
+    # 兜底 (DB 永远赢), 这里显式同步是让语义不依赖 refresh 成败。
+    from gateway.cooldown import cooldown_manager
+    if new_status == "manual_disabled":
+        cooldown_manager.mark_manual_disabled(account_id)
+    else:
+        cooldown_manager.clear_manual_disabled(account_id)
     # refresh 路由缓存
     try:
         from gateway.router import route_engine

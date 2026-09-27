@@ -186,6 +186,7 @@ def test_account_to_dict():
         assert d["key_display"].startswith("encrypted:")
         assert d["notes"] == "测试账号"
         assert d["expires_at"].startswith("2026-12-31")
+        assert d["manual_disabled_at"] is None  # V6.14: 字段暴露, 未禁用为 None
         print(f"  [OK] dict={d['id']}/{d['provider']}/{d['account_name']} quota_pct={d['quota_pct']}")
 
         # 无 quota_total 时 quota_pct=None
@@ -199,6 +200,16 @@ def test_account_to_dict():
         assert d2["quota_remaining"] is None
         assert d2["key_display"] == "(未加密)"
         print(f"  [OK] 无 quota_total → quota_pct=None")
+
+        # V6.14: manual_disabled_at 有值时 ISO 序列化
+        acc3 = Account(
+            id=12, channel_id=1, account_name="y", api_key="",
+            api_key_ciphertext=None, status="active",
+            manual_disabled_at=datetime(2026, 9, 23, 21, 8, 8),
+        )
+        d3 = _account_to_dict(acc3, ch)
+        assert d3["manual_disabled_at"].startswith("2026-09-23T21:08:08"), d3["manual_disabled_at"]
+        print(f"  [OK] manual_disabled_at={d3['manual_disabled_at']}")
 
     asyncio.run(_run())
 
@@ -473,6 +484,54 @@ def test_disable_and_enable():
 
 
 # ============================================================
+# Test 12b (V6.14): 待处理卡禁用 → 账号表启用, 内存标记必须跟着清
+# 回归背景: /enable 此前只写 DB, 内存 manual_disabled + 远期 cooldown 残留
+# → 待处理仍显示「人工禁用」且路由真排除 (glm_01 启用后僵死 4 天实证)
+# ============================================================
+def test_enable_clears_stale_manual_disabled():
+    print("\n=== Test 12b: manual-disable 后走 /enable, 内存禁用态同步清除 ===")
+    async def _run():
+        await _reset_db()
+        ch_id = await _make_channel("glm")
+        from db.engine import async_session_factory
+        from db.models import Account
+        from gateway.cooldown import cooldown_manager
+
+        async with async_session_factory() as session:
+            session.add(Account(channel_id=ch_id, account_name="glm_01", api_key="", status="active"))
+            await session.commit()
+            acc_id = (await session.execute(
+                __import__("sqlalchemy").select(Account)
+            )).scalars().first().id
+
+        async with _get_client() as c:
+            # 待处理卡路径: /manual-disable → 内存 + DB 双写
+            r1 = await c.post(f"/dashboard/api/accounts/{acc_id}/manual-disable")
+            assert r1.status_code == 200
+            assert cooldown_manager.is_manual_disabled(acc_id) is True
+            assert cooldown_manager.is_in_cooldown(acc_id) is True  # 远期 cooldown 即时排除
+
+            # 账号表路径: /enable → DB 置 active, 内存禁用态必须一并清掉
+            r2 = await c.post(f"/dashboard/api/accounts/{acc_id}/enable")
+            assert r2.status_code == 200
+            assert r2.json()["status"] == "active"
+            assert r2.json()["manual_disabled_at"] is None
+            assert cooldown_manager.is_manual_disabled(acc_id) is False, \
+                "内存 manual_disabled 残留 (待处理会继续显示禁用)"
+            assert cooldown_manager.is_in_cooldown(acc_id) is False, \
+                "远期 cooldown 残留 (路由会继续排除该账号)"
+            print(f"  [OK] /enable 后内存禁用态 + 远期 cooldown 全部清除")
+
+            # 反向: /disable (软删语义) 不打 manual 标记, 但也不残留
+            r3 = await c.post(f"/dashboard/api/accounts/{acc_id}/disable")
+            assert r3.status_code == 200
+            assert cooldown_manager.is_manual_disabled(acc_id) is False
+            print(f"  [OK] /disable 不引入 manual 标记")
+
+    asyncio.run(_run())
+
+
+# ============================================================
 # Test 13: rotate 加密入库 + last_rotated_at 更新
 # ============================================================
 def test_rotate_account():
@@ -628,6 +687,7 @@ def main():
         test_create_account_dup_name,
         test_create_account_expires_at_parsing,
         test_disable_and_enable,
+        test_enable_clears_stale_manual_disabled,
         test_rotate_account,
         test_rotate_account_missing_key,
         test_rotate_account_not_found,
