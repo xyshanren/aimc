@@ -49,11 +49,19 @@ from db.normalizers import (
 # 字段：model_id, family, display_name, tier, capabilities (list), context_length,
 #       modality, is_open_source, release_date, notes
 MODEL_REGISTRY = [
-    # ========== DeepSeek (2 个, V4 系列) ==========
+    # ========== DeepSeek (3 个, V4 系列) ==========
     # Phase 2a+ fix (2026-08-13): 官方 API 当前只支持 V4 系列
     # (deepseek-v4-flash 升级到 V4-Flash-0731, deepseek-v4-pro 升级到 V4-Pro-0813)
     # 历史 model 名 (deepseek-chat / deepseek-reasoner / deepseek-coder / deepseek-v2.5)
     # 已不在官方 API 中, 调用会 404
+    # V6.14 (2026-09-27): 补 deepseek-flash — 生产 V4.1 迁移时入库 (T0/multimodal/1M,
+    #   官方 V4.1-Flash) 但 seed 漏记; 9/27 起为 tier:flagship 首位成员, 补行对齐
+    (
+        "deepseek-flash", "deepseek", "DeepSeek V4.1 Flash", "T0",
+        ["reasoning", "code", "general", "long_context"], 1000000, "multimodal", 0, "2026-09",
+        "官方 V4.1-Flash, 多模态, 1M ctx; 官方价 1/4 (谷) 2/8 (峰) cache 0.02/0.04; "
+        "modelscope/sensenova 0 元 + ch1 分时段付费; tier:flagship 首位",
+    ),
     (
         "deepseek-v4-pro", "deepseek", "DeepSeek V4 Pro", "T0",
         ["reasoning", "math", "code", "long_context"], 128000, "text", 0, "2026-08",

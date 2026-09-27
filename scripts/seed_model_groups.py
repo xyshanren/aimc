@@ -110,14 +110,19 @@ GROUPS = [
 # priority 数字越小越优先 (组内同价时 tie-break)
 GROUP_MEMBERS = [
     # ========== tier:flagship (T0/T1 旗舰推理) ==========
-    # deepseek-v4-pro (T0 评分 65.1; V5.0: sensenova 免费第二渠道, 官方付费兜底)
-    # + kimi-k3 (V5.0: sensenova TokenPlan 免费渠道, T0, 原生视觉+1M ctx;
-    #   modality=text 跟 minimax-m3 同例 — API 接受纯文本, 不进 vision 组
-    #   否则被 require_vision 过滤判死; flagship 不限 vision, 带图请求自然落到它)
+    # V6.14 重排 (2026-09-27, 用户拍板): deepseek-flash 首位 — modelscope/sensenova
+    #   双 0 元供给 + ch1 官方分时段付费兜底; v4-pro 降第三 (sensenova 已退役其供给,
+    #   0 元仅剩 modelscope); glm-5.3 殿后 (Lite 池积分系数高)
+    # + deepseek-flash (T0, V4.1-Flash; 生产行 2026-09 前已存在 priority=115,
+    #   seed 此前漏记, 本次补行并对齐新位次)
+    # + deepseek-v4-pro (T0 评分 65.1; V5.0: sensenova 免费第二渠道 — 9/27 退役,
+    #   官方付费 + modelscope 0 元兜底)
+    # + kimi-k3 (V5.0: sensenova TokenPlan 免费渠道, T0, 原生视觉+1M ctx)
     # + glm-5.3 (V4.9.7: bigmodel coding plan Lite, 新一代旗舰)
-    ("tier:flagship", "deepseek-v4-pro", 100, 1.0, None, "manual"),
+    ("tier:flagship", "deepseek-flash",  100, 1.0, None, "manual"),
     ("tier:flagship", "kimi-k3",         105, 1.0, None, "manual"),
-    ("tier:flagship", "glm-5.3",         110, 1.0, None, "manual"),
+    ("tier:flagship", "deepseek-v4-pro", 110, 1.0, None, "manual"),
+    ("tier:flagship", "glm-5.3",         115, 1.0, None, "manual"),
 
     # ========== tier:strong (主力通用) ==========
     # deepseek-v4-flash (T1 评分 60.4) + glm-5.2 (T1, sensenova 免费渠道)
@@ -132,17 +137,17 @@ GROUP_MEMBERS = [
     ("tier:strong", "glm-5.3-flash",     120, 1.0, None, "manual"),
 
     # ========== tier:balanced (T2 性价比) ==========
-    # deepseek-v3 (T2, 硅基流动常驻, 低价付费)
-    # + minimax-m3 (V5.1: T2 降档后入组, TokenPlanMax 年度额度管饱 —
-    #   0 元 + priority 110 使其成为 balanced 日常默认, 把 sensenova 池
-    #   省给 strong 的 v4-flash/glm-5.2; fallback 链 flagship→strong→balanced
-    #   使其成为全链安全网)
+    # V6.14 重排 (2026-09-27, 用户拍板): deepseek-v3 出组 (SF 付费 2/8, 组内唯一
+    #   付费成员且从未承接流量); sensenova-6.8-flash-lite 提到首位 (商汤日级配额
+    #   管饱时优先省 minimax TokenPlanMax 次数), minimax-m3 退居次位
     # + sensenova-6.8-flash-lite (T2, 公测免费, 256K ctx)
+    # + minimax-m3 (V5.1: T2 降档后入组, TokenPlanMax 年度额度管饱;
+    #   fallback 链 flagship→strong→balanced 使其成为全链安全网)
     # 注: glm-5.3-flash 不进 balanced — 保持 strong(+code) 双锚定即可,
     # 再进 balanced 会把主力组流量灌进 Lite 周池
-    ("tier:balanced", "deepseek-v3",  100, 1.0, None, "manual"),
-    ("tier:balanced", "minimax-m3",   110, 1.0, None, "manual"),
-    ("tier:balanced", "sensenova-6.8-flash-lite", 120, 1.0, None, "manual"),
+    ("tier:balanced", "sensenova-6.8-flash-lite", 100, 1.0, None, "manual"),
+    ("tier:balanced", "minimax-m3",               110, 1.0, None, "manual"),
+    # deepseek-v3 出组 (V6.14): 生产行软删除 (is_active=0), seed 行移除留档
 
     # ========== tier:light (T3 轻量免费) ==========
     # V5.1: minimax 旧模型 (m2.7-highspeed/m2.5-highspeed) 移出 — 渠道只主推
