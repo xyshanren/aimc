@@ -585,7 +585,15 @@ async def _run_source_task(source):
         # HTML 路径 (fallback 或 api_endpoint 未设置)
         # Phase 3.6 增强: 跳过空 url (新厂商 source 只配 api_endpoint 时)
         if content is None and source.url:
-            content, error = await fetch_page_with_error(source.url)
+            # V6.14 (2026-09-27): 接线 Phase 2B-3 等待策略 — 旧调用只传 url,
+            # source.wait_until / wait_for 全项目零消费者 (死配置), SPA 站只能拿到
+            # 未水合 SSR 壳 (sensenova /docs 实证: 15.6KB 壳 clean 后 "$/$")
+            content, error = await fetch_page_with_error(
+                source.url,
+                wait_until=getattr(source, "wait_until", None) or "domcontentloaded",
+                wait_for=getattr(source, "wait_for", None),
+                wait_for_timeout=getattr(source, "wait_for_timeout", None) or 10000,
+            )
             if not content:
                 logger.warning(f"采集失败: {source.provider} - {error}")
                 # 调 handle_fetch_error：累加 error_count + 按规则告警

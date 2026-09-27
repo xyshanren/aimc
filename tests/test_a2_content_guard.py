@@ -141,7 +141,7 @@ def guard_env(monkeypatch):
     import intelligence.healer as healer_mod
     import intelligence.differ as differ_mod
 
-    async def _fake_fetch(url):
+    async def _fake_fetch(url, **kw):
         return "x" * 3000, None  # 默认健康内容, 由各测试覆盖
 
     monkeypatch.setattr(fetcher_mod, "fetch_page_with_error", _fake_fetch)
@@ -158,7 +158,7 @@ def test_run_source_task_unhealthy_content_no_differ(guard_env, monkeypatch):
 
     error_page = '<html id="__next_error__">' + "x" * 600
 
-    async def _fetch_error_page(url):
+    async def _fetch_error_page(url, **kw):
         return error_page, None
 
     monkeypatch.setattr(fetcher_mod, "fetch_page_with_error", _fetch_error_page)
@@ -176,7 +176,7 @@ def test_run_source_task_healthy_content_flows_to_differ(guard_env, monkeypatch)
     """健康内容正常进 differ"""
     calls, fetcher_mod, monkeypatch = guard_env
 
-    async def _fetch_ok(url):
+    async def _fetch_ok(url, **kw):
         return "<html><body>" + "正常内容" * 1000 + "</body></html>", None
 
     monkeypatch.setattr(fetcher_mod, "fetch_page_with_error", _fetch_ok)
