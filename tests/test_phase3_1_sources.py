@@ -48,24 +48,25 @@ def test_sourcetype_constants():
 # Test 2: 源注册总数 (37 个: 历次 phase 累加 + V4.8.3)
 # ============================================================
 def test_source_registration():
-    """get_all_sources 应返回 37 个源 (历次 phase 累加)
+    """get_all_sources 应返回 39 个源 (历次 phase 累加)
     演进: P2 6 + P3.1 6 + P3.6 7 + v4.2 1 + v4.3 9 + v4.3.1 7 = 36
     实际去重后 34 (siliconflow pricing 重复合并; 部分源共享 provider)
     V4.8.3: +3 个 benchmark 源 (artificial_analysis/livebench/opencompass) → 37
     V6.5+: +1 个 free_llm_collection 观察源 (2026-09-14) → 38
+    V6.14: +1 个 sensenova_docs 文档站"支持的模型"监测源 (2026-09-27) → 39
     """
     print("\n=== Test 2: 源注册总数 ===")
     from intelligence.sources import get_all_sources
 
     all_sources = get_all_sources()
-    assert len(all_sources) == 38, f"应 38 个源, 实际 {len(all_sources)}"
+    assert len(all_sources) == 39, f"应 39 个源, 实际 {len(all_sources)}"
 
     # 按 type 分组 (V4.8.3 后快照)
     type_counts = {}
     for s in all_sources:
         type_counts[s.source_type] = type_counts.get(s.source_type, 0) + 1
     expected_counts = {
-        "web_page": 4,                  # deepseek/qwen/qwen/glm (价格页)
+        "web_page": 5,                  # deepseek/qwen/qwen/glm (价格页) + sensenova_docs (V6.14)
         "announcement": 9,              # deepseek/glm + v4.3.1 新增 7 家
         "model_list": 9,                # P3.1 2 + P3.6 7
         "price_aggregator": 11,        # siliconflow×2 + openrouter + v4.3 7 + qianwenai + free_llm_collection
@@ -74,7 +75,7 @@ def test_source_registration():
     assert type_counts == expected_counts, \
         f"type 分布应 = {expected_counts}, 实际 = {type_counts}"
 
-    print(f"  [OK] 总 38 个源: {dict(sorted(type_counts.items()))}")
+    print(f"  [OK] 总 39 个源: {dict(sorted(type_counts.items()))}")
 
 
 # ============================================================

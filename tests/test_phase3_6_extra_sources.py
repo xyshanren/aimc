@@ -89,20 +89,20 @@ def test_new_sources_configured():
 
 
 # ============================================================
-# Test 2: get_all_sources 返回 38 个 (V6.5+ free_llm_collection 后全量快照)
+# Test 2: get_all_sources 返回 39 个 (V6.14 sensenova_docs 后全量快照)
 # ============================================================
 def test_get_all_sources_count():
-    print("\n=== Test 2: get_all_sources() 返回 38 个 source ===")
+    print("\n=== Test 2: get_all_sources() 返回 39 个 source ===")
     from intelligence.sources import get_all_sources
 
     srcs = get_all_sources()
-    assert len(srcs) == 38, f"V6.5+ (free_llm_collection) 后应 38 个 source, 实际 {len(srcs)}"
+    assert len(srcs) == 39, f"V6.14 (sensenova_docs) 后应 39 个 source, 实际 {len(srcs)}"
 
     by_type = {}
     for s in srcs:
         by_type.setdefault(s.source_type, []).append(s.provider)
 
-    print(f"  [OK] 总数 38: {dict((k, len(v)) for k, v in by_type.items())}")
+    print(f"  [OK] 总数 39: {dict((k, len(v)) for k, v in by_type.items())}")
     for st, providers in sorted(by_type.items()):
         print(f"        {st}: {providers}")
 

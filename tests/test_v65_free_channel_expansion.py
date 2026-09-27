@@ -64,10 +64,10 @@ def test_free_llm_collection_source_registered():
 
 
 def test_free_llm_collection_source_count_grew():
-    """注册表应恰好 +1 (38 = 37 既有 + 1 新)。"""
+    """注册表随历次加源累加 (V6.14 sensenova_docs 后 = 39)。"""
     from intelligence.sources import get_all_sources
 
-    assert len(get_all_sources()) == 38
+    assert len(get_all_sources()) == 39
 
 
 # ============================================================

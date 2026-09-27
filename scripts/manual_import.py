@@ -243,13 +243,15 @@ CHANNELS = [
         # 历史默认 api.sensenova.cn 错误 (少数 model 在该域名 1214 modelCode不存在)
         # env SENSENOVA_BASE_URL 可运行时覆盖 db (gateway/router.py _resolve_effective_base_url)
         # 鉴权: 标准 Bearer token (sk- 开头), 跟其他渠道一样
-        # model (V4.6.4 update):
-        #   - SenseChat: 移除 (上游已失效, code 5 model not found)
-        #   - sensenova-6.8-flash-lite: 公测 token plan 主力 (8/8 取代 6.7)
-        #   - sensenova-u1-fast: U1 加速版
-        #   - deepseek-v4-flash: 公测免费 (跨渠道 model_id)
-        #   - sensenova-6.7-flash-lite: 保留到 8/31, deprecated (官方重定向将失效)
+        # model (V6.14 update, 2026-09-27):
+        #   - sensenova-6.8-flash-lite: 公测 token plan 主力
+        #   - deepseek-flash: V4.1-Flash 上架 (2026-09-27, 取代 v4-pro 供给)
+        #   - deepseek-v4-flash: 旧名上游仍承接, 保留
         #   - glm-5.2: 公测免费 (跨渠道, 免费第二渠道 — cheapest 策略下 0.0 胜过 siliconflow 8.0)
+        #   - sensenova-u1.5-fast / u1.5-lite: U1 系生图模型升级 (2026-09-27)
+        #   - 移除: deepseek-v4-pro (退役) / sensenova-6.7-flash-lite (退役)
+        #     / sensenova-u1-fast (被 u1.5 系取代)
+        #   - kimi-k3: 无次数限制共用通用池 (9/6 后补行, 本清单曾漏记)
         "key": "sensenova",
         "name": "sensenova_official",
         "provider": "sensenova",
@@ -259,10 +261,12 @@ CHANNELS = [
         "qpm": 30,
         "prices": [
             ("sensenova-6.8-flash-lite", "normal", "全天", 0.0, 0.0),  # 主力
-            ("sensenova-u1-fast", "normal", "全天", 0.0, 0.0),  # 加速版
-            ("deepseek-v4-flash", "normal", "全天", 0.0, 0.0),  # 公测免费 (跨渠道)
-            ("sensenova-6.7-flash-lite", "normal", "全天", 0.0, 0.0),  # 8/31 后失效, 保留兼容
+            ("deepseek-flash", "normal", "全天", 0.0, 0.0),  # V4.1-Flash (2026-09-27 上架)
+            ("deepseek-v4-flash", "normal", "全天", 0.0, 0.0),  # 旧名上游仍承接
             ("glm-5.2", "normal", "全天", 0.0, 0.0),  # 公测免费 (跨渠道, 免费第二渠道)
+            ("kimi-k3", "normal", "全天", 0.0, 0.0),  # 无次数限制共用通用池
+            ("sensenova-u1.5-fast", "normal", "全天", 0.0, 0.0),  # 生图 (未注册=直连)
+            ("sensenova-u1.5-lite", "normal", "全天", 0.0, 0.0),  # 生图 (未注册=直连)
         ],
     },
     {

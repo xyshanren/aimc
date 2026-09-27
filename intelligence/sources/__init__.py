@@ -59,6 +59,8 @@ from intelligence.sources.hunyuan import HunyuanAnnouncementSource
 from intelligence.sources.moonshot import MoonshotAnnouncementSource
 from intelligence.sources.sensenova_announcement import SenseNovaAnnouncementSource
 from intelligence.sources.stepfun_announcement import StepFunAnnouncementSource
+# V6.14 (2026-09-27): sensenova 官方文档站"支持的模型"监测源
+from intelligence.sources.sensenova_docs import SenseNovaDocsSource
 
 
 def get_all_sources() -> list[IntelSourceBase]:
@@ -125,6 +127,8 @@ def get_all_sources() -> list[IntelSourceBase]:
         MoonshotAnnouncementSource(),
         SenseNovaAnnouncementSource(),
         StepFunAnnouncementSource(),
+        # V6.14 (2026-09-27): sensenova 文档站"支持的模型"监测 (侧栏模型清单 hash 变化)
+        SenseNovaDocsSource(),
     ]
 
 
