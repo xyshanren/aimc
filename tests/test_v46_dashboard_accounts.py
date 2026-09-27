@@ -511,6 +511,20 @@ def test_enable_clears_stale_manual_disabled():
             assert cooldown_manager.is_manual_disabled(acc_id) is True
             assert cooldown_manager.is_in_cooldown(acc_id) is True  # 远期 cooldown 即时排除
 
+            # V6.14: 待处理示例行须带渠道/账号名 — 禁用账号不在路由缓存,
+            # 靠 DB 补名, 否则显示 "#N ?"
+            r_ps = await c.get("/dashboard/api/pending-summary")
+            assert r_ps.status_code == 200
+            manual_item = next(
+                i for i in r_ps.json()["items"] if i["category"] == "manual_disabled"
+            )
+            assert manual_item["count"] == 1
+            ex = manual_item["examples"][0]
+            assert ex["account_id"] == acc_id
+            assert ex["channel"] == "glm_official", f"channel 丢了: {ex}"
+            assert ex["account_name"] == "glm_01", f"account_name 丢了: {ex}"
+            print(f"  [OK] 待处理示例带名: #{ex['account_id']} {ex['channel']}")
+
             # 账号表路径: /enable → DB 置 active, 内存禁用态必须一并清掉
             r2 = await c.post(f"/dashboard/api/accounts/{acc_id}/enable")
             assert r2.status_code == 200

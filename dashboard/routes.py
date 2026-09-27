@@ -1655,14 +1655,29 @@ async def get_pending_summary(
     manual_aids = [aid for aid, s in snap.items()
                    if s.get("manual_disabled")]
     if manual_aids:
+        # V6.14: DB 禁用账号不在 _channels_cache (只装 active), 反查不到 →
+        # 落 DB 补名, 否则示例行显示 "#11 ?" 丢渠道/账号名 (taotoken_01 实证)
+        cache_miss = [aid for aid in manual_aids
+                      if _lookup_channel_info(route_engine, aid) is None]
+        db_names: dict[int, tuple[str, str]] = {}
+        if cache_miss:
+            try:
+                pairs = await crud.list_accounts(session)
+                db_names = {a.id: (ch.name, a.account_name) for a, ch in pairs}
+            except Exception as e:
+                logger.warning("待处理人工禁用示例 DB 补名失败 (非致命): %s", e)
         manual_examples = []
         for aid in manual_aids[:3]:
             s = snap[aid]
             ch_info = _lookup_channel_info(route_engine, aid)
+            if ch_info:
+                ch_name, acct_name = ch_info["name"], ch_info.get("account_name", "")
+            else:
+                ch_name, acct_name = db_names.get(aid, ("?", ""))
             manual_examples.append({
                 "account_id": aid,
-                "channel": ch_info["name"] if ch_info else "?",
-                "account_name": ch_info.get("account_name", "") if ch_info else "",
+                "channel": ch_name,
+                "account_name": acct_name,
                 "error_msg": "人工禁用",
             })
         items.append({
