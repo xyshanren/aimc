@@ -66,9 +66,9 @@ def test_source_registration():
     for s in all_sources:
         type_counts[s.source_type] = type_counts.get(s.source_type, 0) + 1
     expected_counts = {
-        "web_page": 5,                  # deepseek/qwen/qwen/glm (价格页) + sensenova_docs (V6.14)
+        "web_page": 4,                  # deepseek/qwen/qwen/glm (价格页)
         "announcement": 9,              # deepseek/glm + v4.3.1 新增 7 家
-        "model_list": 9,                # P3.1 2 + P3.6 7
+        "model_list": 10,               # P3.1 2 + P3.6 7 + V6.14 sensenova_docs
         "price_aggregator": 11,        # siliconflow×2 + openrouter + v4.3 7 + qianwenai + free_llm_collection
         "benchmark": 5,                 # lmsys/superclue + V4.8.3: artificial_analysis/livebench/opencompass
     }

@@ -68,7 +68,7 @@ def get_all_sources() -> list[IntelSourceBase]:
 
     Phase 3.6 (2026-08-06): 共 18 个 source
     - 6 个 web_page / announcement (Phase 2A: deepseek/qwen/glm 各 2 个)
-    - 9 个 model_list (Phase 3.1 + 3.6: siliconflow/volcengine + deepseek/qwen/glm + 4 新厂商)
+    - 10 个 model_list (Phase 3.1 + 3.6: 9 个 + V6.14 sensenova_docs 文档站)
     - 2 个 price_aggregator
     - 1 个 benchmark (实际 2 个 LMSYS + SuperCLUE)
 

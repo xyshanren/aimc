@@ -108,18 +108,19 @@ def test_get_all_sources_count():
 
 
 # ============================================================
-# Test 3: model_list 类型 source 共 9 个
+# Test 3: model_list 类型 source 共 10 个 (V6.14 + sensenova_docs)
 # ============================================================
 def test_model_list_sources_count():
-    print("\n=== Test 3: model_list source 共 9 个 ===")
+    print("\n=== Test 3: model_list source 共 10 个 ===")
     from intelligence.sources import get_all_sources
 
     ml_sources = [s for s in get_all_sources() if s.source_type == "model_list"]
-    assert len(ml_sources) == 9, f"应 9 个 model_list source, 实际 {len(ml_sources)}"
+    assert len(ml_sources) == 10, f"应 10 个 model_list source, 实际 {len(ml_sources)}"
 
     providers = sorted([s.provider for s in ml_sources])
     expected = sorted(["siliconflow", "volcengine", "deepseek", "qwen", "glm",
-                        "stepfun", "sensenova", "hunyuan", "moonshot"])
+                        "stepfun", "sensenova", "hunyuan", "moonshot",
+                        "sensenova"])  # sensenova ×2: API model_list + docs 页 (V6.14)
     assert providers == expected, f"应 {expected}, 实际 {providers}"
 
     print(f"  [OK] 9 个 model_list: {providers}")

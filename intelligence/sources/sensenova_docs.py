@@ -22,14 +22,20 @@ from intelligence.sources.base import IntelSourceBase
 
 
 class SenseNovaDocsSource(IntelSourceBase):
-    """商汤日日新官方文档站采集 (支持的模型监测)"""
+    """商汤日日新官方文档站采集 (支持的模型监测)
+
+    source_type 用 model_list 而非 web_page — healer 提交门要求
+    (is_promotion 且 conf>=0.8) 或 models 非空; 文档页不是优惠页,
+    web_page 型解析结果 is_promotion=False → hash 永不提交, 每轮白跑解析。
+    model_list 型按模型元信息提取, 侧栏模型名清单 → models 非空 → 提交。
+    """
 
     def __init__(self):
         super().__init__(
             provider="sensenova",
             url="https://platform.sensenova.cn/docs",
-            source_type="web_page",
-            poll_interval=1800,
+            source_type="model_list",
+            poll_interval=86400,  # model_list 类型下限 (test_poll_intervals 守卫)
             css_selector=None,
             wait_until="networkidle",
             wait_for=None,
