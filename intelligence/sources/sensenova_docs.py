@@ -38,6 +38,8 @@ class SenseNovaDocsSource(IntelSourceBase):
             poll_interval=86400,  # model_list 类型下限 (test_poll_intervals 守卫)
             css_selector=None,
             wait_until="networkidle",
-            wait_for=None,
-            wait_for_timeout=12000,
+            # SPA 水合竞态: 只等 networkidle 偶发只渲染出 278B 侧栏骨架
+            # (过不了 500 字符守卫); 等 article 元素出现 = 正文就绪 (3/3 实证 78KB)
+            wait_for="article",
+            wait_for_timeout=15000,
         )
