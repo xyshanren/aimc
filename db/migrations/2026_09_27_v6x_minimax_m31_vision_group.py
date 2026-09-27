@@ -1,7 +1,7 @@
 """V6.14 migration: minimax-m3.1-flash-preview 入 tier:vision 组, 优先级高于 minimax-m3 (2026-09-27)
 
 背景 (用户拍板 2026-09-27):
-- minimax-m3.1-flash-preview (V6.14 上午接入, 多模态 preview) 加入 tier:vision 组
+- minimax-m3.1-flash-preview (V6.14 上午接入, 多模态) 加入 tier:vision 组
 - 要求: 优先于 minimax-m3 使用 → member_priority 越小越优先 (V5.1 排序键
   (price, family_bonus, member_priority, -channel.priority), 同价时生效)
 - 现状 (生产 2026-09-27): tier:vision 活跃成员 minimax-m3 (priority=100) +
@@ -14,6 +14,12 @@
 改动:
 1. 确保 (tier:vision, minimax-m3.1-flash-preview) 成员行: 缺失则 INSERT(priority=90),
    软删除行则复活+改 90, 活跃行 priority≠90 则对齐 90 (幂等收敛到目标态)
+2. registry status 'preview' → 'active' (生产 e2e 实证根因修复):
+   _load_groups_cache 只拉 status='active' 的 registry 行进路由缓存,
+   status='preview' 的成员在组路由里被视为"不在 model_registry"直接跳过
+   (精确直连不查该缓存所以直连 200 — 20:14 e2e members=3/candidates=2/skip=m3.1 实证)。
+   语义上"参与组路由"即 active; 同坑预警: step-5-preview (status=preview) 目前
+   同样进不了任何组, 入组前需先改 active。
 
 用法:
     python db/migrations/2026_09_27_v6x_minimax_m31_vision_group.py            # dry-run
@@ -97,10 +103,9 @@ def main():
     if row and row["is_active"] == 1:
         if row["priority"] == TARGET_PRIORITY:
             print(f"\n[OK] 成员行已存在且 priority={TARGET_PRIORITY}, 无需操作")
-            conn.close()
-            return
-        action = "UPDATE"
-        print(f"\n[TO-UPDATE] 活跃成员行 priority {row['priority']} → {TARGET_PRIORITY}")
+        else:
+            action = "UPDATE"
+            print(f"\n[TO-UPDATE] 活跃成员行 priority {row['priority']} → {TARGET_PRIORITY}")
     elif row:
         action = "REACTIVATE"
         print(f"\n[TO-REACTIVATE] 软删除行 id={row['id']} 复活 + priority={TARGET_PRIORITY} "
@@ -109,7 +114,20 @@ def main():
         action = "INSERT"
         print(f"\n[TO-INSERT] 新成员行 ({GROUP_ID}, {MODEL_ID}, priority={TARGET_PRIORITY})")
 
+    # ============ 2. registry status 收敛 (组路由缓存只拉 active) ============
+    status_action = None
+    if reg["status"] != "active":
+        status_action = f"{reg['status']} → active"
+
+    if not action and not status_action:
+        print("\n[OK] 所有数据已就绪, 无需操作")
+        conn.close()
+        return
+
     if not args.apply:
+        if status_action:
+            print(f"[TO-UPDATE] registry status: {status_action} "
+                  f"(preview 不进组路由缓存, 根因见 docstring 改动 2)")
         print("\n[DRY-RUN] 加 --apply 才执行")
         conn.close()
         return
@@ -131,13 +149,22 @@ def main():
                 "removed_by = NULL WHERE id = ?",
                 (TARGET_PRIORITY, row["id"]),
             )
-        else:
+        elif action == "UPDATE":
             conn.execute(
                 "UPDATE model_group_members SET priority = ? WHERE id = ?",
                 (TARGET_PRIORITY, row["id"]),
             )
+        if action:
+            print(f"  [OK] {action}: {MODEL_ID} @ {GROUP_ID} priority={TARGET_PRIORITY}")
+        if status_action:
+            conn.execute(
+                "UPDATE model_registry SET status = 'active', updated_at = datetime('now','localtime') "
+                "WHERE model_id = ?",
+                (MODEL_ID,),
+            )
+            print(f"  [OK] registry status: {status_action}")
         conn.execute("COMMIT")
-        print(f"  [OK] {action}: {MODEL_ID} @ {GROUP_ID} priority={TARGET_PRIORITY}")
+        print("\n[OK] 迁移完成")
     except Exception as e:
         conn.execute("ROLLBACK")
         print(f"[FAIL] 迁移失败: {e}")

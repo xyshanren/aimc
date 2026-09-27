@@ -261,6 +261,116 @@ def test_require_vision_accepts_multimodal():
 
 
 # ============================================================
+# V6.14 (2026-09-27): minimax-m3.1-flash-preview 入 tier:vision
+# ============================================================
+
+def _build_vision_engine(registry_model_ids):
+    """构造 tier:vision 组选型用的 RouteEngine (mock 缓存, 成员=生产 2026-09-27 状态)
+
+    registry_model_ids: 进 _registry_cache 的 model_id 集合 —
+    生产 _load_groups_cache 只拉 status='active' 行, 用集合模拟该语义。
+    """
+    from gateway.router import RouteEngine
+
+    eng = RouteEngine()
+    ch = {
+        "id": 6, "name": "minimax_compat", "provider": "minimax",
+        "priority": 5, "billing_mode": "pay_per_token",
+        "account_id": 60, "quota_remaining": None, "quota_total": None,
+        "quotas": [],
+        "prices": [
+            {"model": "minimax-m3", "price_type": "normal", "time_range": "全天",
+             "input_price": 0.0, "output_price": 0.0, "cached_input_price": None,
+             "cache_write_price": None, "is_promotion": None, "raw_model_id": "minimax-m3"},
+            {"model": "minimax-m3.1-flash-preview", "price_type": "normal", "time_range": "全天",
+             "input_price": 0.0, "output_price": 0.0, "cached_input_price": None,
+             "cache_write_price": None, "is_promotion": None,
+             "raw_model_id": "minimax-m3.1-flash-preview"},
+        ],
+    }
+    eng._channels_cache = [ch]
+
+    class _Reg:
+        def __init__(self, model_id, tier, modality, capabilities, context_length):
+            self.model_id = model_id
+            self.tier = tier
+            self.modality = modality
+            self.capabilities = capabilities
+            self.context_length = context_length
+            self.status = "active"
+            self.family = "minimax"
+
+    all_regs = {
+        "minimax-m3": _Reg("minimax-m3", "T2", "multimodal",
+                           '["reasoning", "code", "long_context", "general"]', 1000000),
+        "minimax-m3.1-flash-preview": _Reg(
+            "minimax-m3.1-flash-preview", "T2", "multimodal",
+            '["reasoning", "code", "general"]', 1000000),
+        "deepseek-flash": _Reg("deepseek-flash", "T0", "multimodal",
+                               '["reasoning", "code", "general"]', 1000000),
+    }
+    eng._registry_cache = {k: v for k, v in all_regs.items() if k in registry_model_ids}
+
+    class _Group:
+        group_id = "tier:vision"
+        tier = None
+        capabilities = None
+        min_context = 0
+        require_vision = 1
+        strategy = "cheapest"
+        fallback_group = "tier:vision-light"
+        enabled = 1
+
+    eng._groups_cache = {"tier:vision": _Group()}
+    eng._group_members_cache = {
+        "tier:vision": ["minimax-m3", "deepseek-flash", "minimax-m3.1-flash-preview"],
+    }
+    eng._member_priority_cache = {
+        "tier:vision": {"minimax-m3": 100, "deepseek-flash": 120,
+                        "minimax-m3.1-flash-preview": 90},
+    }
+    return eng
+
+
+_VISION_IMAGE_MESSAGES = [{
+    "role": "user",
+    "content": [
+        {"type": "text", "text": "What color? one word"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+    ],
+}]
+
+
+def test_vision_group_member_priority_selection():
+    """V6.14: tier:vision 带图请求按 member_priority 选 m3.1(90) 优于 m3(100)
+
+    m3/m3.1 价行同 0 元同渠道, V5.1 排序键 (price, family_bonus, member_priority,
+    -channel.priority) 同价由 priority 决位 — 用户拍板"优先使用 m3.1"。
+    """
+    eng = _build_vision_engine({"minimax-m3", "minimax-m3.1-flash-preview", "deepseek-flash"})
+    best = eng._select_by_group("tier:vision", prefs={}, messages=_VISION_IMAGE_MESSAGES)
+    assert best is not None, "tier:vision 应有可用候选"
+    assert best.get("_registry_model") == "minimax-m3.1-flash-preview", \
+        f"带图请求应首选 m3.1 (priority=90 < m3=100), 实际 {best.get('_registry_model')}"
+    assert best["name"] == "minimax_compat"
+
+
+def test_vision_group_skips_non_active_registry_member():
+    """V6.14 实证坑回归锚点: registry 缓存无该成员 (=status 非 active) 时组路由跳过
+
+    生产 _load_groups_cache 只拉 status='active'; m3.1 初版 status=preview 曾被
+    当"不在 model_registry"跳过 (e2e members=3/candidates=2 实证)。本测试钉住:
+    该语义下 m3 兜底胜出 — 若未来放行 preview 入组, 应连同 _load_groups_cache
+    一起改并更新本测试。
+    """
+    eng = _build_vision_engine({"minimax-m3", "deepseek-flash"})  # m3.1 不在缓存
+    best = eng._select_by_group("tier:vision", prefs={}, messages=_VISION_IMAGE_MESSAGES)
+    assert best is not None
+    assert best.get("_registry_model") == "minimax-m3", \
+        f"m3.1 不在 registry 缓存时应由 m3 兜底, 实际 {best.get('_registry_model')}"
+
+
+# ============================================================
 # Fix 5: _resolve_actual_model 精确路由用 _channel_model 兜底
 # ============================================================
 
@@ -356,6 +466,8 @@ def main():
         ("seed 全组成员在 registry (V6.0)", test_seed_all_group_members_in_registry),
         ("seed groups vision 在 registry", test_seed_groups_vision_members_in_registry),
         ("require_vision 接受 multimodal", test_require_vision_accepts_multimodal),
+        ("组路由 member_priority 首选 m3.1 (V6.14)", test_vision_group_member_priority_selection),
+        ("组路由跳过非 active registry 成员 (V6.14 坑)", test_vision_group_skips_non_active_registry_member),
         ("resolve model 精确路由用 _channel_model", test_resolve_model_exact_route_uses_channel_model),
         ("resolve model 精确路由无 _channel_model", test_resolve_model_exact_route_no_channel_model),
         ("resolve model 精确路由全空", test_resolve_model_exact_route_empty_all),

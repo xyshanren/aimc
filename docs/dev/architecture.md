@@ -150,7 +150,7 @@ RouteEngine (单例 route_engine)
 |---|---|---|---|
 | deepseek_official | 2 | 0 | ✅ 全规范（v4-flash 系 6 行已清） |
 | glm_bigmodel | 4 | 0 | ✅ 全规范 |
-| minimax_compat | 4 | 0 | ✅ **2026-09-27 收敛**：+ minimax-m3.1-flash-preview（多模态 preview，T2，1M ctx 待复核；上游 chat 直测 200、/models 未收录）；m2.5 / m2.5-highspeed / m2.1 / m2.1-highspeed / m2 过时下线（价行移除，usage_logs 历史保留）；m2.5 的 siliconflow 规范名兜底行不受影响；同日晚 m3.1 入 tier:vision（priority=90 首选，m3=100 退居次位，deepseek-flash=120 兜底——同价 0 元由 member_priority 决位），迁移 2026_09_27_v6x_minimax_m31_vision_group.py |
+| minimax_compat | 4 | 0 | ✅ **2026-09-27 收敛**：+ minimax-m3.1-flash-preview（多模态，T2/active，1M ctx 待复核；上游 chat 直测 200、/models 未收录）；m2.5 / m2.5-highspeed / m2.1 / m2.1-highspeed / m2 过时下线（价行移除，usage_logs 历史保留）；m2.5 的 siliconflow 规范名兜底行不受影响；同日晚 m3.1 入 tier:vision（priority=90 首选，m3=100 退居次位，deepseek-flash=120 兜底——同价 0 元由 member_priority 决位）。**实证坑：registry status 非 active 不进组路由**（`_load_groups_cache` 只拉 active，m3.1 初版 status=preview 被当"不在注册表"跳过、精确直连不受影响；已改 active。step-5-preview 同状态同坑，入组前需先改），迁移 2026_09_27_v6x_minimax_m31_vision_group.py |
 | taotoken_coding | 2 | 0 | ✅ 全规范 |
 | sensenova_official | 5 | 2 | ✅ 规范为主；2 行供应商自有名（sensenova-6.7-flash-lite / u1-fast）未注册 = 直连专用 |
 | modelscope_inference | 3 | 5 | ✅ 本规范首例：3 规范行（raw_model_id 指 raw id）+ 3 raw 行（直连入口）+ 2 Qwen 纯直连 |
