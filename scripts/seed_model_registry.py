@@ -282,20 +282,33 @@ MODEL_REGISTRY = [
         "标价 7/20 元每百万tokens (缓存命中 0.35)"
     ),
 
-    # ========== MiniMax (8 个, 对齐 MiniMax 官方 API + minimax_compat 渠道 price_snapshots) ==========
+    # ========== MiniMax (9 个; minimax_compat 渠道侧 2026-09-27 收敛为 4 行 = m3/m3.1-flash-preview/m2.7/m2.7-highspeed) ==========
     # Phase 4 fix (2026-08-13): 修复 1005111 commit 的家族错乱
     # - 修复前错误状态: 5 个 model + family="MiniMax" 大写 + 注释指向 sensenova_official (错误)
     # - sensenova_official 渠道实际一个 MiniMax model 都没有, 跟 family 字段无关
     # - 对齐来源 (1): MiniMax 官方 API 文档 https://platform.minimaxi.com/docs/api-reference/api-overview (2026-08 现行)
-    # - 对齐来源 (2): db 中 minimax_compat 渠道 price_snapshots 实际 8 个 model
+    # - 对齐来源 (2): db 中 minimax_compat 渠道 price_snapshots
+    # - V6.14 (2026-09-27): + m3.1-flash-preview; m2/m2.1/m2.1-highspeed/m2.5/m2.5-highspeed
+    #   渠道价行下线 (registry 条目保留: m2.5 仍有 siliconflow 规范名兜底行, 其余 4 个防历史 usage_logs 关联)
     # - 字段约定: family 统一小写 "minimax" (跟 provider / channel.name 对齐, 与其他 family 一致)
+    (
+        # V6.14 (2026-09-27): 新模型接入 — 多模态 (用户口径, 上游 chat 直测 200,
+        # /models 尚未收录); ctx 暂对齐 M3 线 1M 待官方文档复核; seed 固定 status=active,
+        # 生产库由迁移写入 status='preview'
+        "minimax-m3.1-flash-preview", "minimax", "MiniMax M3.1 Flash Preview", "T2",
+        ["reasoning", "code", "general"], 1000000, "multimodal", 0, "2026-09",
+        "M3 线 flash preview, 多模态; 上游响应 model=MiniMax-M3.1-Flash-Preview "
+        "(大小写不敏感); 未进组等口令",
+    ),
     (
         # V5.1 (2026-09-02): T1 → T2 人工降档 — 能力低于 glm-5.3-flash (T2) 和
         # deepseek-v4-flash (T1); TokenPlanMax 年度额度充足, 定位为 balanced 容量兜底
+        # V6.14 (2026-09-27): modality text → multimodal 对齐生产 (2026-09-08 入
+        # tier:vision 时已改, 2026-09-18 拍板规则不变; 纯文本请求 P0-3 跳过属预期)
         "minimax-m3", "minimax", "MiniMax M3", "T2",
-        ["reasoning", "code", "long_context", "general"], 1000000, "text", 0, "2026-08",
-        "1M ctx, 原生多模态但 API 接受纯文本; modality=text 避免 P0-3 纯文本跳过; "
-        "tier:balanced 兜底 (T2 过滤要求)",
+        ["reasoning", "code", "long_context", "general"], 1000000, "multimodal", 0, "2026-08",
+        "1M ctx, 原生多模态; tier:vision + tier:balanced 成员; "
+        "纯文本请求 P0-3 跳过属预期 (multimodal)",
     ),
     (
         "minimax-m2.7", "minimax", "MiniMax M2.7", "T1",

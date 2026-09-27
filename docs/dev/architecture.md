@@ -150,7 +150,7 @@ RouteEngine (单例 route_engine)
 |---|---|---|---|
 | deepseek_official | 2 | 0 | ✅ 全规范（v4-flash 系 6 行已清） |
 | glm_bigmodel | 4 | 0 | ✅ 全规范 |
-| minimax_compat | 8 | 0 | ✅ 全规范 |
+| minimax_compat | 4 | 0 | ✅ **2026-09-27 收敛**：+ minimax-m3.1-flash-preview（多模态 preview，T2，1M ctx 待复核；上游 chat 直测 200、/models 未收录）；m2.5 / m2.5-highspeed / m2.1 / m2.1-highspeed / m2 过时下线（价行移除，usage_logs 历史保留）；m2.5 的 siliconflow 规范名兜底行不受影响；新模型未进组等口令 |
 | taotoken_coding | 2 | 0 | ✅ 全规范 |
 | sensenova_official | 5 | 2 | ✅ 规范为主；2 行供应商自有名（sensenova-6.7-flash-lite / u1-fast）未注册 = 直连专用 |
 | modelscope_inference | 3 | 5 | ✅ 本规范首例：3 规范行（raw_model_id 指 raw id）+ 3 raw 行（直连入口）+ 2 Qwen 纯直连 |
