@@ -301,13 +301,14 @@ MODEL_REGISTRY = [
     # - 字段约定: family 统一小写 "minimax" (跟 provider / channel.name 对齐, 与其他 family 一致)
     (
         # V6.14 (2026-09-27): 新模型接入 — 多模态 (用户口径, 上游 chat 直测 200,
-        # /models 尚未收录); ctx 暂对齐 M3 线 1M 待官方文档复核
+        # /models 尚未收录); ctx 1M 官方已确认 (2026-09-28 用户截图)
         # ⚠️ status 必须保持 active: 路由缓存只拉 active (2026-09-27 e2e 实证,
         # preview 会被组路由当"不在注册表"跳过 — 当晚已把生产的 preview 改回 active)
         "minimax-m3.1-flash-preview", "minimax", "MiniMax M3.1 Flash Preview", "T2",
         ["reasoning", "code", "general"], 1000000, "multimodal", 0, "2026-09",
-        "M3 线 flash preview, 多模态; 上游响应 model=MiniMax-M3.1-Flash-Preview "
-        "(大小写不敏感); tier:vision 成员 (priority=90 首选)",
+        "M3 线 flash preview, 多模态, 1M ctx (官方确认); 上游响应 "
+        "model=MiniMax-M3.1-Flash-Preview (大小写不敏感); tier:vision 成员 "
+        "(priority=90 首选)",
     ),
     (
         # V5.1 (2026-09-02): T1 → T2 人工降档 — 能力低于 glm-5.3-flash (T2) 和
