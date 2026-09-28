@@ -77,11 +77,16 @@ class CooldownManager:
         failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
         needs_human_thresholds: Optional[dict] = None,
         max_probe_backoff_seconds: int = DEFAULT_MAX_PROBE_BACKOFF_SECONDS,
+        quota_probe_initial_seconds: int = 300,
+        quota_probe_max_seconds: int = 1800,
     ):
         self.cooldown_seconds = cooldown_seconds
         self.failure_threshold = failure_threshold
         self.needs_human_thresholds = needs_human_thresholds or DEFAULT_NEEDS_HUMAN_THRESHOLDS
         self.max_probe_backoff_seconds = max_probe_backoff_seconds
+        # V6.15: 配额桶恢复探测节拍 (指数退避 initial → max)
+        self.quota_probe_initial_seconds = quota_probe_initial_seconds
+        self.quota_probe_max_seconds = quota_probe_max_seconds
         # account_id → state dict (V4.9 扩展)
         self._state: dict[int, dict] = {}
         # V6.10 (2026-09-20): 模型桶级隔离 — (account_id, model) → 冷却截止时间戳.
@@ -91,6 +96,11 @@ class CooldownManager:
         # 仅 QUOTA_EXHAUSTED 且携带 model 的失败进入这里; 其余错误仍账号级.
         # 与 _state 同生命周期 (内存, 重启清零).
         self._quarantine: dict[tuple[int, str], float] = {}
+        # V6.15 (2026-09-28): 配额桶恢复探测节拍 — (account_id, model) →
+        # {"next_probe_at": ts, "attempts": n}. 探活 GET /models 零 token 感知
+        # 不到配额恢复 (上游窗口重置 / 用户后台手动重置都探不到), 需 1-token
+        # 真聊天探测; 到点由 intelligence/channel_health.quota_recovery_probe 执行.
+        self._quarantine_probe: dict[tuple[int, str], dict] = {}
 
     # ============ 状态查询 ============
 
@@ -106,6 +116,7 @@ class CooldownManager:
                 if time.time() >= until:
                     # 桶隔离过期即移除 (配额桶无指数退避序列, 不需要保留 count)
                     self._quarantine.pop((account_id, model), None)
+                    self._quarantine_probe.pop((account_id, model), None)
                     return False
                 return True
         s = self._state.get(account_id)
@@ -121,8 +132,21 @@ class CooldownManager:
             return False
         return True
 
-    def cooldown_remaining(self, account_id: int) -> float:
-        """剩余冷却秒数 (0 表示不在冷却)."""
+    def cooldown_remaining(self, account_id: int, model: Optional[str] = None) -> float:
+        """剩余冷却秒数 (0 表示不在冷却).
+
+        V6.15: model 给定时先查桶隔离 (语义对齐 is_in_cooldown) — 路由候选
+        过滤告警需要报桶级剩余秒数, 账号级 cooldown_remaining 会报 0 误导.
+        """
+        if model:
+            until = self._quarantine.get((account_id, model))
+            if until is not None:
+                remaining = until - time.time()
+                if remaining <= 0:
+                    self._quarantine.pop((account_id, model), None)
+                    self._quarantine_probe.pop((account_id, model), None)
+                    return 0.0
+                return remaining
         s = self._state.get(account_id)
         if not s or s.get("cooldown_until") is None:
             return 0.0
@@ -265,10 +289,18 @@ class CooldownManager:
                 ):
                     self._quarantine[(account_id, model)] = now + cooldown_secs
                     s["last_error_model"] = model
+                    # V6.15: 安排恢复探测节拍 — GET /models 探不到配额恢复,
+                    # 由 quota_recovery_probe 发 1-token 真聊天感知 (上游窗口
+                    # 重置 / 用户后台手动重置都靠它提前放行)
+                    self._quarantine_probe[(account_id, model)] = {
+                        "next_probe_at": now + self.quota_probe_initial_seconds,
+                        "attempts": 0,
+                    }
                     logger.warning(
                         f"CooldownManager: account_id={account_id} model={model} "
                         f"配额桶隔离冷却 {cooldown_secs:.0f}s "
-                        f"(不封账号, 兄弟模型桶可继续路由)"
+                        f"(不封账号, 兄弟模型桶可继续路由; "
+                        f"恢复探测首探 {self.quota_probe_initial_seconds}s 后)"
                     )
                     # 桶级失败不安排账号级探活 (探活 GET /models 无桶语义;
                     # needs_human 升级后本就清除 next_probe_at)
@@ -479,6 +511,59 @@ class CooldownManager:
             if self.is_due_for_probe(aid, now)
         ]
 
+    def quota_buckets_due_for_probe(self, now: Optional[float] = None) -> list[tuple[int, str]]:
+        """V6.15: 列出该做恢复探测的配额桶 (account_id, model).
+
+        范围: 仍在隔离中 (now < until) 且到探测点 (next_probe_at <= now) 的桶;
+        桶已到期的不探 (路由过滤自然复检, 省一次上游调用)。
+        needs_human / manual_disabled 账号不探 (与 accounts_due_for_probe 同原则:
+        前者等人工, 后者已被路由层排除)。
+        """
+        if now is None:
+            now = time.time()
+        due: list[tuple[int, str]] = []
+        for (aid, model), until in self._quarantine.items():
+            if now >= until:
+                continue
+            st = self._quarantine_probe.get((aid, model))
+            if not st or st.get("next_probe_at", 0) > now:
+                continue
+            s = self._state.get(aid)
+            if s and (s.get("needs_human") or s.get("manual_disabled_at") is not None):
+                continue
+            due.append((aid, model))
+        return due
+
+    def quota_probe_result(self, account_id: int, model: str, success: bool) -> None:
+        """V6.15: 配额桶恢复探测结果回写.
+
+        成功 → mark_success 清桶隔离 + 复位账号失败计数 (渠道即刻回到路由池);
+        失败 → 只推探测节拍 (指数退避), 不动 count/needs_human/cooldown —
+        探测是观察不是路由失败, 自愈型配额账号不该被探测推进 needs_human
+        (needs_human 后本方法所在的探测循环也会停, 桶只能干等 until)。
+        """
+        if success:
+            self._quarantine_probe.pop((account_id, model), None)
+            self.mark_success(account_id, model=model)
+            logger.info(
+                f"CooldownManager: account_id={account_id} model={model} "
+                f"恢复探测 200 → 清桶隔离, 回到路由池"
+            )
+            return
+        st = self._quarantine_probe.get((account_id, model))
+        if not st:
+            return
+        st["attempts"] = st.get("attempts", 0) + 1
+        backoff = min(
+            self.quota_probe_max_seconds,
+            self.quota_probe_initial_seconds * (2 ** (st["attempts"] - 1)),
+        )
+        st["next_probe_at"] = time.time() + backoff
+        logger.info(
+            f"CooldownManager: account_id={account_id} model={model} "
+            f"恢复探测未恢复 (桶仍隔离), 下次探测 {backoff:.0f}s 后"
+        )
+
     # ============ 维护 ============
 
     def cleanup(self) -> int:
@@ -526,6 +611,10 @@ class CooldownManager:
         expired_q = [k for k, until in self._quarantine.items() if now >= until]
         for k in expired_q:
             self._quarantine.pop(k, None)
+        # V6.15: 探测节拍记录跟随桶隔离 — 桶已不存在 (到期/被成功清掉) 的节拍无意义
+        orphan_qp = [k for k in self._quarantine_probe if k not in self._quarantine]
+        for k in orphan_qp:
+            self._quarantine_probe.pop(k, None)
         return len(expired) + len(expired_q)
 
     def snapshot(self) -> dict[int, dict]:
@@ -583,6 +672,10 @@ def _build_cooldown_manager():
                 "model_unsupported": getattr(settings, 'needs_human_model_threshold', 2),
             },
             max_probe_backoff_seconds=getattr(settings, 'health_probe_max_backoff', 3600),
+            quota_probe_initial_seconds=getattr(
+                settings, 'quota_recovery_probe_initial_seconds', 300),
+            quota_probe_max_seconds=getattr(
+                settings, 'quota_recovery_probe_max_seconds', 1800),
         )
     except Exception:
         return CooldownManager()

@@ -232,6 +232,19 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # V6.15 (2026-09-28): 配额桶恢复探测 — quota_exhausted 隔离桶发 1-token 真聊天,
+    # 感知上游窗口重置 / 用户后台手动重置 (GET /models 探活零 token 感知不到)。
+    # 调度间隔同探活; 实际节拍由 cooldown_manager._quarantine_probe 控制
+    # (首探 300s, 指数退避至 1800s), 无隔离桶时本 job 零开销。
+    from intelligence.channel_health import quota_recovery_probe_task
+    scheduler.add_job(
+        quota_recovery_probe_task,
+        trigger=IntervalTrigger(seconds=settings.health_probe_interval),
+        id="quota_recovery_probe",
+        name="配额桶恢复探测 (感知上游重置)",
+        replace_existing=True,
+    )
+
     # V4.9: cooldown_manager.cleanup() 周期化 (调研发现从未被自动调过)
     scheduler.add_job(
         cooldown_cleanup_task,

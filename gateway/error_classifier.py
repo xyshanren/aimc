@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
@@ -81,6 +82,23 @@ _RATE_LIMIT_HINT = re.compile(
     re.IGNORECASE,
 )
 
+# V6.15 (2026-09-28): quota_exhausted 消息里的上游重置时间感知
+# 生产实证: GLM coding plan 1308 "已达到 5 小时的使用上限。您的限额将在
+# 2026-09-28 16:44:16 重置。" — 固定 3600s 冷却会在上游重置后继续空窗
+# (16:44 重置但 AIMC 冷到 ~17:12)。解析到绝对重置时间 → 冷却到重置点+缓冲。
+# 只认绝对 datetime (相对表述 "5小时后" 歧义大不解析); 须同时出现重置语义词,
+# 防止配额消息里无关时间戳误伤。
+_RESET_KEYWORD_RE = re.compile(r"(重置|恢复|刷新|reset)", re.IGNORECASE)
+_RESET_DATETIME_RE = re.compile(
+    r"(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?"
+)
+# 重置点缓冲: 贴着边界放行容易撞上上游状态未翻转, 多等 30s
+_RESET_BUFFER_SECONDS = 30
+# 解析下限/上限: 重置点已过 (时钟偏差) → 最小 60s 让路由自然复检;
+# 异常远期时间 (如解析到年份错误) 封顶 7 天, 防止把桶永久封死
+_RESET_MIN_SECONDS = 60
+_RESET_MAX_SECONDS = 7 * 86400
+
 _ERR_MSG_MAX = 500
 
 
@@ -89,6 +107,30 @@ def _truncate(s: Optional[str], n: int = _ERR_MSG_MAX) -> str:
         return ""
     s = s.strip()
     return s[:n] if len(s) > n else s
+
+
+def _quota_reset_cooldown_seconds(msg: str, default_seconds: int) -> int:
+    """V6.15: 从 quota_exhausted 消息解析上游重置时间 → 冷却到重置点 (+缓冲).
+
+    生产实证 (2026-09-28): glm_01 "已达到 5 小时的使用上限。您的限额将在
+    2026-09-28 16:44:16 重置。" 固定 3600s 冷却在 16:44 重置后仍空窗 28 分钟。
+    解析不到 / 无重置语义词 / 时间非法 → 原默认值 (行为不变)。
+    """
+    if not msg or not _RESET_KEYWORD_RE.search(msg):
+        return default_seconds
+    m = _RESET_DATETIME_RE.search(msg)
+    if not m:
+        return default_seconds
+    try:
+        y, mo, d, h, mi = (int(m.group(i)) for i in range(1, 6))
+        sec = int(m.group(6)) if m.group(6) else 0
+        reset_dt = datetime(y, mo, d, h, mi, sec)
+    except ValueError:
+        return default_seconds
+    delta = (reset_dt - datetime.now()).total_seconds() + _RESET_BUFFER_SECONDS
+    if delta < _RESET_MIN_SECONDS:
+        return _RESET_MIN_SECONDS
+    return min(int(delta), _RESET_MAX_SECONDS)
 
 
 def _extract_code_and_msg(response_body: Optional[str]) -> tuple[Optional[str], str, Optional[str]]:
@@ -191,7 +233,7 @@ def classify(
                 error_code=code,
                 error_msg=msg,
                 needs_human=True,
-                suggested_cooldown_seconds=3600,
+                suggested_cooldown_seconds=_quota_reset_cooldown_seconds(msg, 3600),
                 suggested_probe_after_seconds=1800,
             )
         if code == "insufficient_quota" or "quota" in code.lower() and "exceed" in code.lower():
@@ -200,7 +242,7 @@ def classify(
                 error_code=code,
                 error_msg=msg,
                 needs_human=True,
-                suggested_cooldown_seconds=3600,
+                suggested_cooldown_seconds=_quota_reset_cooldown_seconds(msg, 3600),
                 suggested_probe_after_seconds=1800,
             )
         if code in ("invalid_api_key", "unauthorized", "forbidden", "authentication_failed"):
@@ -244,7 +286,7 @@ def classify(
                 error_code=code,
                 error_msg=msg,
                 needs_human=True,
-                suggested_cooldown_seconds=3600,
+                suggested_cooldown_seconds=_quota_reset_cooldown_seconds(msg, 3600),
                 suggested_probe_after_seconds=1800,
             )
         if _AUTH_KEYWORDS.search(msg):

@@ -146,6 +146,15 @@ class Settings(BaseSettings):
     # V4.9.1 防护 #3: account_health_log 保留天数 (防表无限增长)
     account_health_log_retention_days: int = 7         # env: AIMC_ACCOUNT_HEALTH_LOG_RETENTION_DAYS
 
+    # === V6.15 (2026-09-28): 配额桶恢复探测 (quota_exhausted 感知上游重置) ===
+    # 背景: 探活 GET /models 零 token, 感知不到配额恢复 — 生产实证 glm_01 5h 池
+    # 上游 16:44 重置, 固定 1h 冷却空窗 28 分钟; 用户后台手动重置更无法感知。
+    # 本探测对隔离中的 (account, model) 桶发 1-token 真聊天, 200 即清桶隔离。
+    # 消息级探测有成本 (modelscope 免费次数用完为止), 节拍从 initial 起指数退避。
+    quota_recovery_probe_enabled: bool = True          # env: AIMC_QUOTA_RECOVERY_PROBE_ENABLED (总开关)
+    quota_recovery_probe_initial_seconds: int = 300    # env: AIMC_QUOTA_RECOVERY_PROBE_INITIAL (首次探测延迟, 秒)
+    quota_recovery_probe_max_seconds: int = 1800       # env: AIMC_QUOTA_RECOVERY_PROBE_MAX (退避上限, 秒)
+
     # === V6.6.x (2026-09-16): 路由体量准入 ===
     # 渠道名 -> 单请求估算输入 token 的适配窗上/下界。窗口外的候选在频限+配额过滤
     # 之后剔除; 全部候选都在窗外则保留原候选 (宁试一次也不 503)。

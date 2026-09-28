@@ -749,22 +749,39 @@ class RouteEngine:
             logger.warning(f"无可用渠道支持模型: {model}")
             return None
 
-        # 2. 频限过滤
+        # 2. 冷却/频限过滤
         from gateway.limiter import rate_limiter
         from gateway.cooldown import cooldown_manager
         # V4.6.1: 同时过滤 cooldown (单次失败就冷却, 避免反复撞死 key)
         # V6.10: 带 model 查询 — 上游按模型拆分配额桶 (taotoken deepseek_for_coding /
         # glm_for_coding) 时, 桶级隔离只挡本桶; 账号级冷却仍整账号生效。
-        candidates = [
-            (ch, price) for ch, price in candidates
-            if not cooldown_manager.is_in_cooldown(
-                ch["account_id"], ch.get("_channel_model") or model)
-            and not rate_limiter.is_limited(ch["account_id"], ch["quotas"])
-        ]
+        # V6.15: 分开收集过滤原因 — 原「所有渠道频限已满」把冷却误报成频限
+        # (rate_limiter 的 record 端全项目零调用, is_limited 恒 False, 实际
+        # 过滤候选的只有 cooldown), 生产排查 glm_01 配额冷却时被文案带偏。
+        _kept: list = []
+        _dropped: list[str] = []
+        for ch, price in candidates:
+            _bucket_model = ch.get("_channel_model") or model
+            if cooldown_manager.is_in_cooldown(ch["account_id"], _bucket_model):
+                _remaining = cooldown_manager.cooldown_remaining(
+                    ch["account_id"], _bucket_model)
+                _dropped.append(
+                    f"{ch['name']}/{ch.get('account_name') or ch['account_id']}"
+                    f"=冷却中{_remaining:.0f}s"
+                )
+            elif rate_limiter.is_limited(ch["account_id"], ch["quotas"]):
+                _dropped.append(
+                    f"{ch['name']}/{ch.get('account_name') or ch['account_id']}=频限"
+                )
+            else:
+                _kept.append((ch, price))
+        candidates = _kept
 
         if not candidates:
             # 无候选时回 fallback; 再用 _is_channel_usable 检查一次 (含 cooldown)
-            logger.warning(f"所有渠道频限已满: {model}")
+            logger.warning(
+                f"所有渠道候选被冷却/频限过滤: {model} ({'; '.join(_dropped)})"
+            )
             return None
 
         # 3. 配额过滤

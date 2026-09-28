@@ -158,6 +158,203 @@ def _probe_error_info(r: dict) -> ErrorInfo:
     )
 
 
+# ============================ V6.15: 配额桶恢复探测 ============================
+# 背景 (2026-09-28 生产实证): glm_01 5h 池上游 16:44 重置, quota_exhausted 固定
+# 1h 冷却空窗 28 分钟; 用户在官方后台手动重置时 AIMC 只能干等冷却走完。
+# GET /models 探活零 token, 上游配额耗尽时照样 200 — 感知不到恢复。
+# 这里对隔离中的 (account, model) 桶发 1-token 真聊天: 200 = 配额已恢复 → 清桶隔离。
+# 节拍由 cooldown_manager._quarantine_probe 管理 (首探 300s, 指数退避至 1800s),
+# 有成本 (modelscope 免费次数用完为止), 所以只探 quota 桶、绝不高频。
+
+
+async def _chat_probe_one(account_id: int, base_url: str, api_key: Optional[str],
+                          upstream_model: str) -> dict:
+    """单桶恢复探测: 最小聊天请求, 200 即视为配额恢复"""
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload = {
+        "model": upstream_model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+        "stream": False,
+    }
+    start = time.monotonic()
+    client = _get_probe_client()
+    try:
+        # 单请求超时覆盖 client 默认 (health_probe_timeout=5s): 思考型上游出
+        # 1 个 token 也可能 >5s, 探测超时会被误判成"未恢复"白退避一轮
+        r = await client.post(url, headers=headers, json=payload, timeout=15.0)
+        latency_ms = int((time.monotonic() - start) * 1000)
+        response_text = r.text[:500] if hasattr(r, "text") else ""
+        info = classify(r.status_code, response_text, None)
+        return {
+            "account_id": account_id,
+            "success": r.status_code == 200,
+            "status_code": r.status_code,
+            "latency_ms": latency_ms,
+            "error_type": info.category.value,
+            "error_code": info.error_code,
+            "error_msg": info.error_msg[:200],
+        }
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+        latency_ms = int((time.monotonic() - start) * 1000)
+        info = classify(0, None, e)
+        return {
+            "account_id": account_id,
+            "success": False,
+            "status_code": None,
+            "latency_ms": latency_ms,
+            "error_type": info.category.value,
+            "error_code": None,
+            "error_msg": str(e)[:200],
+        }
+    except Exception as e:
+        latency_ms = int((time.monotonic() - start) * 1000)
+        return {
+            "account_id": account_id,
+            "success": False,
+            "status_code": None,
+            "latency_ms": latency_ms,
+            "error_type": "unknown",
+            "error_code": None,
+            "error_msg": str(e)[:200],
+        }
+
+
+async def quota_recovery_probe() -> int:
+    """V6.15 主入口: 探测隔离中的配额桶是否已恢复, 返回恢复 (清桶) 数.
+
+    成功 → cooldown_manager.quota_probe_result(success=True) → mark_success
+    清桶隔离, 渠道即刻回到路由池; 失败 → 只推探测节拍, 不动 count/needs_human。
+    上游模型名从 price_snapshots.raw_model_id 解析 (规范名兜底)。
+    """
+    if not getattr(settings, 'quota_recovery_probe_enabled', True):
+        return 0
+
+    due = cooldown_manager.quota_buckets_due_for_probe()
+    if not due:
+        return 0
+
+    account_ids = sorted({aid for aid, _m in due})
+    async with async_session_factory() as session:
+        accounts = list((await session.execute(
+            select(Account).where(Account.id.in_(account_ids))
+        )).scalars().all())
+        acc_by_id = {acc.id: acc for acc in accounts}
+        channel_ids = sorted({acc.channel_id for acc in accounts})
+        ch_by_id: dict = {}
+        if channel_ids:
+            ch_by_id = {c.id: c for c in (await session.execute(
+                select(Channel).where(Channel.id.in_(channel_ids))
+            )).scalars().all()}
+        # (channel_id, canonical_model) → 上游 raw 模型名 (探测 body 用上游认识的名字)
+        raw_map: dict[tuple[int, str], str] = {}
+        model_names = sorted({m for _a, m in due})
+        if channel_ids and model_names:
+            from db.models import PriceSnapshot
+            rows = list((await session.execute(
+                select(PriceSnapshot).where(
+                    PriceSnapshot.channel_id.in_(channel_ids),
+                    PriceSnapshot.model.in_(model_names),
+                )
+            )).scalars().all())
+            for ps in sorted(rows, key=lambda x: x.id):
+                key = (ps.channel_id, ps.model)
+                if ps.raw_model_id:
+                    raw_map[key] = ps.raw_model_id
+                elif key not in raw_map:
+                    raw_map[key] = ps.model
+
+    from security.crypto import try_decrypt
+    targets = []
+    for aid, model in due:
+        acc = acc_by_id.get(aid)
+        ch = ch_by_id.get(acc.channel_id) if acc else None
+        if acc is None or ch is None:
+            continue
+        base_url = (ch.api_base or ch.base_url or "").strip()
+        if not base_url:
+            continue
+        api_key = None
+        if acc.api_key_ciphertext:
+            try:
+                api_key = try_decrypt(acc.api_key_ciphertext, settings.aimc_master_key)
+            except Exception as e:
+                logger.debug(f"配额恢复探测: account #{aid} key 解密失败: {e}")
+        if not api_key:
+            api_key = acc.api_key or None  # legacy 明文行兜底
+        upstream_model = raw_map.get((ch.id, model), model)
+        targets.append((aid, model, base_url, api_key, upstream_model))
+
+    if not targets:
+        return 0
+
+    sem = _get_sem()
+
+    async def _probe_with_sem(aid, model, base, key, upstream):
+        async with sem:
+            return aid, model, await _chat_probe_one(aid, base, key, upstream)
+
+    total_timeout = getattr(settings, 'health_probe_total_timeout', 60.0)
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                *[_probe_with_sem(*t) for t in targets],
+                return_exceptions=True,
+            ),
+            timeout=total_timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"quota_recovery_probe: 超时 ({total_timeout}s), 取消剩余 task")
+        results = [
+            (aid, model, {
+                "account_id": aid, "success": False, "status_code": None,
+                "latency_ms": int(total_timeout * 1000),
+                "error_type": "network_transient", "error_code": None,
+                "error_msg": f"job timeout ({total_timeout}s)",
+            })
+            for aid, model, *_rest in targets
+        ]
+
+    recovered = 0
+    logs = []
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning(f"配额恢复探测 task 异常: {r}")
+            continue
+        aid, model, probe = r
+        logs.append((aid, probe))
+        if probe["success"]:
+            recovered += 1
+        cooldown_manager.quota_probe_result(aid, model, success=probe["success"])
+
+    if logs:
+        async with async_session_factory() as session:
+            for aid, probe in logs:
+                session.add(AccountHealthLog(
+                    account_id=aid,
+                    triggered_by="quota_recovery",
+                    success=1 if probe["success"] else 0,
+                    status_code=probe.get("status_code"),
+                    error_type=probe.get("error_type"),
+                    error_msg=probe.get("error_msg"),
+                    latency_ms=probe.get("latency_ms"),
+                ))
+            await session.commit()
+        logger.info(
+            f"quota_recovery_probe: {recovered} recovered / "
+            f"{len(logs) - recovered} still quarantined (of {len(logs)})"
+        )
+    return recovered
+
+
+async def quota_recovery_probe_task() -> int:
+    """V6.15 模块级 task wrapper (供 APScheduler 注册, 不能用 lambda)"""
+    return await quota_recovery_probe()
+
+
 async def channel_health_probe() -> int:
     """主入口: 探活所有到期的 account_id
 
