@@ -9,6 +9,13 @@
   (如 V4-Flash 挂了 Kimi 的价、Ling-flash 挂了 Ling-mini 的价、
   MiniMax-M2.5 输出价 1.2 实为 8.4 等), 并补齐 GLM-5.3 / V3.1-Terminus /
   MiniMax-M2.5 / Nex-N2-Pro / Step-3.5-Flash / Ling-mini 等 NULL 行
+- 2026-10-01 对照官方 pricing 页截图 (用户提供) 再次核价: 9/9 解析仍有多处
+  错价 (R1 挂 V3 价 2/8 实为 4/16、V3 标免费实为 2/8、V3.2 输出 6 实为 8、
+  GLM-4-9B 标 4.13 实为免费、GLM-4-32B 1.89 实为 1.5、GLM-4.5-Air/4.5V
+  输出 6 实为 4、Qwen3-32B 1/4 实为 0.5/2、Coder-30B/VL-30B 串价、
+  Reranker-4B 0.07 实为 0.14、R1-0528-Qwen3-8B 标 0.14 实为免费),
+  并新增 SF_CACHE_PRICES 精确 cache 价 (官方页有专门缓存价格列,
+  各模型比例不一, 0.1 系数估算废弃)
 - cache 命中价 SF 网页/API 不提供, 用 input × 0.1 估算 (SF 公开 cache 约 10% off)
   - 免费 model (input=0) cache 也 0
 
@@ -59,24 +66,24 @@ SF_PRICES = {
     'Pro/BAAI/bge-m3': (0.07, 0.07),
     'Pro/BAAI/bge-reranker-v2-m3': (0.07, 0),
     'Pro/MiniMaxAI/MiniMax-M2.5': (2.1, 8.4),
-    'Pro/deepseek-ai/DeepSeek-R1': (2, 8),
+    'Pro/deepseek-ai/DeepSeek-R1': (4, 16),
     'Pro/deepseek-ai/DeepSeek-V3.1-Terminus': (4, 12),
     'Qwen/Qwen2.5-14B-Instruct': (0.7, 0.7),
     'Qwen/Qwen2.5-32B-Instruct': (1.26, 1.26),
     'Qwen/Qwen2.5-72B-Instruct-128K': (4.13, 4.13),
     'Qwen/Qwen2.5-7B-Instruct': (0, 0),
     'Qwen/Qwen3-14B': (0.5, 2),
-    'Qwen/Qwen3-32B': (1, 4),
+    'Qwen/Qwen3-32B': (0.5, 2),
     'Qwen/Qwen3-8B': (0, 0),
-    'Qwen/Qwen3-Coder-30B-A3B-Instruct': (1, 6),
+    'Qwen/Qwen3-Coder-30B-A3B-Instruct': (0.7, 2.8),
     'Qwen/Qwen3-Embedding-0.6B': (0.07, 0),
     'Qwen/Qwen3-Embedding-4B': (0.14, 0),
     'Qwen/Qwen3-Embedding-8B': (0.28, 0),
     'Qwen/Qwen3-Omni-30B-A3B-Captioner': (0.7, 2.8),
     'Qwen/Qwen3-Omni-30B-A3B-Thinking': (0.7, 2.8),
     'Qwen/Qwen3-Reranker-0.6B': (0.07, 0),
-    'Qwen/Qwen3-Reranker-4B': (0.07, 0),
-    'Qwen/Qwen3-VL-30B-A3B-Instruct': (0.5, 5),
+    'Qwen/Qwen3-Reranker-4B': (0.14, 0),
+    'Qwen/Qwen3-VL-30B-A3B-Instruct': (0.7, 2.8),
     'Qwen/Qwen3-VL-30B-A3B-Thinking': (0.7, 2.8),
     'Qwen/Qwen3-VL-32B-Instruct': (1, 4),
     'Qwen/Qwen3-VL-32B-Thinking': (1, 10),
@@ -93,15 +100,15 @@ SF_PRICES = {
     'Qwen/Qwen3.5-4B': (0, 0),
     'Qwen/Qwen3.6-27B': (3, 18),
     'Qwen/Qwen3.6-35B-A3B': (1.8, 10.8),
-    'THUDM/GLM-4-32B-0414': (1.89, 1.89),
-    'THUDM/GLM-4-9B-0414': (4.13, 4.13),
+    'THUDM/GLM-4-32B-0414': (1.5, 1.5),
+    'THUDM/GLM-4-9B-0414': (0, 0),
     'THUDM/GLM-Z1-9B-0414': (0, 0),
     'baidu/ERNIE-Image-Turbo': (None, None),
     'deepseek-ai/DeepSeek-OCR': (0, 0),
-    'deepseek-ai/DeepSeek-R1': (2, 8),
-    'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B': (0.14, 0),
-    'deepseek-ai/DeepSeek-V3': (0, 0),
-    'deepseek-ai/DeepSeek-V3.2': (4, 6),
+    'deepseek-ai/DeepSeek-R1': (4, 16),
+    'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B': (0, 0),
+    'deepseek-ai/DeepSeek-V3': (2, 8),
+    'deepseek-ai/DeepSeek-V3.2': (4, 8),
     'deepseek-ai/DeepSeek-V3.1-Terminus': (4, 12),
     'deepseek-ai/DeepSeek-V4-Flash': (3, 9),
     'deepseek-ai/DeepSeek-V4-Pro': (12, 24),
@@ -116,14 +123,43 @@ SF_PRICES = {
     # 按张计费的图像模型, token 价不适用 -> 清 NULL
     'Tongyi-MAI/Z-Image': (None, None),
     'MiniMaxAI/MiniMax-M2.5': (2.1, 8.4),
-    'zai-org/GLM-4.5-Air': (1, 6),
-    'zai-org/GLM-4.5V': (1, 6),
+    'zai-org/GLM-4.5-Air': (1, 4),
+    'zai-org/GLM-4.5V': (1, 4),
     'zai-org/GLM-5.2': (8, 28),
     'zai-org/GLM-5.3': (8, 28),
 }
 
-# cache 价估算比例 (SF cache 命中约 10% off, 免费 model 保持 0)
+# cache 价估算比例 (官方页未明示 cache 价的行回退用; 2026-10-01 起官方
+# pricing 页已有专门缓存价格列, 各模型比例不一 — 见 SF_CACHE_PRICES)
 CACHE_RATIO = 0.1
+
+# 官方 pricing 页明示的 cache 价 (元/百万 tokens, 2026-10-01 截图实证)
+# 各模型折扣比例不一 (V4-Flash 5%、R1 10%、GLM-5.3 25%、Kimi ≈5.8%),
+# 命中本表的行不再用 CACHE_RATIO 估算
+SF_CACHE_PRICES = {
+    'zai-org/GLM-5.1-Pro': 2.0,
+    'zai-org/GLM-5.2': 2.0,
+    'zai-org/GLM-5.3': 2.0,
+    'deepseek-ai/DeepSeek-V3': 0.2,
+    'deepseek-ai/DeepSeek-V3.2': 0.4,
+    'deepseek-ai/DeepSeek-V3.1-Terminus': 0.4,
+    'Pro/deepseek-ai/DeepSeek-V3.1-Terminus': 0.4,
+    'deepseek-ai/DeepSeek-R1': 0.4,
+    'Pro/deepseek-ai/DeepSeek-R1': 0.4,
+    'deepseek-ai/DeepSeek-V4-Flash': 0.15,
+    'deepseek-ai/DeepSeek-V4-Pro': 1.2,
+    'meituan-longcat/LongCat-2.0': 0.5,
+    'moonshotai/Kimi-K2.7-Code': 0.38,
+}
+
+
+def find_sf_cache_price(model_raw_id: str, input_price) -> float:
+    """按 raw_id 找官方 cache 价; 未命中回退 input×CACHE_RATIO 估算"""
+    lower = (model_raw_id or "").lower()
+    for key, c in SF_CACHE_PRICES.items():
+        if key.lower() == lower:
+            return c
+    return round(input_price * CACHE_RATIO, 4) if input_price else 0.0
 
 
 def find_sf_prices(model_raw_id: str):
@@ -173,17 +209,15 @@ async def main():
             }:
                 skipped += 1
                 continue
-            cache_price = round(ip * CACHE_RATIO, 4) if ip else 0.0
+            cache_price = find_sf_cache_price(p.raw_model_id or p.model, ip)
             if (p.input_price, p.output_price, p.cached_input_price) == (ip, op, cache_price):
                 skipped += 1
                 continue
             updates.append((p.id, p.model, ip, op, cache_price))
 
         print(f"\n=== 计划更新 {len(updates)} 行 ===")
-        for pid, model, ip, op, cip in updates[:12]:
+        for pid, model, ip, op, cip in updates:
             print(f"  [{pid}] {model[:50]}: input={ip} output={op} cache={cip}")
-        if len(updates) > 12:
-            print(f"  ... 还有 {len(updates) - 12} 行")
         print(f"\n跳过 {skipped} 行 (无匹配价格或已是最新)")
 
         if not args.apply:
