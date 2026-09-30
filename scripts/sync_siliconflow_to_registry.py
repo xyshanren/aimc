@@ -96,6 +96,11 @@ def infer_modality(model_id: str) -> str:
     m = model_id.lower()
     if "ocr" in m or "paddleocr" in m or "deepseek-ocr" in m:
         return "ocr"
+    # embedding/reranker 必须在 vision 之前判定: *-VL-Embedding-* / *-VL-Reranker-*
+    # 属多模态检索族, 若被 vision 关键词 (-vl-) 先截走会误归 vision,
+    # 进而有被注册进 tier:vision 组当 chat 模型路由的风险 (2026-09-30 修复)
+    if "embedding" in m or "reranker" in m or "embed" in m or "-bge" in m:
+        return "embedding"
     # P2-A: 扩展 vision 关键词, 覆盖 glm-4.5v / glm-4v / qwen-v 等命名
     if any(k in m for k in ["-vl-", "-vision-", "vl-", "4.5v", "glm-v", "glm-4v", "qwen-v"]):
         return "vision"
@@ -105,8 +110,6 @@ def infer_modality(model_id: str) -> str:
         return "audio"
     if any(k in m for k in ["wan", "hunyuanvideo"]):
         return "video"
-    if "embedding" in m or "reranker" in m or "embed" in m or "-bge" in m:
-        return "embedding"
     return "text"
 
 def infer_tier(model_id: str) -> str:

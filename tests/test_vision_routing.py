@@ -46,6 +46,22 @@ def test_infer_modality_text_unchanged():
     assert infer_modality("minimax-m2.5") == "text"
 
 
+def test_infer_modality_vl_retrieval_family():
+    """*-VL-Embedding-* / *-VL-Reranker-* 归 embedding 而非 vision
+
+    2026-09-30 修复: embedding/reranker 检查须先于 -vl- 关键词,
+    否则多模态检索模型被误归 vision, 有被注册进 tier:vision 组
+    当 chat 模型路由的风险 (生产库曾误标 qwen3-vl-embedding-8b)。
+    """
+    from scripts.sync_siliconflow_to_registry import infer_modality
+    assert infer_modality("qwen3-vl-embedding-8b") == "embedding"
+    assert infer_modality("qwen3-vl-reranker-8b") == "embedding"
+    assert infer_modality("Qwen/Qwen3-VL-Embedding-8B") == "embedding"
+    # 纯文本 embedding/reranker 不回归
+    assert infer_modality("baai-bge-m3") == "embedding"
+    assert infer_modality("qwen3-reranker-4b") == "embedding"
+
+
 def test_convert_sf_model_id_glm_45v():
     """zai-org/GLM-4.5V → family=glm, model_id=glm-4.5v (去重 family 前缀)"""
     from scripts.sync_siliconflow_to_registry import convert_sf_model_id
@@ -451,6 +467,7 @@ def main():
         ("infer_modality glm-4.5v", test_infer_modality_glm_45v),
         ("infer_modality qwen-vl", test_infer_modality_qwen_vl),
         ("infer_modality text 不变", test_infer_modality_text_unchanged),
+        ("infer_modality VL 检索族归 embedding", test_infer_modality_vl_retrieval_family),
         ("convert_sf_model_id glm-4.5v", test_convert_sf_model_id_glm_45v),
         ("convert_sf_model_id qwen-vl", test_convert_sf_model_id_qwen_vl),
         ("seed registry 有 vision 模型", test_seed_registry_has_vision_models),
