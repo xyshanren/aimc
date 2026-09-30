@@ -139,12 +139,17 @@ def _extract_tokens(data: dict) -> tuple:
 
     embeddings (OpenAI): usage.prompt_tokens / usage.completion_tokens
     rerank (Jina 兼容): usage.total_tokens / tokens / tokens.input_tokens
+    多模态 (VL-Embedding/VL-Reranker): image_tokens 与 input_tokens 分列,
+    合入 input_tokens 计量 —— SF pricing 页对两模型只标单一输入价
+    (0.7 元/M, 2026-10-01 官方页截图实证), image 与文本同价;
+    官方文档未单独定义 image token 单价, 同价合并为近似口径。
     """
     usage = data.get("usage")
     if not isinstance(usage, dict):
         usage = {}
     input_tokens = usage.get("prompt_tokens") or 0
     output_tokens = usage.get("completion_tokens") or 0
+    image_tokens = usage.get("image_tokens") or 0
     if not input_tokens:
         total = usage.get("total_tokens")
         if not isinstance(total, int):
@@ -153,13 +158,19 @@ def _extract_tokens(data: dict) -> tuple:
                 total = t
             elif isinstance(t, dict):
                 total = t.get("input_tokens") or t.get("total_tokens")
+                image_tokens = image_tokens or (t.get("image_tokens") or 0)
         # siliconflow rerank (Jina 兼容): 用量在 meta.tokens.input_tokens
         if not isinstance(total, int):
             meta = data.get("meta")
             if isinstance(meta, dict) and isinstance(meta.get("tokens"), dict):
                 total = meta["tokens"].get("input_tokens") or meta["tokens"].get("total_tokens")
+                image_tokens = image_tokens or (meta["tokens"].get("image_tokens") or 0)
+                if not image_tokens:
+                    billed = meta.get("billed_units")
+                    if isinstance(billed, dict):
+                        image_tokens = billed.get("image_tokens") or 0
         input_tokens = total or 0
-    return int(input_tokens or 0), int(output_tokens or 0)
+    return int((input_tokens or 0) + (image_tokens or 0)), int(output_tokens or 0)
 
 
 def _schedule_sf_usage_log(channel, upstream_name, resp, latency_ms,

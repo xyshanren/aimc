@@ -82,14 +82,15 @@ SF_PRICES = {
     'Qwen/Qwen3-VL-32B-Thinking': (1, 10),
     'Qwen/Qwen3-VL-8B-Instruct': (0.5, 2),
     'Qwen/Qwen3-VL-Embedding-8B': (0.7, 0),
-    # 官方页未见独立 token 价 (疑串价), 清 NULL 回 999 兜底
-    'Qwen/Qwen3-VL-Reranker-8B': (None, None),
+    # 官方 pricing 页实证 0.70 (2026-10-01 截图, 与 VL-Embedding 同价;
+    # 9/9 "疑串价" 怀疑撤销, 生产价行 8/14 api:siliconflow 同值互证)
+    'Qwen/Qwen3-VL-Reranker-8B': (0.7, 0),
     'Qwen/Qwen3.5-122B-A10B': (0.8, 6.4),
     'Qwen/Qwen3.5-27B': (0.6, 4.8),
     'Qwen/Qwen3.5-35B-A3B': (0.4, 3.2),
     'Qwen/Qwen3.5-397B-A17B': (1.2, 7.2),
-    # 旧值 1.6/12.8 未经官方页核实, 清 NULL 回 999 兜底
-    'Qwen/Qwen3.5-4B': (None, None),
+    # 旧值 1.6/12.8 未经核实已清; 2026-10-01 官方 pricing 页截图实证免费
+    'Qwen/Qwen3.5-4B': (0, 0),
     'Qwen/Qwen3.6-27B': (3, 18),
     'Qwen/Qwen3.6-35B-A3B': (1.8, 10.8),
     'THUDM/GLM-4-32B-0414': (1.89, 1.89),
