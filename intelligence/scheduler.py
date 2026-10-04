@@ -11,7 +11,7 @@
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -31,8 +31,21 @@ logger = logging.getLogger(__name__)
 _inflight_tasks: set[asyncio.Task] = set()
 
 
+def _jobstore_url(db_path: Path) -> str:
+    """V6.16: jobstore 用独立 sqlite 文件 (data/scheduler_jobs.db), 与业务库解耦.
+
+    历史上与业务库同文件 (aimc.db), 业务写锁持有 >5s 会把 wakeup 回调里的
+    jobstore.update_job 炸成 database is locked —— 异常发生在 asyncio 回调中,
+    下一次唤醒不再重排 → 全部定时任务静默停摆且无自愈 (2026-10-01 生产事故,
+    探活/采集/告警/retention 全停 3.7 天, 路由请求驱动故表面无恙)。
+    独立文件后 jobstore 只与自身读写竞争, 业务锁再也够不到它。
+    """
+    jobs_db = db_path.parent / "scheduler_jobs.db"
+    return f"sqlite:///{jobs_db.as_posix()}"
+
+
 def _build_scheduler() -> AsyncIOScheduler:
-    """构建 scheduler（Phase 2C-2: 用 SQLAlchemyJobStore 持久化 jobs）
+    """构建 scheduler (Phase 2C-2: 用 SQLAlchemyJobStore 持久化 jobs)
 
     重要：用 `url=` 而不是 `engine=`，因为：
     - `url=` 时 SQLAlchemyJobStore 自动建表 + 自动 commit
@@ -41,14 +54,17 @@ def _build_scheduler() -> AsyncIOScheduler:
     from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
     # 从 settings.db_path 推导 sync sqlite URL
-    # settings.db_path = './data/aimc.db' → sqlite:///./data/aimc.db
+    # settings.db_path = './data/aimc.db' → sqlite:///./data/scheduler_jobs.db
+    # (V6.16 起独立文件, 见 _jobstore_url)
     db_path = Path(settings.db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    sync_db_url = f"sqlite:///{db_path.as_posix()}"
+    sync_db_url = _jobstore_url(db_path)
 
     jobstore = SQLAlchemyJobStore(
         url=sync_db_url,
         tablename="apscheduler_jobs",
+        # pysqlite 默认 busy timeout 仅 5s — 兜底偶发锁等待, 拉长到 30s
+        engine_options={"connect_args": {"timeout": 30}},
     )
 
     scheduler = AsyncIOScheduler(jobstores={"default": jobstore})
@@ -66,6 +82,9 @@ def _build_scheduler() -> AsyncIOScheduler:
 
 # 模块级 scheduler 单例（持久化模式）
 scheduler = _build_scheduler()
+
+# V6.16: wakeup 断链 watchdog task 句柄 (stop_scheduler 时取消)
+_watchdog_task: Optional[asyncio.Task] = None
 
 
 def _prune_stale_crawl_jobs(scheduler_obj, current_job_ids: set) -> int:
@@ -88,6 +107,74 @@ def _prune_stale_crawl_jobs(scheduler_obj, current_job_ids: set) -> int:
             except Exception as e:
                 logger.warning(f"清理残留采集 job 失败: {job.id} ({e})")
     return removed
+
+
+async def scheduler_watchdog_task(
+    sched=None,
+    *,
+    interval_s: float = 300,
+    max_lag_s: float = 600,
+    alert_fn=None,
+) -> None:
+    """V6.16: wakeup 断链自愈 watchdog — 独立 asyncio task, 不依赖 APScheduler 自身.
+
+    背景 (2026-10-01 生产事故): jobstore 锁异常在 AsyncIOScheduler.wakeup 回调里
+    抛出时, _process_jobs 中断, 下一次唤醒不再重排 → 所有定时任务静默停摆
+    (探活/采集/告警/retention 全停 3.7 天无人察觉; 路由是请求驱动的所以表面无恙)。
+
+    机制: 正常情况下 job.next_run_time 恒在未来 (到期即被处理并顺延); 滞后超过
+    max_lag_s 说明调度链已断。此时主动调 wakeup() 重新上弦 (幂等: 停旧计时器 →
+    处理到期 job → 重排), 并经 send_alert 告警 (key 节流防刷屏), 恢复后自动复位。
+
+    Args:
+        sched: 目标调度器, None = 模块级单例 (测试注入替身)
+        interval_s: 巡检间隔
+        max_lag_s: next_run_time 滞后判定阈值 (须 > misfire_grace_time=300)
+        alert_fn: 告警函数注入点, None = intelligence.alerter.send_alert
+    """
+    if sched is None:
+        sched = scheduler
+    if alert_fn is None:
+        from intelligence.alerter import send_alert as alert_fn
+    alerted = False
+    logger.info(f"[watchdog] 已启动 (interval={interval_s}s, max_lag={max_lag_s}s)")
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            if not sched.running:
+                continue
+            now = datetime.now(tz=sched.timezone)
+            stale = [
+                job for job in sched.get_jobs()
+                if job.next_run_time and job.next_run_time < now - timedelta(seconds=max_lag_s)
+            ]
+        except Exception as e:
+            logger.error(f"[watchdog] job 巡检失败: {e}")
+            continue
+        if not stale:
+            if alerted:
+                logger.info("[watchdog] 调度链已恢复")
+                alerted = False
+            continue
+        logger.warning(
+            f"[watchdog] {len(stale)} 个 job next_run_time 滞后 >{int(max_lag_s)}s, "
+            f"wakeup 链疑似断链, 主动唤醒重排: {[j.id for j in stale][:5]}"
+        )
+        try:
+            sched.wakeup()
+        except Exception as e:
+            logger.error(f"[watchdog] wakeup 重排失败: {e}")
+        if not alerted:
+            alerted = True
+            try:
+                await alert_fn(
+                    f"AIMC 调度器断链自愈: {len(stale)} 个 job next_run_time 滞后"
+                    f">{int(max_lag_s)}s, 已 wakeup 重排",
+                    key="scheduler_watchdog",
+                    silence_seconds=1800,
+                )
+            except Exception as e:
+                logger.error(f"[watchdog] 告警发送失败: {e}")
 
 
 async def start_scheduler():
@@ -349,14 +436,25 @@ async def start_scheduler():
     logger.info("[阶段2] 注册 apscheduler event listener -> 写 job_health")
 
     scheduler.start()
+
+    # V6.16: 断链 watchdog — 独立 asyncio task, 调度链被锁异常打断时自愈+告警
+    global _watchdog_task
+    _watchdog_task = asyncio.create_task(scheduler_watchdog_task(scheduler))
+
     logger.info(
         f"调度器已启动 (持久化模式), 共 {len(sources) + 4} 个定时任务, "
-        f"jobstore={settings.db_path}"
+        f"jobstore={_jobstore_url(Path(settings.db_path)).replace('sqlite:///', '')}"
+        f" (V6.16 独立文件, 与业务库解耦)"
     )
 
 
 async def stop_scheduler():
     """停止调度器"""
+    global _watchdog_task
+    if _watchdog_task is not None:
+        _watchdog_task.cancel()
+        _watchdog_task = None
+        logger.info("watchdog 已停止")
     if scheduler.running:
         scheduler.shutdown(wait=False)
         logger.info("调度器已停止")
