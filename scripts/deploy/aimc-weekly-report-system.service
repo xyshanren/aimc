@@ -1,0 +1,38 @@
+[Unit]
+Description=AIMC 周报聚合 + 生成 + Bark 推送（系统级变体 — /opt/aimc 部署用）
+# 用户级原件: aimc-weekly-report.service (%h/aimc, install.sh 用)
+# 系统级变体: 面向 /opt 部署 (如 aliy-hy), cp 到 /etc/systemd/system/ 后 daemon-reload
+# 不依赖 aimc.service — 周报只读 DB, SQLite WAL 允许与主服务并发
+# 与用户级原件的差异: User=aimc + 绝对路径 + WantedBy=multi-user.target
+
+[Service]
+Type=oneshot
+User=aimc
+Group=aimc
+WorkingDirectory=/opt/aimc
+Environment="PATH=/opt/aimc/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile=/opt/aimc/.env
+
+# 1) 先聚合上周反馈数据 → model_feedback_summary
+#    (V4.8.6 fix: 此步骤此前从未被编排, 表恒为空 → 周报零数据)
+ExecStart=/opt/aimc/.venv/bin/python /opt/aimc/scripts/aggregate_weekly_feedback.py
+# 2) 再生成 Markdown 报告
+ExecStart=/opt/aimc/.venv/bin/python /opt/aimc/scripts/generate_weekly_report.py
+# 3) 生成成功后推送关键结论 (Bark / Feishu / Server 酱)
+ExecStartPost=/opt/aimc/.venv/bin/python /opt/aimc/scripts/publish_report.py
+
+# 资源限制 — 周报是 IO+少量 DB read, 给 2G 余量
+MemoryMax=2G
+LimitNOFILE=65536
+
+# 安全
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/opt/aimc/data /opt/aimc/.venv /opt/aimc/reports
+
+# oneshot 不需要 Restart
+
+[Install]
+WantedBy=multi-user.target

@@ -338,6 +338,23 @@ nano ~/aimc/.env
 
 改完不需要重启主服务（周报是独立 oneshot，下次触发时读新 `.env`）。
 
+### 系统级部署变体（/opt/aimc 等，如 aliy-hy）
+
+生产迁到 `/opt/aimc` + 系统级 systemd（`/etc/systemd/system/aimc.service`）的机器上，用户级单元不适用（用户级 systemd 未初始化、无 linger）。用 `-system` 后缀变体，名称与文件一一对应，直接装系统级：
+
+```bash
+cp /opt/aimc/scripts/deploy/aimc-weekly-report-system.{service,timer} /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now aimc-weekly-report-system.timer
+
+# 手动跑一次验证（顺带补当周报告）
+systemctl start aimc-weekly-report-system.service
+journalctl -u aimc-weekly-report-system.service --no-pager
+ls -la /opt/aimc/reports/
+```
+
+⚠️ 2026-09-18 迁移 aliy-hy 时漏装本单元 → 周报停更两周，10-05 补装。跨机迁移清单必须含周报单元（用户级或系统级二选一）。
+
 ### 卸载周报 timer
 
 ```bash

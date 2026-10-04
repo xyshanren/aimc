@@ -1,0 +1,15 @@
+[Unit]
+Description=AIMC 周报定时器（系统级变体 — 每周一 09:00）
+Requires=aimc-weekly-report-system.service
+
+[Timer]
+# 每周一 09:00 本地时间触发
+OnCalendar=Mon *-*-* 09:00:00
+# 开机错过补跑 (机器周一前宕机，周二恢复时跑一次)
+Persistent=true
+# 防止抖动（机器时钟不准时延迟一点）
+AccuracySec=1min
+Unit=aimc-weekly-report-system.service
+
+[Install]
+WantedBy=timers.target
