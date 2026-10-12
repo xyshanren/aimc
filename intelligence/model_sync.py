@@ -4,12 +4,18 @@
 - confidence >= 0.8 (high)  → 直接 upsert ModelRegistry + 自动加入对应 tier: 组
 - confidence >= 0.6 (medium) → 写 log + 不动 ModelRegistry (等待人工确认)
 - confidence < 0.6 (low)    → 写 log (标黄) + 不入 registry
-- status="deprecated" 且 confidence >= 0.9 → 自动 mark ModelRegistry.status=deprecated
+- status="deprecated" 且 confidence >= 0.9 → 自动出组, 但有渠道供应护栏 (2026-10-12):
+  仍有 active 渠道价行供应的模型不自动出组 (registry 不标 deprecated、组员不软删),
+  降级为 remove_from_group suggestion + pending capability log 待人工确认;
+  无渠道供应才走原全自动路径 (registry deprecated + 组员软删).
 
 安全阀：
 - tier 调整永远走人工确认：写 model_capabilities_log，approved=0，dashboard 批准才置 1
 - capabilities / context_length / modality 变更也走 log，不直接改 ModelRegistry
 - 出组（status=deprecated）只在 raw_data.status="deprecated" 且 confidence >= 0.9 时执行
+- 护栏（2026-10-12, v4-flash 教训）: 9/28 sensenova/taotoken 仍 0 元供应 deepseek-v4-flash,
+  intel_auto 一步软删其 tier:strong/code 组员行, 组员要事后人工恢复 — 现在"渠道仍供应"
+  的 deprecated 模型改走建议中心人工确认
 """
 
 import json
@@ -79,6 +85,63 @@ def should_auto_leave(item: ModelIntelItem) -> bool:
     )
 
 
+async def _guardrail_active_groups(session, model_id: str) -> list[str]:
+    """查模型当前所有活跃组 (护栏用).
+
+    join 两边都是 TEXT group_id (组名), 不要 join model_groups.id (整型).
+    """
+    from sqlalchemy import select as _select
+    from db.models import ModelGroup as _MG, ModelGroupMember as _MGM
+    rows = await session.execute(
+        _select(_MG.group_id)
+        .join(_MGM, _MGM.group_id == _MG.group_id)
+        .where(_MGM.model_id == model_id, _MGM.is_active == 1)
+    )
+    return list(rows.scalars().all())
+
+
+async def _ensure_remove_suggestion(
+    session, model_id: str, groups: list[str], item: ModelIntelItem,
+) -> bool:
+    """幂等创建 remove_from_group suggestion; 已有 pending 时跳过返回 False."""
+    from sqlalchemy import select as _select
+    from db.models import ModelChangeSuggestion as _MCS
+    existing = (
+        await session.execute(
+            _select(_MCS)
+            .where(
+                _MCS.model_id == model_id,
+                _MCS.change_type == "remove_from_group",
+                _MCS.status == "pending",
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return False
+    groups_str = ", ".join(groups) if groups else "(无活跃组)"
+    session.add(_MCS(
+        model_id=model_id,
+        change_type="remove_from_group",
+        suggested_value=groups[0] if groups else None,
+        current_value=groups_str,
+        reason=(
+            f"intel_auto 护栏: AI 判定 deprecated (conf={item.confidence:.2f}) "
+            f"但渠道仍有价行供应, 不自动出组; 活跃组=[{groups_str}]. "
+            "确认要出组请在 dashboard 组管理手动移除后标记本条."
+        ),
+        confidence=item.confidence,
+        based_on=json.dumps({
+            "model": model_id,
+            "rule": "intel_auto_guardrail",
+            "channel_still_supplies": True,
+            "active_groups": list(groups),
+        }, ensure_ascii=False),
+    ))
+    await session.flush()
+    return True
+
+
 async def _find_target_group(session, inferred_tier: str) -> Optional[str]:
     """按 inferred_tier 找一个 tier: 前缀的 group。
 
@@ -124,6 +187,35 @@ async def process_model_item(
     # 之前只在 inner-if 里 return, 如果 existing 已是 deprecated (重复扫) 或
     # registry 没有该 model, 都会 fallthrough 跳到入组判定 → deprecated model 被重新入组.
     if should_auto_leave(item):
+        # 护栏 (2026-10-12): 渠道仍有价行供应的 deprecated 模型不自动出组.
+        # registry 不标 deprecated (仍进路由), 组员不软删; 降级为
+        # remove_from_group suggestion + pending capability log 待人工确认.
+        # v4-flash 教训: 9/28 sensenova/taotoken 仍 0 元供应却被一步踢出 strong/code.
+        if await crud.has_available_channel(session, model_id):
+            await crud.log_capability_change(
+                session,
+                model_id=model_id,
+                field_changed="status",
+                old_value="active",
+                new_value="deprecated (intel 判定, 待人工确认: 渠道仍供应)",
+                source="ai_infer",
+                confidence=item.confidence,
+                approved=0,
+                provider=item.source_provider,
+            )
+            active_groups = await _guardrail_active_groups(session, model_id)
+            await _ensure_remove_suggestion(session, model_id, active_groups, item)
+            logger.info(
+                "intel_auto 护栏: model=%s deprecated+conf=%.2f 但渠道仍供应, "
+                "降级为 suggestion 待人工确认 (不自动出组)",
+                model_id, item.confidence,
+            )
+            return SyncResult(
+                model_id=model_id, action="pending_review",
+                confidence=item.confidence,
+                reason="deprecated+conf>=0.9 但渠道仍有价行供应, 待人工确认",
+            )
+
         existing = await crud.get_model_registry(session, model_id)
         registry_changed = False
         if existing and existing.status != "deprecated":

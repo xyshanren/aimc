@@ -116,9 +116,12 @@ def _install_mock_db():
             "provider": provider,
         })
 
-    # V4.8.6: mock has_available_channel — 测试环境无 DB, 默认返回 True (有可用渠道)
+    # V4.8.6: mock has_available_channel — 默认 True (有可用渠道, 保 auto-join 语义);
+    # 2026-10-12 intel_auto 护栏后, auto_left 测试需在 _state["channel_supply"]
+    # 显式置 False (渠道无供应) 才走原全自动出组路径.
     async def has_available_channel(session, model_id):
-        return True
+        supply = _state.setdefault("channel_supply", {})
+        return supply.get(model_id, True)
 
     # Patch crud
     crud.get_model_registry = get_model_registry
@@ -396,6 +399,8 @@ def test_process_auto_leave():
         "priority": 100, "weight": 1.0, "added_by": "intel_auto",
         "is_active": 1, "removed_at": None, "removed_reason": None, "removed_by": None,
     }
+    # 2026-10-12 护栏: 渠道无供应才走原全自动出组路径
+    state.setdefault("channel_supply", {})["old-model"] = False
 
     # Phase 4 v4.1: model_sync.auto_left 路径中同步调 remove_model_group_members_by_model
     # (之前只在 P1-2 cleanup 脚本里才调). _install_mock_db() 已装全局 mock, 这里只 trace 调用.
@@ -570,6 +575,8 @@ def test_process_auto_leave_already_deprecated_no_fallthrough():
         "tier": "T1", "status": "deprecated", "context_length": 32000,
         "modality": "text",
     }
+    # 2026-10-12 护栏: 渠道无供应才走原全自动出组路径
+    state.setdefault("channel_supply", {})["old-deprecated"] = False
 
     item = ModelIntelItem(
         model_id="old-deprecated", family="qwen", inferred_tier="T1",
@@ -601,6 +608,9 @@ def test_process_auto_leave_registry_absent():
     state = _install_mock_db()
     from intelligence.model_sync import process_model_item
     from schemas.intel import ModelIntelItem
+
+    # 2026-10-12 护栏: 渠道无供应才走原全自动出组路径
+    state.setdefault("channel_supply", {})["never-existed"] = False
 
     item = ModelIntelItem(
         model_id="never-existed", family="qwen", inferred_tier="T1",
