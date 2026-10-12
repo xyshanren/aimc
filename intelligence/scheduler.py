@@ -396,41 +396,48 @@ async def start_scheduler():
         """
         from datetime import datetime as _dt
         import sys as _sys
+        import time as _time
         print(f"[job_health LISTENER] FIRED for {event.job_id}, success={event.exception is None}", file=_sys.stderr, flush=True)
-        try:
-            from db.engine import sync_engine as _sync_engine
-            from sqlalchemy.orm import Session as _SyncSession
-            from db.models import JobHealth as _JobHealth
-            job_id = event.job_id
-            now = _dt.now()
-            success = event.exception is None
-            # 实际事件字段是 scheduled_run_time (不是 scheduled_call_time)
-            duration_ms = None
-            if hasattr(event, "scheduled_run_time") and event.scheduled_run_time:
-                duration_ms = int(event.scheduled_run_time.timestamp() * 1000)
+        from db.engine import sync_engine as _sync_engine
+        from sqlalchemy.orm import Session as _SyncSession
+        from db.models import JobHealth as _JobHealth
+        job_id = event.job_id
+        now = _dt.now()
+        success = event.exception is None
+        # 实际事件字段是 scheduled_run_time (不是 scheduled_call_time)
+        duration_ms = None
+        if hasattr(event, "scheduled_run_time") and event.scheduled_run_time:
+            duration_ms = int(event.scheduled_run_time.timestamp() * 1000)
 
-            with _SyncSession(_sync_engine) as s:
-                jh = s.get(_JobHealth, job_id)
-                if jh is None:
-                    jh = _JobHealth(job_id=job_id, total_runs=0, total_successes=0, total_failures=0)
-                    s.add(jh)
-                jh.last_run_at = now
-                jh.total_runs = (jh.total_runs or 0) + 1
-                if success:
-                    jh.last_success_at = now
-                    jh.last_error_at = None
-                    jh.last_error_msg = None
-                    jh.last_duration_ms = duration_ms
-                    jh.total_successes = (jh.total_successes or 0) + 1
-                else:
-                    jh.last_error_at = now
-                    jh.last_error_msg = str(event.exception)[:500]
-                    jh.total_failures = (jh.total_failures or 0) + 1
-                s.commit()
-            print(f"[job_health] wrote for {job_id}", file=_sys.stderr, flush=True)
-        except Exception as e:
-            print(f"[job_health] 写失败 (非致命): {e}", file=_sys.stderr, flush=True)
-            logger.debug(f"[job_health] 写失败 (非致命): {e}")
+        # busy_timeout=5s 仍不够覆盖 async 侧长写事务, 加 3 次重试 (2s 间隔)
+        for attempt in range(1, 4):
+            try:
+                with _SyncSession(_sync_engine) as s:
+                    jh = s.get(_JobHealth, job_id)
+                    if jh is None:
+                        jh = _JobHealth(job_id=job_id, total_runs=0, total_successes=0, total_failures=0)
+                        s.add(jh)
+                    jh.last_run_at = now
+                    jh.total_runs = (jh.total_runs or 0) + 1
+                    if success:
+                        jh.last_success_at = now
+                        jh.last_error_at = None
+                        jh.last_error_msg = None
+                        jh.last_duration_ms = duration_ms
+                        jh.total_successes = (jh.total_successes or 0) + 1
+                    else:
+                        jh.last_error_at = now
+                        jh.last_error_msg = str(event.exception)[:500]
+                        jh.total_failures = (jh.total_failures or 0) + 1
+                    s.commit()
+                print(f"[job_health] wrote for {job_id}", file=_sys.stderr, flush=True)
+                break
+            except Exception as e:
+                if attempt < 3:
+                    _time.sleep(2)
+                    continue
+                print(f"[job_health] 写失败 (非致命, 重试{attempt}次后): {e}", file=_sys.stderr, flush=True)
+                logger.debug(f"[job_health] 写失败 (非致命): {e}")
 
     scheduler.add_listener(_record_job_event, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
     logger.info("[阶段2] 注册 apscheduler event listener -> 写 job_health")

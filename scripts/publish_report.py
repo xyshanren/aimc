@@ -166,35 +166,52 @@ async def publish_serverchan(message: str) -> bool:
 
 
 async def publish_feishu(message: str) -> bool:
-    """飞书 webhook 推送，title 用 AIMC 周报。"""
+    """飞书 webhook 推送，title 用 AIMC 周报。
+
+    对 chat rate limit (code=11233) 自动重试 3 次（60s/120s 退避）。
+    """
     feishu_url = _get_setting("feishu_webhook_url", settings.feishu_webhook_url)
     if not feishu_url:
         logger.warning("[PUBLISH-feishu-no-config] %s", _short(message, 50))
         return False
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                feishu_url,
-                json={
-                    "msg_type": "text",
-                    "content": {"text": f"[{NOTIFICATION_TITLE}] {message}"},
-                },
-            )
-            data = (
-                resp.json()
-                if resp.headers.get("content-type", "").startswith("application/json")
-                else {}
-            )
-            if resp.status_code == 200 and data.get("StatusCode") in (0, "0"):
-                logger.info("飞书周报推送成功")
-                return True
-            logger.warning(
-                "飞书周报失败: status=%s body=%s",
-                resp.status_code,
-                resp.text[:200],
-            )
-    except Exception as e:
-        logger.error("飞书周报异常: %s", e)
+    import asyncio as _aio
+    backoffs = [0, 60, 120]  # 首次立即；飞书 chat rate limit 重试 60s/120s
+    for attempt, delay in enumerate(backoffs, 1):
+        if delay:
+            logger.info("[PUBLISH-feishu-retry] attempt %d/%d, waiting %ds", attempt, len(backoffs), delay)
+            await _aio.sleep(delay)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    feishu_url,
+                    json={
+                        "msg_type": "text",
+                        "content": {"text": f"[{NOTIFICATION_TITLE}] {message}"},
+                    },
+                )
+                data = (
+                    resp.json()
+                    if resp.headers.get("content-type", "").startswith("application/json")
+                    else {}
+                )
+                if resp.status_code == 200 and data.get("StatusCode") in (0, "0"):
+                    logger.info("飞书周报推送成功 (attempt %d/%d)", attempt, len(backoffs))
+                    return True
+                feishu_code = data.get("code")
+                if feishu_code == 11233 and attempt < len(backoffs):
+                    logger.warning("飞书限流 (code=11233), attempt %d/%d, 将重试", attempt, len(backoffs))
+                    continue
+                logger.warning(
+                    "飞书周报失败: status=%s body=%s",
+                    resp.status_code,
+                    resp.text[:200],
+                )
+                break
+        except Exception as e:
+            logger.error("飞书周报异常 (attempt %d/%d): %s", attempt, len(backoffs), e)
+            if attempt < len(backoffs):
+                continue
+            break
     return False
 
 
@@ -239,7 +256,15 @@ async def publish(
         )
         return False
 
-    return await handler(summary)
+    result = await handler(summary)
+    if not result:
+        # 推送失败但周报已生成落盘 — 不拖垮退出码（文件在 reports/ 下可查）
+        logger.warning(
+            "[PUBLISH-best-effort] %s 推送失败，但周报已生成落盘，忽略退出码",
+            channel,
+        )
+        return True
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
