@@ -125,16 +125,18 @@ GROUP_MEMBERS = [
     ("tier:flagship", "glm-5.3",         115, 1.0, None, "manual"),
 
     # ========== tier:strong (主力通用) ==========
-    # deepseek-v4-flash (T1 评分 60.4) + glm-5.2 (T1, sensenova 免费渠道)
+    # glm-5.2 (T1, sensenova 免费渠道)
     # + glm-5.3-flash (T2, V5.1: bigmodel Lite 免费兜底 — strong 唯一 GLM Lite
     #   车道, 商汤 5h 窗口烧穿时组内仍有免费可用)
     # V5.1 调整: glm-5.3 移出 (Lite 池专心供 flagship, 5.3 积分系数是 flash 3 倍;
     #   此前 strong 85% 流量实际默认打 glm-5.3 — channel.priority=8 赢 0 元平价)
     # minimax-m3 移出 → tier:balanced 兜底 (能力低于 v4-flash/flash, TokenPlanMax
     #   年度额度大, 适合链路下游做容量缓冲: strong→balanced fallback 接住溢出)
-    ("tier:strong", "deepseek-v4-flash", 100, 1.0, None, "manual"),
     ("tier:strong", "glm-5.2",           108, 1.0, None, "manual"),
     ("tier:strong", "glm-5.3-flash",     120, 1.0, None, "manual"),
+    # deepseek-v4-flash 出组 (2026-09-28 intel_auto 软删: registry deprecated
+    #   +conf>=0.9; 用户 2026-10-12 拍板接受现状 — 官方已弃用旧名(替代
+    #   deepseek-flash), sensenova/taotoken 旧名价行保留仍可直连)
 
     # ========== tier:balanced (T2 性价比) ==========
     # V6.14 重排 (2026-09-27, 用户拍板): deepseek-v3 出组 (SF 付费 2/8, 组内唯一
@@ -188,12 +190,12 @@ GROUP_MEMBERS = [
     ("tier:vision-light", "qwen3-vl-8b-instruct",      140, 1.0, None, "manual"),
 
     # ========== tier:code (T2 代码专用, 替代 scene:code) ==========
-    # minimax-m2.7 (T1 代码主力) + deepseek-v4-flash (含 code cap) + deepseek-v3.2
+    # minimax-m2.7 (T1 代码主力) + deepseek-v3.2
     # + glm-5.3-flash (V4.9.7: bigmodel coding plan Lite, 含 code cap, 兜底)
     ("tier:code", "minimax-m2.7",        100, 1.0, None, "manual"),
-    ("tier:code", "deepseek-v4-flash",   110, 1.0, None, "manual"),
     ("tier:code", "deepseek-v3.2",       120, 1.0, None, "manual"),
     ("tier:code", "glm-5.3-flash",       130, 1.0, None, "manual"),
+    # deepseek-v4-flash 出组 (2026-09-28 intel_auto, 同 tier:strong — 见上)
 
     # ========== 删的 group (历史, V4.6.4 不再 seed) ==========
     # - scene:code: 跟 tier:code 行为一样, 统一 tier: 前缀

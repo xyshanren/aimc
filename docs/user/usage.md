@@ -73,13 +73,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 | 组 | 包含的 model（举例） | 适合 |
 |----|---------------------|------|
-| `tier:flagship` | glm-5.3, kimi-k3, deepseek-v4-pro | 复杂推理 |
-| `tier:strong` | deepseek-v4-flash, glm-5.2, glm-5.3-flash | 主力通用 |
-| `tier:balanced` | deepseek-v3, minimax-m3, sensenova-6.8-flash-lite | 性价比 |
-| `tier:light` | glm-4.7-flash（免费）, qwen3.5-4b, glm-4-flash | 轻量 |
-| `tier:vision` | deepseek-v4-flash-vision-exp, glm-5.3-flash | 旗舰视觉（V6.0 分级）|
+| `tier:flagship` | deepseek-flash, kimi-k3, deepseek-v4-pro, glm-5.3 | 复杂推理 |
+| `tier:strong` | glm-5.2, glm-5.3-flash | 主力通用 |
+| `tier:balanced` | sensenova-6.8-flash-lite, minimax-m3 | 性价比 |
+| `tier:light` | glm-4.7-flash（免费）, qwen3-8b, qwen3.5-4b | 轻量 |
+| `tier:vision` | deepseek-flash, minimax-m3, minimax-m3.1-flash-preview | 旗舰视觉（V6.0 分级）|
 | `tier:vision-light` | glm-4.6v-flash（免费）, qwen3-vl 系列 | 轻量视觉免费兜底（V6.0 新组）|
-| `tier:code` | deepseek-v4-flash, glm-5.2 | 代码 |
+| `tier:code` | minimax-m2.7, deepseek-v3.2, glm-5.3-flash | 代码 |
 
 视觉请求 fallback 链：`tier:vision → tier:vision-light → tier:light`（V6.0 起）。
 
