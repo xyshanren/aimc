@@ -71,9 +71,11 @@ async def apply_model_suggestion(
             return f"SKIP: group '{s.suggested_value}' 不存在"
         if apply:
             # 检查是否已存在 (避免重复)
+            # 2026-10-12 fix: member.group_id 存 TEXT 组名, 之前 == g.id (整型)
+            # 永不命中 → 存在性检查失效且新行插成整型 id, 路由 (TEXT 匹配) 看不见
             existing = (await session.execute(
                 select(ModelGroupMember).where(
-                    ModelGroupMember.group_id == g.id,
+                    ModelGroupMember.group_id == g.group_id,
                     ModelGroupMember.model_id == s.model_id,
                 )
             )).scalars().first()
@@ -82,7 +84,7 @@ async def apply_model_suggestion(
                 existing.priority = existing.priority or 100
             else:
                 session.add(ModelGroupMember(
-                    group_id=g.id,
+                    group_id=g.group_id,
                     model_id=s.model_id,
                     priority=100,
                     weight=1.0,
@@ -98,10 +100,12 @@ async def apply_model_suggestion(
         if not g:
             return f"SKIP: group '{s.suggested_value}' 不存在"
         if apply:
+            # 2026-10-12 fix: 同 add_to_group — member.group_id 是 TEXT 组名,
+            # 之前 == g.id 永不命中, 批准后 apply 实际静默 SKIP
             await session.execute(
                 update(ModelGroupMember)
                 .where(
-                    ModelGroupMember.group_id == g.id,
+                    ModelGroupMember.group_id == g.group_id,
                     ModelGroupMember.model_id == s.model_id,
                     ModelGroupMember.is_active == 1,
                 )
@@ -133,16 +137,17 @@ async def apply_group_suggestion(
             return [f"SKIP: src='{src_gid}' 或 tgt='{tgt_gid}' 不存在"]
         if apply:
             # 把 src 的 active members 移到 tgt (用 INSERT ... ON CONFLICT 类似逻辑)
+            # 2026-10-12 fix: member.group_id 存 TEXT 组名 (同 add_to_group 坑)
             src_members = (await session.execute(
                 select(ModelGroupMember).where(
-                    ModelGroupMember.group_id == src_g.id,
+                    ModelGroupMember.group_id == src_g.group_id,
                     ModelGroupMember.is_active == 1,
                 )
             )).scalars().all()
             for m in src_members:
                 existing = (await session.execute(
                     select(ModelGroupMember).where(
-                        ModelGroupMember.group_id == tgt_g.id,
+                        ModelGroupMember.group_id == tgt_g.group_id,
                         ModelGroupMember.model_id == m.model_id,
                     )
                 )).scalars().first()
@@ -150,7 +155,7 @@ async def apply_group_suggestion(
                     existing.is_active = 1
                 else:
                     session.add(ModelGroupMember(
-                        group_id=tgt_g.id,
+                        group_id=tgt_g.group_id,
                         model_id=m.model_id,
                         priority=m.priority,
                         weight=m.weight,
@@ -167,10 +172,10 @@ async def apply_group_suggestion(
         if not g:
             return [f"SKIP: group '{s.group_id}' 不存在"]
         if apply:
-            # 软删除: members is_active=0 (保留审计)
+            # 软删除: members is_active=0 (保留审计) — 2026-10-12 fix 同上
             await session.execute(
                 update(ModelGroupMember)
-                .where(ModelGroupMember.group_id == g.id, ModelGroupMember.is_active == 1)
+                .where(ModelGroupMember.group_id == g.group_id, ModelGroupMember.is_active == 1)
                 .values(is_active=0, removed_at=datetime.now(),
                         removed_reason="group_deleted_suggestion", removed_by="apply_suggestions.py")
             )
