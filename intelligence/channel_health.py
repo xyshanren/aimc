@@ -50,6 +50,16 @@ def _get_sem() -> asyncio.Semaphore:
     return _HEALTH_SEMAPHORE
 
 
+# 账号级 GET /models 探活的每渠道超时覆盖 (秒). 缺省用共享 client 的
+# settings.health_probe_timeout (5s). 单请求 httpx timeout= 覆盖 client 默认.
+# taotoken_coding: 上游 /models 7d 实测 avg 3.2s / max 5.0s 贴默认 5s 超时
+# 偶发 network_transient 假阳性 (2026-10-12 探活分析), 放宽到 8s;
+# 其余渠道维持默认 5s (死渠道应被快速判失败).
+PROBE_TIMEOUT_OVERRIDES: dict[str, float] = {
+    "taotoken_coding": 8.0,
+}
+
+
 def _get_probe_client() -> httpx.AsyncClient:
     """V4.9 防护: 进程级共享 httpx.AsyncClient 单例
     - 复用 TCP 连接池, 减少握手开销
@@ -77,11 +87,16 @@ async def close_probe_client() -> None:
         _PROBE_CLIENT = None
 
 
-async def _probe_one(account_id: int, base_url: str, api_key: Optional[str]) -> dict:
+async def _probe_one(
+    account_id: int, base_url: str, api_key: Optional[str],
+    timeout: Optional[float] = None,
+) -> dict:
     """单 channel 探活, 返回 {account_id, success, status_code, latency_ms, error_msg, error_type, error_code}
 
     用 GET {base}/models 做轻量健康检查 + 鉴权校验
     V4.9: 使用共享 client (不再每次新建)
+    timeout: 单请求超时覆盖 (秒), None=用 client 默认 (settings.health_probe_timeout).
+             PROBE_TIMEOUT_OVERRIDES 给慢渠道放宽.
     """
     url = f"{base_url.rstrip('/')}/models"
     headers = {}
@@ -89,8 +104,9 @@ async def _probe_one(account_id: int, base_url: str, api_key: Optional[str]) -> 
         headers["Authorization"] = f"Bearer {api_key}"
     start = time.monotonic()
     client = _get_probe_client()
+    req_timeout = timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT
     try:
-        r = await client.get(url, headers=headers)
+        r = await client.get(url, headers=headers, timeout=req_timeout)
         latency_ms = int((time.monotonic() - start) * 1000)
         response_text = r.text[:500] if hasattr(r, 'text') else ""
         info = classify(r.status_code, response_text, None)
@@ -421,20 +437,23 @@ async def channel_health_probe() -> int:
         if not base_url:
             logger.debug(f"探活: account #{acc.id} channel 无 base_url, 跳过")
             continue
-        targets.append((acc.id, base_url, api_key))
+        targets.append((acc.id, base_url, api_key, ch.name))
 
     # 4. 并发探活 (Semaphore 限流 + job hard timeout)
     sem = _get_sem()
 
-    async def _probe_with_sem(aid, base, key):
+    def _probe_timeout_for(chname: str) -> Optional[float]:
+        return PROBE_TIMEOUT_OVERRIDES.get(chname)
+
+    async def _probe_with_sem(aid, base, key, chname):
         async with sem:
-            return await _probe_one(aid, base, key)
+            return await _probe_one(aid, base, key, timeout=_probe_timeout_for(chname))
 
     # V4.9 防护 #2: 整体 hard timeout (asyncio.wait_for)
     try:
         results = await asyncio.wait_for(
             asyncio.gather(
-                *[_probe_with_sem(aid, base, key) for aid, base, key in targets],
+                *[_probe_with_sem(aid, base, key, chname) for aid, base, key, chname in targets],
                 return_exceptions=True,
             ),
             timeout=total_timeout,
@@ -446,7 +465,7 @@ async def channel_health_probe() -> int:
         )
         # 超时: 标记所有未返回的 task 为失败
         results = []
-        for aid, base, key in targets:
+        for aid, base, key, chname in targets:
             results.append({
                 "account_id": aid,
                 "success": False,
