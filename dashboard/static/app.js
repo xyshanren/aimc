@@ -3013,7 +3013,9 @@ document.addEventListener('keydown', (e) => {
 
 // ============================================================
 // V6.3 F3 (自动化收口, 2026-09-05): 自动入组观察卡
-// 纯只读埋点展示, 为 AUTO_JOIN_NON_T0 决策积累数据; 不含任何操作按钮
+// 纯只读埋点展示; S3 已于 2026-09-11 生效 (AUTO_JOIN_NON_T0=True, 门槛 0.9),
+// 本卡转为持续监控. Playwright 促销采集 2026-10-12 下线后 auto-join 源
+// (announcement/benchmark) 已停, 仅 httpx model_list registry 元信息更新在跑.
 // ============================================================
 
 async function loadAutoJoinMetrics() {
@@ -3083,7 +3085,7 @@ async function loadAutoJoinMetrics() {
         }
         html += '</div>';
 
-        html += '<div style="font-size:11px;color:var(--text-muted);">观察期 ≥2 周后基于本卡数据决策是否开启 AUTO_JOIN_NON_T0 (S1-S4), 详见 docs/dev/automation-closure-plan.md</div>';
+        html += '<div style="font-size:11px;color:var(--text-muted);">S3 已于 2026-09-11 生效 (AUTO_JOIN_NON_T0=True, 门槛 0.9), 本卡转为持续监控; Playwright 促销采集下线后 auto-join 源(announcement/benchmark)已停, 仅 httpx model_list 的 registry 元信息更新在跑, 详见 docs/dev/intel-auto-outgroup.md</div>';
         html += '</div>';
         container.innerHTML = html;
     } catch (e) {
