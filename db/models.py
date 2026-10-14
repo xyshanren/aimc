@@ -969,6 +969,32 @@ Index("idx_cde_account_until", CooldownEvent.account_id, CooldownEvent.cooldown_
 Index("idx_cde_created_at", CooldownEvent.created_at)
 
 
+class ModelListSnapshot(Base):
+    """上游模型列表快照 — 模型消失检测用 (2026-10-15)
+
+    每次 model_list 源 (httpx /v1/models) 成功拉取后 upsert;
+    模型从上游列表消失时 miss_count 递增, 连续 >= 2 次 (约 2 天) 仍缺失
+    → intelligence/model_absence.py 生成 remove_from_group suggestion
+    (走既有建议卡人工确认, 不自动出组)。
+
+    防抖: 本次列表规模 < 上次快照 50% 时跳过本轮检测 (上游分页/临时故障)。
+    """
+    __tablename__ = "model_list_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(Text, nullable=False, comment="厂商标识 (intel 源维度)")
+    model = Column(Text, nullable=False, comment="上游原始 model_id")
+    last_seen_at = Column(DateTime, default=datetime.now, nullable=False,
+                          comment="最后一次在上游列表出现的时间")
+    miss_count = Column(Integer, default=0, nullable=False,
+                        comment="连续缺失次数 (重新出现即清零)")
+
+    __table_args__ = (
+        UniqueConstraint("provider", "model", name="uq_mls_provider_model"),
+        Index("idx_mls_provider_seen", "provider", "last_seen_at"),
+    )
+
+
 class SettingsRuntime(Base):
     """Runtime settings override (API-Sec-2, 2026-07-29)
 

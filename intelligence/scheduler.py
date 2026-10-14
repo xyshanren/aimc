@@ -675,6 +675,18 @@ async def _run_source_task(source):
                 logger.info(
                     f"API 抽取成功: {source.provider} → {len(model_ids)} 个 model"
                 )
+                # 模型消失检测 (2026-10-15): 与快照对比, 连续 2 次未出现 →
+                # remove_from_group suggestion (人工确认; 防抖=列骤降守卫+连续缺失)
+                try:
+                    from intelligence.model_absence import detect_missing_models
+                    abs_stats = await detect_missing_models(source.provider, model_ids)
+                    if abs_stats.get("missing_now"):
+                        logger.info(
+                            f"[model-absence] {source.provider}: "
+                            f"待确认消失 {abs_stats['missing_now']}"
+                        )
+                except Exception as e:
+                    logger.warning(f"模型消失检测失败 (非阻断): {e}")
                 # Phase 2a+ fix (2026-08-13): 同时把 model_ids 同步到硅基流动 channel
                 # price_snapshots. 让 /v1/models 在重启后立刻可见, 不需要等 router cache
                 # 仅硅基流动启用, 其他厂商暂不动 (避免污染)

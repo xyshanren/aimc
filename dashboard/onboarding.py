@@ -249,6 +249,43 @@ async def onboarding_add_channel(key: str, payload: dict):
     }
 
 
+@router.get("/api/pricing/unpriced")
+async def pricing_unpriced(session: AsyncSession = Depends(get_session_dep())):
+    """待补价盘点 (渠道页「待补价」卡, 2026-10-15)
+
+    model_list 源自动同步进来的新模型价格行是 NULL — 本端点把它们盘出来:
+    - chat_pending: 疑似聊天模型待补价 (按命名关键词排除嵌入/语音/生图等
+      非聊天类), 人工到官方定价页核对后 UPDATE price_snapshots
+    - non_chat: 非聊天类 (语音/生图/OCR 等, 无按 token 计价语义, 通常无需补)
+    """
+    rows = (await session.execute(
+        select(Channel.name, PriceSnapshot.model)
+        .join(PriceSnapshot, PriceSnapshot.channel_id == Channel.id)
+        .where(PriceSnapshot.input_price.is_(None))
+    )).all()
+
+    non_chat_kw = (
+        "embed", "rerank", "asr", "speech", "voice", "tts", "ocr", "image",
+        "video", "i2v", "t2v", "caption", "kolors", "lora", "diffusion",
+        "gsr", "flux", "/wan",
+    )
+
+    def _is_chat(model: str) -> bool:
+        low = model.lower()
+        return not any(k in low for k in non_chat_kw)
+
+    chat_pending, non_chat = [], []
+    for chname, model in rows:
+        entry = {"model": model, "channel": chname}
+        (chat_pending if _is_chat(model) else non_chat).append(entry)
+    return {
+        "total": len(rows),
+        "chat_pending": chat_pending,
+        "non_chat_count": len(non_chat),
+        "hint": "去对应渠道官方定价页核对后, 在价格表卡编辑或 SQL UPDATE 补价",
+    }
+
+
 @router.post("/api/onboarding/seed-groups")
 async def onboarding_seed_groups():
     """「初始化默认模型组」按钮: 按渠道目录全量补种 registry + 默认组成员

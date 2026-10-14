@@ -2795,6 +2795,36 @@ async function loadJsonCard(containerId, url, renderer, after) {
 
 function loadChannelsCard() { return loadJsonCard('channels-list', '/dashboard/api/channels', renderChannels, filterChannels); }
 function loadPricesCard() { return loadJsonCard('prices-list', '/dashboard/api/prices', renderPrices, filterChannels); }
+
+// 待补价卡 (2026-10-15): model_list 自动同步的 NULL 价格行盘点, 无待补时隐藏
+async function loadUnpricedCard() {
+    const card = document.getElementById('unpriced-card');
+    const container = document.getElementById('unpriced-list');
+    if (!card || !container) return;
+    try {
+        const resp = await authFetch('/dashboard/api/pricing/unpriced');
+        if (!resp.ok) { card.hidden = true; return; }
+        const data = await resp.json();
+        const pending = data.chat_pending || [];
+        if (!pending.length) { card.hidden = true; return; }
+        card.hidden = false;
+        const badge = document.getElementById('unpriced-count');
+        if (badge) badge.textContent = pending.length + ' 待补';
+        const byChannel = {};
+        pending.forEach(x => { (byChannel[x.channel] = byChannel[x.channel] || []).push(x.model); });
+        let html = '';
+        for (const [ch, models] of Object.entries(byChannel)) {
+            html += '<div style="margin-bottom:6px;"><b style="font-size:12px;">' + esc(ch) + '</b>'
+                + ' <span class="text-muted" style="font-size:11px;">' + models.length + ' 个</span>'
+                + '<div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">'
+                + models.slice(0, 8).map(m => '<code>' + esc(m) + '</code>').join(' · ')
+                + (models.length > 8 ? ' …等 ' + models.length + ' 个' : '') + '</div></div>';
+        }
+        html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">'
+            + esc(data.hint || '') + (data.non_chat_count ? ' · 另有 ' + data.non_chat_count + ' 个非聊天类(语音/生图等)未列' : '') + '</div>';
+        container.innerHTML = html;
+    } catch (e) { card.hidden = true; }
+}
 function loadRegistryModelsCard() { return loadJsonCard('registry-models-list', '/dashboard/api/registry/models', renderRegistryModels, filterRegistry); }
 function loadRegistryGroupsCard() { return loadJsonCard('registry-groups-list', '/dashboard/api/registry/groups', renderRegistryGroups); }
 function loadPromotionsCard() { return loadJsonCard('promotions-list', '/dashboard/api/promotions', renderPromotions); }
@@ -2969,7 +2999,7 @@ const PAGE_ROUTES = {
     // 价格表 / registry 模型/分组/用户 Key/采集源是配置类数据 (仅人为或脚本操作才变, 进页即新),
     // 周报周级生成 — 以上均只在进页时加载一次 (once).
     // 注意: 情报页三张审批卡必须留在轮询 — 批准/拒绝只做本地 card.remove(), 卡间联动全靠轮询.
-    channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard], once: [loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
+    channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard], once: [loadUnpricedCard, loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
     intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard], once: [loadReportsList, loadWeeklyReportLatest] },
     ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadSuggestionsList, loadAccountsCard, loadAutoJoinMetrics], once: [loadUserKeys, loadSources, renderMetricDefs] },
 };

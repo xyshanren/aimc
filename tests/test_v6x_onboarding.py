@@ -308,6 +308,22 @@ def test_group_edit_lifecycle():
     asyncio.run(run())
 
 
+def test_pricing_unpriced_endpoint():
+    """待补价盘点端点: NULL 行查询 + 聊天/非聊天分类"""
+    async def run():
+        async with _get_client() as c:
+            resp = await c.get("/dashboard/api/pricing/unpriced")
+            assert resp.status_code == 200, resp.text
+            data = resp.json()
+            assert "chat_pending" in data and "non_chat_count" in data
+            # 分类自检: 端点内关键词逻辑 (这里用返回数据结构验证)
+            for item in data["chat_pending"]:
+                low = item["model"].lower()
+                assert not any(k in low for k in (
+                    "embed", "rerank", "asr", "voice", "ocr", "image", "video"))
+    asyncio.run(run())
+
+
 if __name__ == "__main__":
     test_status_fresh_db_setup_not_done()
     test_add_channel_creates_everything_and_flips_setup_done()
