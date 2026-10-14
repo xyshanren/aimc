@@ -34,9 +34,9 @@
 # 1. 关闭所有渠道 (防厂商 key 被批量盗用)
 #    方式 A: dashboard 改 channels.status = 'disabled' (需 dashboard_token)
 #    方式 B: 直接 SQL (绕过 dashboard)
-ssh aliy-hy "sqlite3 /home/lxc/aimc/data/aimc.db \
+ssh <你的服务器> "sqlite3 ~/aimc/data/aimc.db \
   \"UPDATE channels SET status='disabled' WHERE status='active';\""
-ssh aliy-hy "systemctl --user restart aimc"
+ssh <你的服务器> "systemctl --user restart aimc"
 
 # 2. 通知所有 LLM 厂商 (重置 key)
 #    - 阿里云百炼: https://bailian.console.aliyun.com/
@@ -55,7 +55,7 @@ echo "新 master_key: $NEW_KEY"
 
 ```bash
 # 1. 改 .env
-ssh aliy-hy "nano /home/lxc/aimc/.env"
+ssh <你的服务器> "nano ~/aimc/.env"
 # 替换 AIMC_MASTER_KEY=$NEW_KEY
 
 # 2. 重新加密所有 accounts.api_key_ciphertext
@@ -66,12 +66,12 @@ ssh aliy-hy "nano /home/lxc/aimc/.env"
 #    dashboard → 渠道管理 → 启用各 channel → 填新 key
 
 # 4. 启用 channels
-ssh aliy-hy "sqlite3 /home/lxc/aimc/data/aimc.db \
+ssh <你的服务器> "sqlite3 ~/aimc/data/aimc.db \
   \"UPDATE channels SET status='active' WHERE status='disabled';\""
-ssh aliy-hy "systemctl --user restart aimc"
+ssh <你的服务器> "systemctl --user restart aimc"
 
 # 5. 验证 e2e
-ssh aliy-hy "curl -X POST http://localhost:8080/v1/chat/completions \
+ssh <你的服务器> "curl -X POST http://localhost:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{\"model\":\"tier:flagship\",\"messages\":[{\"role\":\"user\",\"content\":\"test\"}]}'"
 ```
@@ -106,10 +106,10 @@ LIMIT 100;
 ```bash
 # 1. 改 .env 新 token
 NEW_TOKEN=$(openssl rand -hex 32)
-ssh aliy-hy "sed -i 's/^AIMC_DASHBOARD_TOKEN=.*/AIMC_DASHBOARD_TOKEN=$NEW_TOKEN/' /home/lxc/aimc/.env"
+ssh <你的服务器> "sed -i 's/^AIMC_DASHBOARD_TOKEN=.*/AIMC_DASHBOARD_TOKEN=$NEW_TOKEN/' ~/aimc/.env"
 
 # 2. 重启
-ssh aliy-hy "systemctl --user restart aimc"
+ssh <你的服务器> "systemctl --user restart aimc"
 
 # 3. 通知所有用户新 token
 #    通过其他渠道 (邮件 / 钉钉 / 微信) 通知 team
@@ -150,10 +150,10 @@ ORDER BY created_at DESC;
 ```bash
 # 1. 改 .env 新 key
 NEW_API_KEY=$(openssl rand -hex 32)
-ssh aliy-hy "sed -i 's/^AIMC_API_KEY=.*/AIMC_API_KEY=$NEW_API_KEY/' /home/lxc/aimc/.env"
+ssh <你的服务器> "sed -i 's/^AIMC_API_KEY=.*/AIMC_API_KEY=$NEW_API_KEY/' ~/aimc/.env"
 
 # 2. 重启
-ssh aliy-hy "systemctl --user restart aimc"
+ssh <你的服务器> "systemctl --user restart aimc"
 
 # 3. 通知所有客户端 (DSH / agent / 用户)
 #    必须在 2h 内, 否则攻击者继续用旧 key 消耗 token
@@ -214,15 +214,15 @@ LIMIT 100;
 
 ```bash
 # 1. 检查 fail2ban 状态
-ssh aliy-hy "fail2ban-client status sshd"
+ssh <你的服务器> "fail2ban-client status sshd"
 
 # 2. 看最近登录 (成功 / 失败)
-ssh aliy-hy "last -20"
-ssh aliy-hy "journalctl -u sshd --since '24 hours ago' | grep -E 'Failed|Accepted'"
+ssh <你的服务器> "last -20"
+ssh <你的服务器> "journalctl -u sshd --since '24 hours ago' | grep -E 'Failed|Accepted'"
 
 # 3. 改 SSH 端口 (避免暴力破解)
-ssh aliy-hy "sed -i 's/#Port 22/Port 2222/' /etc/ssh/sshd_config"
-ssh aliy-hy "systemctl restart sshd"
+ssh <你的服务器> "sed -i 's/#Port 22/Port 2222/' /etc/ssh/sshd_config"
+ssh <你的服务器> "systemctl restart sshd"
 # 更新本地 ~/.ssh/config: Port 2222
 
 # 4. 限制 SSH 访问 (只允许你家的 IP)
@@ -234,20 +234,20 @@ ssh aliy-hy "systemctl restart sshd"
 
 ```bash
 # 检查异常进程
-ssh aliy-hy "ps auxf | head -30"
+ssh <你的服务器> "ps auxf | head -30"
 
 # 检查新用户 / 后门
-ssh aliy-hy "cat /etc/passwd | grep -v 'nologin\|false'"
-ssh aliy-hy "cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null | grep -v '^#'"
+ssh <你的服务器> "cat /etc/passwd | grep -v 'nologin\|false'"
+ssh <你的服务器> "cat /etc/sudoers /etc/sudoers.d/* 2>/dev/null | grep -v '^#'"
 
 # 检查 SSH 公钥
-ssh aliy-hy "ls -la /root/.ssh/authorized_keys"
+ssh <你的服务器> "ls -la /root/.ssh/authorized_keys"
 
 # 检查 cron 后门
-ssh aliy-hy "crontab -l; ls -la /etc/cron.*"
+ssh <你的服务器> "crontab -l; ls -la /etc/cron.*"
 
 # 检查最近登录
-ssh aliy-hy "lastlog | head -20"
+ssh <你的服务器> "lastlog | head -20"
 ```
 
 ---

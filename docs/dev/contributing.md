@@ -150,6 +150,28 @@ AIMC 是个人项目，**没有 formal Code of Conduct**。但建议：
 - **建设性** — 提改进建议而非只批评
 - **聚焦技术** — 避免无关讨论
 
+## 6.5 维护者：双远程推送（Gitee + GitHub）
+
+AIMC 同时维护 Gitee（主仓）与 GitHub 镜像。Git 原生支持在同一个 remote 上
+配置多条 pushurl —— `git push origin master` 一次推两仓，无需迁移、无需脚本化
+双 push：
+
+```bash
+# 一次性配置（幂等，可重复执行）
+bash scripts/deploy/setup-dual-remote.sh git@github.com:<user>/aimc.git
+
+# 之后日常推送
+git push origin master   # 同时推 Gitee + GitHub
+```
+
+注意事项：
+- **fetch 仍走 fetch URL**（默认 Gitee），GitHub 只作为推送目标
+- **推送非原子**：一个仓被拒（如分支保护）不影响另一个，失败方需单独补推
+- GitHub 仓库请先在网页上创建空仓库（**不要**勾选 README / .gitignore 初始化，
+  否则首推会被拒），首推 `git push -u origin master`
+- 若 GitHub 走 HTTPS 而非 SSH，用 Personal Access Token 当密码（GitHub 已不接受
+  账号密码推送）
+
 ## 7. 第一次贡献后的步骤
 
 PR 合并后：

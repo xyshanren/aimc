@@ -5,7 +5,7 @@
 
 ## 1. systemd user 服务（推荐）
 
-`/home/lxc/aimc/scripts/deploy/aimc.service`：
+`~/aimc/scripts/deploy/aimc.service`：
 
 ```ini
 [Unit]
@@ -15,10 +15,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/lxc/aimc
-Environment="PATH=/home/lxc/aimc/.venv/bin:/usr/local/bin:/usr/bin"
-EnvironmentFile=/home/lxc/aimc/.env
-ExecStart=/home/lxc/aimc/.venv/bin/python /home/lxc/aimc/main.py
+WorkingDirectory=~/aimc
+Environment="PATH=~/aimc/.venv/bin:/usr/local/bin:/usr/bin"
+EnvironmentFile=~/aimc/.env
+ExecStart=~/aimc/.venv/bin/python ~/aimc/main.py
 Restart=on-failure
 RestartSec=5
 StartLimitBurst=5
@@ -92,7 +92,7 @@ ls -la ~/aimc/reports/weekly-latest.md
 
 ## 2. LXC 容器部署
 
-AIMC 已在 Ubuntu 24.04 LXC 容器（`192.168.56.12:8080`）验证：
+AIMC 已在 Ubuntu 24.04 LXC 容器（`<内网IP>:18080`）验证：
 
 ```bash
 # 在 host 上
@@ -117,15 +117,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-ENV AIMC_HOST=0.0.0.0 AIMC_PORT=8080
-EXPOSE 8080
+ENV AIMC_HOST=0.0.0.0 AIMC_PORT=18080
+EXPOSE 18080
 
 CMD ["python", "main.py"]
 ```
 
 ```bash
 docker build -t aimc:latest .
-docker run -d --name aimc -p 8080:8080 --restart unless-stopped \
+docker run -d --name aimc -p 18080:18080 --restart unless-stopped \
   -v /path/to/.env:/app/.env:ro \
   -v /path/to/data:/app/data \
   aimc:latest
@@ -135,7 +135,7 @@ docker run -d --name aimc -p 8080:8080 --restart unless-stopped \
 
 ## 4. 反向代理（可选）
 
-AIMC 默认监听 `0.0.0.0:8080`。生产建议套 nginx：
+AIMC 默认监听 `0.0.0.0:18080`。生产建议套 nginx：
 
 ```nginx
 server {
@@ -143,7 +143,7 @@ server {
     server_name aimc.example.com;
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:18080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -156,7 +156,7 @@ server {
     location /dashboard {
         auth_basic "AIMC Dashboard";
         auth_basic_user_file /etc/nginx/.htpasswd;
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:18080;
     }
 }
 ```
@@ -165,15 +165,15 @@ server {
 
 ```bash
 # UFW (Ubuntu)
-sudo ufw allow from 192.168.0.0/16 to any port 8080
+sudo ufw allow from 192.168.0.0/16 to any port 18080
 sudo ufw enable
 
 # 验证
 sudo ufw status verbose
 
 # 或 iptables (通用)
-sudo iptables -A INPUT -p tcp --dport 8080 -s 192.168.0.0/16 -j ACCEPT
-sudo iptables -A INPUT -p tcp --dport 8080 -j DROP
+sudo iptables -A INPUT -p tcp --dport 18080 -s 192.168.0.0/16 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 18080 -j DROP
 ```
 
 **只允许 LAN** 访问（192.168.0.0/16），不暴露公网（除非有 HTTPS 反向代理）。
@@ -185,9 +185,9 @@ sudo iptables -A INPUT -p tcp --dport 8080 -j DROP
 - [ ] `systemctl --user daemon-reload`（改 service 文件后）
 - [ ] `systemctl --user enable aimc`（开机自启）
 - [ ] `systemctl --user start aimc`
-- [ ] `curl http://localhost:8080/health` 返 `{"status":"ok"}`
+- [ ] `curl http://localhost:18080/health` 返 `{"status":"ok"}`
 - [ ] 周报 timer 已启用（`systemctl --user list-timers | grep weekly`，见 §1.5）
-- [ ] 防火墙放行 8080（或用 reverse proxy）
+- [ ] 防火墙放行 18080（或用 reverse proxy）
 - [ ] Dashboard token 设了（生产环境）
 - [ ] AIMC_API_KEY 设了（生产环境）
 - [ ] 备份脚本 cron 设了（见 [monitor.md](monitor.md)）
@@ -196,7 +196,7 @@ sudo iptables -A INPUT -p tcp --dport 8080 -j DROP
 
 ```bash
 ssh <user>@<host>
-cd /home/lxc/aimc
+cd ~/aimc
 git pull
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -242,7 +242,7 @@ python -m pytest tests/ -v
 | 症状 | 检查 | 修复 |
 |------|------|------|
 | `start` 失败 | `journalctl --user -u aimc -n 50` | 看 traceback |
-| 端口被占用 | `ss -tlnp \| grep 8080` | 杀进程或换端口 |
+| 端口被占用 | `ss -tlnp \| grep 18080` | 杀进程或换端口 |
 | systemd user 不工作 | `loginctl show-user $USER` 看 Linger | `sudo loginctl enable-linger $USER` |
-| 文件权限错 | `ls -la /home/lxc/aimc/` | `sudo chown -R $USER:$USER /home/lxc/aimc` |
+| 文件权限错 | `ls -la ~/aimc/` | `sudo chown -R $USER:$USER ~/aimc` |
 | 容器内 systemd 不可用 | `lxc-attach aimc -- bash -c "systemctl --user status"` | 检查 `loginctl enable-linger` |

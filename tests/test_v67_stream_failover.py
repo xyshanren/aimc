@@ -77,7 +77,7 @@ def test_classify_modelscope_token_limit_is_rate_limited():
 
 
 def test_classify_429001_still_rate_limited():
-    """回归: lixiaoy 体 (429001) 保持 rate_limited 300s。"""
+    """回归: sensenova 429001 体保持 rate_limited 300s。"""
     from gateway.error_classifier import ErrorCategory, classify
 
     info = classify(429, _SENSENOVA_429001)

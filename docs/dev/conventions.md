@@ -268,8 +268,8 @@ async def fresh_session():
 更新 VM：
 
 ```bash
-ssh ubuntu2401
-cd /home/lxc/aimc
+ssh <本地VM>
+cd ~/aimc
 git pull
 source .venv/bin/activate
 pip install -r requirements.txt

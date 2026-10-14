@@ -54,7 +54,7 @@ AIMC 当前有 **23 个 migration 脚本**（`db/migrations/`）：
 2026_09_16_v6x_requires_reasoning_echo.py   # V6.6 DeepSeek thinking 回传（channels.requires_reasoning_echo 渠道标记, 默认 0）
 ```
 
-> 生产环境（ubuntu2401）只跑幂等 migration，**不要**跑 `seed_model_groups.py` /
+> 生产环境（生产 VM）只跑幂等 migration，**不要**跑 `seed_model_groups.py` /
 > `refresh_siliconflow_models.py`（先清后插会丢同步模型与审计历史）。V6.0 起两个
 > `_v60_*` 迁移支持重复执行（已存在列/已有标价自动跳过，不覆盖人工修正）。
 

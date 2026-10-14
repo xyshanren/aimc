@@ -63,7 +63,7 @@ cat > /tmp/rollback_tiers.py << 'PYEOF'
 import sqlite3
 from datetime import datetime
 
-conn = sqlite3.connect("/home/lxc/aimc/data/aimc.db")
+conn = sqlite3.connect("~/aimc/data/aimc.db")
 c = conn.cursor()
 # 找最近 24h 内 applied 的 tier_change
 c.execute("""

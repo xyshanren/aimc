@@ -201,3 +201,31 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# ============ 公开仓库加固 (2026-10-13) ============
+# 临时诊断脚本/文档 (含生产 SSH 拓扑, 不入公开仓)
+.tmp_docs/
+scripts/tmp_*
+*.traineddata
+
+# 扫描工具产物 / 会话计划
+.mimosa/
+.zcode/
+
+# Node (仅 tesseract.js OCR 辅助, 便携版不含)
+node_modules/
+package-lock.json
+
+# Windows 便携版构建产物
+portable/build/
+portable/python/
+portable/AIMC-Portable/
+*.zip
+
+# 本地杂散文件
+chichi*.txt
+counts_now.txt
+
+# 根目录诊断截图/杂散产物 (项目图片归 docs/, 根目录不留)
+/*.png
+/*.jpg

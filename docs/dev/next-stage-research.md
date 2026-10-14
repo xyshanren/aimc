@@ -84,7 +84,7 @@ sensenova、大请求走 taotoken：新增 `channel_min_input_tokens`（默认
 ### ⚡ 已上产（2026-09-14 商定并当日完成，优先于下方所有批次）：429 隐形拒绝修复
 
 **现象**：tier:flagship 组的请求（zcode 调用）在 sensenova_official 被 429 限流期间，两个
-sensenova 账号（lixiaoy / sensenova_01）被轮流反复撞击；备用成员 deepseek-flash 被路由选中
+sensenova 账号（sensenova_01）被轮流反复撞击；备用成员 deepseek-flash 被路由选中
 3 次却从未真正发出上游请求——每次选中后 ~50ms 内被网关自己 429，客户端拿到看板完全不可见的
 隐形 429。glm_01 账号已禁用、glm-5.3 不接盘 → 兜底链仅剩被拒死的 deepseek-flash，整条链等于没有兜底。
 
@@ -314,7 +314,7 @@ Alembic（方案 B）不引入，版本表名格式兼容保留演进空间。
 > **✅ 已上产（2026-09-14，a08da05→1760a9d，814 测试全绿）**
 >
 > **✅ 方案 A 验收完成（2026-09-14 晚）**：modelscope_inference 渠道 id=7 +
-> account modelscope_01 + 5 价格行（按用户 shouyi01 账号当日全量实测矩阵精选，
+> account modelscope_01 + 5 价格行（按账号当日全量实测矩阵精选，
 > 见 §2.6.1 表下注）落库；e2e 实证 `deepseek-ai/DeepSeek-V4.1-Flash` 精确路由
 > 200（usage_logs id=11278, latency 6.9s, 34/15 tokens）、`tier:flagship` 组
 > 路由 200 不受影响。观察期 1b 启动。
