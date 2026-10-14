@@ -3,7 +3,7 @@
 > 受众：部署好 AIMC 后用浏览器访问 dashboard 的用户
 > 前提：AIMC 已配置 `AIMC_DASHBOARD_TOKEN`（见 [configure.md](configure.md)）
 
-访问 `http://<your-host>:8080/dashboard/`，输入 token 登录（token 存 localStorage）。
+访问 `http://<your-host>:18080/dashboard/`，输入 token 登录（token 存 localStorage）。
 
 Phase 3 起（2026-09-05）看板为**侧边栏 6 页哈希路由**（概览 / 成本 / 用量 / 渠道 / 情报 / 运维），
 只轮询当前页；顶栏有全局时间范围 24h/7d/30d 切换（URL + localStorage 持久化）。
@@ -133,16 +133,20 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 > V6.1+：原右栏「按人用量」卡已并入中栏成本审计的「按用户」tab（含 key 下钻），见 §4b。
 
 **Key 管理**：用户列表 + 每人的 key（前缀脱敏）/ admin 标记 / 日月限额 / 最后使用时间。
+- **创建**：卡顶部「+ 新建 Key」表单（username 必填，label 区分工具/场景，可选 admin
+  与日/月限额）——明文只显示一次，弹窗内复制保存
 - 吊销：点对应 key 的「吊销」按钮，立即失效不可恢复
 
-发 key / 设限额用 CLI（见 [configure.md §4](configure.md#4-多用户-key-管理v48)）或
+发 key 也可以用 CLI（见 [configure.md §4](configure.md#4-多用户-key-管理v48)）或
 `POST /dashboard/api/keys`（V6.1，见 [agent-api.md](../agent-api.md)）。
 
-**API**：`GET /dashboard/api/keys`、`POST /dashboard/api/keys/<id>/revoke`。
+**API**：`GET /dashboard/api/keys`、`POST /dashboard/api/keys`、`POST /dashboard/api/keys/<id>/revoke`。
 
 ## §7 账号管理 / 待确认能力变更 / 优惠情报
 
 **账号管理**：渠道账号增删、key 轮换、过期扫描（折叠卡片）。
+- 加账号的 provider 下拉 = 已有渠道 + 渠道目录未建渠道（标"新渠道"）——选新渠道
+  提交时自动建渠道 + 价格行 + 限流配额 + 模型组种子（与初始化配置页同一条龙）
 
 **待确认能力变更**：AI 从厂商页面推断的模型能力变化（tier / capabilities / context 等），
 置信度分高/中/低（绿/黄/红），人工「批准」后写入 registry 并同步模型组。
@@ -150,6 +154,14 @@ AIMC 自动注入 cache 标记（见 [usage.md §7](usage.md)），无需客户�
 - 变更类型用中文标签显示（新模型入库 / 元信息变更 / 档位调整 / 状态变更 / 显示名变更 /
   上下文长度 / 多模态变更），鼠标悬停可见原始值（2026-08-21 起）。
 - 条目旁附模型显示名（如 `kimi-k2.7 (Kimi K2.7 Code)`），便于判断是否该批准。
+
+**Model Registry + Groups（渠道页，V6.17 增强可编辑）**：
+- 全新部署配完渠道后模型组会自动种子（按目录 tier 入组），不必手动跑 seed 脚本；
+  若组为空（存量升级场景），卡内空态有「初始化默认模型组」按钮一键补种（幂等，只补缺失）
+- 手动调整：每个组卡成员行有「移出」按钮（软删，可重新加入）；组卡底部有「+ 加成员」
+  下拉（registry 模型全集 − 已成员）；卡底「+ 新建组」表单可建自定义 `tier:`/`scene:` 组
+- 变更后自动刷新路由缓存（立即生效）；`POST /api/onboarding/seed-groups` 仅供按钮触发，
+  不会改动已策展的组成员
 
 **优惠情报**：各厂商活动列表。**默认只显示可信条目**（AI 解析置信度低的 flagged
 条目已过滤；`GET /api/promotions?include_flagged=true` 可查全部）。无标题的解析

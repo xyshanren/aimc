@@ -61,6 +61,24 @@
 
     <main class="main">
 
+        <!-- ===== 初始化配置 (首启引导, 2026-10-13) ===== -->
+        <section class="page" id="page-setup">
+            <div class="card">
+                <div class="card-title"><span class="card-title-main">欢迎使用 AIMC <span class="card-title-sub">初始化配置 — 添加你的第一个渠道</span></span></div>
+                <div class="card-body">
+                    <p style="font-size:13px;margin:0 0 8px;">只需两步：<b>①</b> 点渠道卡片的「注册」链接注册并创建 API Key；<b>②</b> 把 Key 粘贴到输入框点「保存」。配置一个免费渠道即可开始使用。</p>
+                    <p style="font-size:12px;margin:0;color:var(--text-secondary);">客户端接入：<code>base_url = http://&lt;本机&gt;:18080/v1</code>（默认端口，可在 .env 用 AIMC_PORT 修改），<code>api_key</code> 见 .env 里的 <code>AIMC_API_KEY</code>（便携版首启自动生成）。之后随时可在「运维 → 账号管理」追加多账号。</p>
+                </div>
+            </div>
+            <div id="setup-catalog"><div class="card"><div class="card-body"><div class="loading">加载渠道目录…</div></div></div></div>
+            <div class="card">
+                <div class="card-body" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+                    <button class="btn" id="setup-done-btn">完成初始化，进入看板 →</button>
+                    <span style="font-size:12px;color:var(--text-muted);">也可以先跳过 — 之后在「运维 → 账号管理」随时添加</span>
+                </div>
+            </div>
+        </section>
+
         <!-- ===== 概览 ===== -->
         <section class="page" id="page-overview">
             <div class="card">
@@ -395,6 +413,19 @@
             <div class="card">
                 <div class="card-title"><span class="card-title-main">Key 管理</span><span class="card-title-sub">多用户</span></div>
                 <div class="card-body">
+                    <details style="margin-bottom:10px;">
+                        <summary class="btn btn-sm">+ 新建 Key</summary>
+                        <div class="accounts-toolbar" style="margin-top:8px;flex-wrap:wrap;">
+                            <input id="new-key-username" placeholder="username (必填)" style="padding:6px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;width:140px;">
+                            <input id="new-key-label" placeholder="label (场景/工具)" style="padding:6px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;width:160px;">
+                            <input id="new-key-dname" placeholder="显示名 (可选)" style="padding:6px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;width:140px;">
+                            <label style="font-size:12px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="new-key-admin"> admin</label>
+                            <input id="new-key-daily" type="number" placeholder="日 token 限额(可选)" style="padding:6px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;width:150px;">
+                            <input id="new-key-monthly" type="number" placeholder="月 token 限额(可选)" style="padding:6px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;width:150px;">
+                            <button class="btn btn-sm" onclick="createUserKey()">创建</button>
+                        </div>
+                        <p style="font-size:11px;color:var(--text-muted);margin:6px 0 0;">明文 Key 只在创建后显示一次, 立即保存; 首次建议留空限额试用后再收紧</p>
+                    </details>
                     <div class="accounts-toolbar">
                         <button class="btn btn-sm" onclick="loadUserKeys()">刷新</button>
                         <span id="keys-meta" class="meta"></span>

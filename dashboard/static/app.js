@@ -251,8 +251,10 @@ function renderPrices(container) {
 function renderRegistryModels(container) {
     try {
         const data = JSON.parse(container.textContent);
+        // 供组管理卡的加成员下拉复用
+        window._aimcRegistryModels = (data && data.models) || [];
         if (!data || !data.models || data.models.length === 0) {
-            container.innerHTML = '<div class="empty">暂无 model registry 数据</div>';
+            container.innerHTML = '<div class="empty">暂无 model registry 数据 — 配置渠道后会自动生成, 或点下方「初始化默认模型组」</div>';
             return;
         }
         let html = '<div class="text-muted" style="margin-bottom:var(--space-sm);font-size:12px;">共 ' + esc(data.count) + ' 个 model</div>';
@@ -283,11 +285,13 @@ function renderRegistryModels(container) {
 // === P0-UI v5 (2026-08-16): renderRegistryGroups + renderRegistryModels 优化 ===
 
 // 替换 renderRegistryGroups: 用表格而不是 list, 每个 group 独立卡片
+// V6.17 (2026-10-14): + 空态种子按钮 + 成员加/移 UI + 新建组表单
 function renderRegistryGroups(container) {
     try {
         const data = JSON.parse(container.textContent);
         if (!data || !data.groups || data.groups.length === 0) {
-            container.innerHTML = '<div class="empty">暂无 model group 数据</div>';
+            container.innerHTML = '<div class="empty">暂无 model group — <button class="btn btn-sm" onclick="seedDefaultGroups(this)">初始化默认模型组</button>'
+                + '<div class="text-muted" style="font-size:11px;margin-top:6px;">按渠道目录 tier 自动入组 (幂等, 只补缺失不动已有); 也可在下方手动新建</div></div>';
             return;
         }
 
@@ -318,23 +322,123 @@ function renderRegistryGroups(container) {
             if (caps.length) html += '<span class="text-muted" style="font-size:11px;">caps: ' + caps.map(esc).join(', ') + '</span>';
             html += '</div>';
 
-            // members 表格
+            // members 表格 + 行内加/移操作
             if (g.members && g.members.length > 0) {
-                html += '<table style="margin-top:var(--space-sm);"><thead><tr><th>Model</th><th class="mono">Priority</th></tr></thead><tbody>';
+                html += '<table style="margin-top:var(--space-sm);"><thead><tr><th>Model</th><th class="mono">Priority</th><th>操作</th></tr></thead><tbody>';
                 for (const m of g.members) {
-                    html += '<tr><td><code class="text-mono">' + esc(m.model_id) + '</code></td><td class="mono">' + esc(m.priority) + '</td></tr>';
+                    html += '<tr><td><code class="text-mono">' + esc(m.model_id) + '</code></td><td class="mono">' + esc(m.priority) + '</td>'
+                        + '<td><button class="btn-sm btn-danger" onclick="removeGroupMember(\'' + esc(g.group_id) + '\', \'' + esc(m.model_id) + '\', this)">移出</button></td></tr>';
                 }
                 html += '</tbody></table>';
             } else {
                 html += '<div class="text-muted" style="font-size:11px;margin-top:var(--space-sm);">无 member</div>';
             }
+            // 行内加成员 (下拉 = registry 模型 - 已是成员)
+            html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap;">'
+                + '<select class="ob-add-member" data-group="' + esc(g.group_id) + '" style="flex:1;min-width:200px;padding:5px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;font-size:12px;"><option value="">+ 加成员 (选 registry 模型)…</option></select>'
+                + '<button class="btn btn-sm" onclick="addGroupMember(\'' + esc(g.group_id) + '\', this)">加入</button>'
+                + '</div>';
             html += '</div>';
         }
+        // 底部: 新建组表单 + 填充各组的加成员下拉
+        html += '<details style="margin-top:var(--space-sm);"><summary class="btn btn-sm" style="font-size:12px;">+ 新建组</summary>'
+            + '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;">'
+            + '<input id="new-group-id" placeholder="组ID (tier:xxx / scene:xxx)" style="flex:1;min-width:180px;padding:6px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;font-size:12px;">'
+            + '<input id="new-group-dname" placeholder="展示名 (可选)" style="width:150px;padding:6px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;font-size:12px;">'
+            + '<select id="new-group-fallback" style="width:170px;padding:6px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;font-size:12px;"><option value="">fallback (可选)</option>'
+            + data.groups.map(g => '<option value="' + esc(g.group_id) + '">' + esc(g.group_id) + '</option>').join('')
+            + '</select>'
+            + '<label style="font-size:12px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="new-group-vision"> 视觉组</label>'
+            + '<button class="btn btn-sm" onclick="createModelGroup()">创建</button>'
+            + '</div></details>';
         container.innerHTML = html;
+        populateMemberDropdowns(data.groups);
     } catch (e) {
         console.error('renderRegistryGroups failed:', e);
         container.innerHTML = '<div class="empty">渲染失败: ' + esc(e.message) + '</div>';
     }
+}
+
+// 组成员下拉填充: registry 模型 - 该组已有成员
+function populateMemberDropdowns(groups) {
+    const models = window._aimcRegistryModels || [];
+    document.querySelectorAll('.ob-add-member').forEach(sel => {
+        const gid = sel.dataset.group;
+        const inGroup = new Set(((groups || []).find(g => g.group_id === gid)?.members || []).map(m => m.model_id));
+        sel.innerHTML = '<option value="">+ 加成员 (选 registry 模型)…</option>'
+            + models.filter(m => !inGroup.has(m.model_id) && (m.status || 'active') === 'active')
+                .map(m => '<option value="' + esc(m.model_id) + '">' + esc(m.model_id) + ' (' + esc(m.tier || '?') + ')</option>')
+                .join('');
+    });
+}
+
+async function _groupMutation(refresh) {
+    // 变更后: 刷新路由缓存 (立即生效) + 重拉卡片
+    try { await authFetch('/dashboard/api/cache/refresh', { method: 'POST' }); } catch (e) { /* 60s 自动刷新兜底 */ }
+    if (refresh) refresh();
+}
+
+async function seedDefaultGroups(btn) {
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await authFetch('/dashboard/api/onboarding/seed-groups', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.ok) {
+            alert('✓ 初始化完成: registry +' + (data.registry_created || 0) + ' 行, 组成员 +' + (data.members_created || 0) + ' 个');
+            await _groupMutation(() => loadRegistryModelsCard());
+            loadRegistryGroupsCard();
+        } else { alert('失败: ' + (data.detail || resp.status)); if (btn) btn.disabled = false; }
+    } catch (e) { alert('请求失败: ' + e.message); if (btn) btn.disabled = false; }
+}
+
+async function addGroupMember(gid, btn) {
+    const sel = document.querySelector('.ob-add-member[data-group="' + gid + '"]');
+    const modelId = sel ? sel.value : '';
+    if (!modelId) { alert('先在下拉里选一个模型'); return; }
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await authFetch('/dashboard/api/onboarding/groups/' + encodeURIComponent(gid) + '/members', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_id: modelId })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.ok) {
+            await _groupMutation(() => loadRegistryGroupsCard());
+        } else { alert('加入失败: ' + (data.detail || resp.status)); if (btn) btn.disabled = false; }
+    } catch (e) { alert('请求失败: ' + e.message); if (btn) btn.disabled = false; }
+}
+
+async function removeGroupMember(gid, mid, btn) {
+    if (!confirm('把 ' + mid + ' 移出 ' + gid + '?\n(软删除, 可随时重新加入)')) return;
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await authFetch('/dashboard/api/onboarding/groups/' + encodeURIComponent(gid) + '/members/' + encodeURIComponent(mid), { method: 'DELETE' });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.ok) {
+            await _groupMutation(() => loadRegistryGroupsCard());
+        } else { alert('移出失败: ' + (data.detail || resp.status)); if (btn) btn.disabled = false; }
+    } catch (e) { alert('请求失败: ' + e.message); if (btn) btn.disabled = false; }
+}
+
+async function createModelGroup() {
+    const gid = (document.getElementById('new-group-id')?.value || '').trim();
+    if (!gid) { alert('组ID 必填 (tier:xxx / scene:xxx)'); return; }
+    const body = { group_id: gid };
+    const dname = document.getElementById('new-group-dname')?.value.trim();
+    const fb = document.getElementById('new-group-fallback')?.value;
+    if (dname) body.display_name = dname;
+    if (fb) body.fallback_group = fb;
+    if (document.getElementById('new-group-vision')?.checked) body.require_vision = true;
+    try {
+        const resp = await authFetch('/dashboard/api/onboarding/groups', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.ok) {
+            await _groupMutation(() => loadRegistryGroupsCard());
+        } else { alert('创建失败: ' + (data.detail || resp.status)); }
+    } catch (e) { alert('请求失败: ' + e.message); }
 }
 
 
@@ -861,12 +965,15 @@ function loadWeeklyReport(value) {
 // ============================================================
 
 async function loadActiveChannels() {
-    // 填充加账号表单的 provider select
+    // 填充加账号表单的 provider select — 两段式:
+    // 已有渠道 (原行为) + 渠道目录未建渠道 (标"新渠道", 提交走 onboarding 一条龙)
     const sel = document.getElementById('acct-provider');
     if (!sel) return;
     try {
         const resp = await authFetch('/dashboard/api/channels/active');
         const data = await resp.json();
+        const existing = new Set((data.channels || []).map(ch => ch.provider));
+        window._aimcExistingProviders = existing;  // submitNewAccount 分流用
         sel.innerHTML = '<option value="">-- 选择 provider --</option>';
         (data.channels || []).forEach(ch => {
             const opt = document.createElement('option');
@@ -874,6 +981,27 @@ async function loadActiveChannels() {
             opt.textContent = `${ch.provider} (${ch.name})`;
             sel.appendChild(opt);
         });
+        // 渠道目录补全 (channels_catalog 元数据随 onboarding status 下发)
+        try {
+            const obResp = await authFetch('/dashboard/api/onboarding/status');
+            if (obResp.ok) {
+                const ob = await obResp.json();
+                let added = 0;
+                (ob.catalog || []).forEach(ch => {
+                    if (existing.has(ch.key)) return;
+                    const opt = document.createElement('option');
+                    opt.value = ch.key;
+                    opt.textContent = `${ch.key} — 新渠道 (保存时自动建渠道+价格行)`;
+                    sel.appendChild(opt);
+                    added++;
+                });
+                if (!added) {
+                    const og = document.createElement('optgroup');
+                    og.label = '(目录渠道已全部创建)';
+                    sel.appendChild(og);
+                }
+            }
+        } catch (e) { /* 目录拉取失败不影响原有下拉 */ }
     } catch (e) {
         sel.innerHTML = `<option value="">加载失败: ${esc(e.message)}</option>`;
     }
@@ -1030,17 +1158,26 @@ async function submitNewAccount() {
     if (expiresAt) payload.expires_at = expiresAt;
     if (notes) payload.notes = notes;
 
-    feedback.textContent = '提交中...';
+    // 分流: 渠道不存在 → onboarding 端点 (建渠道+价格行+配额+账号+模型组种子);
+    // 已存在 → 原 /api/accounts
+    const isNewChannel = !(window._aimcExistingProviders || new Set()).has(provider);
+    const submitUrl = isNewChannel
+        ? '/dashboard/api/onboarding/channels/' + encodeURIComponent(provider)
+        : '/dashboard/api/accounts';
+
+    feedback.textContent = isNewChannel ? '提交中... (新渠道: 自动建渠道+价格行+默认模型组)' : '提交中...';
     feedback.className = 'feedback';
     try {
-        const resp = await authFetch('/dashboard/api/accounts', {
+        const resp = await authFetch(submitUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
         const data = await resp.json();
         if (resp.ok) {
-            feedback.textContent = `✅ 账号 #${data.account.id} 创建成功 (${data.account.account_name})`;
+            const acctName = (data.account && data.account.account_name) || data.account || name;
+            const seedNote = data.seed ? ` · 模型组种子: registry+${data.seed.registry_created} 成员+${data.seed.members_created}` : '';
+            feedback.textContent = `✅ 创建成功 (${acctName})${seedNote}`;
             feedback.className = 'feedback success';
             // 清空表单
             document.getElementById('acct-name').value = '';
@@ -1180,6 +1317,7 @@ async function loadDataFreshnessDonut() {
 document.addEventListener("keydown", (e) => {
     const tag = e.target.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (e.target.isContentEditable) return;
     if (e.ctrlKey || e.metaKey) return;
     if (e.key === "r") { e.preventDefault(); location.reload(); }
     else if (e.key === "a") { e.preventDefault(); if (typeof applyAllSuggestions === "function") applyAllSuggestions(); }
@@ -1699,7 +1837,7 @@ async function loadUserKeys() {
         const users = data.users || [];
         if (meta) meta.textContent = users.length + ' 个用户';
         if (users.length === 0) {
-            container.innerHTML = '<p class="empty">无用户 — 用 <code>scripts/add_user_key.py</code> 创建</p>';
+            container.innerHTML = '<p class="empty">无用户 — 点上方「+ 新建 Key」创建第一把</p>';
             return;
         }
         let html = '';
@@ -1750,8 +1888,43 @@ async function loadUserKeys() {
     }
 }
 
-async function revokeKey(keyId, btn) {
-    if (!confirm('确定吊销 Key #' + keyId + '?\n吊销后该 Key 立即失效, 不可恢复 (需重新生成)。')) return;
+// 新建 Key (V6.17: 看板自给自足, 后端 POST /api/keys 既有端点)
+async function createUserKey() {
+    const username = (document.getElementById('new-key-username')?.value || '').trim();
+    if (!username) { alert('username 必填'); return; }
+    const body = { username };
+    const label = document.getElementById('new-key-label')?.value.trim();
+    const dname = document.getElementById('new-key-dname')?.value.trim();
+    const daily = document.getElementById('new-key-daily')?.value;
+    const monthly = document.getElementById('new-key-monthly')?.value;
+    if (label) body.label = label;
+    if (dname) body.display_name = dname;
+    if (document.getElementById('new-key-admin')?.checked) body.admin = true;
+    if (daily) body.daily_limit = parseInt(daily, 10);
+    if (monthly) body.monthly_limit = parseInt(monthly, 10);
+    try {
+        const resp = await authFetch('/dashboard/api/keys', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) { alert('创建失败: ' + (data.detail || resp.status)); return; }
+        // 明文只显示一次 — 用可复制弹层而非 alert
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center;';
+        overlay.innerHTML = '<div style="background:var(--bg-primary,#161b22);color:inherit;border:1px solid var(--border,#333);border-radius:10px;padding:24px;max-width:560px;width:90%;">'
+            + '<h3 style="margin:0 0 8px;">✓ Key 已创建 (' + esc(data.key_prefix || '') + '…)</h3>'
+            + '<p style="font-size:12px;color:var(--text-secondary);margin:0 0 8px;">明文只显示这一次, 立即复制保存:</p>'
+            + '<textarea readonly style="width:100%;height:72px;font-family:monospace;font-size:13px;background:var(--bg-secondary,#0d1117);color:var(--text-primary,#e6edf3);border:1px solid var(--border,#333);border-radius:6px;padding:8px;">' + esc(data.key_plain || '') + '</textarea>'
+            + '<div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end;">'
+            + '<button class="btn btn-sm" onclick="navigator.clipboard.writeText(this.parentElement.previousElementSibling.value).then(()=>this.textContent=\'已复制\')">复制</button>'
+            + '<button class="btn btn-sm" onclick="this.closest(\'div[style*=fixed]\').remove()">我已保存, 关闭</button></div></div>';
+        document.body.appendChild(overlay);
+        await loadUserKeys();
+    } catch (e) { alert('创建请求失败: ' + e.message); }
+}
+
+async function revokeKey(keyId, btn) {    if (!confirm('确定吊销 Key #' + keyId + '?\n吊销后该 Key 立即失效, 不可恢复 (需重新生成)。')) return;
     if (btn) btn.disabled = true;
     try {
         const resp = await authFetch('/dashboard/api/keys/' + keyId + '/revoke', { method: 'POST' });
@@ -2787,6 +2960,8 @@ async function refreshBadges() {
 // ---- 页面注册表 + 调度器 ----
 
 const PAGE_ROUTES = {
+    // setup: 首启引导页 (仅无任何渠道账号时自动进入; 不在侧边栏, 数据仅在进页时拉)
+    setup:    { title: '初始化配置', ms: 600000, loaders: [] },
     overview: { title: '概览', ms: 60000, loaders: [loadOverviewKPIs, loadOverviewTrend, loadUsageTop, loadGroupOverview, loadTodaySummary] },
     cost:     { title: '成本', ms: 60000, loaders: [loadCostAudit, loadCacheStatsList] },
     usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadUserUsage, loadUserTrend, loadGroupRouting, loadPerf, loadRequests], once: [loadRequestFilterOptions] },
@@ -3091,5 +3266,144 @@ async function loadAutoJoinMetrics() {
     } catch (e) {
         container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
     }
+}
+
+// ============================================================
+// 初始化配置页 (onboarding, 2026-10-13)
+// 首启 (无任何渠道账号) 自动进入; 渠道目录/文案来自后端 channels_catalog
+// ============================================================
+
+const ONBOARDING_STATUS_URL = '/dashboard/api/onboarding/status';
+let _onboardingDone = null;   // null = 未拉取
+let _onboardingData = null;
+let _obSaving = {};           // key -> 'saved' 标记
+
+// 启动钩子: 拉取 onboarding 状态, 未完成 → 自动进入引导页
+// (鉴权启用且 token 无效时 authFetch 会先跳 login, 这里自然落在其后)
+(async function checkOnboardingOnLoad() {
+    await new Promise(r => setTimeout(r, 300));  // 让鉴权检查 IIFE 先走
+    try {
+        const resp = await authFetch(ONBOARDING_STATUS_URL);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        _onboardingDone = !!data.setup_done;
+        if (!_onboardingDone) {
+            _onboardingData = data;
+            renderSetupPage(data);
+            if ((location.hash.replace(/^#\//, '') || 'overview') !== 'setup') {
+                showPage('setup');
+            }
+        }
+    } catch (e) {
+        console.warn('onboarding check failed (non-fatal):', e);
+        _onboardingDone = true;   // 接口异常不挡看板
+    }
+})();
+
+function renderSetupPage(data) {
+    const container = document.getElementById('setup-catalog');
+    if (!container) return;
+    const byCategory = {};
+    (data.catalog || []).forEach(ch => {
+        (byCategory[ch.category] = byCategory[ch.category] || []).push(ch);
+    });
+    const meta = data.categories || {};
+    let html = '';
+    for (const cat of ['free', 'paid', 'subscription']) {
+        const list = byCategory[cat];
+        if (!list || !list.length) continue;
+        const cm = meta[cat] || {};
+        html += '<div style="margin:16px 0 8px;font-weight:600;font-size:13px;">' + esc(cm.title || cat)
+            + (cm.hint ? ' <span style="font-weight:400;font-size:11px;color:var(--text-muted);">— ' + esc(cm.hint) + '</span>' : '') + '</div>';
+        for (const ch of list) html += _setupChannelCard(ch);
+    }
+    const pg = data.pr_guide || {};
+    if (pg.repo_url) {
+        html += '<div class="card"><div class="card-body">'
+            + '<div style="font-size:13px;font-weight:600;">没有你要的服务商？欢迎提 PR</div>'
+            + '<div style="font-size:12px;color:var(--text-secondary);margin:6px 0 0;">'
+            + '在 <a href="' + esc(pg.repo_url) + '" target="_blank" rel="noopener">GitHub 仓库</a>'
+            + ' 点 Fork → 修改 <code>' + esc(pg.file || 'channels_catalog.py') + '</code>'
+            + '（条目格式参考文件内现有渠道）→ 发起 Pull Request。</div>'
+            + '</div></div>';
+    }
+    container.innerHTML = html;
+    const doneBtn = document.getElementById('setup-done-btn');
+    if (doneBtn) doneBtn.addEventListener('click', completeOnboarding);
+}
+
+function _setupChannelCard(ch) {
+    const saved = _obSaving[ch.key] === 'saved';
+    return '<div class="card" style="margin-bottom:12px;">'
+        + '<div class="card-title"><span class="card-title-main">' + esc(ch.display || ch.key)
+        + ' <span class="card-title-sub">' + esc(ch.tagline || '') + '</span></span>'
+        + '<a class="btn btn-sm" style="margin-left:auto;" href="' + esc(ch.register_url || '#') + '" target="_blank" rel="noopener">注册 ↗</a></div>'
+        + '<div class="card-body">'
+        + '<p style="font-size:13px;margin:0 0 6px;">' + esc(ch.description || '') + '</p>'
+        + (ch.invite ? '<p style="font-size:11px;margin:0 0 6px;color:var(--text-muted);">ℹ ' + esc(ch.invite) + '</p>' : '')
+        + (ch.setup_note ? '<p style="font-size:12px;margin:0 0 6px;color:var(--text-secondary);">⚠ ' + esc(ch.setup_note) + '</p>' : '')
+        + '<p style="font-size:11px;margin:0 0 8px;color:var(--text-muted);">模型: ' + esc((ch.models || []).join(' / ')) + '</p>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+        + '<input id="ob-key-' + esc(ch.key) + '" type="password" placeholder="粘贴 API Key"' + (saved ? ' disabled' : '')
+        + ' style="flex:1;min-width:220px;padding:8px 10px;border:1px solid var(--border, #333);border-radius:6px;background:var(--bg-secondary, transparent);color:inherit;">'
+        + '<button class="btn btn-sm" id="ob-test-' + esc(ch.key) + '" onclick="testOnboardingKey(\'' + esc(ch.key) + '\')">测试</button>'
+        + '<button class="btn btn-sm" id="ob-save-' + esc(ch.key) + '" onclick="saveOnboardingChannel(\'' + esc(ch.key) + '\')">保存</button>'
+        + '</div>'
+        + '<div id="ob-msg-' + esc(ch.key) + '" style="font-size:12px;margin-top:6px;min-height:16px;"></div>'
+        + '</div></div>';
+}
+
+function _obMsg(key, text, ok) {
+    const el = document.getElementById('ob-msg-' + key);
+    if (el) { el.textContent = text; el.style.color = ok ? 'var(--success, #3fb950)' : 'var(--danger, #f85149)'; }
+}
+
+async function testOnboardingKey(key) {
+    const input = document.getElementById('ob-key-' + key);
+    if (!input || !input.value.trim()) { _obMsg(key, '先粘贴 API Key 再测试', false); return; }
+    _obMsg(key, '测试中…', true);
+    try {
+        const resp = await authFetch('/dashboard/api/onboarding/test', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key: key, api_key: input.value.trim() })
+        });
+        const data = await resp.json();
+        _obMsg(key, data.detail || (data.ok ? 'key 有效' : '测试失败'), !!data.ok);
+    } catch (e) { _obMsg(key, '测试请求失败: ' + e.message, false); }
+}
+
+async function saveOnboardingChannel(key) {
+    const input = document.getElementById('ob-key-' + key);
+    if (!input || !input.value.trim()) { _obMsg(key, '先粘贴 API Key', false); return; }
+    const btn = document.getElementById('ob-save-' + key);
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await authFetch('/dashboard/api/onboarding/channels/' + encodeURIComponent(key), {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_key: input.value.trim() })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.ok) {
+            _obMsg(key, '✓ 已保存: ' + (data.channel || key) + ' / ' + (data.account || '')
+                + '（价格 ' + (data.prices || 0) + ' 行）。可继续添加其他渠道，或点底部「完成初始化」。', true);
+            _obSaving[key] = 'saved';
+            input.disabled = true;
+            if (btn) btn.textContent = '已保存 ✓';
+        } else {
+            _obMsg(key, data.detail || ('保存失败 (' + resp.status + ')'), false);
+            if (btn) btn.disabled = false;
+        }
+    } catch (e) {
+        _obMsg(key, '保存请求失败: ' + e.message, false);
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function completeOnboarding() {
+    try {
+        await authFetch('/dashboard/api/onboarding/complete', { method: 'POST' });
+    } catch (e) { /* 忽略 — 本地状态照切 */ }
+    _onboardingDone = true;
+    showPage('overview');
 }
 

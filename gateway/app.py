@@ -177,6 +177,10 @@ def create_app() -> FastAPI:
     from dashboard.routes import router as dashboard_router
     app.include_router(dashboard_router)
 
+    # 看板「初始化配置」页 API (渠道目录引导, 与 dashboard 同 token 鉴权)
+    from dashboard.onboarding import router as onboarding_router
+    app.include_router(onboarding_router)
+
     # 挂载 Dashboard 静态文件
     # V6.8/公网部署 (2026-09-18): 静态资源 7 天强缓存 — 经 CF 隧道/慢链路时
     # 消除每次体检式的 304 往返 (ETag 仍保留供 max-age 过期后协商)。文件名
