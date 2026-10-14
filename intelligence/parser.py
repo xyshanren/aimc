@@ -27,12 +27,29 @@ _client: Optional[AsyncOpenAI] = None
 
 
 def _get_client() -> AsyncOpenAI:
+    """解析客户端 — 两档配置 (2026-10-13 统一):
+
+    1. OPENAI_API_KEY 已设 → 外部模型 (旧三件套兼容: OPENAI_API_KEY +
+       OPENAI_BASE_URL + AIMC_PARSE_MODEL, e.g. 指向 MiniMax 代理)
+    2. 未设 (默认) → 自调用本网关: 127.0.0.1:AIMC_PORT, 复用网关鉴权 key;
+       AIMC_PARSE_MODEL 可填 tier: 组名 (默认 tier:balanced, 走组路由
+       复用已配渠道) 或具体模型名 (精确路由)。
+
+    自调用安全性: 解析请求经网关转发到上游, 不会回环 (网关不消费解析)。
+    """
     global _client
     if _client is None:
-        _client = AsyncOpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-        )
+        if settings.openai_api_key:
+            _client = AsyncOpenAI(
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url,
+            )
+        else:
+            _client = AsyncOpenAI(
+                # 网关鉴权未开时占位值即可 (AsyncOpenAI 要求非空)
+                api_key=settings.api_key or "aimc-parse-selfcall",
+                base_url=f"http://127.0.0.1:{settings.port}/v1",
+            )
     return _client
 
 
@@ -361,7 +378,7 @@ async def parse_content(
       之前是"AI 失败就返回 is_promotion=False"——这样 healer 看不到失败
       现在 healer 自己 try/except，能区分"AI 失败"和"AI 成功但不是优惠"
     """
-    client = _get_client()  # 缺 key 时这里抛 OpenAIError
+    client = _get_client()  # 外部档缺 key 时在调用处抛 OpenAIError
 
     # 1. 净化 HTML → 干净 Markdown
     # V6.5+ (2026-09-14): max_tokens 1200→4000 — parse_model=tier:balanced

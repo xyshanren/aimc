@@ -32,7 +32,9 @@ class Settings(BaseSettings):
 
     # === 服务配置 ===
     host: str = "0.0.0.0"          # env: AIMC_HOST
-    port: int = 8080               # env: AIMC_PORT
+    # 默认端口 18080 (2026-10-13): 8080 与各类代理/开发工具高频冲突;
+    # 老部署在 .env 显式 AIMC_PORT 的不受默认值变化影响
+    port: int = 18080              # env: AIMC_PORT
     log_level: str = "INFO"        # env: AIMC_LOG_LEVEL
 
     # === 加密 (API-Sec-1, 2026-07-29) ===
@@ -98,7 +100,9 @@ class Settings(BaseSettings):
     # 加 AIMC_ 前缀会破坏兼容性 (SDK / 用户肌肉记忆都期望无前缀)
     openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
     openai_base_url: str = Field(default="https://api.openai.com/v1", validation_alias="OPENAI_BASE_URL")
-    parse_model: str = "gpt-4o-mini"   # env: AIMC_PARSE_MODEL
+    # parse_model 默认走自调用网关的 balanced 组 (OPENAI_API_KEY 留空时生效, parser.py 两档逻辑);
+    # 可填其他 tier: 组名或具体模型名; 配了 OPENAI_API_KEY 则按外部模型解析
+    parse_model: str = "tier:balanced"   # env: AIMC_PARSE_MODEL
 
     # === 告警通道（Phase 试用简化）===
     # alert_channel:

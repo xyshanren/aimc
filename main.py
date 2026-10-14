@@ -1,7 +1,7 @@
 """AIMC - AI Model Compass 主入口
 
 启动命令：
-    uvicorn main:app --host 0.0.0.0 --port 8080
+    uvicorn main:app --host 0.0.0.0 --port 18080
 """
 
 from gateway.app import create_app

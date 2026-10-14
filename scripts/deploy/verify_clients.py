@@ -2,8 +2,8 @@
 
 启动 AIMC 服务后, 模拟 4 个客户端实测 base_url:
 1. localhost (同机 curl, 验证服务在跑)
-2. windows (workbuddy / qclaw / trae 等, base_url=http://<vm-ip>:8080/v1)
-3. wsl (hermes-agent 在 wsl 内, base_url=http://<vm-ip>:8080/v1)
+2. windows (workbuddy / qclaw / trae 等, base_url=http://<vm-ip>:18080/v1)
+3. wsl (hermes-agent 在 wsl 内, base_url=http://<vm-ip>:18080/v1)
 4. LAN (其他机器, 同 #2)
 
 每个客户端调 /v1/models, 验证:
@@ -13,9 +13,9 @@
 - 响应头包含 X-AIMC-* (可选, 用于验证路由层)
 
 用法:
-    # 在 Ubuntu VM 上跑 (假设服务在 0.0.0.0:8080)
+    # 在 Ubuntu VM 上跑 (假设服务在 0.0.0.0:18080, 默认端口)
     python scripts/deploy/verify_clients.py
-    python scripts/deploy/verify_clients.py --host 192.168.1.100 --port 8080
+    python scripts/deploy/verify_clients.py --host 192.168.1.100 --port 18080
 """
 import argparse
 import ipaddress
@@ -128,7 +128,7 @@ def check_endpoint(name: str, base_url: str, api_key: str = "") -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 4 v4.3 多客户端连通性验证")
     parser.add_argument("--host", default="127.0.0.1", help="AIMC 服务 host (默认 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8080, help="AIMC 服务 port (默认 8080)")
+    parser.add_argument("--port", type=int, default=18080, help="AIMC 服务 port (默认 18080)")
     parser.add_argument("--api-key", default="", help="AIMC_API_KEY (如配置)")
     parser.add_argument("--skip-lan", action="store_true", help="跳过 LAN 客户端测试")
     # v4.3.11: --lan-host 强制指定 LAN IP (覆盖 socket 自动探测)

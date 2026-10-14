@@ -104,11 +104,11 @@ def test_non_prefixed_vars_no_longer_take_effect():
         clear_extra=_NOISE_PREFIXED,
     )
     assert s.host == "0.0.0.0"           # 默认值, HOST 未生效
-    assert s.port == 8080                 # 默认值
+    assert s.port == 18080                # 默认值 (2026-10-13 起 18080)
     assert s.log_level == "INFO"          # 默认值
     assert s.db_path == "./data/aimc.db"  # 默认值
     assert s.proxy_url == ""              # 默认值
-    assert s.parse_model == "gpt-4o-mini"  # 默认值
+    assert s.parse_model == "tier:balanced"  # 默认值 (2026-10-13 起自调用网关)
     assert s.crawl_enabled is True        # 默认值
 
 

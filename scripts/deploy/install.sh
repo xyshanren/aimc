@@ -260,10 +260,13 @@ else
 fi
 
 # === 9. 健康检查 ===
-if curl -sf http://127.0.0.1:8080/health >/dev/null 2>&1; then
-    info "OK /health OK"
+# 端口从 .env 读 (默认 18080; 旧部署显式 AIMC_PORT=8080 也能探到)
+HEALTH_PORT=$(grep -E '^AIMC_PORT=' "$AIMC_HOME/.env" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '[:space:]')
+HEALTH_PORT="${HEALTH_PORT:-18080}"
+if curl -sf "http://127.0.0.1:${HEALTH_PORT}/health" >/dev/null 2>&1; then
+    info "OK /health OK (port=$HEALTH_PORT)"
 else
-    warn "/health 未响应 — 可能服务未启 / .env 没填完"
+    warn "/health 未响应 (port=$HEALTH_PORT) — 可能服务未启 / .env 没填完"
 fi
 
 echo
