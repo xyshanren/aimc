@@ -87,6 +87,16 @@ def _ensure_db():
     asyncio.run(init_db())
 
 
+async def _ensure_db_async():
+    """用例内建表 + 重置 app 缓存 (conftest 每 test 后删项目模块 → engine
+    按当前 settings 重建; _APP 单例若跨用例存活会持有旧 engine 绑定,
+    导致端点写入与用例断言分属两个库 — 每用例重建保证一致)"""
+    global _APP
+    _APP = None
+    from db.init_db import init_db
+    await init_db()
+
+
 def _crud_session():
     from db.engine import async_session_factory
     return async_session_factory()
@@ -106,6 +116,7 @@ def test_status_fresh_db_setup_not_done():
     _ensure_db()
 
     async def run():
+        await _ensure_db_async()
         async with _get_client() as c:
             resp = await c.get("/dashboard/api/onboarding/status")
             assert resp.status_code == 200, resp.text
@@ -127,6 +138,7 @@ def test_status_fresh_db_setup_not_done():
 
 def test_add_channel_creates_everything_and_flips_setup_done():
     async def run():
+        await _ensure_db_async()
         async with _get_client() as c:
             resp = await c.post("/dashboard/api/onboarding/channels/siliconflow",
                                 json={"api_key": _key("sf")})
@@ -174,6 +186,7 @@ def test_add_channel_creates_everything_and_flips_setup_done():
 
 def test_add_channel_duplicate_409():
     async def run():
+        await _ensure_db_async()
         async with _get_client() as c:
             r1 = await c.post("/dashboard/api/onboarding/channels/deepseek",
                               json={"api_key": _key("a")})
@@ -186,6 +199,7 @@ def test_add_channel_duplicate_409():
 
 def test_add_channel_unknown_and_hidden_404():
     async def run():
+        await _ensure_db_async()
         async with _get_client() as c:
             r_unknown = await c.post("/dashboard/api/onboarding/channels/no_such_channel",
                                      json={"api_key": _key("x")})
@@ -198,6 +212,7 @@ def test_add_channel_unknown_and_hidden_404():
 
 def test_complete_marks_done_even_without_accounts():
     async def run():
+        await _ensure_db_async()
         # complete 落 settings_runtime 标记 → 即使没有账号也算完成
         async with _get_client() as c:
             resp = await c.post("/dashboard/api/onboarding/complete")
@@ -209,6 +224,7 @@ def test_complete_marks_done_even_without_accounts():
 
 def test_test_key_endpoint_validation():
     async def run():
+        await _ensure_db_async()
         async with _get_client() as c:
             r_nokey = await c.post("/dashboard/api/onboarding/test", json={"key": "sensenova"})
             assert r_nokey.status_code == 400
@@ -232,6 +248,7 @@ def test_catalog_prices_match_single_source():
 def test_seed_groups_idempotent():
     """seed-groups 全量补种: 首次补缺失, 二次零 diff (ensure 语义)"""
     async def run():
+        await _ensure_db_async()
         async with _get_client() as c:
             r1 = await c.post("/dashboard/api/onboarding/seed-groups")
             assert r1.status_code == 200
@@ -257,6 +274,7 @@ def test_seed_groups_idempotent():
 def test_group_edit_lifecycle():
     """组编辑端点生命周期: 创建 → 加成员 → 重复 409 → 软删 → 复活 → 加未知模型 404"""
     async def run():
+        await _ensure_db_async()
         async with _get_client() as c:
             # 创建
             r = await c.post("/dashboard/api/onboarding/groups",
@@ -311,6 +329,7 @@ def test_group_edit_lifecycle():
 def test_pricing_unpriced_endpoint():
     """待补价盘点端点: NULL 行查询 + 聊天/非聊天分类"""
     async def run():
+        await _ensure_db_async()
         async with _get_client() as c:
             resp = await c.get("/dashboard/api/pricing/unpriced")
             assert resp.status_code == 200, resp.text
@@ -321,6 +340,111 @@ def test_pricing_unpriced_endpoint():
                 low = item["model"].lower()
                 assert not any(k in low for k in (
                     "embed", "rerank", "asr", "voice", "ocr", "image", "video"))
+    asyncio.run(run())
+
+
+# ============================================================
+# 模型消失检测 (intelligence/model_absence.py)
+# 并入本文件: 复用已验证的 settings 窗口机制 (独立测试文件会被 conftest
+# 收集期的模块删除打到错误库, 见 _ensure_db_async 注释)。
+# 注意: detect_missing_models 必须用例内延迟 import — 顶层 import 会持有
+# 收集期旧模块闭包 (其 db.engine 绑错库)。
+# ============================================================
+
+
+async def _absence_cleanup(providers: list, seeded_models: list):
+    from db.engine import async_session_factory
+    from db.models import ModelChangeSuggestion, ModelGroupMember, ModelListSnapshot
+    from sqlalchemy import delete
+    async with async_session_factory() as s:
+        await s.execute(delete(ModelListSnapshot).where(
+            ModelListSnapshot.provider.in_(list(providers))))
+        if seeded_models:
+            await s.execute(delete(ModelGroupMember).where(
+                ModelGroupMember.model_id.in_(list(seeded_models))))
+            await s.execute(delete(ModelChangeSuggestion).where(
+                ModelChangeSuggestion.model_id.in_(list(seeded_models))))
+        await s.commit()
+
+
+async def _absence_snapshot_state(provider: str):
+    from db.engine import async_session_factory
+    from db.models import ModelListSnapshot
+    from sqlalchemy import select
+    async with async_session_factory() as s:
+        rows = list((await s.execute(select(
+            ModelListSnapshot.model, ModelListSnapshot.miss_count)
+            .where(ModelListSnapshot.provider == provider))).all())
+        return {m: c for m, c in rows}
+
+
+def test_absence_first_snapshot_and_threshold():
+    """首次全量插入 → 消失计 miss → 连续第二次且无组员只记录 → 回归清零"""
+    async def run():
+        await _ensure_db_async()
+        from intelligence.model_absence import detect_missing_models
+        try:
+            stats = await detect_missing_models("pa1", ["ma-a", "ma-b", "ma-c"])
+            assert stats["suggestions_created"] == []
+            state = await _absence_snapshot_state("pa1")
+            assert state == {"ma-a": 0, "ma-b": 0, "ma-c": 0}
+            await detect_missing_models("pa1", ["ma-a", "ma-b"])   # ma-c miss 1
+            state = await _absence_snapshot_state("pa1")
+            assert state["ma-c"] == 1
+            stats = await detect_missing_models("pa1", ["ma-a", "ma-b"])  # miss 2
+            assert stats["missing_now"] == ["ma-c"]
+            assert stats["suggestions_created"] == []  # 无组员不建
+            await detect_missing_models("pa1", ["ma-a", "ma-b", "ma-c"])  # 回归
+            state = await _absence_snapshot_state("pa1")
+            assert state["ma-c"] == 0
+        finally:
+            await _absence_cleanup(["pa1"], [])
+    asyncio.run(run())
+
+
+def test_absence_suggestion_with_member_and_idempotent():
+    """有活跃组员 → 连续缺失生成出组建议; 重复检测幂等只一条"""
+    async def run():
+        await _ensure_db_async()
+        from intelligence.model_absence import detect_missing_models
+        from db.engine import async_session_factory
+        from db.models import ModelGroupMember, ModelChangeSuggestion
+        from sqlalchemy import select
+        try:
+            async with async_session_factory() as s:
+                s.add(ModelGroupMember(group_id="tier:code", model_id="ma-old",
+                                       priority=100, weight=1.0, added_by="test"))
+                await s.commit()
+            await detect_missing_models("pa2", ["ma-old", "ma-new"])
+            await detect_missing_models("pa2", ["ma-new"])
+            stats = await detect_missing_models("pa2", ["ma-new"])
+            assert stats["suggestions_created"] == ["ma-old"]
+            await detect_missing_models("pa2", ["ma-new"])
+            await detect_missing_models("pa2", ["ma-new"])
+            async with async_session_factory() as s:
+                rows = list((await s.execute(select(
+                    ModelChangeSuggestion.model_id).where(
+                    ModelChangeSuggestion.model_id == "ma-old",
+                    ModelChangeSuggestion.status == "pending"))).scalars().all())
+                assert rows == ["ma-old"]  # 幂等只一条
+        finally:
+            await _absence_cleanup(["pa2"], ["ma-old"])
+    asyncio.run(run())
+
+
+def test_absence_shrink_guard():
+    """列骤降过半: 跳过检测且快照不动"""
+    async def run():
+        await _ensure_db_async()
+        from intelligence.model_absence import detect_missing_models
+        try:
+            await detect_missing_models("pa3", ["mb-%d" % i for i in range(10)])
+            stats = await detect_missing_models("pa3", ["mb-0", "mb-1", "mb-2", "mb-3"])
+            assert stats["shrunk_skipped"] is True
+            state = await _absence_snapshot_state("pa3")
+            assert len(state) == 10
+        finally:
+            await _absence_cleanup(["pa3"], [])
     asyncio.run(run())
 
 
