@@ -137,7 +137,7 @@ hermes-agent-cn 想做智能路由（按任务类型/复杂度分模型）
 **hermes-agent-cn 侧改动**：
 ```python
 # 启动时
-models = httpx.get("http://aimc:8080/v1/models").json()
+models = httpx.get("http://aimc:18080/v1/models").json()
 capability_cache = {
     "scene:code": "deepseek-v4-flash",  # 历史命中
     "scene:longctx": "kimi-k3",
@@ -217,7 +217,7 @@ models:
 ```yaml
 # ========== AIMC 网关配置 ==========
 aimc:
-  base_url: http://localhost:8080/v1      # AIMC 网关地址
+  base_url: http://localhost:18080/v1      # AIMC 网关地址
   api_key: ${AIMC_API_KEY}                # 从环境变量读, 不明文写在 YAML
   timeout: 120                            # 秒 (大模型响应慢)
   max_retries: 2                          # AIMC 内部已有 fallback, hermes-agent-cn 这层不重复

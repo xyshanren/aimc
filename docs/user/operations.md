@@ -37,7 +37,7 @@ cat reports/weekly-latest.md
 
 ```bash
 # 看 shadow log（积累真自动应用决策数据）
-tail -50 /home/lxc/aimc/intelligence/auto_apply_shadow.log
+tail -50 ~/aimc/intelligence/auto_apply_shadow.log
 
 # 格式: 每次 suggest_changes --apply 跑时记录 "如果自动应用会改哪些"
 # 当前是人工 review + apply, shadow 记录供未来 P2-19 真自动应用决策用
@@ -87,7 +87,7 @@ journalctl --user -u aimc -n 100 | tail -50
 # 如果频繁: 升级 TokenPlan 或加账号
 
 # 4. 如果是 channel 不可用
-curl http://localhost:8080/dashboard/api/channels | python3 -m json.tool
+curl http://localhost:18080/dashboard/api/channels | python3 -m json.tool
 ```
 
 ## 限额监控
@@ -161,7 +161,7 @@ cp .env ~/.backup-aimc-env-$(date +%Y%m%d)
 
 # 3. 配合 cron (每月 1 号)
 cat > ~/.config/cron/aimc-backup.cron << 'EOF'
-0 3 1 * * sqlite3 /home/lxc/aimc/data/aimc.db ".backup /backup/aimc-$(date +\%Y\%m\%d).db"
+0 3 1 * * sqlite3 ~/aimc/data/aimc.db ".backup /backup/aimc-$(date +\%Y\%m\%d).db"
 EOF
 ```
 
@@ -221,7 +221,7 @@ systemctl --user restart aimc
 grep 'Added job' /tmp/aimc.log | grep -E 'Channel 智能探活'
 
 # 2. 总开关是否开了?
-grep AIMC_HEALTH_PROBE_ENABLED /home/lxc/aimc/.env
+grep AIMC_HEALTH_PROBE_ENABLED ~/aimc/.env
 
 # 3. cooldown_manager 有没有待探活 account?
 # (无代码检查入口, 直接重启服务看)

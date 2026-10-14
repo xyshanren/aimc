@@ -22,9 +22,9 @@ sudo apt update
 sudo apt install -y git curl sqlite3 python3-venv python3-pip
 
 # 4. 防火墙 (如启用)
-sudo ufw allow from 192.168.0.0/16 to any port 8080  # 仅 LAN 内允许
+sudo ufw allow from 192.168.0.0/16 to any port 18080  # 仅 LAN 内允许
 # 或者
-sudo ufw allow 8080/tcp  # 任何来源
+sudo ufw allow 18080/tcp  # 任何来源
 
 # 5. 静态 IP / DNS (确保多客户端能稳定找到)
 ip addr show  # 记下 vm-ip
@@ -135,13 +135,13 @@ systemctl --user restart aimc
 
 ```bash
 # 基础
-curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:18080/health
 
 # 模型清单
-curl http://127.0.0.1:8080/v1/models | python -m json.tool | head -20
+curl http://127.0.0.1:18080/v1/models | python -m json.tool | head -20
 
 # 跨网 (从 windows / wsl / 其他机器)
-curl http://<vm-ip>:8080/health
+curl http://<vm-ip>:18080/health
 ```
 
 ---
@@ -183,7 +183,7 @@ python scripts/deploy/verify_clients.py --host <vm-ip>
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://<vm-ip>:8080/v1",
+    base_url="http://<vm-ip>:18080/v1",
     api_key="<你的 AIMC_API_KEY, 或任意字符如未配>"
 )
 
@@ -246,8 +246,8 @@ journalctl --user -u aimc -n 50 --no-pager
 ### 端口冲突
 
 ```bash
-# 看谁占 8080
-ss -tlnp | grep 8080
+# 看谁占 18080
+ss -tlnp | grep 18080
 
 # 改 AIMC_PORT=8081 等
 nano ~/aimc/.env
@@ -261,14 +261,14 @@ systemctl --user restart aimc
 sudo ufw status
 
 # 2. AIMC 是否绑 0.0.0.0
-ss -tlnp | grep 8080
-# 期望: 0.0.0.0:8080 (不是 127.0.0.1:8080)
+ss -tlnp | grep 18080
+# 期望: 0.0.0.0:18080 (不是 127.0.0.1:18080)
 
 # 3. 从 windows ping VM
 ping <vm-ip>
 
 # 4. VM 上 listen 服务
-sudo netstat -tlnp | grep :8080
+sudo netstat -tlnp | grep :18080
 ```
 
 ### scheduler 没跑采集
@@ -278,7 +278,7 @@ sudo netstat -tlnp | grep :8080
 journalctl --user -u aimc | grep -i scheduler
 
 # 看是否启了
-curl http://127.0.0.1:8080/health | python -m json.tool
+curl http://127.0.0.1:18080/health | python -m json.tool
 ```
 
 ---

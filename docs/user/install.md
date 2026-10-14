@@ -58,18 +58,20 @@ python main.py
 # systemctl --user start aimc
 ```
 
-启动后默认监听 `0.0.0.0:8080`。健康检查：
+启动后默认监听 `0.0.0.0:18080`。健康检查：
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:18080/health
 # 期望: {"status":"ok"}
 ```
 
-> **首次启动没有任何渠道？** 启动日志会提示「首启引导」。两种配置方式任选：
-> 1. 看板「账号管理」页添加渠道 + API Key（推荐，可视化）
+> **首次启动没有任何渠道？** 打开看板 `http://localhost:18080/dashboard/` 会自动进入
+> **「初始化配置」页** — 按卡片引导注册渠道（免费渠道优先推荐）并粘贴 API Key，
+> 一键完成渠道+账号+价格行配置，无需命令行。两种补充方式任选：
+> 1. 看板「初始化配置」页（推荐，可视化，首启自动进入）
 > 2. 命令行批量导入：`python scripts/manual_import.py`（从 .env 读取 key）
 >
-> 配置后重启服务生效。
+> 配置后路由缓存约 60s 自动刷新，无需重启。
 
 ## 6. 验证
 
@@ -77,7 +79,7 @@ curl http://localhost:8080/health
 # OpenAI SDK (Python)
 python -c "
 from openai import OpenAI
-c = OpenAI(base_url='http://localhost:8080/v1', api_key='your-aimc-key')
+c = OpenAI(base_url='http://localhost:18080/v1', api_key='your-aimc-key')
 print(c.chat.completions.create(model='deepseek-v4-pro',
       messages=[{'role':'user','content':'hi'}], max_tokens=5).choices[0].message.content)
 "
@@ -98,6 +100,6 @@ print(c.chat.completions.create(model='deepseek-v4-pro',
 | `pip install` 报错 | Python 版本 ≥ 3.11 | 升级 Python / 用 pyenv |
 | 启动报 `ModuleNotFoundError` | venv 没激活 | `source .venv/bin/activate` |
 | 启动报 `database is locked` | 多进程启动 | `pkill -f "python main.py"` 后重启 |
-| `curl /health` 连不上 | 防火墙/端口 | `ufw allow 8080` 或换端口 |
+| `curl /health` 连不上 | 防火墙/端口 | `ufw allow 18080` 或换端口 |
 | `manual_import` 报 `Invalid API key` | .env 没填或错 | 检查 .env 重跑脚本 |
 | 启动日志出现「首启引导」 | 渠道/账号未配置 | 看板加渠道或跑 manual_import.py（见第 5 步） |

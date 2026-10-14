@@ -26,7 +26,7 @@
 **A:** 每个响应都带 `X-AIMC-Actual-Model` / `X-AIMC-Actual-Channel` / `X-AIMC-Actual-Group-Id` / `X-AIMC-Actual-Tier` 头：
 
 ```bash
-curl -i -X POST http://localhost:8080/v1/chat/completions \
+curl -i -X POST http://localhost:18080/v1/chat/completions \
   -H "Authorization: Bearer $KEY" \
   -d '{"model":"tier:flagship","messages":[{"role":"user","content":"hi"}]}' \
   | grep -i "X-AIMC-"

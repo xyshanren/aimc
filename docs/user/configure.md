@@ -26,7 +26,7 @@ AIMC_ALERT_CHANNEL=feishu
 ```ini
 # === 网关 ===
 AIMC_HOST=0.0.0.0
-AIMC_PORT=8080
+AIMC_PORT=18080
 AIMC_LOG_LEVEL=INFO
 
 # === 鉴权 ===
@@ -62,11 +62,13 @@ AIMC_CRAWL_ENABLED=true
 # 价格波动告警阈值 (%)
 AIMC_PRICE_ALERT_THRESHOLD_PCT=30.0
 
-# === AI 解析 (优惠情报用) ===
-OPENAI_API_KEY=sk-xxx
-# 可指向 SF 兼容 endpoint 省 token
-OPENAI_BASE_URL=https://api.siliconflow.cn/v1
-AIMC_PARSE_MODEL=MiniMax-M2.7
+# === AI 解析 (情报采集层, 2026-10-13 起两档) ===
+# A. 默认 (推荐): 全留空 = 自调用本网关, 解析走组路由复用已配渠道
+#    可用 AIMC_PARSE_MODEL 换组或指定模型 (tier:flagship / tier:light / 具体名)
+# B. 外部模型: 填 OPENAI_API_KEY (+ 可选 OPENAI_BASE_URL) 自动切换
+# OPENAI_API_KEY=
+# OPENAI_BASE_URL=
+# AIMC_PARSE_MODEL=tier:balanced
 
 # === 告警 ===
 AIMC_BARK_KEY=
@@ -108,12 +110,16 @@ AIMC_ACCOUNT_HEALTH_LOG_RETENTION_DAYS=7
 
 ## 2. 录入账号
 
+> 💡 **全新部署推荐先走看板「初始化配置」页** — 打开看板即自动进入，按渠道卡片
+> （免费渠道优先）注册并粘贴 API Key 即可，效果等同本节所有手动步骤。
+> 本节是手动/批量路径。
+
 ### 方式 A: Dashboard 方式（推荐）
 
 ```
-1. 浏览器访问 http://localhost:8080/dashboard/
+1. 浏览器访问 http://localhost:18080/dashboard/
 2. 输入 AIMC_DASHBOARD_TOKEN
-3. 进 "账号管理" → "新增账号"
+3. 首启自动进「初始化配置」页；之后加账号走 "运维 → 账号管理" → "新增账号"
 4. 选渠道（siliconflow_aggregator / deepseek_official / ...）+ 填 API Key
 5. 保存
 ```
@@ -143,7 +149,7 @@ echo "AIMC_DASHBOARD_TOKEN=$DASHBOARD_TOKEN" >> .env
 systemctl --user restart aimc
 ```
 
-访问 `http://localhost:8080/dashboard/`，粘贴 token 登录（token 存浏览器 localStorage）。
+访问 `http://localhost:18080/dashboard/`，粘贴 token 登录（token 存浏览器 localStorage）。
 
 **留空 = legacy 行为**（LAN 内裸开），适合开发环境。
 
@@ -172,7 +178,7 @@ python scripts/add_user_key.py --username zhangsan \
 ### 用法（跟普通 OpenAI 客户端一样）
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:18080/v1/chat/completions \
   -H "Authorization: Bearer aimc-xxxxxxxx" \
   -H "Content-Type: application/json" \
   -d '{"model": "tier:balanced", "messages": [...]}'
@@ -196,7 +202,7 @@ AIMC_API_KEY**（全局 key，无 caller 记账）。两种 key 可并存，渐�
 python scripts/list_user_keys.py
 
 # 吊销 key（dashboard "Key 管理" 栏点吊销，或 API）
-curl -X POST http://localhost:8080/dashboard/api/keys/<id>/revoke \
+curl -X POST http://localhost:18080/dashboard/api/keys/<id>/revoke \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -236,10 +242,10 @@ python scripts/seed_account_quotas.py
 
 ```bash
 # 1. 网关鉴权工作
-curl -H "Authorization: Bearer $AIMC_API_KEY" http://localhost:8080/v1/models | head
+curl -H "Authorization: Bearer $AIMC_API_KEY" http://localhost:18080/v1/models | head
 
 # 2. Dashboard token 工作
-curl http://localhost:8080/dashboard/api/channels -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN" | head
+curl http://localhost:18080/dashboard/api/channels -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN" | head
 
 # 3. 限额配置生效
 sqlite3 data/aimc.db "SELECT * FROM account_quotas LIMIT 5"

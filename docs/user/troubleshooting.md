@@ -5,7 +5,7 @@
 
 ## 1. 网关连不上 / 启动失败
 
-### 症状：`curl http://localhost:8080/health` 连不上
+### 症状：`curl http://localhost:18080/health` 连不上
 
 ```bash
 # 1. service 状态
@@ -13,7 +13,7 @@ systemctl --user status aimc
 # 或: ps aux | grep "python main.py"
 
 # 2. 端口监听
-ss -tlnp | grep 8080
+ss -tlnp | grep 18080
 
 # 3. 启动日志
 journalctl --user -u aimc -n 50
@@ -23,9 +23,9 @@ journalctl --user -u aimc -n 50
 ### 症状：`Address already in use`
 
 ```bash
-# 找占用 8080 的进程
-lsof -i :8080
-# 或: ss -tlnp | grep 8080
+# 找占用 18080 的进程
+lsof -i :18080
+# 或: ss -tlnp | grep 18080
 
 # 杀掉
 kill <PID>
@@ -65,7 +65,7 @@ systemctl --user restart aimc
 ```bash
 # Windows Git Bash → WSL 执行（hermes 等 WSL 侧客户端的场景）
 MSYS_NO_PATHCONV=1 wsl bash /mnt/d/work/workspace/Qoder/aimc/scripts/tmp_verify_hermes_key.sh
-# 传参: 第 1 个 = .env 路径, 第 2 个 = 网关 base_url（默认 http://127.0.0.1:8080/v1）
+# 传参: 第 1 个 = .env 路径, 第 2 个 = 网关 base_url（默认 http://127.0.0.1:18080/v1）
 ```
 
 三条路径全 200 即 key/鉴权/组路由全通：`GET /v1/models`（组列表）+ `POST tier:light` + `POST tier:balanced`（真实路由链）。
@@ -138,7 +138,7 @@ V4.9 起，**余额不足类 429 会被标 `needs_human=true`**，路由**不再
 
 ```bash
 # 1. 直接查 API
-curl -s http://localhost:8080/dashboard/api/cooldown/needs-human \
+curl -s http://localhost:18080/dashboard/api/cooldown/needs-human \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN" | jq
 
 # 2. 看 DB usage_logs (V4.9 持久化)
@@ -173,7 +173,7 @@ journalctl --user -u aimc -n 20 | grep -i "cooldown"
 
 # 3. 重置 cooldown
 # Dashboard /api/cache/refresh 后会重新 load
-curl -X POST http://localhost:8080/dashboard/api/cache/refresh
+curl -X POST http://localhost:18080/dashboard/api/cache/refresh
 ```
 
 ### 症状：500 Internal Server Error
@@ -193,7 +193,7 @@ systemctl --user restart aimc
 
 ```bash
 # 1. 看 cache stats
-curl http://localhost:8080/dashboard/api/cache/stats?days=7 | python3 -m json.tool
+curl http://localhost:18080/dashboard/api/cache/stats?days=7 | python3 -m json.tool
 
 # 2. 检查 channel.supports_prompt_cache (P1-12 加的字段)
 sqlite3 data/aimc.db "SELECT name, supports_prompt_cache FROM channels"
@@ -230,7 +230,7 @@ python scripts/check_model_consistency.py --check db
 sqlite3 data/aimc.db "SELECT id, model_id, change_type, status, confidence FROM model_change_suggestions ORDER BY id DESC LIMIT 5"
 
 # 2. 手动触发建议生成 (默认 shadow mode)
-cd /home/lxc/aimc && source .venv/bin/activate
+cd ~/aimc && source .venv/bin/activate
 PYTHONPATH=. python intelligence/analytics/suggest_changes.py --shadow-mode
 
 # 3. 写到 db
@@ -336,7 +336,7 @@ sqlite3 data/aimc.db "SELECT COUNT(*) FROM channels, accounts, price_snapshots, 
 
 # 4. 复现步骤
 echo "request: $(date)" >> /tmp/aimc.log
-curl -v http://localhost:8080/v1/chat/completions \
+curl -v http://localhost:18080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $AIMC_API_KEY" \
   -d '{"model":"tier:flagship","messages":[{"role":"user","content":"hi"}]}' >> /tmp/aimc.log 2>&1

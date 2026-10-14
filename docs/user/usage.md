@@ -11,7 +11,7 @@
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8080/v1",  # AIMC 网关地址
+    base_url="http://localhost:18080/v1",  # AIMC 网关地址
     api_key="your-aimc-key",              # 跟 .env 里 AIMC_API_KEY 一致
 )
 
@@ -39,7 +39,7 @@ print(resp.choices[0].message.content)
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  baseURL: "http://localhost:8080/v1",
+  baseURL: "http://localhost:18080/v1",
   apiKey: "your-aimc-key",
 });
 
@@ -56,7 +56,7 @@ for await (const chunk of stream) {
 ## 2. curl（不需要 SDK）
 
 ```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:18080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer your-aimc-key" \
   -d '{
@@ -136,7 +136,7 @@ resp = client.chat.completions.create(
 AIMC 在每个响应加 5 个 `X-AIMC-*` header：
 
 ```bash
-curl -i -X POST http://localhost:8080/v1/chat/completions \
+curl -i -X POST http://localhost:18080/v1/chat/completions \
   -H "Authorization: Bearer $KEY" \
   -d '{"model":"tier:flagship","messages":[{"role":"user","content":"hi"}]}' | head
 

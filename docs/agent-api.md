@@ -7,7 +7,7 @@
 ## 0. 快速开始
 
 ```bash
-BASE=http://<your-host>:8080
+BASE=http://<your-host>:18080
 
 # 鉴权（三种等价方式，任选其一）
 # 1. dashboard token:   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"

@@ -42,12 +42,12 @@ cp .env.example .env
 
 # 3. 启动
 python scripts/manual_import.py    # 录入渠道 (可选, V6.3 起空渠道仅 WARN 引导, 也可启动后 Dashboard 加)
-python main.py                       # 启动网关 (默认 :8080)
+python main.py                       # 启动网关 (默认 :18080)
 
 # 4. 使用（OpenAI SDK）
 from openai import OpenAI
 client = OpenAI(
-    base_url="http://localhost:8080/v1",
+    base_url="http://localhost:18080/v1",
     api_key="your-aimc-key",
 )
 response = client.chat.completions.create(
