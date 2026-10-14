@@ -123,6 +123,9 @@ RAW_ALIASES = {
     # siliconflow
     "deepseek-ai/DeepSeek-V3": "deepseek-v3",
     "Qwen/Qwen2.5-72B-Instruct": "qwen2.5-72b",
+    "zai-org/GLM-5.3": "glm-5.3",
+    "zai-org/GLM-5.3-Flash": "glm-5.3-flash",
+    "zai-org/GLM-5.2": "glm-5.2",
 }
 
 # ============================================================
@@ -232,8 +235,15 @@ CHANNELS = [
             ],
         },
         "prices": [
-            ("deepseek-ai/DeepSeek-V3", "normal", "全天", 2.0, 2.0),
+            # 对齐硅基流动官方价格页 (2026-10-14 核对 www.siliconflow.cn/pricing)
+            # DeepSeek-V3 旧目录 2.0/2.0 为错价, 修正为 2.0/8.0 (与生产一致)
+            ("deepseek-ai/DeepSeek-V3", "normal", "全天", 2.0, 8.0),
             ("Qwen/Qwen2.5-72B-Instruct", "normal", "全天", 4.13, 4.13),
+            # 2026-10-14 新增: GLM-5.3 系列 + Hy4 preview (官方页实价, 含缓存价)
+            ("zai-org/GLM-5.3", "normal", "全天", 8.0, 28.0, 2.0),
+            ("zai-org/GLM-5.3-Flash", "normal", "全天", 0.8, 2.8, 0.23),
+            ("zai-org/GLM-5.2", "normal", "全天", 8.0, 28.0),
+            ("tencent/Hy4-preview", "normal", "全天", 6.0, 18.0, 0.30),
         ],
     },
 

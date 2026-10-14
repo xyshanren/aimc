@@ -135,10 +135,10 @@ def test_add_channel_creates_everything_and_flips_setup_done():
             assert data["ok"] is True
             assert data["channel"] == "siliconflow_aggregator"
             assert data["account"] == "siliconflow_01"
-            assert data["prices"] == 2  # siliconflow 目录 2 行价格
+            assert data["prices"] == 6  # siliconflow 目录 6 行价格 (2026-10-14 扩)
             # 自动种子: registry + 默认组 (V6.17)
-            assert data["seed"]["registry_created"] == 2  # deepseek-v3 / qwen2.5-72b
-            assert data["seed"]["members_created"] >= 3   # strong/balanced/code/vision…至少 3 个成员
+            assert data["seed"]["registry_created"] == 5  # v3/qwen2.5-72b/5.3/5.3-flash/5.2
+            assert data["seed"]["members_created"] >= 8   # tier 组 + code/vision 映射
 
             rows = await _account_rows()
             assert len(rows) == 1
