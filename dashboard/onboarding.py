@@ -82,6 +82,7 @@ def _catalog_view() -> list:
             "description": ob.get("description"),
             "register_url": ob.get("register_url"),
             "key_console_url": ob.get("key_console_url"),
+            "invite_code": ob.get("invite_code"),
             "invite": ob.get("invite"),
             "setup_note": ob.get("setup_note"),
         })

@@ -3019,7 +3019,7 @@ async function refreshBadges() {
 
 const PAGE_ROUTES = {
     // setup: 首启引导页 (仅无任何渠道账号时自动进入; 不在侧边栏, 数据仅在进页时拉)
-    setup:    { title: '初始化配置', ms: 600000, loaders: [] },
+    setup:    { title: '初始化配置', ms: 600000, loaders: [], once: [loadSetupCatalog] },
     overview: { title: '概览', ms: 60000, loaders: [loadOverviewKPIs, loadOverviewTrend, loadUsageTop, loadGroupOverview, loadTodaySummary] },
     cost:     { title: '成本', ms: 60000, loaders: [loadCostAudit, loadCacheStatsList] },
     usage:    { title: '用量', ms: 60000, loaders: [loadUsageChart, loadUserUsage, loadUserTrend, loadGroupRouting, loadPerf, loadRequests], once: [loadRequestFilterOptions] },
@@ -3358,6 +3358,22 @@ let _obSaving = {};           // key -> 'saved' 标记
     }
 })();
 
+// 已完成初始化后再次访问 #/setup 也要渲染渠道目录 (2026-10-15):
+// 原逻辑只在 setup_done=false 时渲染, 老用户进引导页永远停在「加载渠道目录…」,
+// 看不到注册链接/邀请码卡片
+async function loadSetupCatalog() {
+    const container = document.getElementById('setup-catalog');
+    if (!container) return;
+    try {
+        const resp = await authFetch(ONBOARDING_STATUS_URL);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        _onboardingDone = !!data.setup_done;
+        _onboardingData = data;
+        renderSetupPage(data);
+    } catch (e) { console.warn('setup catalog load failed (non-fatal):', e); }
+}
+
 function renderSetupPage(data) {
     const container = document.getElementById('setup-catalog');
     if (!container) return;
@@ -3398,6 +3414,9 @@ function _setupChannelCard(ch) {
         + '<a class="btn btn-sm" style="margin-left:auto;" href="' + esc(ch.register_url || '#') + '" target="_blank" rel="noopener">注册 ↗</a></div>'
         + '<div class="card-body">'
         + '<p style="font-size:13px;margin:0 0 6px;">' + esc(ch.description || '') + '</p>'
+        + (ch.invite_code ? '<p style="font-size:13px;margin:0 0 6px;">🔑 邀请码: <code class="text-mono" style="font-weight:700;font-size:14px;">' + esc(ch.invite_code) + '</code> '
+            + '<button class="btn btn-sm" style="font-size:11px;padding:2px 10px;" onclick="copyInviteCode(\'' + esc(ch.invite_code) + '\', this)">复制</button>'
+            + '<span style="font-size:11px;color:var(--text-muted);margin-left:6px;">注册页不自动带出时请手动填写</span></p>' : '')
         + (ch.invite ? '<p style="font-size:11px;margin:0 0 6px;color:var(--text-muted);">ℹ ' + esc(ch.invite) + '</p>' : '')
         + (ch.setup_note ? '<p style="font-size:12px;margin:0 0 6px;color:var(--text-secondary);">⚠ ' + esc(ch.setup_note) + '</p>' : '')
         + '<p style="font-size:11px;margin:0 0 8px;color:var(--text-muted);">模型: ' + esc((ch.models || []).join(' / ')) + '</p>'
@@ -3414,6 +3433,21 @@ function _setupChannelCard(ch) {
 function _obMsg(key, text, ok) {
     const el = document.getElementById('ob-msg-' + key);
     if (el) { el.textContent = text; el.style.color = ok ? 'var(--success, #3fb950)' : 'var(--danger, #f85149)'; }
+}
+
+async function copyInviteCode(code, btn) {
+    try {
+        await navigator.clipboard.writeText(code);
+    } catch (e) {
+        // 非安全上下文 (http) 无 clipboard API — 退化用临时 textarea
+        const ta = document.createElement('textarea');
+        ta.value = code;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+    }
+    if (btn) { const old = btn.textContent; btn.textContent = '已复制 ✓'; setTimeout(() => { btn.textContent = old; }, 1500); }
 }
 
 async function testOnboardingKey(key) {

@@ -40,12 +40,15 @@ MODEL_REGISTRY = {
         "context_length": 1048576,
     },
     "deepseek-v4-flash": {
-        "tier": "T1", "family": "deepseek", "modality": "multimodal",
+        # 2026-10-15 对齐生产: 非多模态(用户确认); V4.1-Flash(deepseek-flash) 已替代,
+        # deprecated = 种子时建 registry 行但不入组, 直接路由仍走 sensenova 价行
+        "tier": "T1", "family": "deepseek", "modality": "text", "status": "deprecated",
         "capabilities": ["reasoning", "code", "long_context"],
         "context_length": 1048576,
     },
     "deepseek-v3": {
-        "tier": "T1", "family": "deepseek", "modality": "text",
+        # 2026-10-15 对齐生产: T1 -> T2 (上一代模型, 生产策展结论)
+        "tier": "T2", "family": "deepseek", "modality": "text",
         "capabilities": ["reasoning", "code", "math"],
         "context_length": 131072,
     },
@@ -56,7 +59,8 @@ MODEL_REGISTRY = {
         "context_length": 131072,
     },
     "glm-5.3": {
-        "tier": "T1", "family": "glm", "modality": "text",
+        # 2026-10-15 对齐生产: T1 -> T0 (智谱当前旗舰, 生产 flagship 成员)
+        "tier": "T0", "family": "glm", "modality": "text",
         "capabilities": ["reasoning", "code", "long_context"],
         "context_length": 131072,
     },
@@ -67,7 +71,8 @@ MODEL_REGISTRY = {
     },
     # --- kimi 系 ---
     "kimi-k3": {
-        "tier": "T0", "family": "kimi", "modality": "multimodal",
+        # 2026-10-15 对齐生产: multimodal -> text (生产策展结论; 慢, 不入 vision 组)
+        "tier": "T0", "family": "kimi", "modality": "text",
         "capabilities": ["reasoning", "code", "long_context"],
         "context_length": 1048576,
     },
@@ -83,7 +88,8 @@ MODEL_REGISTRY = {
     },
     # --- minimax 系 ---
     "minimax-m3": {
-        "tier": "T1", "family": "minimax", "modality": "text",
+        # 2026-10-15 对齐生产: T1/text -> T2/multimodal (M 系全系原生多模态, 生产 tier:balanced 成员)
+        "tier": "T2", "family": "minimax", "modality": "multimodal",
         "capabilities": ["reasoning", "code", "long_context"],
         "context_length": 1048576,
     },
@@ -108,6 +114,37 @@ MODEL_REGISTRY = {
         "capabilities": ["reasoning", "code", "math"],
         "context_length": 131072,
     },
+    # --- 2026-10-15 对齐生产新增 (tier:code / tier:light 供给, 生产 registry 同名同档) ---
+    "kimi-k2.7-code": {
+        "tier": "T1", "family": "kimi", "modality": "text",
+        "capabilities": ["code"],
+        "context_length": 262144,
+    },
+    "qwen3-coder-30b-a3b-instruct": {
+        "tier": "T3", "family": "qwen", "modality": "text",
+        "capabilities": ["code"],
+        "context_length": 262144,
+    },
+    "qwen3-8b": {
+        "tier": "T4", "family": "qwen", "modality": "text",
+        "capabilities": ["general"],
+        "context_length": 131072,
+    },
+    "qwen3.5-4b": {
+        "tier": "T4", "family": "qwen", "modality": "text",
+        "capabilities": ["general"],
+        "context_length": 262144,
+    },
+    "glm-4.7-flash": {
+        "tier": "T3", "family": "glm", "modality": "text",
+        "capabilities": ["general"],
+        "context_length": 131072,
+    },
+    "glm-4.6v-flash": {
+        "tier": "T3", "family": "glm", "modality": "vision",
+        "capabilities": ["general"],
+        "context_length": 131072,
+    },
     "sensenova-6.8-flash-lite": {
         "tier": "T2", "family": "sensenova", "modality": "multimodal",
         "capabilities": ["general"],
@@ -126,6 +163,11 @@ RAW_ALIASES = {
     "zai-org/GLM-5.3": "glm-5.3",
     "zai-org/GLM-5.3-Flash": "glm-5.3-flash",
     "zai-org/GLM-5.2": "glm-5.2",
+    # 2026-10-15: tier:code / tier:light 供给 (raw 名与生产 ch3 价行一致)
+    "moonshotai/Kimi-K2.7-Code": "kimi-k2.7-code",
+    "Qwen/Qwen3-Coder-30B-A3B-Instruct": "qwen3-coder-30b-a3b-instruct",
+    "Qwen/Qwen3-8B": "qwen3-8b",
+    "Qwen/Qwen3.5-4B": "qwen3.5-4b",
 }
 
 # ============================================================
@@ -136,6 +178,7 @@ RAW_ALIASES = {
 #   key_console_url                          — API key 控制台
 #   setup_note: 可选, 配置额外要求 (如 minimax 必须填 base_url)
 #   invite: 注册链接是维护者邀请链接时写简短说明
+#   invite_code: 可选, 注册页不自动带出需手填的邀请码 (卡片展示+复制)
 # ============================================================
 
 CHANNELS = [
@@ -191,8 +234,10 @@ CHANNELS = [
                 "超额自动限流（AIMC 冷却自愈），可用模型以官网当日列表为准。"
             ),
             "register_url": "https://www.modelscope.cn/register?inviteCode=守一&invitorName=shouyi01",
+            # 注册页不回填 URL 里的邀请码, 需要手动填 — invite_code 供卡片展示+复制
+            "invite_code": "守一",
             "key_console_url": "https://modelscope.cn/my/myaccesstoken",
-            "invite": "此为维护者邀请链接, 注册成功会给维护者少量魔粒奖励, 不影响你的额度",
+            "invite": "注册时若未自动填入邀请码, 请手动填写上方邀请码; 此为维护者邀请链接, 注册成功会给维护者少量魔粒奖励, 不影响你的额度",
             "setup_note": "需要绑定阿里云账号（免费推理由阿里云提供算力）",
         },
         "prices": [
@@ -244,6 +289,11 @@ CHANNELS = [
             ("zai-org/GLM-5.3-Flash", "normal", "全天", 0.8, 2.8, 0.23),
             ("zai-org/GLM-5.2", "normal", "全天", 8.0, 28.0),
             ("tencent/Hy4-preview", "normal", "全天", 6.0, 18.0, 0.30),
+            # 2026-10-15 新增: tier:code / tier:light 供给 (与生产 ch3 价行一致)
+            ("moonshotai/Kimi-K2.7-Code", "normal", "全天", 6.5, 27.0),
+            ("Qwen/Qwen3-Coder-30B-A3B-Instruct", "normal", "全天", 0.7, 2.8),
+            ("Qwen/Qwen3-8B", "normal", "全天", 0.0, 0.0),
+            ("Qwen/Qwen3.5-4B", "normal", "全天", 0.0, 0.0),
         ],
     },
 
@@ -309,6 +359,10 @@ CHANNELS = [
             # 未订阅/超额部分按官方按量价计费, 成本页以官方标价双轨估算)
             ("glm-5.3", "normal", "全天", 0.0, 0.0),
             ("glm-5.3-flash", "normal", "全天", 0.0, 0.0),
+            # 2026-10-15 新增: Lite 档免费模型 (与生产 ch2 价行一致; 4.7-flash 进 tier:light,
+            # 4.6v-flash 进 tier:vision-light)
+            ("glm-4.7-flash", "normal", "全天", 0.0, 0.0),
+            ("glm-4.6v-flash", "normal", "全天", 0.0, 0.0),
         ],
     },
     {

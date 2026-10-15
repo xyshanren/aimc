@@ -174,7 +174,7 @@ def test_add_channel_creates_everything_and_flips_setup_done():
                     select(ModelGroupMember.group_id, ModelGroupMember.model_id)
                     .where(ModelGroupMember.is_active == 1)
                 )).all())
-                assert ("tier:strong", "deepseek-v3") in members
+                assert ("tier:balanced", "deepseek-v3") in members
                 assert ("tier:balanced", "qwen2.5-72b") in members
                 assert ("tier:code", "deepseek-v3") in members
 

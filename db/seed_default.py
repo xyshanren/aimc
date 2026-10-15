@@ -4,12 +4,15 @@
 不再依赖手动跑 seed_model_registry.py / seed_model_groups.py。
 
 设计约束 (与 scripts/seed_model_groups.py 生产形态对齐):
-- **ensure 语义**: 只补缺失 (INSERT-if-missing), 绝不 UPDATE/DELETE 已有行 —
-  生产已策展的组/成员/registry 不受任何影响, 重跑零 diff
+- **ensure 语义**: 只补缺失 (INSERT-if-missing), 绝不改已有行 —
+  生产已策展的组/成员/registry 不受任何影响, 重跑零 diff;
+  软删 (is_active=0) 的组成员行视为策展移出, 跳过不复活也不重建
+  (UNIQUE 槽位占用, 直接 INSERT 会撞约束 — 2026-10-15 修)
 - **成员只按渠道挂**: 只为本渠道价格行对应的模型建组成员 (ensure_group_members
   接收单个渠道 cfg), 不碰其他渠道的成员资格
 - tier→组映射与各组过滤器自洽:
-    T0→flagship(不限)  T1→strong(不限)  T2→balanced(过滤T2✓)  T3/T4→light(过滤T3✓)
+    T0→flagship(不限)  T1→strong(不限)  T2→balanced(过滤T2✓)  T3/T4→light(不限,
+    2026-10-15 对齐生产: 原 T3 过滤会把 T4 成员全跳过致 503)
     multimodal/vision → vision(T0/T1) 或 vision-light(T2+);  code 能力 → code(不限)
   prod 教训 "精确 tier 过滤只添乱" 的组 (flagship/strong/vision/code) 均为
   NULL tier, 自动映射成员不会被过滤器误杀
@@ -38,7 +41,7 @@ DEFAULT_GROUPS = [
     ("tier:flagship", "旗舰推理组", None, None, 64000, 0, "cheapest", "tier:strong", 10),
     ("tier:strong", "主力通用组", None, None, 0, 0, "cheapest", "tier:balanced", 20),
     ("tier:balanced", "均衡性价比组", "T2", None, 0, 0, "cheapest", "tier:light", 30),
-    ("tier:light", "轻量免费组", "T3", None, 0, 0, "cheapest", None, 40),
+    ("tier:light", "轻量免费组", None, None, 0, 0, "cheapest", None, 40),
     ("tier:vision", "多模态视觉组", None, None, 0, 1, "cheapest", "tier:vision-light", 25),
     ("tier:vision-light", "轻量视觉组", None, None, 0, 1, "cheapest", "tier:light", 26),
     ("tier:code", "代码专用组", None, None, 0, 0, "cheapest", "tier:balanced", 50),
@@ -50,6 +53,10 @@ SEED_ADDED_BY = "catalog-seed"
 
 def _tier_groups(meta: dict) -> list[str]:
     """模型 tier/能力 → 目标组列表 (映射规则见模块 docstring)"""
+    # deprecated 模型不入组 (2026-10-15 对齐生产: deepseek-v4-flash 等被替代模型
+    # registry 保留行但组内无成员, 直接路由仍走渠道价行)
+    if meta.get("status") == "deprecated":
+        return []
     tier = meta.get("tier")
     modality = meta.get("modality", "text")
     caps = meta.get("capabilities") or []
@@ -126,7 +133,7 @@ async def ensure_registry_and_members(session, cfg: dict) -> dict:
             capabilities=json.dumps(meta.get("capabilities") or []),
             context_length=meta.get("context_length"),
             modality=meta.get("modality", "text"),
-            status="active",
+            status=meta.get("status", "active"),
         ))
         stats["registry_created"] += 1
     if stats["registry_created"]:
@@ -154,6 +161,18 @@ async def ensure_registry_and_members(session, cfg: dict) -> dict:
                        ModelGroupMember.is_active == 1)
             )).scalars().all()
             pri = (max(max_pri) + 5) if max_pri else 100
+            # 软删行占着 UNIQUE(group_id, model_id) 槽位, 直接 INSERT 会撞约束 500
+            # (2026-10-15 修)。但这里**跳过而非复活**: 软删 = 策展有意移出, 自动补种
+            # 不得翻案 (复活只走看板手动加成员的显式意图)
+            stale = (await session.execute(
+                select(ModelGroupMember.id).where(
+                    ModelGroupMember.group_id == gid,
+                    ModelGroupMember.model_id == canon)
+            )).scalars().first()
+            if stale is not None:
+                logger.debug(
+                    f"[seed-default] {gid}/{canon} 有软删行 (策展移出), 跳过不复活")
+                continue
             session.add(ModelGroupMember(
                 group_id=gid, model_id=canon,
                 priority=pri, weight=1.0, max_cost_ratio=None,
