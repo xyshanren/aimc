@@ -359,15 +359,43 @@ function renderRegistryGroups(container) {
     }
 }
 
-// 组成员下拉填充: registry 模型 - 该组已有成员
+// 组成员下拉填充: registry 模型 - 该组已有成员, 且按组语义过滤 (2026-10-15)
+// - 排除非聊天模型 (向量/语音/生图/视频/OCR 等, 关键词与待补价卡同源)
+// - tier 白名单: flagship/strong=[T0,T1] balanced=[T2] light=[T3,T4]
+//   vision=[T0,T1]+多模态 vision-light=[T2+]多模态 code=不限; 自定义组只排非聊天
+const CHAT_EXCLUDE_KW = ['embed', 'rerank', 'asr', 'voice', 'tts', 'audio', 'ocr',
+    'image', 'video', 'i2v', 't2v', 'caption', 'kolors', 'lora', 'diffusion', 'wan'];
+function _isChatModel(m) {
+    const low = (m.model_id || '').toLowerCase();
+    if (CHAT_EXCLUDE_KW.some(k => low.includes(k))) return false;
+    const mod = m.modality || 'text';
+    return mod === 'text' || mod === 'multimodal' || mod === 'vision';
+}
+function _tierAllowedForGroup(g, tier) {
+    if (!tier) return true;                     // 组未限定 tier
+    const gid = g.group_id || '';
+    const allow = {
+        'tier:flagship': ['T0', 'T1'], 'tier:strong': ['T0', 'T1'],
+        'tier:balanced': ['T2'], 'tier:light': ['T3', 'T4'],
+        'tier:vision': ['T0', 'T1'], 'tier:vision-light': ['T2', 'T3', 'T4'],
+    }[gid];
+    return allow ? allow.includes(tier) : true; // 自定义组不限
+}
 function populateMemberDropdowns(groups) {
     const models = window._aimcRegistryModels || [];
     document.querySelectorAll('.ob-add-member').forEach(sel => {
         const gid = sel.dataset.group;
-        const inGroup = new Set(((groups || []).find(g => g.group_id === gid)?.members || []).map(m => m.model_id));
+        const g = (groups || []).find(x => x.group_id === gid) || {};
+        const inGroup = new Set((g.members || []).map(m => m.model_id));
         sel.innerHTML = '<option value="">+ 加成员 (选 registry 模型)…</option>'
-            + models.filter(m => !inGroup.has(m.model_id) && (m.status || 'active') === 'active')
-                .map(m => '<option value="' + esc(m.model_id) + '">' + esc(m.model_id) + ' (' + esc(m.tier || '?') + ')</option>')
+            + models
+                .filter(m => !inGroup.has(m.model_id)
+                             && (m.status || 'active') === 'active'
+                             && _isChatModel(m)
+                             && _tierAllowedForGroup(g, m.tier))
+                .map(m => '<option value="' + esc(m.model_id) + '">'
+                    + esc(m.model_id) + ' (' + esc(m.tier || '?')
+                    + (m.modality && m.modality !== 'text' ? '/' + esc(m.modality) : '') + ')</option>')
                 .join('');
     });
 }

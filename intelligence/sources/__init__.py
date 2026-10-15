@@ -19,6 +19,7 @@ from intelligence.sources.glm import (
 from intelligence.sources.model_lists import (
     SiliconFlowModelListSource,
     VolcengineArkModelListSource,
+    MinimaxModelListSource,
 )
 # Phase 3.6 (2026-08-06): 4 个新国内厂商 model_list 源
 from intelligence.sources.model_lists_extra import (
@@ -96,6 +97,8 @@ def get_all_sources() -> list[IntelSourceBase]:
         SenseNovaModelListSource(),
         HunyuanModelListSource(),
         MoonshotModelListSource(),
+        # 2026-10-15: MiniMax M 系列供给监控 (模型消失检测数据源)
+        MinimaxModelListSource(),
         # Phase 3.1 price_aggregator
         SiliconFlowPricingSource(),
         OpenRouterPricingSource(),

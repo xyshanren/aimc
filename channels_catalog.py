@@ -88,7 +88,7 @@ MODEL_REGISTRY = {
         "context_length": 1048576,
     },
     "minimax-m3.1-flash-preview": {
-        "tier": "T2", "family": "minimax", "modality": "multimodal",
+        "tier": "T1", "family": "minimax", "modality": "multimodal",
         "capabilities": ["general", "code", "long_context"],
         "context_length": 1048576,
     },
@@ -109,7 +109,7 @@ MODEL_REGISTRY = {
         "context_length": 131072,
     },
     "sensenova-6.8-flash-lite": {
-        "tier": "T3", "family": "sensenova", "modality": "text",
+        "tier": "T2", "family": "sensenova", "modality": "multimodal",
         "capabilities": ["general"],
         "context_length": 131072,
     },

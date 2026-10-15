@@ -63,3 +63,27 @@ class VolcengineArkModelListSource(IntelSourceBase):
             api_endpoint="https://ark.cn-beijing.volces.com/api/v3",
             api_key_from="volcengine",
         )
+
+
+class MinimaxModelListSource(IntelSourceBase):
+    """MiniMax 模型列表 (2026-10-15)
+
+    用途: M3 系列供给监控 — 模型消失检测的数据源之一
+    (官方公告 M2.5/M2.7 系列 2026-11-18 正式下线, 届时列表应移除旧名,
+     连续两次同步未出现即自动出组建议, 验证 model_absence 端到端链路)
+
+    频率: 1 天
+    """
+
+    def __init__(self):
+        super().__init__(
+            provider="minimax",
+            url="",
+            source_type=SourceType.MODEL_LIST,
+            poll_interval=86400,  # 1 天
+            css_selector=None,
+            wait_until="domcontentloaded",
+            wait_for=None,
+            api_endpoint="https://api.minimaxi.com/v1",
+            api_key_from="minimax",
+        )
