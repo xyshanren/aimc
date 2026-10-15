@@ -83,20 +83,15 @@ def test_seed_skips_soft_deleted_member():
                 ModelGroupMember.group_id == "tier:strong",
                 ModelGroupMember.model_id == "glm-5.2")
         )).scalars().all()
-        code_rows = (await session.execute(
-            select(ModelGroupMember).where(
-                ModelGroupMember.group_id == "tier:code",
-                ModelGroupMember.model_id == "glm-5.2")
-        )).scalars().all()
-        return rows, code_rows
+        return rows
 
-    strong_rows, code_rows = asyncio.run(fetch())
-    # glm-5.2 = T1 text + code cap → strong(软删跳过) + code(新插入)
-    assert stats["members_created"] == 1
-    assert len(strong_rows) == 1, "UNIQUE 槽位复用, 不应出现第二行"
-    assert strong_rows[0].is_active == 0, "策展软删行不得被种子复活"
-    assert strong_rows[0].removed_reason == "curated"
-    assert len(code_rows) == 1 and code_rows[0].is_active == 1
+    rows = asyncio.run(fetch())
+    # glm-5.2 = T1 text → 只映射 tier:strong (泛用 code cap 不再入 tier:code);
+    # strong 有软删行 → 跳过不复活 → 零新建
+    assert stats["members_created"] == 0
+    assert len(rows) == 1, "UNIQUE 槽位复用, 不应出现第二行"
+    assert rows[0].is_active == 0, "策展软删行不得被种子复活"
+    assert rows[0].removed_reason == "curated"
 
 
 def test_seed_deprecated_not_grouped():

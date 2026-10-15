@@ -16,10 +16,17 @@ import os
 # ============================================================
 # 模型注册表元数据 (db/seed_default.py 消费, 2026-10-14)
 #
-# 初始化时按此建 model_registry 行 + 按 tier 自动入默认组:
+# 初始化时按此建 model_registry 行 + 自动入默认组:
 #   T0→tier:flagship  T1→tier:strong  T2→tier:balanced  T3/T4→tier:light
 #   multimodal/vision 额外入 tier:vision (T0/T1) 或 tier:vision-light (T2+)
-#   capabilities 含 code 额外入 tier:code
+# 与生产策展对齐的三个精细控制 (2026-10-15):
+#   specialized: "tier:xxx" — 特化模型只进该组 (如 kimi-k2.7-code 只进
+#     tier:code, glm-4.6v-flash 只进 tier:vision-light); 泛用 capabilities
+#     含 'code' 不再作为入组信号 (生产 tier:code 只放特化代码模型)
+#   auto_group: False — registry 保留行但不入任何组 (生产策展移出组的
+#     模型, 如 deepseek-v3/qwen2.5-72b, 仅直接路由)
+#   group_priorities: {组: priority} — 入组时用生产的精确优先级,
+#     缺失的组回落 max+5 递增
 # 生图/暂不入组模型不列在此处 (仅价格行存在, 不建 registry)。
 #
 # RAW_ALIASES: 聚合平台 raw 价格行名 -> 规范 registry 名
@@ -33,11 +40,13 @@ MODEL_REGISTRY = {
         "tier": "T0", "family": "deepseek", "modality": "multimodal",
         "capabilities": ["reasoning", "code", "math", "long_context"],
         "context_length": 1048576,
+        "group_priorities": {"tier:flagship": 110},
     },
     "deepseek-flash": {
         "tier": "T0", "family": "deepseek", "modality": "multimodal",
         "capabilities": ["reasoning", "code", "math", "long_context"],
         "context_length": 1048576,
+        "group_priorities": {"tier:flagship": 100, "tier:vision": 120},
     },
     "deepseek-v4-flash": {
         # 2026-10-15 对齐生产: 非多模态(用户确认); V4.1-Flash(deepseek-flash) 已替代,
@@ -47,8 +56,10 @@ MODEL_REGISTRY = {
         "context_length": 1048576,
     },
     "deepseek-v3": {
-        # 2026-10-15 对齐生产: T1 -> T2 (上一代模型, 生产策展结论)
+        # 2026-10-15 对齐生产: T1 -> T2 (上一代模型); 生产策展已移出全部组
+        # (registry 保留行仅直接路由), 种子 auto_group=False 同形态
         "tier": "T2", "family": "deepseek", "modality": "text",
+        "auto_group": False,
         "capabilities": ["reasoning", "code", "math"],
         "context_length": 131072,
     },
@@ -57,17 +68,22 @@ MODEL_REGISTRY = {
         "tier": "T1", "family": "glm", "modality": "text",
         "capabilities": ["reasoning", "code", "long_context"],
         "context_length": 131072,
+        "group_priorities": {"tier:strong": 108},
     },
     "glm-5.3": {
         # 2026-10-15 对齐生产: T1 -> T0 (智谱当前旗舰, 生产 flagship 成员)
         "tier": "T0", "family": "glm", "modality": "text",
         "capabilities": ["reasoning", "code", "long_context"],
         "context_length": 131072,
+        "group_priorities": {"tier:flagship": 115},
     },
     "glm-5.3-flash": {
-        "tier": "T2", "family": "glm", "modality": "multimodal",
+        # 2026-10-15 二次校准 (用户拍板): T2 -> T1 — 5.3 系新一代不应低于
+        # glm-5.2 的 T1; 生产同步修改。多模态入 tier:vision(100) + strong(120)
+        "tier": "T1", "family": "glm", "modality": "multimodal",
         "capabilities": ["general", "code"],
         "context_length": 131072,
+        "group_priorities": {"tier:strong": 120, "tier:vision": 100},
     },
     # --- kimi 系 ---
     "kimi-k3": {
@@ -75,6 +91,7 @@ MODEL_REGISTRY = {
         "tier": "T0", "family": "kimi", "modality": "text",
         "capabilities": ["reasoning", "code", "long_context"],
         "context_length": 1048576,
+        "group_priorities": {"tier:flagship": 105},
     },
     "moonshot-v1-128k": {
         "tier": "T1", "family": "kimi", "modality": "text",
@@ -92,11 +109,13 @@ MODEL_REGISTRY = {
         "tier": "T2", "family": "minimax", "modality": "multimodal",
         "capabilities": ["reasoning", "code", "long_context"],
         "context_length": 1048576,
+        "group_priorities": {"tier:balanced": 110, "tier:vision-light": 110},
     },
     "minimax-m3.1-flash-preview": {
         "tier": "T1", "family": "minimax", "modality": "multimodal",
         "capabilities": ["general", "code", "long_context"],
         "context_length": 1048576,
+        "group_priorities": {"tier:vision": 90, "tier:strong": 125},
     },
     # --- stepfun / qwen / sensenova ---
     "step-5-preview": {
@@ -110,45 +129,58 @@ MODEL_REGISTRY = {
         "context_length": 131072,
     },
     "qwen2.5-72b": {
+        # 生产策展: 不入任何组 (registry 保留行仅直接路由)
         "tier": "T2", "family": "qwen", "modality": "text",
+        "auto_group": False,
         "capabilities": ["reasoning", "code", "math"],
         "context_length": 131072,
     },
     # --- 2026-10-15 对齐生产新增 (tier:code / tier:light 供给, 生产 registry 同名同档) ---
     "kimi-k2.7-code": {
         "tier": "T1", "family": "kimi", "modality": "text",
+        "specialized": "tier:code",
         "capabilities": ["code"],
         "context_length": 262144,
+        "group_priorities": {"tier:code": 100},
     },
     "qwen3-coder-30b-a3b-instruct": {
         "tier": "T3", "family": "qwen", "modality": "text",
+        "specialized": "tier:code",
         "capabilities": ["code"],
         "context_length": 262144,
+        "group_priorities": {"tier:code": 105},
     },
     "qwen3-8b": {
         "tier": "T4", "family": "qwen", "modality": "text",
         "capabilities": ["general"],
         "context_length": 131072,
+        "group_priorities": {"tier:light": 100},
     },
     "qwen3.5-4b": {
         "tier": "T4", "family": "qwen", "modality": "text",
         "capabilities": ["general"],
         "context_length": 262144,
+        "group_priorities": {"tier:light": 110},
     },
     "glm-4.7-flash": {
         "tier": "T3", "family": "glm", "modality": "text",
         "capabilities": ["general"],
         "context_length": 131072,
+        "group_priorities": {"tier:light": 130},
     },
     "glm-4.6v-flash": {
+        # 视觉特化: 生产只放 tier:vision-light(100), 不随 T3 进 tier:light
         "tier": "T3", "family": "glm", "modality": "vision",
+        "specialized": "tier:vision-light",
         "capabilities": ["general"],
         "context_length": 131072,
+        "group_priorities": {"tier:vision-light": 100},
     },
     "sensenova-6.8-flash-lite": {
         "tier": "T2", "family": "sensenova", "modality": "multimodal",
         "capabilities": ["general"],
         "context_length": 131072,
+        "group_priorities": {"tier:balanced": 100, "tier:vision-light": 105},
     },
 }
 

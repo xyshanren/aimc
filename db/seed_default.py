@@ -13,7 +13,11 @@
 - tier→组映射与各组过滤器自洽:
     T0→flagship(不限)  T1→strong(不限)  T2→balanced(过滤T2✓)  T3/T4→light(不限,
     2026-10-15 对齐生产: 原 T3 过滤会把 T4 成员全跳过致 503)
-    multimodal/vision → vision(T0/T1) 或 vision-light(T2+);  code 能力 → code(不限)
+    multimodal/vision → vision(T0/T1) 或 vision-light(T2+)
+  精细控制 (catalog 字段, 2026-10-15 与生产策展对齐):
+    specialized="tier:xxx" — 特化模型只进该组 (tier:code 只放特化代码模型)
+    auto_group=False — registry 保留行但不入组 (生产策展移出的模型)
+    group_priorities={组:优先级} — 入组用生产精确值, 缺失回落 max+5 递增
   prod 教训 "精确 tier 过滤只添乱" 的组 (flagship/strong/vision/code) 均为
   NULL tier, 自动映射成员不会被过滤器误杀
 - 生图/观察期模型不入组: catalog prices 有行但 MODEL_REGISTRY 无条目的模型
@@ -57,9 +61,16 @@ def _tier_groups(meta: dict) -> list[str]:
     # registry 保留行但组内无成员, 直接路由仍走渠道价行)
     if meta.get("status") == "deprecated":
         return []
+    # 特化模型只进特化组 (2026-10-15): kimi-k2.7-code/qwen3-coder 只进 tier:code,
+    # glm-4.6v-flash 只进 tier:vision-light — 生产 tier:code 只放特化代码模型,
+    # 泛用 capabilities 含 'code' 不再作为入组信号
+    if meta.get("specialized"):
+        return [meta["specialized"]]
+    # 生产策展移出组的模型 (registry 保留行仅直接路由, 如 deepseek-v3/qwen2.5-72b)
+    if not meta.get("auto_group", True):
+        return []
     tier = meta.get("tier")
     modality = meta.get("modality", "text")
-    caps = meta.get("capabilities") or []
     groups: list[str] = []
     if tier in ("T0",):
         groups.append("tier:flagship")
@@ -71,8 +82,6 @@ def _tier_groups(meta: dict) -> list[str]:
         groups.append("tier:light")
     if modality in ("vision", "multimodal"):
         groups.append("tier:vision" if tier in ("T0", "T1") else "tier:vision-light")
-    if "code" in caps:
-        groups.append("tier:code")
     return groups
 
 
@@ -154,13 +163,17 @@ async def ensure_registry_and_members(session, cfg: dict) -> dict:
         for gid in _tier_groups(meta):
             if (gid, canon) in existing_members:
                 continue
-            # 组内 priority: 已有最大值 +5 (保序, 不与人工排位冲突)
-            max_pri = (await session.execute(
-                select(ModelGroupMember.priority)
-                .where(ModelGroupMember.group_id == gid,
-                       ModelGroupMember.is_active == 1)
-            )).scalars().all()
-            pri = (max(max_pri) + 5) if max_pri else 100
+            # 组内 priority: catalog group_priorities 给的 (生产精确值) 优先,
+            # 缺失时按组内已有最大值 +5 递增 (保序, 不与人工排位冲突)
+            hints = meta.get("group_priorities") or {}
+            pri = hints.get(gid)
+            if pri is None:
+                max_pri = (await session.execute(
+                    select(ModelGroupMember.priority)
+                    .where(ModelGroupMember.group_id == gid,
+                           ModelGroupMember.is_active == 1)
+                )).scalars().all()
+                pri = (max(max_pri) + 5) if max_pri else 100
             # 软删行占着 UNIQUE(group_id, model_id) 槽位, 直接 INSERT 会撞约束 500
             # (2026-10-15 修)。但这里**跳过而非复活**: 软删 = 策展有意移出, 自动补种
             # 不得翻案 (复活只走看板手动加成员的显式意图)

@@ -30,9 +30,16 @@ def _key(name: str) -> str:
     return f"aimc-selftest-{name}-" + "0" * 8
 
 
+_TMP_DIR = None
+
+
 def _install_mock_env():
-    tmp_dir = tempfile.mkdtemp(prefix="aimc_onboarding_")
-    db_path = os.path.join(tmp_dir, "test.db")
+    """安装 config mock (conftest 每用例后清项目模块 → 每个用例前须重装;
+    tmp 目录只建一次, 保证用例共享同一临时库按文件顺序执行)"""
+    global _TMP_DIR
+    if _TMP_DIR is None:
+        _TMP_DIR = tempfile.mkdtemp(prefix="aimc_onboarding_")
+    db_path = os.path.join(_TMP_DIR, "test.db")
     db_url = f"sqlite+aiosqlite:///{db_path}"
 
     import types
@@ -51,7 +58,7 @@ def _install_mock_env():
         port=8080,
         log_level="info",
     )
-    return tmp_dir
+    return _TMP_DIR
 
 
 _install_mock_env()
@@ -83,6 +90,7 @@ def _get_client():
 
 
 def _ensure_db():
+    _install_mock_env()  # conftest 清模块后重装 (否则真 config 无 master key → 500)
     from db.init_db import init_db
     asyncio.run(init_db())
 
@@ -93,6 +101,7 @@ async def _ensure_db_async():
     导致端点写入与用例断言分属两个库 — 每用例重建保证一致)"""
     global _APP
     _APP = None
+    _install_mock_env()  # 同 _ensure_db: 清模块后 config mock 须重装
     from db.init_db import init_db
     await init_db()
 
@@ -147,10 +156,11 @@ def test_add_channel_creates_everything_and_flips_setup_done():
             assert data["ok"] is True
             assert data["channel"] == "siliconflow_aggregator"
             assert data["account"] == "siliconflow_01"
-            assert data["prices"] == 6  # siliconflow 目录 6 行价格 (2026-10-14 扩)
+            assert data["prices"] == 10  # siliconflow 目录 10 行价格 (2026-10-15 扩)
             # 自动种子: registry + 默认组 (V6.17)
-            assert data["seed"]["registry_created"] == 5  # v3/qwen2.5-72b/5.3/5.3-flash/5.2
-            assert data["seed"]["members_created"] >= 8   # tier 组 + code/vision 映射
+            # 9 个: v3/qwen2.5-72b/5.3/5.3-flash/5.2 + k2.7-code/qwen3-coder/qwen3-8b/qwen3.5-4b
+            assert data["seed"]["registry_created"] == 9
+            assert data["seed"]["members_created"] >= 8   # tier 组 + vision 映射
 
             rows = await _account_rows()
             assert len(rows) == 1
@@ -174,9 +184,17 @@ def test_add_channel_creates_everything_and_flips_setup_done():
                     select(ModelGroupMember.group_id, ModelGroupMember.model_id)
                     .where(ModelGroupMember.is_active == 1)
                 )).all())
-                assert ("tier:balanced", "deepseek-v3") in members
-                assert ("tier:balanced", "qwen2.5-72b") in members
-                assert ("tier:code", "deepseek-v3") in members
+                assert ("tier:flagship", "glm-5.3") in members
+                assert ("tier:strong", "glm-5.3-flash") in members
+                assert ("tier:vision", "glm-5.3-flash") in members
+                assert ("tier:code", "kimi-k2.7-code") in members
+                assert ("tier:light", "qwen3-8b") in members
+                # 生产策展排除: deepseek-v3/qwen2.5-72b registry-only 不入组
+                assert ("tier:balanced", "deepseek-v3") not in members
+                assert ("tier:balanced", "qwen2.5-72b") not in members
+                # 特化: tier:code 只放代码特化模型
+                assert ("tier:code", "glm-5.2") not in members
+                assert ("tier:code", "glm-5.3-flash") not in members
 
             # setup_done 因账号存在而翻 true
             resp = await c.get("/dashboard/api/onboarding/status")
