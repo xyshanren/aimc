@@ -1,6 +1,6 @@
 [project]
 name = "aimc"
-version = "0.1.0"
+version = "1.0.0"
 description = "AI Model Compass - 面向个人开发者的轻量级 LLM 网关与优惠情报聚合工具"
 readme = "README.md"
 requires-python = ">=3.11"
