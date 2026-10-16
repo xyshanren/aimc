@@ -360,11 +360,13 @@ function renderRegistryGroups(container) {
 }
 
 // 组成员下拉填充: registry 模型 - 该组已有成员, 且按组语义过滤 (2026-10-15)
-// - 排除非聊天模型 (向量/语音/生图/视频/OCR 等, 关键词与待补价卡同源)
+// - 排除非聊天模型 (向量/语音/生图/视频/OCR 等; 关键词与 onboarding.py
+//   non_chat_kw 同源, 2026-10-16 同步补 speech/gsr/flux//wan)
 // - tier 白名单: flagship/strong=[T0,T1] balanced=[T2] light=[T3,T4]
 //   vision=[T0,T1]+多模态 vision-light=[T2+]多模态 code=不限; 自定义组只排非聊天
-const CHAT_EXCLUDE_KW = ['embed', 'rerank', 'asr', 'voice', 'tts', 'audio', 'ocr',
-    'image', 'video', 'i2v', 't2v', 'caption', 'kolors', 'lora', 'diffusion', 'wan'];
+const CHAT_EXCLUDE_KW = ['embed', 'rerank', 'asr', 'speech', 'voice', 'tts', 'ocr',
+    'image', 'video', 'i2v', 't2v', 'caption', 'kolors', 'lora', 'diffusion',
+    'gsr', 'flux', '/wan'];
 function _isChatModel(m) {
     const low = (m.model_id || '').toLowerCase();
     if (CHAT_EXCLUDE_KW.some(k => low.includes(k))) return false;
@@ -3348,6 +3350,7 @@ let _obSaving = {};           // key -> 'saved' 标记
         if (!_onboardingDone) {
             _onboardingData = data;
             renderSetupPage(data);
+            _setupCatalogRendered = true;  // 与 once-loader 共用守卫, 防双渲染
             if ((location.hash.replace(/^#\//, '') || 'overview') !== 'setup') {
                 showPage('setup');
             }
@@ -3361,7 +3364,11 @@ let _obSaving = {};           // key -> 'saved' 标记
 // 已完成初始化后再次访问 #/setup 也要渲染渠道目录 (2026-10-15):
 // 原逻辑只在 setup_done=false 时渲染, 老用户进引导页永远停在「加载渠道目录…」,
 // 看不到注册链接/邀请码卡片
+// 2026-10-16: 加模块级守卫 — 每次进入 #/setup 整页重渲染会清掉未保存的
+// API key 输入 (保存流程本身局部更新 DOM, 无需重渲染)
+let _setupCatalogRendered = false;
 async function loadSetupCatalog() {
+    if (_setupCatalogRendered) return;
     const container = document.getElementById('setup-catalog');
     if (!container) return;
     try {
@@ -3371,6 +3378,7 @@ async function loadSetupCatalog() {
         _onboardingDone = !!data.setup_done;
         _onboardingData = data;
         renderSetupPage(data);
+        _setupCatalogRendered = true;
     } catch (e) { console.warn('setup catalog load failed (non-fatal):', e); }
 }
 
@@ -3415,7 +3423,8 @@ function _setupChannelCard(ch) {
         + '<div class="card-body">'
         + '<p style="font-size:13px;margin:0 0 6px;">' + esc(ch.description || '') + '</p>'
         + (ch.invite_code ? '<p style="font-size:13px;margin:0 0 6px;">🔑 邀请码: <code class="text-mono" style="font-weight:700;font-size:14px;">' + esc(ch.invite_code) + '</code> '
-            + '<button class="btn btn-sm" style="font-size:11px;padding:2px 10px;" onclick="copyInviteCode(\'' + esc(ch.invite_code) + '\', this)">复制</button>'
+            // JSON.stringify+&quot; 转义: invite_code 未来来自 PR 目录, 防 JS 字符串/属性逃逸
+            + '<button class="btn btn-sm" style="font-size:11px;padding:2px 10px;" onclick="copyInviteCode(' + JSON.stringify(String(ch.invite_code)).replace(/"/g, '&quot;') + ', this)">复制</button>'
             + '<span style="font-size:11px;color:var(--text-muted);margin-left:6px;">注册页不自动带出时请手动填写</span></p>' : '')
         + (ch.invite ? '<p style="font-size:11px;margin:0 0 6px;color:var(--text-muted);">ℹ ' + esc(ch.invite) + '</p>' : '')
         + (ch.setup_note ? '<p style="font-size:12px;margin:0 0 6px;color:var(--text-secondary);">⚠ ' + esc(ch.setup_note) + '</p>' : '')

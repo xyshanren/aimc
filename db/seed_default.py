@@ -152,6 +152,9 @@ async def ensure_registry_and_members(session, cfg: dict) -> dict:
     await ensure_default_groups(session)
 
     # 4) ensure 组成员 (本渠道模型 only; priority 按组内已有最大值递增)
+    valid_groups = set((await session.execute(
+        select(ModelGroup.group_id)
+    )).scalars().all())
     existing_members = set((await session.execute(
         select(ModelGroupMember.group_id, ModelGroupMember.model_id)
         .where(ModelGroupMember.is_active == 1)
@@ -161,6 +164,12 @@ async def ensure_registry_and_members(session, cfg: dict) -> dict:
     for canon in canon_models:
         meta = MODEL_REGISTRY[canon]
         for gid in _tier_groups(meta):
+            # specialized 等自定义组目标必须真实存在, 否则 INSERT 出
+            # 路由永远看不见的孤儿成员行 (2026-10-16 防御)
+            if gid not in valid_groups:
+                logger.warning(
+                    f"[seed-default] {canon} 目标组 {gid!r} 不存在, 跳过入组")
+                continue
             if (gid, canon) in existing_members:
                 continue
             # 组内 priority: catalog group_priorities 给的 (生产精确值) 优先,

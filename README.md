@@ -15,7 +15,7 @@ AIMC（AI Model Compass）是一款专为个人开发者设计的**轻量级 LLM
 ## 核心特性
 
 - **智能路由** — 基于时段/价格/配额/频限多维权重，自动选择最优渠道
-- **多维模型组 (V6.0 分级)** — 按 `tier:xxx` 前缀调用（支持 `tier:vision/deepseek-v4-flash-vision-exp` 组内指定），组内跨 model 选最便宜；vision → vision-light → light 分级 fallback，接入 GLM 官方免费模型（GLM-4.7-Flash 文本 / GLM-4.6V-Flash 视觉）
+- **多维模型组 (V6.0 分级)** — 按 `tier:xxx` 前缀调用（支持 `tier:vision/glm-5.3-flash` 组内指定），组内跨 model 选最便宜；vision → vision-light → light 分级 fallback，接入 GLM 官方免费模型（GLM-4.7-Flash 文本 / GLM-4.6V-Flash 视觉）
 - **标价双轨成本审计 (V6.0)** — 免费/订阅渠道实付 0 也按官方标价量化"省了多少"，4 个成本 API + Dashboard 成本审计卡 + 周分析 💰 信号
 - **零侵入透传** — 兼容 OpenAI SDK，流式/非流式原样透传
 - **多用户 Key (V4.8)** — `aimc-` 前缀按人发 key、按人记账（caller_id）、个人日/月限额、Dashboard 按人用量 + Key 管理
@@ -51,7 +51,7 @@ client = OpenAI(
     api_key="your-aimc-key",
 )
 response = client.chat.completions.create(
-    model="deepseek-v4-pro",  # 或 "tier:flagship" / "scene:code"
+    model="deepseek-v4-pro",  # 或 "tier:flagship" / "tier:code"
     messages=[{"role": "user", "content": "Hello!"}],
 )
 ```
@@ -64,10 +64,10 @@ response = client.chat.completions.create(
 aimc/
 ├── gateway/                # 网关核心 (router / proxy / quota / cooldown)
 ├── intelligence/           # 情报采集 (scheduler / sources / analytics)
-├── db/                     # 数据库层 (含 21 个 migration)
+├── db/                     # 数据库层 (含 30 个 migration)
 ├── dashboard/              # Dashboard 后端 (FastAPI routes) + 前端 (原生 JS + Chart.js)
 ├── scripts/                # 运维脚本 (sync_prices / apply_suggestions / weekly_report)
-├── tests/                  # 802 个测试 (pytest, ~7min, 全绿)
+├── tests/                  # 968 个测试 (pytest, ~7min, 968 绿 / 10 旧断言挂账)
 └── docs/                   # 完整文档 (见 docs/index.md)
 ```
 
@@ -82,7 +82,7 @@ aimc/
 | Dashboard | 原生 JS + Chart.js |
 | 测试 | pytest + pytest-asyncio |
 
-## 最近变更（2026-08-16~25）
+## 最近变更（2026-08 ~ 2026-10）
 
 - **A-2 采集健康盲区告警（2026-09-08）**：修复情报系统"失明两周无人知晓"（错误页字节级稳定 → differ 判无变化 → 14 天零变化检测零告警）。新增 `intelligence/content_guard.py` 内容健康检查（错误页特征库：`__next_error__`/404 title/Chromium 网络错误/未渲染 SPA + 500B 最短长度，只查前 4KB 防误报），fetch 后 differ 前挂钩——不健康内容不写 last_content（不污染 hash 基线），走既有 handle_fetch_error 通道（error_count+1，连续 3 次禁用+告警，恢复自动通知）；新增 `intel_blindspot_audit_task`（每 6h，全部在采 HTML 源 `last_changed_at` 距今 >7 天 → "系统疑似失明"告警，throttle 3 天）；intel_sources 加 `last_changed_at` 列（ensure_migrations 幂等 ALTER）；周报新增「情报采集健康」章节（error 态源/缺 key 空转/距上次变化天数）
 

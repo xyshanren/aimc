@@ -1,5 +1,13 @@
 """Seed ModelGroup + ModelGroupMember 表 (V4.6.4, 2026-08-14)
 
+⚠️⚠️ 已废弃 (2026-10-15) — 勿在生产/便携版运行 ⚠️⚠️
+本脚本是 2026-08 的"先清后插"种子快照，已被 db/seed_default.py 的
+ensure 语义取代 (只补缺失、软删策展行不复活、三层精细控制
+specialized/auto_group/group_priorities)。本脚本会整表清空组/成员
+(冲掉策展审计史)，且组定义落后生产 (tier:light 曾是 T3 过滤会把
+T4 成员全跳过致 503)。组定义与成员以 db/seed_default.py +
+channels_catalog.py 为准；本文件仅留档历史形态。
+
 V4.6.4 重设计 (post-merge):
 - 6 个 tier group: flagship / strong / balanced / light / vision / code
 - 删 scene:code (450499c 删了, 不重建) - 改用 tier:code 统一
@@ -71,7 +79,7 @@ GROUPS = [
         "tier:balanced", "均衡性价比组", "T2", None, 0, 0, "cheapest", "tier:light", 30,
     ),
     (
-        "tier:light", "轻量免费组", "T3", None, 0, 0, "cheapest", None, 40,
+        "tier:light", "轻量免费组", None, None, 0, 0, "cheapest", None, 40,
     ),
     # ========== V4.6.4 新增 2 个 tier 组 ==========
     (

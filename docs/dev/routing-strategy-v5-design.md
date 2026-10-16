@@ -3,6 +3,12 @@
 > 状态: **设计稿，暂不执行**
 > 日期: 2026-08-26
 > 背景: V4.9.5 运行后对路由体系的全面梳理与改进设计
+>
+> ⚠️ **本稿为 2026-08 设计快照，部分组形态已被后续演进取代**：tier:light 过滤
+> 已改 None（原 T3）、tier:code 只收特化代码模型（specialized 控制而非
+> capabilities 含 code）、vision/vision-light/code 组均为 NULL tier。
+> 现行 7 组形态以 `db/seed_default.py` DEFAULT_GROUPS + `channels_catalog.py`
+> 为准（见 docs/index.md）。
 
 ---
 

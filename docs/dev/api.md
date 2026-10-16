@@ -5,7 +5,7 @@
 
 ## 网关 API（OpenAI 兼容）
 
-**基础 URL**：`http://<host>:8080`
+**基础 URL**：`http://<host>:18080`
 
 **鉴权**：如果配置了 `AIMC_API_KEY`，所有 `/v1/*` 请求需带 `Authorization: Bearer <key>`。
 
@@ -18,7 +18,7 @@ V4.8 起支持多用户 key：`aimc-` 前缀的 key 先查 `api_keys` 表（SHA2
 OpenAI Chat Completions 协议，AIMC 网关透传。
 
 ```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:18080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $AIMC_API_KEY" \
   -d '{
@@ -46,7 +46,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ### GET /v1/models
 
 ```bash
-curl http://localhost:8080/v1/models -H "Authorization: Bearer $KEY"
+curl http://localhost:18080/v1/models -H "Authorization: Bearer $KEY"
 ```
 
 返回 AIMC 支持的 model 列表（OpenAI 兼容格式）。
@@ -56,13 +56,13 @@ curl http://localhost:8080/v1/models -H "Authorization: Bearer $KEY"
 健康检查（无需鉴权）：
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:18080/health
 # {"status":"ok"}
 ```
 
 ## Dashboard API（HTML 浏览器 + JSON 端点）
 
-**基础 URL**：`http://<host>:8080/dashboard/`
+**基础 URL**：`http://<host>:18080/dashboard/`
 
 **鉴权**：如果配置了 `AIMC_DASHBOARD_TOKEN`，所有 `/dashboard/*` 请求需带 token（3 种方式）：
 - `Authorization: Bearer <token>`
@@ -76,7 +76,7 @@ curl http://localhost:8080/health
 ### GET /dashboard/api/channels
 
 ```bash
-curl http://localhost:8080/dashboard/api/channels \
+curl http://localhost:18080/dashboard/api/channels \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -87,7 +87,7 @@ curl http://localhost:8080/dashboard/api/channels \
 更新渠道字段（`api_base` / `api_style` / `supports_prompt_cache` / `status` / `priority`）。
 
 ```bash
-curl -X PUT http://localhost:8080/dashboard/api/channels/1 \
+curl -X PUT http://localhost:18080/dashboard/api/channels/1 \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN" \
   -d '{"api_base":"https://api.siliconflow.cn/v1","supports_prompt_cache":1}'
@@ -96,7 +96,7 @@ curl -X PUT http://localhost:8080/dashboard/api/channels/1 \
 ### GET /dashboard/api/cache/stats?days=7
 
 ```bash
-curl 'http://localhost:8080/dashboard/api/cache/stats?days=7' \
+curl 'http://localhost:18080/dashboard/api/cache/stats?days=7' \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -108,7 +108,7 @@ curl 'http://localhost:8080/dashboard/api/cache/stats?days=7' \
 ### GET /dashboard/api/data-freshness
 
 ```bash
-curl http://localhost:8080/dashboard/api/data-freshness \
+curl http://localhost:18080/dashboard/api/data-freshness \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -117,7 +117,7 @@ curl http://localhost:8080/dashboard/api/data-freshness \
 ### GET /dashboard/api/suggestions?status=pending
 
 ```bash
-curl 'http://localhost:8080/dashboard/api/suggestions?status=pending' \
+curl 'http://localhost:18080/dashboard/api/suggestions?status=pending' \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -128,7 +128,7 @@ curl 'http://localhost:8080/dashboard/api/suggestions?status=pending' \
 批准建议（改 status: pending → approved）：
 
 ```bash
-curl -X POST http://localhost:8080/dashboard/api/suggestions/model/1/approve \
+curl -X POST http://localhost:18080/dashboard/api/suggestions/model/1/approve \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN" \
   -d '{"reviewed_by":"dashboard_user"}'
@@ -143,7 +143,7 @@ curl -X POST http://localhost:8080/dashboard/api/suggestions/model/1/approve \
 一键应用所有 status=approved 的建议（直接 UPDATE db，写 applied_at）：
 
 ```bash
-curl -X POST http://localhost:8080/dashboard/api/suggestions/apply-all \
+curl -X POST http://localhost:18080/dashboard/api/suggestions/apply-all \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN" \
   -d '{"min_confidence":0.5,"reviewed_by":"dashboard_user"}'
@@ -154,7 +154,7 @@ curl -X POST http://localhost:8080/dashboard/api/suggestions/apply-all \
 读取当前 5 维权重：
 
 ```bash
-curl http://localhost:8080/dashboard/api/settings/router-score-weights \
+curl http://localhost:18080/dashboard/api/settings/router-score-weights \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -165,7 +165,7 @@ curl http://localhost:8080/dashboard/api/settings/router-score-weights \
 修改权重（60s 内 router cache refresh 后生效）：
 
 ```bash
-curl -X PUT http://localhost:8080/dashboard/api/settings/router-score-weights \
+curl -X PUT http://localhost:18080/dashboard/api/settings/router-score-weights \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN" \
   -d '{"weights":{"W_PRICE":0.6,"W_QUOTA":0.15,"W_SUCCESS":0.15,"W_RECENCY":0.05,"W_PRIORITY":0.05}}'
@@ -178,7 +178,7 @@ curl -X PUT http://localhost:8080/dashboard/api/settings/router-score-weights \
 立即刷新 router cache（不等 TTL）：
 
 ```bash
-curl -X POST http://localhost:8080/dashboard/api/cache/refresh \
+curl -X POST http://localhost:18080/dashboard/api/cache/refresh \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 # {"status":"ok","channels":6,"models":117}
 ```
@@ -196,7 +196,7 @@ curl -X POST http://localhost:8080/dashboard/api/cache/refresh \
 按 caller 聚合用量（近 N 天）：
 
 ```bash
-curl 'http://localhost:8080/dashboard/api/stats/per-user?days=7' \
+curl 'http://localhost:18080/dashboard/api/stats/per-user?days=7' \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -209,7 +209,7 @@ V4.8.1 起每行内嵌 `keys` 子数组（按 key label 下钻，key_id 为 NULL
 用户 + key 列表（脱敏，只含 `key_prefix`，永不返回 hash）：
 
 ```bash
-curl http://localhost:8080/dashboard/api/keys \
+curl http://localhost:18080/dashboard/api/keys \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -218,7 +218,7 @@ curl http://localhost:8080/dashboard/api/keys \
 吊销 key（立即失效，不可恢复）：
 
 ```bash
-curl -X POST http://localhost:8080/dashboard/api/keys/3/revoke \
+curl -X POST http://localhost:18080/dashboard/api/keys/3/revoke \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -227,7 +227,7 @@ curl -X POST http://localhost:8080/dashboard/api/keys/3/revoke \
 组路由命中分布（近 7 天，按 `usage_logs.group_id` 聚合）：
 
 ```bash
-curl http://localhost:8080/dashboard/api/stats/group_routing \
+curl http://localhost:18080/dashboard/api/stats/group_routing \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -239,7 +239,7 @@ curl http://localhost:8080/dashboard/api/stats/group_routing \
 成本审计 — 按模型拆「标价 vs 实付 vs 节省」（V6.0 Phase 2，按官方标价降序）：
 
 ```bash
-curl 'http://localhost:8080/dashboard/api/usage/cost-by-model?days=7' \
+curl 'http://localhost:18080/dashboard/api/usage/cost-by-model?days=7' \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -261,11 +261,11 @@ curl 'http://localhost:8080/dashboard/api/usage/cost-by-model?days=7' \
 
 ```bash
 # 只看可信条目
-curl http://localhost:8080/dashboard/api/promotions \
+curl http://localhost:18080/dashboard/api/promotions \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 
 # 调试：查全部（含 flagged）
-curl 'http://localhost:8080/dashboard/api/promotions?include_flagged=true' \
+curl 'http://localhost:18080/dashboard/api/promotions?include_flagged=true' \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -277,7 +277,7 @@ curl 'http://localhost:8080/dashboard/api/promotions?include_flagged=true' \
 待确认能力变更列表（`model_capabilities_log` WHERE `approved=0 AND source='ai_infer'`）：
 
 ```bash
-curl http://localhost:8080/dashboard/api/pending-review \
+curl http://localhost:18080/dashboard/api/pending-review \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -288,7 +288,7 @@ curl http://localhost:8080/dashboard/api/pending-review \
 采集源列表（合并内存定义 + DB 状态）：
 
 ```bash
-curl http://localhost:8080/dashboard/api/sources \
+curl http://localhost:18080/dashboard/api/sources \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -300,7 +300,7 @@ curl http://localhost:8080/dashboard/api/sources \
 scheduler 对 `disabled` 源跳过采集）：
 
 ```bash
-curl -X POST http://localhost:8080/dashboard/api/sources/deepseek/toggle \
+curl -X POST http://localhost:18080/dashboard/api/sources/deepseek/toggle \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -313,7 +313,7 @@ curl -X POST http://localhost:8080/dashboard/api/sources/deepseek/toggle \
 **重启后生效**——实际调度间隔在启动时从内存 source 定义读取）：
 
 ```bash
-curl -X POST 'http://localhost:8080/dashboard/api/sources/deepseek/interval?interval=3600' \
+curl -X POST 'http://localhost:18080/dashboard/api/sources/deepseek/interval?interval=3600' \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -324,7 +324,7 @@ curl -X POST 'http://localhost:8080/dashboard/api/sources/deepseek/interval?inte
 立即触发指定 provider 的采集（后台 fire-and-forget，接口立即返回）：
 
 ```bash
-curl -X POST 'http://localhost:8080/dashboard/api/sources/run-now?provider=deepseek' \
+curl -X POST 'http://localhost:18080/dashboard/api/sources/run-now?provider=deepseek' \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 # {"status":"started","provider":"deepseek","count":4}
 ```
@@ -336,7 +336,7 @@ curl -X POST 'http://localhost:8080/dashboard/api/sources/run-now?provider=deeps
 渠道冷却状态快照 — 让用户看到哪些 account 被冷却了、剩余多少秒：
 
 ```bash
-curl http://localhost:8080/dashboard/api/cooldown \
+curl http://localhost:18080/dashboard/api/cooldown \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -375,7 +375,7 @@ V4.9 在 Dashboard 新增 5 个端点，让用户在「🔴 待处理 (N)」tab 
 **V6.3.1 起支持 `?exclude_transient=true`**（顶栏 badge 专用）：排除 `cooldown_degraded`（瞬时冷却，15-60s 自动恢复），badge 只计持久待处理项；排除的同时仍会在观察点落 `cooldown_events` 流水（见下）。
 
 ```bash
-curl http://localhost:8080/dashboard/api/pending-summary \
+curl http://localhost:18080/dashboard/api/pending-summary \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -403,7 +403,7 @@ curl http://localhost:8080/dashboard/api/pending-summary \
 瞬时冷却事件流水：`/api/pending-summary` 观察到非零 `cooldown_degraded` 时落库（badge 30s + 运维页 60s 双观察者按 account 最近一条 `cooldown_until` 去重，同 episode 不重复；episode 中途刷新剩余时间则记新行）。查询参数 `hours`（默认 24）/ `limit`（默认 100）/ `account_id`（可选过滤）。
 
 ```bash
-curl "http://localhost:8080/dashboard/api/cooldown-events?hours=24&limit=100" \
+curl "http://localhost:18080/dashboard/api/cooldown-events?hours=24&limit=100" \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -434,7 +434,7 @@ curl "http://localhost:8080/dashboard/api/cooldown-events?hours=24&limit=100" \
 列出所有 `needs_human=true` 的 account 详情（弹窗详细列表）：
 
 ```bash
-curl http://localhost:8080/dashboard/api/cooldown/needs-human \
+curl http://localhost:18080/dashboard/api/cooldown/needs-human \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -445,7 +445,7 @@ curl http://localhost:8080/dashboard/api/cooldown/needs-human \
 人工确认账号问题已解决 → `mark_success` + 清 DB `last_error_*` + **立即触发探活**（异步 `triggered_by="recovery_check"`）：
 
 ```bash
-curl -X POST http://localhost:8080/dashboard/api/cooldown/5/ack-recover \
+curl -X POST http://localhost:18080/dashboard/api/cooldown/5/ack-recover \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"note": "已充值，确认余额"}'
@@ -456,7 +456,7 @@ curl -X POST http://localhost:8080/dashboard/api/cooldown/5/ack-recover \
 人工禁用 account（路由永久排除，不进 cooldown 也不主动探活），DB `accounts.status='manual_disabled'`：
 
 ```bash
-curl -X POST http://localhost:8080/dashboard/api/accounts/5/manual-disable \
+curl -X POST http://localhost:18080/dashboard/api/accounts/5/manual-disable \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -465,7 +465,7 @@ curl -X POST http://localhost:8080/dashboard/api/accounts/5/manual-disable \
 解除人工禁用，恢复 `accounts.status='active'`：
 
 ```bash
-curl -X POST http://localhost:8080/dashboard/api/accounts/5/manual-enable \
+curl -X POST http://localhost:18080/dashboard/api/accounts/5/manual-enable \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
 ```
 
@@ -575,7 +575,7 @@ AIMC 严格兼容 OpenAI Chat Completions 协议，所以以下 SDK 都直接能
 ```python
 # Python
 from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="...")
+client = OpenAI(base_url="http://localhost:18080/v1", api_key="...")
 
 # Node.js
 import OpenAI from "openai";

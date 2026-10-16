@@ -417,7 +417,8 @@ CHANNELS = [
             "register_url": "https://platform.moonshot.cn/",
             "key_console_url": "https://platform.moonshot.cn/console/api-keys",
             "invite": None,
-            "models_display": ["kimi-k3", "moonshot-v1-128k", "moonshot-v1-32k"],
+            # kimi-k3 不列: 本渠道无其价行 (kimi-k3 供给走 sensenova), 列出会误导路由可用性
+            "models_display": ["moonshot-v1-128k", "moonshot-v1-32k"],
         },
         "prices": [
             ("moonshot-v1-128k", "normal", "全天", 6.0, 6.0),

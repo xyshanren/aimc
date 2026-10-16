@@ -189,7 +189,7 @@ def _make_engine():
             model_id="deepseek-v4-flash", family="deepseek", tier="T1",
             modality="text", context_length=128000, capabilities=None),
         "glm-5.3-flash": types.SimpleNamespace(
-            model_id="glm-5.3-flash", family="glm", tier="T2",
+            model_id="glm-5.3-flash", family="glm", tier="T1",
             modality="multimodal", context_length=128000, capabilities=None),
     }
     engine._groups_cache = {

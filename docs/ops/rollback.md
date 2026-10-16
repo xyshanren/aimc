@@ -52,7 +52,7 @@ sqlite3 data/aimc.db "
 "
 
 # 3. 触发 cache refresh
-curl -X POST http://localhost:8080/dashboard/api/cache/refresh
+curl -X POST http://localhost:18080/dashboard/api/cache/refresh
 ```
 
 ### 方式 B: 写回滚脚本（批量回滚多个）
@@ -92,7 +92,7 @@ print(f"回滚 {c.rowcount} 条 tier 调整")
 conn.close()
 PYEOF
 python3 /tmp/rollback_tiers.py
-curl -X POST http://localhost:8080/dashboard/api/cache/refresh
+curl -X POST http://localhost:18080/dashboard/api/cache/refresh
 ```
 
 > 注：P2-19 真自动应用时会先建 `model_change_audit` 表（备份 tier 历史），rollback 会更简单。
@@ -104,7 +104,7 @@ curl -X POST http://localhost:8080/dashboard/api/cache/refresh
 sqlite3 data/aimc.db "
   DELETE FROM settings_runtime WHERE key = 'router_score_weights'
 "
-curl -X POST http://localhost:8080/dashboard/api/cache/refresh
+curl -X POST http://localhost:18080/dashboard/api/cache/refresh
 # router 用默认值 (0.4/0.3/0.2/0.05/0.05)
 ```
 

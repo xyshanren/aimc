@@ -398,6 +398,21 @@ async def ensure_migrations():
             ))
             logger.info("迁移: model_capabilities_log 添加 pending 去重索引 (V4.8.6)")
 
+        # tier:light 组过滤 T3 → NULL (2026-10-15, 数据修复)
+        # 背景: DEFAULT_GROUPS 已改 None (T3 过滤会把 T4 成员 qwen3-8b/qwen3.5-4b
+        # 全跳过 → tier:light 候选为空 503), 但 ensure_default_groups 只补缺失
+        # 不改已有行 — 存量库升级后组定义仍是旧 T3, 这里幂等修复。
+        # WHERE 条件使本语句天然幂等 (修完后零匹配)。
+        result = await conn.execute(text(
+            "SELECT count(*) FROM model_groups WHERE group_id='tier:light' AND tier='T3'"
+        ))
+        if result.scalar_one() > 0:
+            await conn.exec_driver_sql(
+                "UPDATE model_groups SET tier=NULL "
+                "WHERE group_id='tier:light' AND tier='T3'"
+            )
+            logger.info("迁移: model_groups.tier:light 过滤 T3 → NULL (2026-10-15 对齐生产)")
+
 
 async def drop_all():
     """删除所有表（仅开发/测试用）"""

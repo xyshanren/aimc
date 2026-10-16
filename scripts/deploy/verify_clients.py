@@ -185,8 +185,8 @@ def main() -> int:
     if ok == 0:
         print("\n[FAIL] 所有端点都不通 — 检查:")
         print("  1. 服务是否启: systemctl --user status aimc")
-        print("  2. 端口监听: ss -tlnp | grep 8080")
-        print("  3. 防火墙: sudo ufw allow 8080/tcp (如启用)")
+        print("  2. 端口监听: ss -tlnp | grep 18080")
+        print("  3. 防火墙: sudo ufw allow 18080/tcp (如启用)")
         return 1
     elif ok < len(results):
         print(f"\n[WARN] 部分端点不通 — 检查网络/firewall/API key 配置")

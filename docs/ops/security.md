@@ -36,7 +36,7 @@
 1. 域名注册（国内域名约 ¥50/年，必须 ICP 备案）
 2. 云服务器需有公网 IP（阿里云/腾讯云弹性公网 IP，~¥20/月）
 3. 安装 nginx + certbot，自动签发 Let's Encrypt SSL 证书
-4. nginx 反向代理 AIMC（127.0.0.1:8080）
+4. nginx 反向代理 AIMC（127.0.0.1:18080）
 5. AIMC 内部加 Cookie 安全标记
 
 **成本**：
@@ -54,7 +54,7 @@
 **适合**：HTTPS 外包给 Cloudflare，但 AIMC 仍 HTTP（依赖外部）
 
 **步骤**：
-1. AIMC 服务保持 HTTP（监听 0.0.0.0:8080，公网可达）
+1. AIMC 服务保持 HTTP（监听 0.0.0.0:18080，公网可达）
 2. Cloudflare 配 Origin Server + SSL/TLS 加密模式 "Full"
 3. 域名解析走 Cloudflare DNS（自动 SSL）
 
@@ -96,7 +96,7 @@ tunnel: <TUNNEL_UUID>
 credentials-file: ~/.cloudflared/<TUNNEL_UUID>.json
 ingress:
   - hostname: aimc.your-domain.com
-    service: http://127.0.0.1:8080
+    service: http://127.0.0.1:18080
   - service: http_status:404
 
 # 5. DNS 路由 + 启动
@@ -123,7 +123,7 @@ sudo systemctl start cloudflared
 
 如果连域名钱都不花：
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8080
+cloudflared tunnel --url http://127.0.0.1:18080
 # 输出: https://xxxx.trycloudflare.com
 ```
 

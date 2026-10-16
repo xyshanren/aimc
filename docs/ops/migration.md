@@ -10,7 +10,7 @@
 列对齐**，`db/schema_align.py`）→ `mark_legacy_migrations()`（历史脚本登记版本表）。
 
 - **版本表** `schema_migrations(migration, note, applied_at)`：记录 align 补列
-  （note=`orm-align`）与 23 个历史手动脚本基线（note=`legacy-manual`），
+  （note=`orm-align`）与 30 个历史手动脚本基线（note=`legacy-manual`），
   解决「无法判断某脚本是否已跑」的审计盲区。
 - **列对齐**：以 `db/models.py` 为单一事实源。新 ORM 列忘写迁移 → 启动时自动
   对老库补 `ALTER TABLE ADD COLUMN`（幂等）。日常维护流程：改 `db/models.py`
@@ -24,7 +24,7 @@
 
 ## 1. 当前 migration 总览
 
-AIMC 当前有 **23 个 migration 脚本**（`db/migrations/`）：
+AIMC 当前有 **30 个 migration 脚本**（`db/migrations/`）：
 
 ```
 2026_07_xx  P0-P0.1  (历史)
@@ -52,6 +52,12 @@ AIMC 当前有 **23 个 migration 脚本**（`db/migrations/`）：
 2026_09_09_v6x_feedback_score_no_retry.py   # V6.x 反馈分四项修复（usage_logs.feedback_score_no_retry 列 + 聚合口径）
 2026_09_11_v6x_thinking_inject.py           # V6.4 思考 Phase B（channels.disable_thinking_inject 渠道注入开关, 默认 0）
 2026_09_16_v6x_requires_reasoning_echo.py   # V6.6 DeepSeek thinking 回传（channels.requires_reasoning_echo 渠道标记, 默认 0）
+2026_09_20_v6x_step5_preview.py             # V6.x stepfun step-5-preview 接入（价行 + registry 条目）
+2026_09_27_v6x_group_priority_rebalance.py  # V6.14 flagship/balanced 组重排（幂等 priority 调整）
+2026_09_27_v6x_minimax_m31_flash_preview.py # V6.14 minimax_compat 收敛（+m3.1-flash-preview, 5 老模型下线）
+2026_09_27_v6x_minimax_m31_vision_group.py  # V6.14 m3.1 入 tier:vision(90)（m3 退居次位）
+2026_09_27_v6x_sensenova_channel_refresh.py # V6.14 sensenova 渠道模型刷新（+deepseek-flash/u1.5 系）
+2026_09_30_v6x_vl_embedding_modality_fix.py # VL embedding modality 修复（vision→embedding 存量迁移）
 ```
 
 > 生产环境（生产 VM）只跑幂等 migration，**不要**跑 `seed_model_groups.py` /
@@ -188,7 +194,7 @@ python -m pytest tests/ -v | tail -3
 # 6. e2e
 KEY=$(grep ^AIMC_API_KEY= .env | cut -d= -f2)
 for m in tier:flagship tier:strong tier:balanced tier:light tier:code; do
-  STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8080/v1/chat/completions \
+  STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:18080/v1/chat/completions \
     -H "Content-Type: application/json" -H "Authorization: Bearer $KEY" \
     -d "{\"model\":\"$m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":3}")
   echo "[$m] HTTP=$STATUS"

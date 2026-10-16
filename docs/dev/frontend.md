@@ -258,7 +258,7 @@ async function authFetch(url, opts = {}) {
 
 ```bash
 # 看后端 API 数据
-curl -s http://localhost:8080/dashboard/api/cache/stats?days=7 | python3 -m json.tool
+curl -s http://localhost:18080/dashboard/api/cache/stats?days=7 | python3 -m json.tool
 
 # 浏览器控制台查看 JS 错误
 F12 → Console

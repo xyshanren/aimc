@@ -67,21 +67,23 @@ curl -X POST http://localhost:18080/v1/chat/completions \
   }'
 ```
 
-## 3. 模型组路由 (`tier:xxx` / `scene:xxx`)
+## 3. 模型组路由 (`tier:xxx`)
 
 **AIMC 核心能力**：用 `tier:flagship` 这种语义标签，AIMC 在组内跨 channel 选最便宜的可用 model。
+组成员随渠道配置自动种子（`channels_catalog.py` 分级 + 三层控制 `specialized`/`auto_group`/`group_priorities`，与生产策展一致），下表为生产当前形态：
 
-| 组 | 包含的 model（举例） | 适合 |
+| 组 | 包含的 model（生产当前成员, priority） | 适合 |
 |----|---------------------|------|
-| `tier:flagship` | deepseek-flash, kimi-k3, deepseek-v4-pro, glm-5.3 | 复杂推理 |
-| `tier:strong` | glm-5.2, glm-5.3-flash | 主力通用 |
-| `tier:balanced` | sensenova-6.8-flash-lite, minimax-m3 | 性价比 |
-| `tier:light` | glm-4.7-flash（免费）, qwen3-8b, qwen3.5-4b | 轻量 |
-| `tier:vision` | deepseek-flash, minimax-m3, minimax-m3.1-flash-preview | 旗舰视觉（V6.0 分级）|
-| `tier:vision-light` | glm-4.6v-flash（免费）, qwen3-vl 系列 | 轻量视觉免费兜底（V6.0 新组）|
-| `tier:code` | minimax-m2.7, deepseek-v3.2, glm-5.3-flash | 代码 |
+| `tier:flagship` | deepseek-flash(100), kimi-k3(105), deepseek-v4-pro(110), glm-5.3(115) | 复杂推理 |
+| `tier:strong` | glm-5.2(108), glm-5.3-flash(120), minimax-m3.1-flash-preview(125) | 主力通用 |
+| `tier:balanced` | sensenova-6.8-flash-lite(100), minimax-m3(110) | 性价比 |
+| `tier:light` | qwen3-8b(100), qwen3.5-4b(110), glm-4.7-flash(130)（免费） | 轻量 |
+| `tier:vision` | minimax-m3.1-flash-preview(90), glm-5.3-flash(100), deepseek-flash(120) | 多模态视觉 |
+| `tier:vision-light` | glm-4.6v-flash(100), sensenova-6.8-flash-lite(105), minimax-m3(110) | 轻量视觉免费兜底 |
+| `tier:code` | kimi-k2.7-code(100), qwen3-coder-30b-a3b-instruct(105)（特化代码模型） | 代码 |
 
 视觉请求 fallback 链：`tier:vision → tier:vision-light → tier:light`（V6.0 起）。
+注意：vision 组成员均为多模态，纯文本请求会被 P0-3 规则跳过并沿 fallback 落到下游文本组——测 vision 组自身请带图。
 
 **示例**：
 
@@ -119,7 +121,7 @@ import base64
 img_b64 = base64.b64encode(open("cat.png", "rb").read()).decode()
 
 resp = client.chat.completions.create(
-    model="tier:vision",  # V6.0: vision-exp / glm-5.3-flash 领跑, 不可用降级 vision-light (glm-4.6v-flash 免费)
+    model="tier:vision",  # minimax-m3.1-flash-preview / glm-5.3-flash 领跑, 不可用降级 vision-light (glm-4.6v-flash 免费)
     messages=[{
         "role": "user",
         "content": [

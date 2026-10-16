@@ -71,7 +71,7 @@ ssh <你的服务器> "sqlite3 ~/aimc/data/aimc.db \
 ssh <你的服务器> "systemctl --user restart aimc"
 
 # 5. 验证 e2e
-ssh <你的服务器> "curl -X POST http://localhost:8080/v1/chat/completions \
+ssh <你的服务器> "curl -X POST http://localhost:18080/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{\"model\":\"tier:flagship\",\"messages\":[{\"role\":\"user\",\"content\":\"test\"}]}'"
 ```

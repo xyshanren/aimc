@@ -33,7 +33,7 @@ python scripts/manual_import.py
 python main.py
 ```
 
-启动后监听 `http://0.0.0.0:8080`。
+启动后监听 `http://0.0.0.0:18080`。
 
 ## 4. 跑测试
 
@@ -113,14 +113,14 @@ aimc/
 
 ```bash
 # 改 router.py 后看效果
-curl -X POST http://localhost:8080/v1/chat/completions \
+curl -X POST http://localhost:18080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $AIMC_API_KEY" \
   -d '{"model":"tier:flagship","messages":[{"role":"user","content":"hi"}],"max_tokens":3}' \
   -i | head -20
 
 # 触发 router cache 立即刷新 (不等 TTL)
-curl -X POST http://localhost:8080/dashboard/api/cache/refresh
+curl -X POST http://localhost:18080/dashboard/api/cache/refresh
 
 # 看 router 日志 (DEBUG 级)
 AIMC_LOG_LEVEL=DEBUG python main.py

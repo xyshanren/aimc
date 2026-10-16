@@ -199,7 +199,8 @@ MODEL_REGISTRY = [
         # 图片/视频/文件/文本; 进 tier:vision 补位旗舰 (require_vision 只认
         # vision/multimodal)。P0-3 已收窄为仅 require_vision 组内跳过,
         # strong/code 的纯文本角色不受影响 (docs/next-major-v6-plan.md §1.3)
-        "glm-5.3-flash", "glm", "GLM-5.3 Flash", "T2",
+        # 2026-10-15: T2 → T1 (用户拍板: 5.3 系新一代不应低于 glm-5.2 的 T1)
+        "glm-5.3-flash", "glm", "GLM-5.3 Flash", "T1",
         ["general", "code"], 128000, "multimodal", 0, "2026-08",
         "GLM-5.3 极速版, coding plan Lite; 多模态; 调用 GLM-5-Turbo/4.7 自动切换至本模型",
     ),

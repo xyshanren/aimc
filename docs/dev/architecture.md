@@ -5,8 +5,8 @@
 > 配套：模块间结合问题的逐条清单见 [module-integration-audit.md](module-integration-audit.md)；
 > 下一阶段规划调研见 [next-stage-research.md](next-stage-research.md)
 
-> **文档时点**：2026-09-16（对应旗舰修复批，840 测试全绿）。文中的文件行号会随代码演进漂移，
-> 引用时以函数名/符号名为主键，行号仅作定位辅助。
+> **文档时点**：2026-10-16（对应模型分级校准 + 种子映射三层控制批，968 绿 / 10 失败挂账）。
+> 文中的文件行号会随代码演进漂移，引用时以函数名/符号名为主键，行号仅作定位辅助。
 
 ## 1. 系统分层
 
@@ -34,12 +34,13 @@
 │  └────────────────────────────────────────────────────────┘ │
 ├──────────────────────────────────────────────────────────────┤
 │  看板层  dashboard/ (同进程, 挂 /dashboard + /static)         │
-│  routes.py    67 个端点 (channels/accounts/keys/usage/cost/  │
+│  routes.py    69 个端点 (channels/accounts/keys/usage/cost/  │
 │               intel/sources/suggestions/cooldown/ops/settings)│
 │  static/      index.html + app.js + style.css (零框架, 6 页)  │
 ├──────────────────────────────────────────────────────────────┤
 │  情报层  intelligence/ (同进程, APScheduler)                  │
-│  scheduler.py 42 个 job (30 batch_crawl + 12 固定) + job_health│
+│  scheduler.py 44 个 job (32 batch_crawl + 12 固定; 10-12 起   │
+│               26 个 Playwright 促销源按行禁用) + job_health    │
 │  sources/     37 个采集源 (5 类型) + fetcher (Playwright/httpx)│
 │  differ/healer/parser/extractor/content_guard  采集→变化→修复 │
 │  model_sync/pricing_sync/pricing_writer/benchmark_aggregator  │
@@ -50,7 +51,7 @@
 │  数据层  db/ + schemas/                                      │
 │  models.py  27 个 ORM 表 | crud.py 58 函数 | engine.py        │
 │  init_db.py create_all + ensure_migrations (幂等 ALTER)       │
-│  migrations/ 23 个手动脚本 (--apply, 无版本表)                │
+│  migrations/ 30 个手动脚本 (--apply, 无版本表)                │
 │  schemas/intel.py 情报数据契约 (channel/pricing/routing 遗留)  │
 └──────────────────────────────────────────────────────────────┘
         │
@@ -150,11 +151,11 @@ RouteEngine (单例 route_engine)
 |---|---|---|---|
 | deepseek_official | 2 | 0 | ✅ 全规范（v4-flash 系 6 行已清） |
 | glm_bigmodel | 4 | 0 | ✅ 全规范 |
-| minimax_compat | 4 | 0 | ✅ **2026-09-27 收敛**：+ minimax-m3.1-flash-preview（多模态，T2/active，1M ctx 官方确认 2026-09-28；上游 chat 直测 200、/models 未收录）；m2.5 / m2.5-highspeed / m2.1 / m2.1-highspeed / m2 过时下线（价行移除，usage_logs 历史保留）；m2.5 的 siliconflow 规范名兜底行不受影响；同日晚 m3.1 入 tier:vision（priority=90 首选，m3=100 退居次位，deepseek-flash=120 兜底——同价 0 元由 member_priority 决位）。**实证坑：registry status 非 active 不进组路由**（`_load_groups_cache` 只拉 active，m3.1 初版 status=preview 被当"不在注册表"跳过、精确直连不受影响；已改 active。step-5-preview 同状态同坑，入组前需先改），迁移 2026_09_27_v6x_minimax_m31_vision_group.py |
+| minimax_compat | 4 | 0 | ✅ **2026-09-27 收敛**：+ minimax-m3.1-flash-preview（多模态，T1/active〔2026-10-15 分级校准由 T2 改 T1〕，1M ctx 官方确认 2026-09-28；上游 chat 直测 200、/models 未收录）；m2.5 / m2.5-highspeed / m2.1 / m2.1-highspeed / m2 过时下线（价行移除，usage_logs 历史保留）；m2.5 的 siliconflow 规范名兜底行不受影响；同日晚 m3.1 入 tier:vision（priority=90 首选，m3=100 退居次位，deepseek-flash=120 兜底——同价 0 元由 member_priority 决位）。**实证坑：registry status 非 active 不进组路由**（`_load_groups_cache` 只拉 active，m3.1 初版 status=preview 被当"不在注册表"跳过、精确直连不受影响；已改 active。step-5-preview 同状态同坑，入组前需先改），迁移 2026_09_27_v6x_minimax_m31_vision_group.py |
 | taotoken_coding | 2 | 0 | ✅ 全规范 |
 | sensenova_official | 5 | 2 | ✅ **2026-09-27 刷新**：+ deepseek-flash 上架（上游 id=规范名实证）、u1.5-fast / u1.5-lite 生图行（未注册 raw=直连专用）；deepseek-v4-pro / sensenova-6.7-flash-lite 退役（文档站侧栏实证，v4-pro 30d 555 次落 ch1 付费）、u1-fast 被 u1.5 系取代；deepseek-v4-flash 旧行保留（上游仍承接，30d 1315 次）；情报侧新增 sensenova 文档站监测源（model_list 型 /docs 侧栏=支持模型清单，86400s；须 networkidle+wait_for=article——SPA 水合竞态下 domcontentloaded 只拿到未水合壳；配套修复 scheduler 接线 Phase 2B-3 wait 等待策略死配置 + 生产 .env OPENAI_BASE_URL 旧 VM IP 致解析腿超时） |
 | modelscope_inference | 3 | 5 | ✅ 本规范首例：3 规范行（raw_model_id 指 raw id）+ 3 raw 行（直连入口）+ 2 Qwen 纯直连 |
-| stepfun_official | 1 | 1 | ✅ **2026-09-20 step-5-preview 接入**：规范名行+注册表条目（T1/multimodal/1M ctx，标价 7/20 cache 0.35，状态 preview）= 可进组路由；step-3.5-flash 未注册 = 仅直连/fallback；step-1o 已过时下线（价行移除） |
+| stepfun_official | 1 | 1 | ✅ **2026-09-20 step-5-preview 接入**：规范名行+注册表条目（T0/multimodal/1M ctx〔2026-10-15 校准由 T1 改 T0〕，标价 7/20 cache 0.35，状态 preview）= 可进组路由；step-3.5-flash 未注册 = 仅直连/fallback；step-1o 已过时下线（价行移除） |
 | siliconflow_aggregator | 13 | 99 | ✅ **2026-09-16 规范化完成**：13 规范名行=<br>（A）deepseek-v3/v3.2 + qwen3-8b/3.5-4b + qwen3-vl-32b-instruct/-thinking/30b-a3b-thinking/8b-instruct = **SF 独供 active 成员从 fallback 黑路径提为一等候选**<br>（B）deepseek-v4-flash / deepseek-v4-pro / glm-5.2 / minimax-m2.5 = 与官方渠道重复，显式付费兜底<br>（C）paddleocr-vl-1.5 = registry 已有规范名，用起来<br>+ glm-4-flash（light 组死成员）移除（glm-4.7-flash 已在组）。**全组 active 成员均有一等候选**，fallback WARN 降至 0。raw 行保留作聚合兜底 + 直连入口；embeddings/rerank 独立直通不受影响 |
 
 **新渠道 / 新模型接入规范（V6.6 起，此后一律照此办理）**
@@ -420,10 +421,10 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
    全部表全部列），缺列即执行预生成 `ALTER` 并登记版本表（幂等）。覆盖「新 ORM 列
    忘写迁移 → 老库 no such column」这一最高频事故路径。NOT NULL 无 server_default
    列不在常量内（SQLite ALTER 硬限制不可 ADD，只出现在全新库）。
-4. `mark_legacy_migrations()` — 23 个历史手动迁移脚本登记 `schema_migrations` 版本表
+4. `mark_legacy_migrations()` — 30 个历史手动迁移脚本登记 `schema_migrations` 版本表
    （note=`legacy-manual`，仅登记不执行），解决「无法判断某脚本是否已跑」的审计盲区。
 
-**手动**：`db/migrations/*.py` 共 23 个，`argparse + sqlite3` 直连，默认 dry-run，
+**手动**：`db/migrations/*.py` 共 30 个，`argparse + sqlite3` 直连，默认 dry-run，
 需 `--apply`；**无任何代码调用，全靠人工按 [../ops/migration.md](../ops/migration.md) 执行**。
 
 **仍需人工迁移的场景**：列类型变更、删列、数据回填、NOT NULL 无默认列的补齐
@@ -519,3 +520,5 @@ model_capabilities_log ; cross_source_discrepancies ; model_feedback_summary
 | 2026-09-27 (V6.14) | 人工禁用以 DB status 为唯一真相，内存靠 refresh_cache 对账 | 「人工禁用」有两份真相（DB status+manual_disabled_at / 内存 manual_disabled_at+远期 cooldown_until），写入路径各修一半（待处理卡两端写、账号表/CLI 只写 DB）→ glm_01 启用后内存残留：待处理仍显示禁用且 is_in_cooldown 一年为 True 路由真排除（僵死 4 天，无看板动作可解只靠重启）；taotoken_01 反向：重启后 DB 禁用从待处理消失。修法：clear_manual_disabled 连带清远期 cooldown、refresh_cache 每轮 reconcile（DB 永远赢）、_set_account_status 双写 + 清 DB 时间戳、manual 端点补 refresh_cache、_account_to_dict 暴露 manual_disabled_at |
 | 2026-10-05 (V6.16) | APScheduler jobstore 独立文件 + wakeup 断链 watchdog 自愈 | jobstore 与业务共用 aimc.db，业务写锁持有 >5s（pysqlite 默认 busy timeout）令 AsyncIOScheduler.wakeup 回调里 update_job 抛 database is locked——异常在 asyncio 回调中，下一次唤醒不再重排 → 全部 in-process job（探活/采集/告警/retention）静默停摆且无自愈（10/1 生产事故：02:02 重启后 06:03 断链，停摆 3.7 天；路由请求驱动故表面无恙，周报页停更只是可见一角——另有独立根因：周报 systemd timer 9/18 迁移未随装）。修法：① jobstore 切 `data/scheduler_jobs.db` 独立文件 + connect timeout 30s（旧 aimc.db.apscheduler_jobs 表留存不再读写，jobs 启动时全量重注册）；② 独立 asyncio watchdog（300s 巡检）：任一 job next_run_time 滞后 >600s 判定断链，主动 wakeup() 重排 + send_alert（key 节流 30min），恢复自动复位。回归 tests/test_v616_scheduler_watchdog.py（6 项） |
 | 2026-10-12 (体检批) | intel_auto 出组护栏（渠道供应门）+ Playwright 促销采集下线 | intel 判 deprecated+conf≥0.9 原为一步全自动（registry deprecated + 软删全组员）——9/28 把 sensenova/taotoken 仍 0 元供应的 deepseek-v4-flash 踢出 strong/code（git 零痕迹，两周后体检才发现）。护栏：出组前查 `has_available_channel`（active 渠道×价行），仍供应 → 不动手，降级 remove_from_group suggestion + pending log 走建议中心人工确认；无供应 → 全自动放行。同时砍 Playwright 促销采集：A-2 验收死线已过（is_promotion=1 恒 0，转化闭环从未接通）+ chromium 常驻 ~100MB，26 个 PW 型源按行 disabled（`_run_source_task` 开头短路），保留 9 个 httpx model_list 轻量 registry 同步；chromium 惰性启动故禁用即断、重启后内存 538→796Mi。机制全貌见 [intel-auto-outgroup.md](intel-auto-outgroup.md) |
+| 2026-10-13 (公开仓批) | 对外开放准备：安全加固 + 双远程推送 + Windows 便携版 + 看板「初始化配置」页 + 默认端口 8080→18080 | 生产 IP 从 docs 清洗、.gitignore 补齐；`git push` 一条命令同步 Gitee 主仓 + GitHub 镜像；便携版内嵌 Python 3.12 解压即用（`portable/build_portable.py`）；onboarding 页（`dashboard/onboarding.py` + `channels_catalog.py` 渠道目录单一事实源）卡片引导注册→存 key→一键建渠道/账号/价格行+种子默认组 |
+| 2026-10-15/16 (分级校准批) | glm-5.3-flash T1 + 种子映射三层控制 + 软删补种跳过 + tier:light 过滤 None | ① 用户拍板 glm-5.3-flash T2→T1（5.3 系新一代不应低于 glm-5.2 的 T1；多模态入 tier:vision(100)+strong(120)，生产 DB 同步）；registry 全面校准对齐生产策展（glm-5.3 T0 / deepseek-v3 T2 / kimi-k3 text / v4-flash text+deprecated / minimax-m3 T2 multimodal / sensenova-6.8-flash-lite T2 multimodal）；② fresh seed 与生产策展对齐：catalog 三层控制 `specialized`（tier:code 只放特化代码模型）/ `auto_group:False`（deepseek-v3/qwen2.5-72b registry-only）/ `group_priorities`（生产精确优先级），新增 6 供给模型；③ 软删成员补种改**跳过不复活**（原 INSERT 撞 UNIQUE 500；策展移出不得翻案，复活只走看板手动加成员）；④ tier:light 组过滤 T3→None（T4 成员被全跳过致 503；存量库 init_db 幂等数据迁移兜底）⑤ 魔搭 invite_code 卡片 + `#/setup` 老用户可渲染。回归 test_seed_default_soft_delete.py（3 项）+ test_v6x_onboarding 环境失败修复 |
