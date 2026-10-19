@@ -188,7 +188,10 @@ MODEL_REGISTRY = {
 
 RAW_ALIASES = {
     # modelscope (raw 价格行名 -> 规范名)
-    "deepseek-ai/DeepSeek-V4.1-Flash": "deepseek-flash",
+    # 2026-10-19: 上游把 DeepSeek-V4.1-Flash 轮换退役 (直连实证 400
+    # "Model id : deepseek-ai/DeepSeek-V4.1-Flash , has no provider supported"),
+    # 现役 id = DeepSeek-V4.1-Flash-1017 (对应 V4.1-Flash-1017 版本, 2026-10-17)
+    "deepseek-ai/DeepSeek-V4.1-Flash-1017": "deepseek-flash",
     "deepseek-ai/DeepSeek-V4-Pro": "deepseek-v4-pro",
     "ZhipuAI/GLM-5.2": "glm-5.2",
     # siliconflow
@@ -263,7 +266,7 @@ CHANNELS = [
             "tagline": "注册领魔粒, 免费调大参数模型",
             "description": (
                 "魔搭社区的免费推理服务：注册并绑定阿里云账号后，用全站激励积分"
-                "「魔粒」免费调用 DeepSeek-V4.1-Flash / GLM-5.2 / Qwen3-235B 等"
+                "「魔粒」免费调用 DeepSeek-V4.1-Flash-1017 / GLM-5.2 / Qwen3-235B 等"
                 "大参数模型；登录、做社区任务可继续获得魔粒。免费额度动态调整、"
                 "超额自动限流（AIMC 冷却自愈），可用模型以官网当日列表为准。"
             ),
@@ -275,7 +278,9 @@ CHANNELS = [
             "setup_note": "需要绑定阿里云账号（免费推理由阿里云提供算力）",
         },
         "prices": [
-            ("deepseek-ai/DeepSeek-V4.1-Flash", "normal", "全天", 0.0, 0.0),
+            # 2026-10-19: DeepSeek-V4.1-Flash 旧 raw id 上游已退役 (400 no provider
+            # supported), 轮换到 DeepSeek-V4.1-Flash-1017 (V4.1-Flash-1017 版本)
+            ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "normal", "全天", 0.0, 0.0),
             ("deepseek-ai/DeepSeek-V4-Pro", "normal", "全天", 0.0, 0.0),
             ("ZhipuAI/GLM-5.2", "normal", "全天", 0.0, 0.0),
             ("Qwen/Qwen3-Next-80B-A3B-Instruct", "normal", "全天", 0.0, 0.0),

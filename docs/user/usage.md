@@ -78,7 +78,7 @@ curl -X POST http://localhost:18080/v1/chat/completions \
 | `tier:strong` | minimax-m3.1-flash(100), glm-5.2(108), glm-5.3-flash(120) | 主力通用 |
 | `tier:balanced` | sensenova-6.8-flash-lite(100), minimax-m3(110) | 性价比 |
 | `tier:light` | qwen3-8b(100), qwen3.5-4b(110), glm-4.7-flash(130)（免费） | 轻量 |
-| `tier:vision` | minimax-m3(100), deepseek-flash(120) | 多模态视觉 |
+| `tier:vision` | glm-5.3-flash(100), deepseek-flash(120) | 多模态视觉 |
 | `tier:vision-light` | glm-4.6v-flash(100), sensenova-6.8-flash-lite(105), minimax-m3(110) | 轻量视觉免费兜底 |
 | `tier:code` | kimi-k2.7-code(100), qwen3-coder-30b-a3b-instruct(105)（特化代码模型） | 代码 |
 
@@ -121,7 +121,7 @@ import base64
 img_b64 = base64.b64encode(open("cat.png", "rb").read()).decode()
 
 resp = client.chat.completions.create(
-    model="tier:vision",  # minimax-m3 / deepseek-flash 领跑, 不可用降级 vision-light (glm-4.6v-flash 免费)
+    model="tier:vision",  # glm-5.3-flash / deepseek-flash 领跑, 不可用降级 vision-light (glm-4.6v-flash 免费)
     messages=[{
         "role": "user",
         "content": [

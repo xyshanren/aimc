@@ -25,8 +25,12 @@ def test_manual_import_modelscope_config():
     assert cfg["qpm"] == 30
     # 价格行: raw 名直录 (同 siliconflow 聚合模式), 全 0 元
     # 模型行来自 2026-09-14 用户全量实测 (只录大参数直接可用行)
+    # 2026-10-19: DeepSeek 旧 raw id 上游退役 (直连实证 400 "no provider
+    # supported"), 轮换到 V4.1-Flash-1017 (V4.1-Flash-1017 版本)
     models = [p[0] for p in cfg["prices"]]
-    assert "deepseek-ai/DeepSeek-V4.1-Flash" in models
+    assert "deepseek-ai/DeepSeek-V4.1-Flash-1017" in models
+    assert "deepseek-ai/DeepSeek-V4.1-Flash" not in models, \
+        "旧 raw id 上游已退役 (no provider supported), 不应留在价行"
     assert "deepseek-ai/DeepSeek-V4-Pro" in models
     assert "ZhipuAI/GLM-5.2" in models
     assert "Qwen/Qwen3-Next-80B-A3B-Instruct" in models

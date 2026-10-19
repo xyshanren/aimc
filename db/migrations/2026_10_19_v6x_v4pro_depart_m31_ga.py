@@ -19,7 +19,7 @@
    价行保持 0.0/0.0 — M Plan 订阅边际成本, cheapest 策略下填标价
    会被同组 0 元成员反压 priority
 4. model_group_members: vision 行软删除 (改名后留档, reason=m31_ga_move_to_strong);
-   INSERT tier:strong 行 priority=100 (幂等: 已存在则只收敛 priority)
+   strong 行改名 + priority 收敛 100 (幂等: 已存在则收敛 model_id+priority)
 
 ⚠️ 不在本迁移范围: 生产 .env AIMC_PARSE_MODEL 若指向 minimax-m3.1-flash-preview
    需同步改为 minimax-m3.1-flash (parse 走精确路由); 迁移后需刷新路由缓存/重启
