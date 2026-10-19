@@ -118,21 +118,25 @@ GROUPS = [
 # priority 数字越小越优先 (组内同价时 tie-break)
 GROUP_MEMBERS = [
     # ========== tier:flagship (T0/T1 旗舰推理) ==========
-    # V6.14 重排 (2026-09-27, 用户拍板): deepseek-flash 首位 — modelscope/sensenova
-    #   双 0 元供给 + ch1 官方分时段付费兜底; v4-pro 降第三 (sensenova 已退役其供给,
-    #   0 元仅剩 modelscope); glm-5.3 殿后 (Lite 池积分系数高)
-    # + deepseek-flash (T0, V4.1-Flash; 生产行 2026-09 前已存在 priority=115,
+    # V6.14 重排 (2026-09-27): deepseek-flash 首位 — modelscope/sensenova
+    #   双 0 元供给 + ch1 官方分时段付费兜底
+    # deepseek-v4-pro 出组 (2026-10-19, 用户拍板): V4.1-Flash-1017 上线后
+    #   deepseek-flash 与 v4-pro 彻底拉开差距, 组路由不再需要 v4-pro;
+    #   registry + ch1/modelscope 价行保留, 精确直连不受影响
+    # + deepseek-flash (T0, V4.1-Flash, 2026-10-17 起上游版本 V4.1-Flash-1017
+    #   仍用 deepseek-flash 名; 生产行 2026-09 前已存在 priority=115,
     #   seed 此前漏记, 本次补行并对齐新位次)
-    # + deepseek-v4-pro (T0 评分 65.1; V5.0: sensenova 免费第二渠道 — 9/27 退役,
-    #   官方付费 + modelscope 0 元兜底)
     # + kimi-k3 (V5.0: sensenova TokenPlan 免费渠道, T0, 原生视觉+1M ctx)
     # + glm-5.3 (V4.9.7: bigmodel coding plan Lite, 新一代旗舰)
     ("tier:flagship", "deepseek-flash",  100, 1.0, None, "manual"),
     ("tier:flagship", "kimi-k3",         105, 1.0, None, "manual"),
-    ("tier:flagship", "deepseek-v4-pro", 110, 1.0, None, "manual"),
     ("tier:flagship", "glm-5.3",         115, 1.0, None, "manual"),
 
     # ========== tier:strong (主力通用) ==========
+    # + minimax-m3.1-flash (2026-10-19 GA, 用户拍板): 去 preview 后缀正式发布,
+    #   T1 不变, vision(90) 移入 strong 提到最前 — M3.1 Flash 速度提升近 3 倍
+    #   (200+ TPS) / Agentic 成本降 70%, 待用一段再评估升组 flagship;
+    #   价行 0 元订阅边际成本, cheapest 策略下与 glm-5.2 平价由 priority 决位
     # glm-5.2 (T1, sensenova 免费渠道)
     # + glm-5.3-flash (T2, V5.1: bigmodel Lite 免费兜底 — strong 唯一 GLM Lite
     #   车道, 商汤 5h 窗口烧穿时组内仍有免费可用)
@@ -140,8 +144,9 @@ GROUP_MEMBERS = [
     #   此前 strong 85% 流量实际默认打 glm-5.3 — channel.priority=8 赢 0 元平价)
     # minimax-m3 移出 → tier:balanced 兜底 (能力低于 v4-flash/flash, TokenPlanMax
     #   年度额度大, 适合链路下游做容量缓冲: strong→balanced fallback 接住溢出)
-    ("tier:strong", "glm-5.2",           108, 1.0, None, "manual"),
-    ("tier:strong", "glm-5.3-flash",     120, 1.0, None, "manual"),
+    ("tier:strong", "minimax-m3.1-flash", 100, 1.0, None, "manual"),
+    ("tier:strong", "glm-5.2",            108, 1.0, None, "manual"),
+    ("tier:strong", "glm-5.3-flash",      120, 1.0, None, "manual"),
     # deepseek-v4-flash 出组 (2026-09-28 intel_auto 软删: registry deprecated
     #   +conf>=0.9; 用户 2026-10-12 拍板接受现状 — 官方已弃用旧名(替代
     #   deepseek-flash), sensenova/taotoken 旧名价行保留仍可直连)
@@ -182,7 +187,8 @@ GROUP_MEMBERS = [
     #   注: 生产活跃成员以 2026-09-27 迁移后为准 = m3.1(90)/m3(100)/deepseek-flash(120),
     #   本文件 vision 块其余行已落后生产 (deepseek-v4-flash-vision-exp 已改名 deepseek-flash,
     #   glm-5.3-flash 等已软删除), 重跑 seed 会冲掉生产软删史 — 生产以 db 为准
-    ("tier:vision", "minimax-m3.1-flash-preview",   90, 1.0, None, "manual"),
+    # 2026-10-19: minimax-m3.1-flash-preview GA 改名 minimax-m3.1-flash 并移出
+    #   vision → tier:strong(100 首位), 生产同步软删 vision 行 — vision 首选回落 m3
     ("tier:vision", "minimax-m3",                   100, 1.0, None, "manual"),
     ("tier:vision", "deepseek-v4-flash-vision-exp", 100, 1.0, None, "manual"),
     ("tier:vision", "glm-5.3-flash",                110, 1.0, None, "manual"),

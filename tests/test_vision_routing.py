@@ -121,28 +121,62 @@ def test_seed_registry_vision_validate_namespace():
 
 
 def test_seed_groups_vision_members():
-    """seed_model_groups.py 的 tier:vision 组 member (V6.14 minimax 双成员)
+    """seed_model_groups.py 的 tier:vision 组 member
 
     V6.0: glm-4.5v 移除, qwen-vl 系列下沉 vision-light, 双旗舰互备。
     V6.14 (2026-09-27): + minimax-m3.1-flash-preview (90, 首选, 用户拍板) +
     minimax-m3 (100); deepseek-v4-flash-vision-exp 是 V6.0 时代的名字
     (生产已改名 deepseek-flash, 本 seed 行为意图留档, 生产以 db 为准)。
+    2026-10-19: m3.1-flash GA 改名并移出 vision → strong, vision 首选回落 m3。
     """
     from scripts.seed_model_groups import GROUP_MEMBERS
     vision_members = [m for m in GROUP_MEMBERS if m[0] == "tier:vision"]
-    assert len(vision_members) == 4, f"tier:vision 应有 4 个 member, 实际 {len(vision_members)}"
+    assert len(vision_members) == 3, f"tier:vision 应有 3 个 member, 实际 {len(vision_members)}"
     model_ids = {m[1] for m in vision_members}
     expected = {
-        "minimax-m3.1-flash-preview",
         "minimax-m3",
         "deepseek-v4-flash-vision-exp",
         "glm-5.3-flash",
     }
     assert model_ids == expected, f"tier:vision 成员不匹配: {model_ids ^ expected}"
-    # m3.1 首选: priority 必须严格小于 m3 (越小越优先, 同价 0 元由它决位)
-    pri = {m[1]: m[2] for m in vision_members}
-    assert pri["minimax-m3.1-flash-preview"] < pri["minimax-m3"], \
-        f"m3.1 priority ({pri['minimax-m3.1-flash-preview']}) 应小于 m3 ({pri['minimax-m3']})"
+    # m3.1 已移出 vision (2026-10-19 GA → strong)
+    assert all("m3.1" not in m[1] for m in vision_members), \
+        "minimax-m3.1-flash 应已移出 tier:vision (2026-10-19 GA 移入 strong)"
+
+
+def test_seed_groups_strong_m31_flash_first():
+    """2026-10-19 GA: minimax-m3.1-flash 进 tier:strong 且提到最前 (用户拍板)
+
+    strong 三成员 0 元订阅边际成本同价, cheapest 策略下由 member_priority 决位:
+    m3.1-flash(100) < glm-5.2(108) < glm-5.3-flash(120)。
+    """
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    strong_members = [m for m in GROUP_MEMBERS if m[0] == "tier:strong"]
+    model_ids = {m[1] for m in strong_members}
+    assert model_ids == {"minimax-m3.1-flash", "glm-5.2", "glm-5.3-flash"}, \
+        f"tier:strong 成员不匹配: {model_ids}"
+    pri = {m[1]: m[2] for m in strong_members}
+    assert pri["minimax-m3.1-flash"] < pri["glm-5.2"], \
+        f"m3.1-flash priority ({pri['minimax-m3.1-flash']}) 应小于 glm-5.2 ({pri['glm-5.2']})"
+    assert pri["minimax-m3.1-flash"] < pri["glm-5.3-flash"], \
+        f"m3.1-flash priority ({pri['minimax-m3.1-flash']}) 应小于 glm-5.3-flash ({pri['glm-5.3-flash']})"
+
+
+def test_seed_groups_flagship_v4pro_departed():
+    """2026-10-19: deepseek-v4-pro 出组 flagship (V4.1-Flash-1017 后拉开差距)
+
+    registry + ch1/modelscope 价行保留, 精确直连不受影响 — 仅组路由移除。
+    """
+    from scripts.seed_model_groups import GROUP_MEMBERS
+    flagship = [m for m in GROUP_MEMBERS if m[0] == "tier:flagship"]
+    model_ids = {m[1] for m in flagship}
+    assert "deepseek-v4-pro" not in model_ids, \
+        f"deepseek-v4-pro 应已出组 flagship, 实际成员: {model_ids}"
+    assert model_ids == {"deepseek-flash", "kimi-k3", "glm-5.3"}, \
+        f"tier:flagship 成员不匹配: {model_ids}"
+    pri = {m[1]: m[2] for m in flagship}
+    assert pri["deepseek-flash"] < pri["kimi-k3"] < pri["glm-5.3"], \
+        f"flagship 位次应 flash < kimi < glm-5.3, 实际 {pri}"
 
 
 def test_seed_groups_vision_null_tier_fallback_vision_light():
@@ -277,75 +311,79 @@ def test_require_vision_accepts_multimodal():
 
 
 # ============================================================
-# V6.14 (2026-09-27): minimax-m3.1-flash-preview 入 tier:vision
+# 2026-10-19: minimax-m3.1-flash GA → tier:strong 首位; vision 组 m3 首选回归
 # ============================================================
 
-def _build_vision_engine(registry_model_ids):
-    """构造 tier:vision 组选型用的 RouteEngine (mock 缓存, 成员=生产 2026-09-27 状态)
+def _reg_entry(model_id, tier, modality):
+    class _Reg:
+        def __init__(self):
+            self.model_id = model_id
+            self.tier = tier
+            self.modality = modality
+            self.status = "active"
+            self.family = model_id.split("-")[0]
+            self.capabilities = '["reasoning", "code", "general"]'
+            self.context_length = 1000000
+    return _Reg()
 
+
+def _build_group_engine(group_id, fallback_group, member_priorities,
+                        channels, registry_model_ids):
+    """构造组选型用的 RouteEngine (mock 缓存)
+
+    member_priorities: {model_id: priority}
+    channels: 渠道 dict 列表 (含 prices, 0 元价行)
     registry_model_ids: 进 _registry_cache 的 model_id 集合 —
     生产 _load_groups_cache 只拉 status='active' 行, 用集合模拟该语义。
     """
     from gateway.router import RouteEngine
 
     eng = RouteEngine()
-    ch = {
-        "id": 6, "name": "minimax_compat", "provider": "minimax",
-        "priority": 5, "billing_mode": "pay_per_token",
-        "account_id": 60, "quota_remaining": None, "quota_total": None,
-        "quotas": [],
-        "prices": [
-            {"model": "minimax-m3", "price_type": "normal", "time_range": "全天",
-             "input_price": 0.0, "output_price": 0.0, "cached_input_price": None,
-             "cache_write_price": None, "is_promotion": None, "raw_model_id": "minimax-m3"},
-            {"model": "minimax-m3.1-flash-preview", "price_type": "normal", "time_range": "全天",
-             "input_price": 0.0, "output_price": 0.0, "cached_input_price": None,
-             "cache_write_price": None, "is_promotion": None,
-             "raw_model_id": "minimax-m3.1-flash-preview"},
-        ],
-    }
-    eng._channels_cache = [ch]
-
-    class _Reg:
-        def __init__(self, model_id, tier, modality, capabilities, context_length):
-            self.model_id = model_id
-            self.tier = tier
-            self.modality = modality
-            self.capabilities = capabilities
-            self.context_length = context_length
-            self.status = "active"
-            self.family = "minimax"
+    eng._channels_cache = channels
 
     all_regs = {
-        "minimax-m3": _Reg("minimax-m3", "T2", "multimodal",
-                           '["reasoning", "code", "long_context", "general"]', 1000000),
-        "minimax-m3.1-flash-preview": _Reg(
-            "minimax-m3.1-flash-preview", "T2", "multimodal",
-            '["reasoning", "code", "general"]', 1000000),
-        "deepseek-flash": _Reg("deepseek-flash", "T0", "multimodal",
-                               '["reasoning", "code", "general"]', 1000000),
+        "minimax-m3": _reg_entry("minimax-m3", "T2", "multimodal"),
+        "minimax-m3.1-flash": _reg_entry("minimax-m3.1-flash", "T1", "multimodal"),
+        "deepseek-flash": _reg_entry("deepseek-flash", "T0", "multimodal"),
+        "glm-5.2": _reg_entry("glm-5.2", "T1", "text"),
     }
     eng._registry_cache = {k: v for k, v in all_regs.items() if k in registry_model_ids}
 
     class _Group:
-        group_id = "tier:vision"
-        tier = None
-        capabilities = None
-        min_context = 0
-        require_vision = 1
-        strategy = "cheapest"
-        fallback_group = "tier:vision-light"
-        enabled = 1
+        pass
 
-    eng._groups_cache = {"tier:vision": _Group()}
-    eng._group_members_cache = {
-        "tier:vision": ["minimax-m3", "deepseek-flash", "minimax-m3.1-flash-preview"],
-    }
-    eng._member_priority_cache = {
-        "tier:vision": {"minimax-m3": 100, "deepseek-flash": 120,
-                        "minimax-m3.1-flash-preview": 90},
-    }
+    grp = _Group()
+    grp.group_id = group_id
+    grp.tier = None
+    grp.capabilities = None
+    grp.min_context = 0
+    grp.require_vision = 1 if group_id.startswith("tier:vision") else 0
+    grp.strategy = "cheapest"
+    grp.fallback_group = fallback_group
+    grp.enabled = 1
+
+    eng._groups_cache = {group_id: grp}
+    eng._group_members_cache = {group_id: list(member_priorities.keys())}
+    eng._member_priority_cache = {group_id: dict(member_priorities)}
     return eng
+
+
+def _price_row(model, raw=None, channel_id=6, channel_name="minimax_compat"):
+    return {
+        "model": model, "price_type": "normal", "time_range": "全天",
+        "input_price": 0.0, "output_price": 0.0, "cached_input_price": None,
+        "cache_write_price": None, "is_promotion": None,
+        "raw_model_id": raw or model,
+    }
+
+
+def _channel(channel_id, name, prices, priority=5):
+    return {
+        "id": channel_id, "name": name, "provider": name.split("_")[0],
+        "priority": priority, "billing_mode": "pay_per_token",
+        "account_id": channel_id * 10, "quota_remaining": None, "quota_total": None,
+        "quotas": [], "prices": prices,
+    }
 
 
 _VISION_IMAGE_MESSAGES = [{
@@ -357,33 +395,69 @@ _VISION_IMAGE_MESSAGES = [{
 }]
 
 
-def test_vision_group_member_priority_selection():
-    """V6.14: tier:vision 带图请求按 member_priority 选 m3.1(90) 优于 m3(100)
+def test_strong_group_m31_flash_first_multi_channel():
+    """2026-10-19 GA: tier:strong 纯文本请求 minimax-m3.1-flash(100) 跨渠道首选
 
-    m3/m3.1 价行同 0 元同渠道, V5.1 排序键 (price, family_bonus, member_priority,
-    -channel.priority) 同价由 priority 决位 — 用户拍板"优先使用 m3.1"。
+    strong 三成员 0 元同价跨三渠道 (minimax_compat/sensenova/glm_bigmodel),
+    V5.1 排序键 (price, family_bonus, member_priority, -channel.priority)
+    同价由 member_priority 决位 — 用户拍板"优先使用 m3.1, 提到最前"。
     """
-    eng = _build_vision_engine({"minimax-m3", "minimax-m3.1-flash-preview", "deepseek-flash"})
+    eng = _build_group_engine(
+        "tier:strong", "tier:balanced",
+        {"minimax-m3.1-flash": 100, "glm-5.2": 108, "glm-5.3-flash": 120},
+        [
+            _channel(6, "minimax_compat",
+                     [_price_row("minimax-m3.1-flash")]),
+            _channel(2, "sensenova_official", [_price_row("glm-5.2")]),
+            _channel(8, "glm_bigmodel", [_price_row("glm-5.3-flash")], priority=8),
+        ],
+        {"minimax-m3.1-flash", "glm-5.2", "glm-5.3-flash"},
+    )
+    best = eng._select_by_group("tier:strong", prefs={}, messages=[{"role": "user", "content": "hi"}])
+    assert best is not None, "tier:strong 应有可用候选"
+    assert best.get("_registry_model") == "minimax-m3.1-flash", \
+        f"strong 组应首选 m3.1-flash (priority=100), 实际 {best.get('_registry_model')}"
+    assert best["name"] == "minimax_compat"
+
+
+def test_vision_group_member_priority_selection():
+    """2026-10-19: m3.1 移出 vision 后, 带图请求首选回落 m3(100) 优于 deepseek-flash(120)
+
+    m3/deepseek-flash 价行同 0 元同渠道, V5.1 排序键同价由 priority 决位。
+    """
+    eng = _build_group_engine(
+        "tier:vision", "tier:vision-light",
+        {"minimax-m3": 100, "deepseek-flash": 120},
+        [_channel(6, "minimax_compat",
+                  [_price_row("minimax-m3"), _price_row("deepseek-flash")])],
+        {"minimax-m3", "deepseek-flash"},
+    )
     best = eng._select_by_group("tier:vision", prefs={}, messages=_VISION_IMAGE_MESSAGES)
     assert best is not None, "tier:vision 应有可用候选"
-    assert best.get("_registry_model") == "minimax-m3.1-flash-preview", \
-        f"带图请求应首选 m3.1 (priority=90 < m3=100), 实际 {best.get('_registry_model')}"
+    assert best.get("_registry_model") == "minimax-m3", \
+        f"带图请求应首选 m3 (priority=100 < 120), 实际 {best.get('_registry_model')}"
     assert best["name"] == "minimax_compat"
 
 
 def test_vision_group_skips_non_active_registry_member():
     """V6.14 实证坑回归锚点: registry 缓存无该成员 (=status 非 active) 时组路由跳过
 
-    生产 _load_groups_cache 只拉 status='active'; m3.1 初版 status=preview 曾被
+    生产 _load_groups_cache 只拉 status='active'; 非 active 成员曾被
     当"不在 model_registry"跳过 (e2e members=3/candidates=2 实证)。本测试钉住:
-    该语义下 m3 兜底胜出 — 若未来放行 preview 入组, 应连同 _load_groups_cache
-    一起改并更新本测试。
+    该语义下次位成员兜底胜出 — 若未来放行非 active 入组, 应连同
+    _load_groups_cache 一起改并更新本测试。
     """
-    eng = _build_vision_engine({"minimax-m3", "deepseek-flash"})  # m3.1 不在缓存
+    eng = _build_group_engine(
+        "tier:vision", "tier:vision-light",
+        {"minimax-m3": 100, "deepseek-flash": 120},
+        [_channel(6, "minimax_compat",
+                  [_price_row("minimax-m3"), _price_row("deepseek-flash")])],
+        {"deepseek-flash"},  # m3 不在缓存 (=非 active)
+    )
     best = eng._select_by_group("tier:vision", prefs={}, messages=_VISION_IMAGE_MESSAGES)
     assert best is not None
-    assert best.get("_registry_model") == "minimax-m3", \
-        f"m3.1 不在 registry 缓存时应由 m3 兜底, 实际 {best.get('_registry_model')}"
+    assert best.get("_registry_model") == "deepseek-flash", \
+        f"m3 不在 registry 缓存时应由 deepseek-flash 兜底, 实际 {best.get('_registry_model')}"
 
 
 # ============================================================
@@ -473,7 +547,9 @@ def main():
         ("seed registry 有 vision 模型", test_seed_registry_has_vision_models),
         ("seed registry vision modality", test_seed_registry_vision_modality),
         ("seed registry vision namespace", test_seed_registry_vision_validate_namespace),
-        ("seed groups vision members (V6.0 双旗舰)", test_seed_groups_vision_members),
+        ("seed groups vision members", test_seed_groups_vision_members),
+        ("seed groups strong m3.1 首位 (2026-10-19)", test_seed_groups_strong_m31_flash_first),
+        ("seed groups flagship v4-pro 出组 (2026-10-19)", test_seed_groups_flagship_v4pro_departed),
         ("seed groups vision tier/fallback (V6.0)", test_seed_groups_vision_null_tier_fallback_vision_light),
         ("seed groups vision-light 组定义 (V6.0)", test_seed_groups_vision_light_group),
         ("seed groups vision-light 成员 (V6.0)", test_seed_groups_vision_light_members),
@@ -483,7 +559,8 @@ def main():
         ("seed 全组成员在 registry (V6.0)", test_seed_all_group_members_in_registry),
         ("seed groups vision 在 registry", test_seed_groups_vision_members_in_registry),
         ("require_vision 接受 multimodal", test_require_vision_accepts_multimodal),
-        ("组路由 member_priority 首选 m3.1 (V6.14)", test_vision_group_member_priority_selection),
+        ("strong 组 m3.1 跨渠道首选 (2026-10-19)", test_strong_group_m31_flash_first_multi_channel),
+        ("vision 组 m3 首选回归 (2026-10-19)", test_vision_group_member_priority_selection),
         ("组路由跳过非 active registry 成员 (V6.14 坑)", test_vision_group_skips_non_active_registry_member),
         ("resolve model 精确路由用 _channel_model", test_resolve_model_exact_route_uses_channel_model),
         ("resolve model 精确路由无 _channel_model", test_resolve_model_exact_route_no_channel_model),

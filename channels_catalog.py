@@ -111,11 +111,13 @@ MODEL_REGISTRY = {
         "context_length": 1048576,
         "group_priorities": {"tier:balanced": 110, "tier:vision-light": 110},
     },
-    "minimax-m3.1-flash-preview": {
+    "minimax-m3.1-flash": {
+        # 2026-10-19 GA (用户拍板): 去 preview 后缀正式发布 (早期 Space Bunny 匿名灰度),
+        # tier T1 不变; vision(90) → strong(100) 首位, 待用一段再评估升组
         "tier": "T1", "family": "minimax", "modality": "multimodal",
         "capabilities": ["general", "code", "long_context"],
         "context_length": 1048576,
-        "group_priorities": {"tier:vision": 90, "tier:strong": 125},
+        "group_priorities": {"tier:strong": 100},
     },
     # --- stepfun / qwen / sensenova ---
     "step-5-preview": {
@@ -439,18 +441,22 @@ CHANNELS = [
             "tagline": "M3 系列, M Plan 订阅, 原生多模态",
             "description": (
                 "MiniMax 开放平台（OpenAI 兼容）：当前主力 minimax-m3 / "
-                "m3.1-flash-preview，全系原生多模态。订阅制为 M Plan（token 包），"
-                "AIMC 以订阅边际成本 0 元参与路由；价格以官方为准。"
+                "m3.1-flash，全系原生多模态。订阅制为 M Plan（token 包），"
+                "AIMC 以订阅边际成本 0 元参与路由；m3.1-flash 官方标价"
+                "输入 1 / 输出 4 / 缓存读 0.1 元每百万 tokens，价格以官方为准。"
             ),
             "register_url": "https://platform.minimaxi.com/",
             "key_console_url": "https://platform.minimaxi.com/user-center/basic-information/interface-key",
             "invite": None,
-            "models_display": ["minimax-m3", "minimax-m3.1-flash-preview"],
+            "models_display": ["minimax-m3", "minimax-m3.1-flash"],
         },
         "prices": [
             # m2.7 / m2.7-highspeed 已移除 — 官方公布近期下架 (2026-10 用户确认)
+            # m3.1-flash: 2026-10-19 GA 去 preview 后缀; 价行保持 0.0 (M Plan
+            # 订阅边际成本, cheapest 策略下填标价会被免费成员反超), 官方标价
+            # 1/4 cache 0.1 记 registry list_* 双轨
             ("minimax-m3", "normal", "全天", 0.0, 0.0),
-            ("minimax-m3.1-flash-preview", "normal", "全天", 0.0, 0.0),
+            ("minimax-m3.1-flash", "normal", "全天", 0.0, 0.0),
         ],
     },
     {

@@ -58,6 +58,7 @@ AIMC 当前有 **30 个 migration 脚本**（`db/migrations/`）：
 2026_09_27_v6x_minimax_m31_vision_group.py  # V6.14 m3.1 入 tier:vision(90)（m3 退居次位）
 2026_09_27_v6x_sensenova_channel_refresh.py # V6.14 sensenova 渠道模型刷新（+deepseek-flash/u1.5 系）
 2026_09_30_v6x_vl_embedding_modality_fix.py # VL embedding modality 修复（vision→embedding 存量迁移）
+2026_10_19_v6x_v4pro_depart_m31_ga.py       # v4-pro 出组 flagship + m3.1-flash GA 改名/移组 strong(100)/标价双轨
 ```
 
 > 生产环境（生产 VM）只跑幂等 migration，**不要**跑 `seed_model_groups.py` /

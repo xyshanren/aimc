@@ -291,7 +291,7 @@ MODEL_REGISTRY = [
         "标价 7/20 元每百万tokens (缓存命中 0.35)"
     ),
 
-    # ========== MiniMax (9 个; minimax_compat 渠道侧 2026-09-27 收敛为 4 行 = m3/m3.1-flash-preview/m2.7/m2.7-highspeed) ==========
+    # ========== MiniMax (9 个; minimax_compat 渠道侧 2026-10-19 起收敛为 2 规范行 = m3/m3.1-flash) ==========
     # Phase 4 fix (2026-08-13): 修复 1005111 commit 的家族错乱
     # - 修复前错误状态: 5 个 model + family="MiniMax" 大写 + 注释指向 sensenova_official (错误)
     # - sensenova_official 渠道实际一个 MiniMax model 都没有, 跟 family 字段无关
@@ -301,15 +301,17 @@ MODEL_REGISTRY = [
     #   渠道价行下线 (registry 条目保留: m2.5 仍有 siliconflow 规范名兜底行, 其余 4 个防历史 usage_logs 关联)
     # - 字段约定: family 统一小写 "minimax" (跟 provider / channel.name 对齐, 与其他 family 一致)
     (
-        # V6.14 (2026-09-27): 新模型接入 — 多模态 (用户口径, 上游 chat 直测 200,
-        # /models 尚未收录); ctx 1M 官方已确认 (2026-09-28 用户截图)
+        # 2026-10-19 GA (用户拍板): 去 preview 后缀正式发布 — 早期以 Space Bunny
+        # 匿名身份灰度 (200T token), 官方公布推理提速近 3 倍 (日常 200+ TPS, P50
+        # 170+), Agentic 综合成本降 70%; 官方标价 1/4 cache 0.1 元每百万tokens
+        # (list_* 双轨回填由 2026_10_19 迁移执行); tier T1 不变, vision(90) →
+        # strong(100) 首位, 待用一段再评估升组
         # ⚠️ status 必须保持 active: 路由缓存只拉 active (2026-09-27 e2e 实证,
-        # preview 会被组路由当"不在注册表"跳过 — 当晚已把生产的 preview 改回 active)
-        "minimax-m3.1-flash-preview", "minimax", "MiniMax M3.1 Flash Preview", "T2",
+        # 非 active 会被组路由当"不在注册表"跳过)
+        "minimax-m3.1-flash", "minimax", "MiniMax M3.1 Flash", "T1",
         ["reasoning", "code", "general"], 1000000, "multimodal", 0, "2026-09",
-        "M3 线 flash preview, 多模态, 1M ctx (官方确认); 上游响应 "
-        "model=MiniMax-M3.1-Flash-Preview (大小写不敏感); tier:vision 成员 "
-        "(priority=90 首选)",
+        "M3.1 Flash 正式版 (2026-10-19 GA, 原 m3.1-flash-preview), 多模态, 1M ctx; "
+        "官方标价 1/4 cache 0.1 元每百万tokens; tier:strong 成员 (priority=100 首位)",
     ),
     (
         # V5.1 (2026-09-02): T1 → T2 人工降档 — 能力低于 glm-5.3-flash (T2) 和
