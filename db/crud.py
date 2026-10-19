@@ -956,6 +956,13 @@ async def reject_capability_change(
 # k-v 存储 runtime settings (alert_channel / bark_key / feishu_webhook_url)
 # dashboard PUT 即时生效, alerter 优先读这里, fallback 到 .env
 
+async def get_runtime_setting(session: AsyncSession, key: str) -> Optional[str]:
+    """读单条 runtime override, 无则返 None."""
+    return (await session.execute(
+        select(SettingsRuntime.value).where(SettingsRuntime.key == key)
+    )).scalar_one_or_none()
+
+
 async def set_runtime_setting(session: AsyncSession, key: str, value: Optional[str]) -> None:
     """写 runtime override. value=None 表示删除 override 回退 .env
 

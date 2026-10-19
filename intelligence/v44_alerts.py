@@ -1,14 +1,33 @@
 """V4.4 账号配额、活跃账号和成本异常告警。"""
 
+import json
 import logging
 from datetime import datetime, timedelta
 
+from db.crud import get_runtime_setting, set_runtime_setting
 from db.engine import async_session_factory
 from db.models import Account, Channel, UsageLog
 from intelligence.alerter import send_alert
 from sqlalchemy import func, select
 
 logger = logging.getLogger(__name__)
+
+# no_active_account 告警抑制: 同一 provider 连续发 3 次后静默 (2026-10-19)
+# 场景: 用户手动禁用某渠道唯一账号后, 告警每 6h 调度周期都会重发, 刷屏.
+# 已发次数以 JSON 存 settings_runtime 单行 (no_active_alert_counts), 重启不丢;
+# provider 重新出现 active 账号即清零, 下次再异常会重新发 3 次.
+NO_ACTIVE_ALERT_LIMIT = 3
+_NO_ACTIVE_COUNTS_KEY = "no_active_alert_counts"
+
+
+async def _load_no_active_counts(session) -> dict:
+    """读已发次数 JSON, 损坏/缺失时按空表处理."""
+    raw = await get_runtime_setting(session, _NO_ACTIVE_COUNTS_KEY)
+    try:
+        data = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        data = {}
+    return data if isinstance(data, dict) else {}
 
 
 async def check_quota_alerts() -> int:
@@ -37,9 +56,17 @@ async def check_quota_alerts() -> int:
 
 
 async def check_no_active_accounts() -> int:
-    """检查每个 provider 是否至少有一个可用 active 账号。"""
+    """检查每个 provider 是否至少有一个可用 active 账号.
+
+    连续 NO_ACTIVE_ALERT_LIMIT 次告警后静默; 计数存 settings_runtime 单行 JSON:
+    - active 账号恢复 → 计数清零
+    - 仍无 active 且计数 < 上限 → 发告警, 计数+1
+    - 仍无 active 且计数 ≥ 上限 → 静默 (debug 留痕)
+    """
     sent = 0
     async with async_session_factory() as session:
+        counts = await _load_no_active_counts(session)
+        dirty = False
         providers = await session.execute(select(Channel.provider).distinct())
         for provider in providers.scalars():
             stmt = select(func.count(Account.id)).join(Channel).where(
@@ -48,13 +75,31 @@ async def check_no_active_accounts() -> int:
                 Account.status == "active",
             )
             active_count = (await session.execute(stmt)).scalar_one()
+            count = int(counts.get(provider) or 0)
+
+            if active_count > 0:
+                if provider in counts:
+                    counts.pop(provider, None)
+                    dirty = True
+                continue
+
+            if count >= NO_ACTIVE_ALERT_LIMIT:
+                logger.debug(
+                    "[no-active-suppressed] provider=%s count=%d, skip",
+                    provider, count,
+                )
+                continue
+
             if active_count == 0:
                 await send_alert(
                     f"{provider} 已无 active 账号，路由将自动降级到其他渠道",
                     key=f"no_active_account:{provider}",
                 )
+                counts[provider] = count + 1
+                dirty = True
                 sent += 1
-        await session.commit()
+        if dirty:
+            await set_runtime_setting(session, _NO_ACTIVE_COUNTS_KEY, json.dumps(counts))
     return sent
 
 

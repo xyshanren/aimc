@@ -10,6 +10,8 @@
 7. check_cost_rising: 涨幅 >=30% 触发
 8. check_cost_rising: 涨幅 <30% 不触发
 9. check_all_alerts: 单 checker 抛异常不影响其他
+10. check_no_active_accounts: 连续 3 次后静默 (告警抑制)
+11. check_no_active_accounts: active 恢复清零计数, 再异常重新发
 
 跑法: python tests/test_v44_alerts.py
 """
@@ -113,6 +115,15 @@ async def _make_account(
         session.add(acc)
         await session.commit()
         return acc.id
+
+
+async def _reset_no_active_counts():
+    """清掉 no_active 告警计数, 保证测试隔离 (set_runtime_setting(None) 内部即 delete)。"""
+    from db.crud import set_runtime_setting
+    from db.engine import async_session_factory
+
+    async with async_session_factory() as session:
+        await set_runtime_setting(session, "no_active_alert_counts", None)
 
 
 # ============================================================
@@ -364,6 +375,67 @@ def test_check_all_alerts_isolation():
 
 
 # ============================================================
+# Test 10: no_active 连续 3 次后静默 (告警抑制)
+# ============================================================
+def test_no_active_accounts_suppressed_after_limit():
+    print("\n=== Test 10: no_active 连续 3 次后静默 ===")
+    async def _run():
+        await _reset_db()
+        await _reset_no_active_counts()
+        ch_id = await _make_channel("qwen")
+        await _make_account(ch_id, "qwen_01", status="expired")
+
+        from intelligence.v44_alerts import check_no_active_accounts
+        with patch("intelligence.v44_alerts.send_alert", new=AsyncMock()) as mock:
+            s1 = await check_no_active_accounts()
+            s2 = await check_no_active_accounts()
+            s3 = await check_no_active_accounts()
+            s4 = await check_no_active_accounts()
+            assert (s1, s2, s3) == (1, 1, 1), f"前 3 次应各发 1 条, 实际 {(s1, s2, s3)}"
+            assert s4 == 0, f"第 4 次应静默, 实际 {s4}"
+            assert mock.call_count == 3, f"send_alert 应恰好 3 次, 实际 {mock.call_count}"
+            print(f"  [OK] 连发 3 次后第 4 次静默")
+
+    asyncio.run(_run())
+
+
+# ============================================================
+# Test 11: no_active active 恢复 → 计数清零, 再异常重新发
+# ============================================================
+def test_no_active_accounts_count_resets_on_recovery():
+    print("\n=== Test 11: active 恢复清零计数 ===")
+    async def _run():
+        await _reset_db()
+        await _reset_no_active_counts()
+        ch_id = await _make_channel("qwen")
+        acc_id = await _make_account(ch_id, "qwen_01", status="expired")
+
+        from db.engine import async_session_factory
+        from db.models import Account
+        from intelligence.v44_alerts import check_no_active_accounts
+
+        async def set_status(status: str):
+            async with async_session_factory() as session:
+                acc = await session.get(Account, acc_id)
+                acc.status = status
+                await session.commit()
+
+        with patch("intelligence.v44_alerts.send_alert", new=AsyncMock()) as mock:
+            await check_no_active_accounts()
+            await check_no_active_accounts()
+            assert mock.call_count == 2
+
+            await set_status("active")       # 恢复
+            assert await check_no_active_accounts() == 0
+            await set_status("expired")      # 再次异常
+            assert await check_no_active_accounts() == 1, "计数应已清零, 重新发 1 条"
+            assert mock.call_count == 3
+            print(f"  [OK] 恢复清零, 再异常重新发")
+
+    asyncio.run(_run())
+
+
+# ============================================================
 # 入口
 # ============================================================
 def main():
@@ -377,6 +449,8 @@ def main():
         test_cost_rising_triggers,
         test_cost_rising_quiet,
         test_check_all_alerts_isolation,
+        test_no_active_accounts_suppressed_after_limit,
+        test_no_active_accounts_count_resets_on_recovery,
     ]
     failed = 0
     for t in tests:
