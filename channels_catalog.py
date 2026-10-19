@@ -188,11 +188,11 @@ MODEL_REGISTRY = {
 
 RAW_ALIASES = {
     # modelscope (raw 价格行名 -> 规范名)
-    # 2026-10-19: 上游把 DeepSeek-V4.1-Flash 轮换退役 (直连实证 400
-    # "Model id : deepseek-ai/DeepSeek-V4.1-Flash , has no provider supported"),
-    # 现役 id = DeepSeek-V4.1-Flash-1017 (对应 V4.1-Flash-1017 版本, 2026-10-17)
+    # 2026-10-19: 上游把 DeepSeek-V4.1-Flash / DeepSeek-V4-Pro 两个 raw id 都轮换
+    # 退役 (直连实证 400 "Model id : ... , has no provider supported"), 现役 id =
+    # V4.1-Flash-1017 (对应 V4.1-Flash-1017 版本, 2026-10-17) / V4-Pro-0813
     "deepseek-ai/DeepSeek-V4.1-Flash-1017": "deepseek-flash",
-    "deepseek-ai/DeepSeek-V4-Pro": "deepseek-v4-pro",
+    "deepseek-ai/DeepSeek-V4-Pro-0813": "deepseek-v4-pro",
     "ZhipuAI/GLM-5.2": "glm-5.2",
     # siliconflow
     "deepseek-ai/DeepSeek-V3": "deepseek-v3",
@@ -278,10 +278,10 @@ CHANNELS = [
             "setup_note": "需要绑定阿里云账号（免费推理由阿里云提供算力）",
         },
         "prices": [
-            # 2026-10-19: DeepSeek-V4.1-Flash 旧 raw id 上游已退役 (400 no provider
-            # supported), 轮换到 DeepSeek-V4.1-Flash-1017 (V4.1-Flash-1017 版本)
+            # 2026-10-19: DeepSeek 两个旧 raw id 上游均已退役 (400 no provider
+            # supported), 轮换到现役 id (V4.1-Flash-1017 / V4-Pro-0813)
             ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "normal", "全天", 0.0, 0.0),
-            ("deepseek-ai/DeepSeek-V4-Pro", "normal", "全天", 0.0, 0.0),
+            ("deepseek-ai/DeepSeek-V4-Pro-0813", "normal", "全天", 0.0, 0.0),
             ("ZhipuAI/GLM-5.2", "normal", "全天", 0.0, 0.0),
             ("Qwen/Qwen3-Next-80B-A3B-Instruct", "normal", "全天", 0.0, 0.0),
             ("Qwen/Qwen3-235B-A22B", "normal", "全天", 0.0, 0.0),
