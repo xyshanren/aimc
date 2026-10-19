@@ -157,7 +157,7 @@ def main():
         print(f"  [TO-DEACTIVATE] vision id={vis_row['id']} ({vis_row['model_id']}) 软删除")
 
     strong_row = conn.execute(
-        "SELECT id, priority, is_active FROM model_group_members "
+        "SELECT id, model_id, priority, is_active FROM model_group_members "
         "WHERE group_id = 'tier:strong' AND model_id IN (?, ?)",
         (OLD_MODEL, NEW_MODEL),
     ).fetchone()
@@ -165,16 +165,17 @@ def main():
     if not strong_row:
         strong_insert = True
         print(f"  [TO-INSERT] tier:strong <- {NEW_MODEL} priority={STRONG_PRIORITY}")
-    elif strong_row["is_active"] == 1 and strong_row["priority"] == STRONG_PRIORITY:
+    elif (strong_row["is_active"] == 1 and strong_row["priority"] == STRONG_PRIORITY
+          and strong_row["model_id"] == NEW_MODEL):
         print(f"  [OK] strong 行已就绪 priority={STRONG_PRIORITY}")
-    elif strong_row["is_active"] == 1:
-        strong_update = strong_row["id"]
-        print(f"  [TO-UPDATE] strong id={strong_row['id']}: "
-              f"priority={strong_row['priority']} → {STRONG_PRIORITY}")
     else:
         strong_update = strong_row["id"]
-        print(f"  [TO-REACTIVATE] strong id={strong_row['id']} (is_active=0) "
-              f"priority → {STRONG_PRIORITY}")
+        if strong_row["model_id"] != NEW_MODEL:
+            print(f"  [TO-UPDATE] strong id={strong_row['id']}: model_id {strong_row['model_id']} "
+                  f"→ {NEW_MODEL}, priority={strong_row['priority']} → {STRONG_PRIORITY}")
+        else:
+            print(f"  [TO-UPDATE] strong id={strong_row['id']}: "
+                  f"priority={strong_row['priority']} → {STRONG_PRIORITY}")
 
     # ============ 5. 信息项: 迁移后组态预览 ============
     print("\n=== 5. [INFO] 当前 flagship / strong / vision 活跃成员 ===")
@@ -242,11 +243,11 @@ def main():
             print(f"  [OK] strong <- {NEW_MODEL} priority={STRONG_PRIORITY}")
         elif strong_update:
             conn.execute(
-                "UPDATE model_group_members SET priority = ?, is_active = 1, "
-                "removed_at = NULL, removed_reason = NULL WHERE id = ?",
-                (STRONG_PRIORITY, strong_update),
+                "UPDATE model_group_members SET model_id = ?, priority = ?, "
+                "is_active = 1, removed_at = NULL, removed_reason = NULL WHERE id = ?",
+                (NEW_MODEL, STRONG_PRIORITY, strong_update),
             )
-            print(f"  [OK] strong 行收敛 priority={STRONG_PRIORITY} (active)")
+            print(f"  [OK] strong 行收敛 → {NEW_MODEL} priority={STRONG_PRIORITY} (active)")
         conn.execute("COMMIT")
         print("\n[OK] 迁移完成")
     except Exception as e:
