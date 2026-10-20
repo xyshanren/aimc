@@ -1651,6 +1651,41 @@ async def get_pending_summary(
         # V6.3.1: 抓现场 — 无论 badge 是否排除瞬时项, 都落事件流水
         await _record_cooldown_events(session, snap, cooldown_aids)
 
+    # === 4.5 配额桶隔离中 (V6.17) ===
+    # 上游订阅窗口耗尽 (minimax Token Plan 2056) 走模型桶隔离 — 账号级不冷却,
+    # 所以不落在上面任何类目, 待处理栏看不见 (A 把 2056 改判配额耗尽后新增
+    # 的状态)。桶由 V6.15 恢复探测在窗口刷新后自动放行, 这里给出可见条目 +
+    # 手动确认恢复入口。needs_human 账号已由 §1 的余额不足类目呈现, 不重复。
+    bucket_aids = [aid for aid, s in snap.items()
+                   if s.get("quarantine_models") and not s.get("manual_disabled")
+                   and not s.get("needs_human")]
+    if bucket_aids and not exclude_transient:
+        bucket_examples = []
+        for aid in sorted(bucket_aids,
+                          key=lambda a: max(snap[a]["quarantine_models"].values()),
+                          reverse=True)[:5]:
+            s = snap[aid]
+            ch_info = _lookup_channel_info(route_engine, aid)
+            models = ", ".join(
+                f"{m}({rem:.0f}s)" for m, rem in s["quarantine_models"].items()
+            )
+            msg = s.get("last_error_msg", "")[:100]
+            bucket_examples.append({
+                "account_id": aid,
+                "channel": ch_info["name"] if ch_info else "?",
+                "account_name": ch_info.get("account_name", "") if ch_info else "",
+                "error_msg": f"配额桶隔离中 {models}" + (f" — {msg}" if msg else ""),
+            })
+        items.append({
+            "category": "quota_bucket",
+            "count": len(bucket_aids),
+            "severity": "warning",
+            "label": "⏳ 配额桶隔离中",
+            "anchor": "accounts-meta",
+            "examples": bucket_examples,
+        })
+        total += len(bucket_aids)
+
     # === 5. 人工禁用 ===
     manual_aids = [aid for aid, s in snap.items()
                    if s.get("manual_disabled")]
@@ -1775,6 +1810,11 @@ async def ack_recover(account_id: int, note: str = ""):
     """V4.9: 人工确认账号问题已解决 → mark_success + 立即探活
 
     Body: {"note": "可选备注"}
+
+    V6.17 (2026-10-21): mark_success 改 force=True 越过迟到成功护栏.
+    此前对账号级冷却中的账号 (rate_limited 退避 / auth 24h 冷却) 点
+    "确认恢复"会被 early-return 什么都不清, 按钮形同虚设; 用户已核实
+    上游恢复是强信号, 应当立即放行 + 立即探活验证, 撞了再冷可接受.
     """
     from gateway.cooldown import cooldown_manager
     from db.engine import async_session_factory
@@ -1782,7 +1822,7 @@ async def ack_recover(account_id: int, note: str = ""):
     from datetime import datetime
     from sqlalchemy import update
 
-    cooldown_manager.mark_success(account_id)
+    cooldown_manager.mark_success(account_id, force=True)
     # 更新 DB: last_error_at 清掉
     async with async_session_factory() as session:
         await session.execute(

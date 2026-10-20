@@ -188,6 +188,39 @@ def test_stale_success_then_failure_escalates():
     check("再败退避到 ~60s (未被迟到成功清零)", 59 <= cd <= 61, True)
 
 
+def test_force_success_clears_cooldown():
+    print("\n--- test_force_success_clears_cooldown ---")
+    # V6.17: ack-recover 人工确认恢复 = force=True 越过迟到成功护栏
+    # (此前对冷却中账号 mark_success early-return, 确认恢复按钮形同虚设)
+    cm = CooldownManager(failure_threshold=1)
+    aid = 13
+    cm.mark_failure(aid, error_info=_rate_limited_info())
+    cm._state[aid]["needs_human"] = True   # 模拟 auth/quota 路径升级后的状态
+
+    cm.mark_success(aid, force=True)       # 人工确认: 冷却内也全量复位
+    check("force 清 cooldown_until", cm._state[aid]["cooldown_until"], None)
+    check("force 清 count", cm._state[aid]["count"], 0)
+    check("force 清 needs_human", cm._state[aid]["needs_human"], False)
+    check("is_in_cooldown False", cm.is_in_cooldown(aid), False)
+
+
+def test_force_success_clears_quarantine_buckets():
+    print("\n--- test_force_success_clears_quarantine_buckets ---")
+    # V6.17: 人工确认 = 整账号放行 — 同时清该账号的模型桶隔离 + 探测节拍
+    # (桶不清的话, 确认恢复后该模型仍被路由排除, 按钮等于没按)
+    cm = CooldownManager(failure_threshold=1)
+    aid = 14
+    cm.mark_failure(aid, error_info=_rate_limited_info())
+    cm._quarantine[(aid, "m1")] = time.time() + 3600
+    cm._quarantine_probe[(aid, "m1")] = {
+        "next_probe_at": time.time() + 300, "attempts": 0,
+    }
+    cm.mark_success(aid, force=True)
+    check("桶已清", (aid, "m1") in cm._quarantine, False)
+    check("探测节拍已清", (aid, "m1") in cm._quarantine_probe, False)
+    check("is_in_cooldown False", cm.is_in_cooldown(aid, "m1"), False)
+
+
 # ============================================================
 # 渠道级限流同步 (兄弟账号)
 # ============================================================
@@ -304,6 +337,8 @@ if __name__ == "__main__":
     test_stale_success_keeps_cooldown()
     test_success_after_cooldown_expiry_resets()
     test_stale_success_then_failure_escalates()
+    test_force_success_clears_cooldown()
+    test_force_success_clears_quarantine_buckets()
     test_sibling_rate_limited_sync()
     test_sibling_sync_ignores_auth_cooldown()
     test_no_sibling_no_sync()

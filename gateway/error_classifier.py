@@ -86,6 +86,24 @@ _RATE_LIMIT_HINT = re.compile(
     re.IGNORECASE,
 )
 
+# V6.17 (2026-10-21): 真套餐耗尽判别 — minimax 把**所有** 429 的 error.type 都标成
+# rate_limit_error (含 Token Plan 用量上限 2056), 于是上面的限流兜底会抢在
+# message 配额匹配之前 → 误判为瞬时限流 → 账号级冷却 + 指数退避, 接不上
+# V6.15 配额恢复探测 → 上游 5h 窗口刷新后 AIMC 仍白冷最多 1h (生产实证
+# 2026-10-21: minimax_01 冷却 2055s 未自清, 官方控制台额度已刷新)。
+# 判别依据: "升级套餐 / 购买积分" 这类话术只可能出现在真实套餐配额耗尽,
+# 吞吐限流 (TPM/RPM) 不会让用户升级套餐 — sensenova/modelscope 实证无此类话术。
+_PLAN_EXHAUSTED_HINT = re.compile(
+    r"(升级.{0,16}(套餐|plan)|购买积分|积分.{0,6}(补充|额度|不足)|"
+    r"套餐.{0,8}(上限|额度|耗尽|用尽)|token\s*plan.{0,12}(上限|额度|耗尽|用尽))",
+    re.IGNORECASE,
+)
+
+# V6.17: 套餐窗口类配额耗尽 (无绝对重置时间时) 的桶隔离时长 — 覆盖典型订阅
+# 窗口 (minimax Token Plan 5h)。比窗口短的固定冷却会让桶在窗口耗尽期内反复
+# 到期 → 重撞 → 升级 needs_human; 恢复探测会在窗口刷新后提前放行, 不靠冷却到期。
+_PLAN_WINDOW_SECONDS = 5 * 3600
+
 # V6.15 (2026-09-28): quota_exhausted 消息里的上游重置时间感知
 # 生产实证: GLM coding plan 1308 "已达到 5 小时的使用上限。您的限额将在
 # 2026-09-28 16:44:16 重置。" — 固定 3600s 冷却会在上游重置后继续空窗
@@ -135,6 +153,18 @@ def _quota_reset_cooldown_seconds(msg: str, default_seconds: int) -> int:
     if delta < _RESET_MIN_SECONDS:
         return _RESET_MIN_SECONDS
     return min(int(delta), _RESET_MAX_SECONDS)
+
+
+def _quota_cooldown_seconds(msg: str) -> int:
+    """配额类失败的冷却时长 — 绝对重置时间优先, 否则按类型取默认。
+
+    V6.17 (2026-10-21): 套餐窗口类 (message 含升级套餐/购买积分话术) 无绝对
+    重置时间时用 5h 默认, 覆盖典型订阅窗口 (minimax Token Plan 5h)。比窗口
+    短的固定冷却会让桶在窗口耗尽期内反复到期 → 重撞 → 升级 needs_human;
+    恢复探测会在窗口刷新后提前放行, 不依赖冷却到期。
+    """
+    default = _PLAN_WINDOW_SECONDS if _PLAN_EXHAUSTED_HINT.search(msg or "") else 3600
+    return _quota_reset_cooldown_seconds(msg, default)
 
 
 def _extract_code_and_msg(response_body: Optional[str]) -> tuple[Optional[str], str, Optional[str]]:
@@ -218,7 +248,17 @@ def classify(
     # insufficient_quota (sensenova/modelscope 把共享池 TPM 限流标成配额错误,
     # 生产实证见 _RATE_LIMIT_HINT 注释)。真计费耗尽的 message 不含这些词,
     # 仍走下方 code 分支判 quota_exhausted。
-    if status_code == 429 and _RATE_LIMIT_HINT.search(haystack):
+    #
+    # V6.17 (2026-10-21): 加真套餐耗尽豁免 — minimax 把所有 429 (含 Token Plan
+    # 用量上限 2056) 的 error.type 都标 rate_limit_error, 上面"真计费耗尽的
+    # message 不含这些词"的前提被证伪 (限流词在 type 里, 不在 message 里)。
+    # 豁免条件: message 命中套餐耗尽话术 **且** 本身可命中配额关键字 ——
+    # 只把"本该判配额"的情况让给 §4, 其余 429 分类不变。
+    _msg = msg or ""
+    _is_plan_exhausted = bool(
+        _PLAN_EXHAUSTED_HINT.search(_msg) and _QUOTA_KEYWORDS.search(_msg)
+    )
+    if status_code == 429 and _RATE_LIMIT_HINT.search(haystack) and not _is_plan_exhausted:
         return ErrorInfo(
             category=ErrorCategory.RATE_LIMITED,
             error_code=code,
@@ -237,7 +277,7 @@ def classify(
                 error_code=code,
                 error_msg=msg,
                 needs_human=True,
-                suggested_cooldown_seconds=_quota_reset_cooldown_seconds(msg, 3600),
+                suggested_cooldown_seconds=_quota_cooldown_seconds(msg),
                 suggested_probe_after_seconds=1800,
             )
         if code == "insufficient_quota" or "quota" in code.lower() and "exceed" in code.lower():
@@ -246,7 +286,7 @@ def classify(
                 error_code=code,
                 error_msg=msg,
                 needs_human=True,
-                suggested_cooldown_seconds=_quota_reset_cooldown_seconds(msg, 3600),
+                suggested_cooldown_seconds=_quota_cooldown_seconds(msg),
                 suggested_probe_after_seconds=1800,
             )
         if code in ("invalid_api_key", "unauthorized", "forbidden", "authentication_failed"):
@@ -290,7 +330,7 @@ def classify(
                 error_code=code,
                 error_msg=msg,
                 needs_human=True,
-                suggested_cooldown_seconds=_quota_reset_cooldown_seconds(msg, 3600),
+                suggested_cooldown_seconds=_quota_cooldown_seconds(msg),
                 suggested_probe_after_seconds=1800,
             )
         if _AUTH_KEYWORDS.search(msg):

@@ -2148,10 +2148,14 @@ async function loadPendingSummary() {
                     html += '<div style="font-size:11px;margin-top:6px;color:var(--text-secondary);">';
                     html += '· #' + aid + ' ' + esc(ch) + ': ' + esc(msg);
                     html += '</div>';
-                    if (item.category && item.category.startsWith('needs_human')) {
+                    // V6.17: cooldown_degraded / quota_bucket 也给确认恢复入口 — 到期自愈外允许手动提前放行
+                    const showActions = item.category && (item.category.startsWith('needs_human') || item.category === 'cooldown_degraded' || item.category === 'quota_bucket');
+                    if (showActions) {
                         html += '<div class="pending-actions">';
                         html += '<button class="btn btn-sm btn-enable" onclick="ackRecover(' + aid + ', this)">确认恢复</button>';
-                        html += '<button class="btn btn-sm btn-disable" onclick="manualDisable(' + aid + ', this)">禁用</button>';
+                        if (item.category.startsWith('needs_human')) {
+                            html += '<button class="btn btn-sm btn-disable" onclick="manualDisable(' + aid + ', this)">禁用</button>';
+                        }
                         html += '</div>';
                     }
                 }

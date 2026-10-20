@@ -55,6 +55,35 @@ def test_quota_plan_exhausted():
     check("needs_human", info.needs_human, True)
 
 
+def test_quota_plan_exhausted_minimax_real_body():
+    """V6.17: 生产真实响应体 (2026-10-21 request_transcripts 实录)。
+
+    minimax 把**所有** 429 的 error.type 都标成 rate_limit_error, 含 Token
+    Plan 用量上限 2056 — 命中 V6.7 限流兜底会抢在 message 配额匹配之前, 误判
+    为瞬时限流 → 账号级冷却 + 指数退避, 接不上 V6.15 配额恢复探测 (上游 5h
+    窗口刷新后 AIMC 仍白冷最多 1h)。必须判配额耗尽 + 5h 窗口桶隔离。
+    """
+    body = (
+        '{"type":"error","error":{"type":"rate_limit_error","message":'
+        '"已达到 Token Plan 用量上限：请升级 Token Plan 套餐或购买积分补充用量。 (2056)",'
+        '"http_code":"429"},"request_id":"0726c2f2"}'
+    )
+    info = classify(429, body)
+    check("category", info.category, ErrorCategory.QUOTA_EXHAUSTED)
+    check("needs_human", info.needs_human, True)
+    check("cooldown 5h 订阅窗口", info.suggested_cooldown_seconds, 18000)
+    check("probe_after", info.suggested_probe_after_seconds, 1800)
+
+
+def test_rate_limited_tpm_wording_not_touched_by_plan_exemption():
+    """V6.17 回归: 吞吐限流 (TPM/RPM) 即使 type 标 rate_limit_error 仍走限流路径。"""
+    body = '{"error":{"type":"rate_limit_error","message":"inference exceeds tpm/rpm limit"}}'
+    info = classify(429, body)
+    check("category", info.category, ErrorCategory.RATE_LIMITED)
+    check("cooldown 300s", info.suggested_cooldown_seconds, 300)
+    check("needs_human", info.needs_human, False)
+
+
 # ===== 2. auth_failed =====
 def test_auth_401():
     info = classify(401, '{"error":{"message":"Invalid API key"}}')
@@ -241,6 +270,8 @@ def main():
         test_quota_chinese_vendor,
         test_quota_openai_style,
         test_quota_plan_exhausted,
+        test_quota_plan_exhausted_minimax_real_body,
+        test_rate_limited_tpm_wording_not_touched_by_plan_exemption,
         test_auth_401,
         test_auth_403,
         test_auth_code_match,

@@ -365,7 +365,13 @@ class CooldownManager:
             f"reason={reason!r}, needs_human={s.get('needs_human', False)})"
         )
 
-    def mark_success(self, account_id: int, model: Optional[str] = None) -> None:
+    def mark_success(
+        self,
+        account_id: int,
+        model: Optional[str] = None,
+        *,
+        force: bool = False,
+    ) -> None:
         """标记一次成功 → 重置失败计数 + 清 cooldown + 清 needs_human.
 
         V6.4.x: 冷却期内的"迟到成功"不复位 — 长流式请求在冷却设置前路由、
@@ -377,17 +383,32 @@ class CooldownManager:
         V6.10: model 给定时先清该 (account, model) 配额桶隔离 — glm 桶的 200
         不应擦掉 deepseek 桶的 1h 冷却 (配额桶独立, 见 _quarantine); 账号级
         复位逻辑照旧.
+
+        V6.17 (2026-10-21): force=True 越过迟到成功护栏, 供人工确认恢复
+        (ack-recover) 使用. 冷却内点"确认恢复"是用户已核实上游恢复的强信号,
+        应当立即清状态 + 立即探活, 不能被在途护栏拦住 (此前 ack-recover 调
+        mark_success 对冷却中账号 early-return 什么都不清, 按钮形同虚设).
         """
         if model:
             self._quarantine.pop((account_id, model), None)
+        if force:
+            # 人工确认 = 整账号放行: 同时清该账号所有模型桶隔离 + 恢复探测节拍
+            # (桶不清的话, 确认恢复后该模型仍被路由排除, 按钮等于没按)。
+            # 放在 state 检查之前 — cleanup() 会清掉过期的 _state 条目, 而 5h
+            # 桶可能还活着, 此时不能因为没有 state 就漏清。
+            for key in [k for k in self._quarantine if k[0] == account_id]:
+                self._quarantine.pop(key, None)
+            for key in [k for k in self._quarantine_probe if k[0] == account_id]:
+                self._quarantine_probe.pop(key, None)
         s = self._state.get(account_id)
         if not s:
             return
         now = time.time()
         s["last_success_at"] = now
-        cu = s.get("cooldown_until")
-        if cu is not None and now < cu:
-            return
+        if not force:
+            cu = s.get("cooldown_until")
+            if cu is not None and now < cu:
+                return
         s["count"] = 0
         s["cooldown_until"] = None
         s["cooldown_expired_at"] = None
@@ -516,8 +537,14 @@ class CooldownManager:
 
         范围: 仍在隔离中 (now < until) 且到探测点 (next_probe_at <= now) 的桶;
         桶已到期的不探 (路由过滤自然复检, 省一次上游调用)。
-        needs_human / manual_disabled 账号不探 (与 accounts_due_for_probe 同原则:
-        前者等人工, 后者已被路由层排除)。
+        manual_disabled 账号不探 (已被路由层排除)。
+
+        V6.17 (2026-10-21): needs_human 账号**继续**探 — 配额失败第 2 次会
+        升级 needs_human, 而订阅窗口类配额 (minimax Token Plan 5h) 在窗口
+        耗尽期内会反复失败, 一旦 needs_human 停掉探测, 桶只能等冷却到期
+        (窗口刷新后仍不自清), 自动恢复彻底断链。探测是"窗口是否重置"的
+        观察而非路由失败, 不该被 needs_human 掐断 (与 quota_probe_result
+        "探测不动 needs_human" 同原则)。
         """
         if now is None:
             now = time.time()
@@ -529,7 +556,7 @@ class CooldownManager:
             if not st or st.get("next_probe_at", 0) > now:
                 continue
             s = self._state.get(aid)
-            if s and (s.get("needs_human") or s.get("manual_disabled_at") is not None):
+            if s and s.get("manual_disabled_at") is not None:
                 continue
             due.append((aid, model))
         return due

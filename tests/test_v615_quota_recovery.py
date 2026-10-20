@@ -176,13 +176,29 @@ def test_probe_backoff_capped():
     check("backoff capped at 1800s", ok, True)
 
 
-def test_needs_human_account_not_probed():
+def test_needs_human_account_still_probed():
+    """V6.17 (2026-10-21): needs_human 账号的配额桶**继续**探测。
+
+    订阅窗口类配额 (minimax Token Plan 5h) 在窗口耗尽期内会反复失败,
+    第 2 次失败升级 needs_human — 若此时停掉探测, 桶只能等冷却到期, 上游
+    窗口刷新后仍不自清, 自动恢复彻底断链。探测是"窗口是否重置"的观察,
+    不该被 needs_human 掐断。
+    """
     cm = _mk_cm()
     cm.mark_failure(2, error_info=_quota_info("上限"), model="glm-5.3")
     cm.mark_failure(2, error_info=_quota_info("上限"), model="glm-5.3")  # count=2 → needs_human
     check("needs_human raised", cm._state[2]["needs_human"], True)
     cm._quarantine_probe[(2, "glm-5.3")]["next_probe_at"] = time.time() - 1
-    check("not probed", cm.quota_buckets_due_for_probe(), [])
+    check("still probed", cm.quota_buckets_due_for_probe(), [(2, "glm-5.3")])
+
+
+def test_manual_disabled_account_not_probed():
+    """人工禁用的账号路由层已排除, 不探 (与 needs_human 豁免区分)。"""
+    cm = _mk_cm()
+    cm.mark_failure(2, error_info=_quota_info("上限"), model="glm-5.3")
+    cm.mark_manual_disabled(2)
+    cm._quarantine_probe[(2, "glm-5.3")]["next_probe_at"] = time.time() - 1
+    check("manual_disabled not probed", cm.quota_buckets_due_for_probe(), [])
 
 
 def test_expired_bucket_not_probed():
@@ -396,7 +412,8 @@ def main():
         test_probe_success_clears_bucket,
         test_probe_failure_backs_off_without_touching_count,
         test_probe_backoff_capped,
-        test_needs_human_account_not_probed,
+        test_needs_human_account_still_probed,
+        test_manual_disabled_account_not_probed,
         test_expired_bucket_not_probed,
         test_cleanup_drops_orphan_probe_entries,
         test_cooldown_remaining_bucket_semantics,

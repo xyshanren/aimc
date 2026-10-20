@@ -88,11 +88,13 @@ async def _reset_db():
 
 
 def _clear_runtime_state():
-    """清全局单例内存态 (冷却 + 路由缓存), 避免跨测试污染"""
+    """清全局单例内存态 (冷却 + 路由缓存 + 配额桶), 避免跨测试污染"""
     from gateway.cooldown import cooldown_manager
     from gateway.router import route_engine
 
     cooldown_manager._state.clear()
+    cooldown_manager._quarantine.clear()
+    cooldown_manager._quarantine_probe.clear()
     route_engine._channels_cache = []
 
 
@@ -142,6 +144,30 @@ def _seed_transient_cooldown(aid, error_type="rate_limited", error_code="429",
         "next_probe_at": time.time() + 30,
         "probe_attempts": 1,
         "manual_disabled_at": None,
+    }
+
+
+def _seed_quarantine_bucket(aid, model="MiniMax-M3.1-Flash", secs=1800):
+    """往全局 cooldown_manager 注入一条配额桶隔离态 (账号级不在冷却)"""
+    from gateway.cooldown import cooldown_manager
+
+    cooldown_manager._state[aid] = {
+        "count": 1,
+        "cooldown_until": None,
+        "first_failure_at": time.time() - 10,
+        "last_failure_at": time.time() - 5,
+        "last_success_at": None,
+        "last_error_type": "quota_exhausted",
+        "last_error_code": "rate_limit_error",
+        "last_error_msg": "已达到 Token Plan 用量上限 (mock)",
+        "needs_human": False,
+        "next_probe_at": None,
+        "probe_attempts": 0,
+        "manual_disabled_at": None,
+    }
+    cooldown_manager._quarantine[(aid, model)] = time.time() + secs
+    cooldown_manager._quarantine_probe[(aid, model)] = {
+        "next_probe_at": time.time() + 300, "attempts": 0,
     }
 
 
@@ -343,6 +369,62 @@ def test_no_cooldown_no_events_written():
                 assert resp.json() == {"total": 0, "items": []}
 
             assert _fetch_events() == []
+        finally:
+            _clear_runtime_state()
+    asyncio.run(_run())
+
+
+# ============================================================
+# 6. V6.17: 配额桶隔离 (订阅窗口耗尽) 也进待处理栏
+# ============================================================
+
+def test_quota_bucket_category_visible():
+    """V6.17: 订阅窗口耗尽走模型桶隔离 (账号级不冷却) → 待处理栏必须有条目,
+    否则该状态完全不可见, 用户既看不到也手动放行不了。"""
+    async def _run():
+        await _reset_db()
+        _clear_runtime_state()
+        aid = await _seed_channel_account()
+        _seed_router_cache(aid)
+        _seed_quarantine_bucket(aid)
+        try:
+            async with _get_client() as c:
+                resp = await c.get("/dashboard/api/pending-summary")
+                assert resp.status_code == 200, resp.text
+                data = resp.json()
+                cats = {i["category"] for i in data["items"]}
+                assert "quota_bucket" in cats
+                item = next(i for i in data["items"]
+                            if i["category"] == "quota_bucket")
+                assert item["count"] == 1
+                assert item["severity"] == "warning"
+                assert item["label"] == "⏳ 配额桶隔离中"
+                ex = item["examples"][0]
+                assert ex["account_id"] == aid
+                assert ex["channel"] == "v631_ch"
+                assert "配额桶隔离中" in ex["error_msg"]
+                assert "MiniMax-M3.1-Flash" in ex["error_msg"]
+        finally:
+            _clear_runtime_state()
+    asyncio.run(_run())
+
+
+def test_quota_bucket_excluded_when_needs_human():
+    """needs_human 账号已由「余额不足」类目呈现, 桶条目不重复出现"""
+    async def _run():
+        await _reset_db()
+        _clear_runtime_state()
+        aid = await _seed_channel_account()
+        _seed_router_cache(aid)
+        _seed_quarantine_bucket(aid)
+        from gateway.cooldown import cooldown_manager
+        cooldown_manager._state[aid]["needs_human"] = True
+        try:
+            async with _get_client() as c:
+                resp = await c.get("/dashboard/api/pending-summary")
+                assert resp.status_code == 200, resp.text
+                cats = {i["category"] for i in resp.json()["items"]}
+                assert "quota_bucket" not in cats
         finally:
             _clear_runtime_state()
     asyncio.run(_run())
