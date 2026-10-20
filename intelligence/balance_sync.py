@@ -196,6 +196,10 @@ async def sync_account_balances() -> dict:
         await session.commit()
 
     if detail:
-        logger.info(f"[balance_sync] 自适应调度: {detail}")
-    logger.info(f"[balance_sync] 本轮 synced={synced} skipped={skipped}")
+        # tick 每分钟一次, 明细走 DEBUG 免得刷屏 (有真实 sync 时才 INFO)
+        logger.debug(f"[balance_sync] 自适应调度: {detail}")
+    if synced:
+        logger.info(f"[balance_sync] 本轮 synced={synced} skipped={skipped}")
+    else:
+        logger.debug(f"[balance_sync] 本轮 synced=0 skipped={skipped}")
     return {"synced": synced, "skipped": skipped, "detail": detail}
