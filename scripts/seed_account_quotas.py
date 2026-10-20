@@ -36,10 +36,11 @@ QUOTA_CONFIG = [
     (
         "minimax_compat", "minimax_01",
         [
-            ("5h_tokens", 50_000_000, 5 * 3600, "rolling",
-             "TokenPlanMax 5h 滚动窗口估算"),
-            ("weekly_tokens", 200_000_000, 7 * 86400, "rolling",
-             "TokenPlanMax 周滚动窗口估算"),
+            # 2026-10-20 用户拍板: 不 seed token 门 (5h_tokens/weekly_tokens)。
+            # 上游 TokenPlanMax 限额动态不透明 (后台可调/活动期放宽/重置卡与积分
+            # 可恢复), 固定 token 门会在上游额度已恢复时把账号假死 (生产实证:
+            # 8/14 估算的 5h_tokens=50M 被真实流量 3h 打满, 连环 429)。
+            # 上游 429 由冷却+failover 兜底; 月度预算 (~18 亿 token) 走用量看板。
             ("rpm", 60, None, "rolling", "估算 RPM"),
             ("concurrent", 10, None, "rolling", "保守并发限制"),
         ]
