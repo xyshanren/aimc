@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional
 
@@ -49,6 +49,10 @@ class ErrorInfo:
 _QUOTA_KEYWORDS = re.compile(
     r"(insufficient_quota|quota_exceeded|quota_near_limit|余额不足|无可用资源包|"
     r"已达上限|已达.+?上限|plan.+?(耗尽|用尽|到期|exhausted)|"
+    # V6.17 (2026-10-21): modelscope 每日免费额度耗尽 (429 无 code/type, message
+    # 就一句 "insufficient balance", 生产实录) — 用户确认是当日额度用完非共享池
+    # 抖动, 原掉进 429 裸兜底按 30s 瞬时限流反复重撞。
+    r"insufficient\s+balance|"
     r"free.+?tier.+?limit|billing.+?limit|不够|欠费|充值)",
     re.IGNORECASE,
 )
@@ -103,6 +107,10 @@ _PLAN_EXHAUSTED_HINT = re.compile(
 # 窗口 (minimax Token Plan 5h)。比窗口短的固定冷却会让桶在窗口耗尽期内反复
 # 到期 → 重撞 → 升级 needs_human; 恢复探测会在窗口刷新后提前放行, 不靠冷却到期。
 _PLAN_WINDOW_SECONDS = 5 * 3600
+
+# V6.17b (2026-10-21): 每日额度耗尽话术 — modelscope 429 裸 message
+# "insufficient balance" (无 code/type, 生产实录), 按天重置 → 冷却到下一午夜。
+_DAILY_QUOTA_HINT = re.compile(r"insufficient\s+balance", re.IGNORECASE)
 
 # V6.15 (2026-09-28): quota_exhausted 消息里的上游重置时间感知
 # 生产实证: GLM coding plan 1308 "已达到 5 小时的使用上限。您的限额将在
@@ -162,7 +170,20 @@ def _quota_cooldown_seconds(msg: str) -> int:
     重置时间时用 5h 默认, 覆盖典型订阅窗口 (minimax Token Plan 5h)。比窗口
     短的固定冷却会让桶在窗口耗尽期内反复到期 → 重撞 → 升级 needs_human;
     恢复探测会在窗口刷新后提前放行, 不依赖冷却到期。
+
+    V6.17b: 每日额度类 (modelscope "insufficient balance") → 冷却到下一个
+    本地午夜 (+缓冲)。日配额按天重置, 固定 3600s 会在白天反复到期重撞;
+    若重置时刻假设有偏差, 由恢复探测 / 桶到期后路由自然复检自愈。
     """
+    if _DAILY_QUOTA_HINT.search(msg or ""):
+        now = datetime.now()
+        tomorrow = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return max(
+            _RESET_MIN_SECONDS,
+            int((tomorrow - now).total_seconds()) + _RESET_BUFFER_SECONDS,
+        )
     default = _PLAN_WINDOW_SECONDS if _PLAN_EXHAUSTED_HINT.search(msg or "") else 3600
     return _quota_reset_cooldown_seconds(msg, default)
 

@@ -84,6 +84,24 @@ def test_rate_limited_tpm_wording_not_touched_by_plan_exemption():
     check("needs_human", info.needs_human, False)
 
 
+def test_quota_insufficient_balance_modelscope_daily():
+    """V6.17b: modelscope 每日免费额度耗尽 — 429 裸 message "insufficient balance"
+    (无 code/type, 2026-10-21 生产实录)。判 QUOTA_EXHAUSTED 走桶隔离+恢复探测,
+    冷却到下一个本地午夜 (日配额按天重置), 不再掉进 429 裸兜底 30s 反复重撞。"""
+    from datetime import datetime, timedelta
+    body = '{"error":{"message":"insufficient balance","request_id":"961a8b39"}}'
+    info = classify(429, body)
+    check("category", info.category, ErrorCategory.QUOTA_EXHAUSTED)
+    check("needs_human", info.needs_human, True)
+    now = datetime.now()
+    tomorrow = (now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    expected = max(60, int((tomorrow - now).total_seconds()) + 30)
+    check("cooldown 到下一个午夜+缓冲",
+          abs(info.suggested_cooldown_seconds - expected) <= 2, True)
+    check("probe_after", info.suggested_probe_after_seconds, 1800)
+
+
 # ===== 2. auth_failed =====
 def test_auth_401():
     info = classify(401, '{"error":{"message":"Invalid API key"}}')
@@ -272,6 +290,7 @@ def main():
         test_quota_plan_exhausted,
         test_quota_plan_exhausted_minimax_real_body,
         test_rate_limited_tpm_wording_not_touched_by_plan_exemption,
+        test_quota_insufficient_balance_modelscope_daily,
         test_auth_401,
         test_auth_403,
         test_auth_code_match,
