@@ -6,6 +6,10 @@
 - raw_id 含 '/' 前缀 (Qwen/Qwen3-32B)
 - 未匹配 model -> (None, None)
 - None / 空字符串输入 -> (None, None)
+
+2026-10-20: 期望值对齐 ef39dee "SF 价行对照官方页截图全面核价" (修 13 行错价):
+Qwen3-32B 1/4→0.5/2, DeepSeek-R1(含 Pro) 2/8→4/16, GLM-4.5-Air 输出 6→4。
+测试断言的是价表快照, 核价是照官方页截图逐行订正的, 故期望值随之更新。
 """
 import sys
 from pathlib import Path
@@ -18,25 +22,25 @@ from scripts.sync_siliconflow_prices import find_sf_prices, SF_PRICES
 
 def test_exact_match():
     ip, op = find_sf_prices("Qwen/Qwen3-32B")
-    assert ip == 1.0
-    assert op == 4.0
+    assert ip == 0.5
+    assert op == 2.0
 
 
 def test_case_insensitive():
     """大小写不敏感"""
     ip, op = find_sf_prices("QWEN/QWEN3-32B")
-    assert ip == 1.0
-    assert op == 4.0
+    assert ip == 0.5
+    assert op == 2.0
     ip, op = find_sf_prices("qwen/qwen3-32b")
-    assert ip == 1.0
-    assert op == 4.0
+    assert ip == 0.5
+    assert op == 2.0
 
 
 def test_pro_prefix():
     """Pro/ 前缀 (硅基流动的 Pro 版渠道)"""
     ip, op = find_sf_prices("Pro/deepseek-ai/DeepSeek-R1")
-    assert ip == 2.0
-    assert op == 8.0
+    assert ip == 4.0
+    assert op == 16.0
 
 
 def test_no_match_returns_none():
@@ -60,7 +64,7 @@ def test_none():
 def test_glm():
     ip, op = find_sf_prices("zai-org/GLM-4.5-Air")
     assert ip == 1.0
-    assert op == 6.0
+    assert op == 4.0
 
 
 def test_bge():

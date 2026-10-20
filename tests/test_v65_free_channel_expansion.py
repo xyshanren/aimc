@@ -76,10 +76,10 @@ def test_free_llm_collection_source_registered():
 
 
 def test_free_llm_collection_source_count_grew():
-    """注册表随历次加源累加 (V6.14 sensenova_docs 后 = 39)。"""
+    """注册表随历次加源累加 (10-15 MiniMax 供给监控源后 = 40)。"""
     from intelligence.sources import get_all_sources
 
-    assert len(get_all_sources()) == 39
+    assert len(get_all_sources()) == 40
 
 
 # ============================================================

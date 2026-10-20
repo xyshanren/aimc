@@ -116,8 +116,8 @@ def test_qianwenai_registered_in_get_all_sources():
     assert qianwenai_src.source_type == "price_aggregator"
 
     # 总 source 数 (V6.5+ free_llm_collection 后全量快照 = 38)
-    assert len(sources) == 39, (
-        f"V6.14 (sensenova_docs) 后应 39 个 source, 实际 {len(sources)}"
+    assert len(sources) == 40, (
+        f"应 40 个 source, 实际 {len(sources)}"
     )
 
     print(f"  [OK] get_all_sources 共 {len(sources)} 个, qianwenai 已注册")

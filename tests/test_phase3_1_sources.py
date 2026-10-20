@@ -48,18 +48,19 @@ def test_sourcetype_constants():
 # Test 2: 源注册总数 (37 个: 历次 phase 累加 + V4.8.3)
 # ============================================================
 def test_source_registration():
-    """get_all_sources 应返回 39 个源 (历次 phase 累加)
+    """get_all_sources 应返回 40 个源 (历次 phase 累加)
     演进: P2 6 + P3.1 6 + P3.6 7 + v4.2 1 + v4.3 9 + v4.3.1 7 = 36
     实际去重后 34 (siliconflow pricing 重复合并; 部分源共享 provider)
     V4.8.3: +3 个 benchmark 源 (artificial_analysis/livebench/opencompass) → 37
     V6.5+: +1 个 free_llm_collection 观察源 (2026-09-14) → 38
     V6.14: +1 个 sensenova_docs 文档站"支持的模型"监测源 (2026-09-27) → 39
+    2026-10-15 (7eb5fe1): +1 个 MiniMax 供给监控源 (moonshot model_list) → 40
     """
     print("\n=== Test 2: 源注册总数 ===")
     from intelligence.sources import get_all_sources
 
     all_sources = get_all_sources()
-    assert len(all_sources) == 39, f"应 39 个源, 实际 {len(all_sources)}"
+    assert len(all_sources) == 40, f"应 40 个源, 实际 {len(all_sources)}"
 
     # 按 type 分组 (V4.8.3 后快照)
     type_counts = {}
@@ -68,14 +69,14 @@ def test_source_registration():
     expected_counts = {
         "web_page": 4,                  # deepseek/qwen/qwen/glm (价格页)
         "announcement": 9,              # deepseek/glm + v4.3.1 新增 7 家
-        "model_list": 10,               # P3.1 2 + P3.6 7 + V6.14 sensenova_docs
+        "model_list": 11,               # P3.1 2 + P3.6 7 + V6.14 sensenova_docs + 10-15 MiniMax 供给监控源
         "price_aggregator": 11,        # siliconflow×2 + openrouter + v4.3 7 + qianwenai + free_llm_collection
         "benchmark": 5,                 # lmsys/superclue + V4.8.3: artificial_analysis/livebench/opencompass
     }
     assert type_counts == expected_counts, \
         f"type 分布应 = {expected_counts}, 实际 = {type_counts}"
 
-    print(f"  [OK] 总 39 个源: {dict(sorted(type_counts.items()))}")
+    print(f"  [OK] 总 40 个源: {dict(sorted(type_counts.items()))}")
 
 
 # ============================================================
@@ -86,12 +87,12 @@ def test_get_sources_by_type():
     print("\n=== Test 3: get_sources_by_type ===")
     from intelligence.sources import get_sources_by_type
 
-    # model_list 应含至少 siliconflow + volcengine (P3.1 基线), 实际 9 家
+    # model_list 应含至少 siliconflow + volcengine (P3.1 基线), 实际 10 家
     sources = get_sources_by_type("model_list")
     providers = {s.provider for s in sources}
     assert {"siliconflow", "volcengine"}.issubset(providers), \
         f"model_list 至少含 siliconflow+volcengine, 实际 {providers}"
-    assert len(providers) == 9, f"model_list 应 9 家, 实际 {len(providers)}: {providers}"
+    assert len(providers) == 10, f"model_list 应 10 家, 实际 {len(providers)}: {providers}"
 
     # benchmark 应有 5 个 (V4.8.3: +artificial_analysis/livebench/opencompass)
     sources = get_sources_by_type("benchmark")
@@ -103,7 +104,7 @@ def test_get_sources_by_type():
     sources = get_sources_by_type("nonexistent")
     assert sources == [], f"不存在的 type 应返 [], 实际 {sources}"
 
-    print(f"  [OK] model_list: 9 家 (含 siliconflow + volcengine)")
+    print(f"  [OK] model_list: 10 家 (含 siliconflow + volcengine)")
     print(f"  [OK] benchmark: lmsys + superclue")
     print(f"  [OK] nonexistent: [] (空)")
 

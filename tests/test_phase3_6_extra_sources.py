@@ -89,41 +89,41 @@ def test_new_sources_configured():
 
 
 # ============================================================
-# Test 2: get_all_sources 返回 39 个 (V6.14 sensenova_docs 后全量快照)
+# Test 2: get_all_sources 返回 40 个 (V6.14 sensenova_docs 39 + 10-15 MiniMax 供给监控源)
 # ============================================================
 def test_get_all_sources_count():
-    print("\n=== Test 2: get_all_sources() 返回 39 个 source ===")
+    print("\n=== Test 2: get_all_sources() 返回 40 个 source ===")
     from intelligence.sources import get_all_sources
 
     srcs = get_all_sources()
-    assert len(srcs) == 39, f"V6.14 (sensenova_docs) 后应 39 个 source, 实际 {len(srcs)}"
+    assert len(srcs) == 40, f"应 40 个 source, 实际 {len(srcs)}"
 
     by_type = {}
     for s in srcs:
         by_type.setdefault(s.source_type, []).append(s.provider)
 
-    print(f"  [OK] 总数 39: {dict((k, len(v)) for k, v in by_type.items())}")
+    print(f"  [OK] 总数 40: {dict((k, len(v)) for k, v in by_type.items())}")
     for st, providers in sorted(by_type.items()):
         print(f"        {st}: {providers}")
 
 
 # ============================================================
-# Test 3: model_list 类型 source 共 10 个 (V6.14 + sensenova_docs)
+# Test 3: model_list 类型 source 共 11 个 (V6.14 + sensenova_docs + 10-15 MiniMax 供给监控源)
 # ============================================================
 def test_model_list_sources_count():
-    print("\n=== Test 3: model_list source 共 10 个 ===")
+    print("\n=== Test 3: model_list source 共 11 个 ===")
     from intelligence.sources import get_all_sources
 
     ml_sources = [s for s in get_all_sources() if s.source_type == "model_list"]
-    assert len(ml_sources) == 10, f"应 10 个 model_list source, 实际 {len(ml_sources)}"
+    assert len(ml_sources) == 11, f"应 11 个 model_list source, 实际 {len(ml_sources)}"
 
     providers = sorted([s.provider for s in ml_sources])
     expected = sorted(["siliconflow", "volcengine", "deepseek", "qwen", "glm",
                         "stepfun", "sensenova", "hunyuan", "moonshot",
-                        "sensenova"])  # sensenova ×2: API model_list + docs 页 (V6.14)
+                        "sensenova", "minimax"])  # sensenova ×2: API model_list + docs 页 (V6.14); minimax: 10-15 供给监控源
     assert providers == expected, f"应 {expected}, 实际 {providers}"
 
-    print(f"  [OK] 9 个 model_list: {providers}")
+    print(f"  [OK] 11 个 model_list: {providers}")
 
 
 # ============================================================
