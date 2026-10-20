@@ -35,10 +35,16 @@ def test_manual_import_modelscope_config():
     assert "deepseek-ai/DeepSeek-V4-Pro" not in models, \
         "旧 raw id 上游已退役 (no provider supported), 不应留在价行"
     assert "ZhipuAI/GLM-5.2" in models
-    assert "Qwen/Qwen3-Next-80B-A3B-Instruct" in models
+    # 2026-10-19 直探 200: GLM-5.3-Flash 有 0 元供给 (规范名行另由迁移补)
+    assert "ZhipuAI/GLM-5.3-Flash" in models
     # 实测不可用/需流式的行不应录入
     assert "deepseek-ai/DeepSeek-V4-Flash" not in models  # ModelScope 无此 id
     assert "MiniMax/MiniMax-M3" not in models  # has no provider
+    assert "ZhipuAI/GLM-5.3" not in models  # has no provider (无 GLM-5.3)
+    assert "moonshotai/Kimi-K3" not in models  # has no provider (ModelScope 无 kimi)
+    # 2026-10-19 上游撤供 (400 no provider supported, 2026-09-14 实测时仍可用)
+    assert "Qwen/Qwen3-Next-80B-A3B-Instruct" not in models
+    assert "Qwen/Qwen3-235B-A22B" not in models
     assert "ZhipuAI/GLM-4.7-Flash" not in models  # 1305 过载
     for row in cfg["prices"]:
         assert row[1] == "normal" and row[2] == "全天"

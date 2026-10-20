@@ -194,6 +194,9 @@ RAW_ALIASES = {
     "deepseek-ai/DeepSeek-V4.1-Flash-1017": "deepseek-flash",
     "deepseek-ai/DeepSeek-V4-Pro-0813": "deepseek-v4-pro",
     "ZhipuAI/GLM-5.2": "glm-5.2",
+    # 2026-10-19 直探 200 可用: GLM-5.3-Flash 走 modelscope 有 0 元供给
+    # (注: ZhipuAI/GLM-5.3 本身 400 no provider — ModelScope 无 GLM-5.3)
+    "ZhipuAI/GLM-5.3-Flash": "glm-5.3-flash",
     # siliconflow
     "deepseek-ai/DeepSeek-V3": "deepseek-v3",
     "Qwen/Qwen2.5-72B-Instruct": "qwen2.5-72b",
@@ -283,8 +286,11 @@ CHANNELS = [
             ("deepseek-ai/DeepSeek-V4.1-Flash-1017", "normal", "全天", 0.0, 0.0),
             ("deepseek-ai/DeepSeek-V4-Pro-0813", "normal", "全天", 0.0, 0.0),
             ("ZhipuAI/GLM-5.2", "normal", "全天", 0.0, 0.0),
-            ("Qwen/Qwen3-Next-80B-A3B-Instruct", "normal", "全天", 0.0, 0.0),
-            ("Qwen/Qwen3-235B-A22B", "normal", "全天", 0.0, 0.0),
+            # 2026-10-19 直探 200: GLM-5.3-Flash 上架且可推理 (规范名行另由迁移补)
+            ("ZhipuAI/GLM-5.3-Flash", "normal", "全天", 0.0, 0.0),
+            # 2026-10-19 下线: 两条 Qwen 旧 raw id 上游已退役 (400 no provider
+            # supported) — Qwen/Qwen3-Next-80B-A3B-Instruct / Qwen/Qwen3-235B-A22B
+            # (2026-09-14 用户实测时可用, 之后上游撤供)
         ],
     },
     {
