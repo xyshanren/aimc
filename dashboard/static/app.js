@@ -253,6 +253,11 @@ function renderRegistryModels(container) {
         const data = JSON.parse(container.textContent);
         // 供组管理卡的加成员下拉复用
         window._aimcRegistryModels = (data && data.models) || [];
+        // 两个 registry 接口并发加载, groups 端点更快 → 组卡先渲染时下拉是空的;
+        // models 后到时用已缓存的 groups 数据重填一次 (两个接口谁先到都能填上)
+        if (window._aimcRegistryGroups) {
+            populateMemberDropdowns(window._aimcRegistryGroups);
+        }
         if (!data || !data.models || data.models.length === 0) {
             container.innerHTML = '<div class="empty">暂无 model registry 数据 — 配置渠道后会自动生成, 或点下方「初始化默认模型组」</div>';
             return;
@@ -289,6 +294,8 @@ function renderRegistryModels(container) {
 function renderRegistryGroups(container) {
     try {
         const data = JSON.parse(container.textContent);
+        // 缓存组数据: models 接口后到时用它重填加成员下拉 (见 renderRegistryModels)
+        window._aimcRegistryGroups = (data && data.groups) || [];
         if (!data || !data.groups || data.groups.length === 0) {
             container.innerHTML = '<div class="empty">暂无 model group — <button class="btn btn-sm" onclick="seedDefaultGroups(this)">初始化默认模型组</button>'
                 + '<div class="text-muted" style="font-size:11px;margin-top:6px;">按渠道目录 tier 自动入组 (幂等, 只补缺失不动已有); 也可在下方手动新建</div></div>';
