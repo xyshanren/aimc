@@ -98,6 +98,17 @@ def test_model_400_with_code():
     check("needs_human", info.needs_human, True)
 
 
+def test_model_disabled_sf_30003():
+    """生产实证 (2026-10-20): SF 403 code=30003 "Model disabled." 是模型级禁用,
+    不是 key 失效 — 归 MODEL_UNSUPPORTED, 不得走 401/403 兜底判 auth_failed
+    (曾致整账号 needs_human 冷 24h, 换 key 修不好)"""
+    info = classify(403, '{"code":30003,"message":"Model disabled.","data":null}')
+    check("category", info.category, ErrorCategory.MODEL_UNSUPPORTED)
+    check("error_code", info.error_code, "30003")
+    check("needs_human", info.needs_human, True)
+    check("cooldown", info.suggested_cooldown_seconds, 1800)
+
+
 # ===== 5. network_transient =====
 def test_network_timeout():
     """TimeoutException → network_transient"""
@@ -236,6 +247,7 @@ def main():
         test_rate_limited_429_no_quota_keyword,
         test_model_404,
         test_model_400_with_code,
+        test_model_disabled_sf_30003,
         test_network_timeout,
         test_network_connect_error,
         test_network_remote_protocol_error,

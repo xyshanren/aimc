@@ -59,7 +59,11 @@ _AUTH_KEYWORDS = re.compile(
 )
 _MODEL_KEYWORDS = re.compile(
     r"(model_not_found|model.+?does.+?not.+?exist|model.+?not.+?available|"
-    r"unsupported.model|invalid.model|model.+?decommissioned|模型不存在|模型不支持|模型已下线)",
+    r"unsupported.model|invalid.model|model.+?decommissioned|模型不存在|模型不支持|模型已下线|"
+    # V6.x (2026-10-20): SF 403 code=30003 "Model disabled." — 模型级禁用
+    # (该模型对本账号不可用), 不是 key 失效。必须先于 401/403 兜底匹配,
+    # 否则整账号按 auth_failed 判 needs_human 冷 24h, 换 key 也修不好。
+    r"model.+?disabled|模型已禁用)",
     re.IGNORECASE,
 )
 # V6.x: 上下文超限 (deepseek CONTEXT_WINDOW_EXCEEDED / OpenAI context_length_exceeded 等)
