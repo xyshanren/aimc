@@ -104,12 +104,20 @@ async def _check_dimension(
         # - 未 sync 时 used_value=0 (初始值), 不能当作 "余额耗尽"
         # - 用 window_start 作为 "是否 sync 过" 标记:
         #   * window_start IS NULL = 从未 sync -> 跳过 (不拦截, 视作未知)
-        #   * window_start 非空 = sync 过 -> used_value 是余额, <=0 拦截
-        # - 幂等: sync 脚本设置 window_start=CURRENT_TIMESTAMP + used_value=余额
+        #   * window_start 非空 = sync 过 -> used_value 是余额
+        # 2026-10-20: 语义从 "耗尽 (<=0) 才拦" 改为 "低于阈值 (limit_value) 即拦" —
+        # limit_value=余额下限 (防打爆缓冲), e.g. deepseek 5 元: sync 到余额
+        # <=5 时停止路由该账号。原 <=0 语义下 limit_value 不参与判断,
+        # "控制到 5 元" 无法表达; 且耗尽才拦时上游往往已经开始拒单。
+        # 注意: sync 快照不含 sync 之后的消费 (AIMC 不计上游扣费), 快照偏乐观 —
+        # sync 间隔越短越准 (scheduler balance_sync 10min)。
         if usage.window_start is None:
             return True, None  # 未 sync, 不拦截 (余额未知)
-        if usage.used_value <= 0:
-            return False, f"账户余额耗尽 ({usage.used_value:.2f} 元)"
+        if usage.used_value <= (quota.limit_value or 0):
+            return False, (
+                f"账户余额低于阈值 (sync 余额 {usage.used_value:.2f} 元 / "
+                f"下限 {quota.limit_value:.2f} 元)"
+            )
         return True, None
 
     if dim == "rpm":

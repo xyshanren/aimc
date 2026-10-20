@@ -376,6 +376,19 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # 2026-10-20: 账户余额定期 sync (balance_cny 余额门的配套执行体, 8/14 设计
+    # 遗留 — sync 脚本从未存在, 门恒未激活)。当前仅 deepseek (用户拍板)。
+    # next_run_time=now: 重启后立即跑一次, 门即刻生效 (否则首次 sync 要等 10min)。
+    from intelligence.balance_sync import sync_account_balances, BALANCE_SYNC_INTERVAL_MINUTES
+    scheduler.add_job(
+        sync_account_balances,
+        trigger=IntervalTrigger(minutes=BALANCE_SYNC_INTERVAL_MINUTES),
+        next_run_time=datetime.now(tz=scheduler.timezone),
+        id="balance_sync",
+        name="账户余额 sync (deepseek 余额门)",
+        replace_existing=True,
+    )
+
     # A-2 (2026-09-08): 系统级盲区审计 — 全部在采源 7 天零变化检测 → 告警
     # 9/8 实证: 错误页被当内容 → 14 天零变化检测无任何告警; 本任务是最后防线
     scheduler.add_job(

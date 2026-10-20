@@ -159,17 +159,51 @@ async def test_balance_cny_synced_zero_blocks():
         q = await _get_quota(session, acc_id)
         ok, reason = await _check_dimension(session, acc_id, q)
         assert ok is False
-        assert "余额耗尽" in reason
+        assert "余额低于阈值" in reason
 
 
 async def test_balance_cny_synced_healthy_passes():
+    """2026-10-20 新语义: limit_value = 余额下限, sync 余额 > 下限即放行"""
     await _init_test_db()
     from db.engine import async_session_factory
 
     async with async_session_factory() as session:
         acc_id = await _setup_channel_account(session)
         await _add_quota(session, acc_id, "balance_cny", 10.0, reset_strategy="never")
-        await _set_usage(session, acc_id, "balance_cny", 5.0, window_start=datetime.now())
+        await _set_usage(session, acc_id, "balance_cny", 20.0, window_start=datetime.now())
+        await session.commit()
+
+        q = await _get_quota(session, acc_id)
+        ok, reason = await _check_dimension(session, acc_id, q)
+        assert ok is True
+
+
+async def test_balance_cny_below_floor_blocks():
+    """2026-10-20: 余额低于阈值 (limit_value) 即拦 — "控制到 5 元" 的表达。
+    生产语义: deepseek balance_cny limit=5, sync 余额 3 元 -> 停止路由该账号"""
+    await _init_test_db()
+    from db.engine import async_session_factory
+
+    async with async_session_factory() as session:
+        acc_id = await _setup_channel_account(session)
+        await _add_quota(session, acc_id, "balance_cny", 5.0, reset_strategy="never")
+        await _set_usage(session, acc_id, "balance_cny", 3.0, window_start=datetime.now())
+        await session.commit()
+
+        q = await _get_quota(session, acc_id)
+        ok, reason = await _check_dimension(session, acc_id, q)
+        assert ok is False
+        assert "余额低于阈值" in reason
+
+
+async def test_balance_cny_above_floor_passes():
+    await _init_test_db()
+    from db.engine import async_session_factory
+
+    async with async_session_factory() as session:
+        acc_id = await _setup_channel_account(session)
+        await _add_quota(session, acc_id, "balance_cny", 5.0, reset_strategy="never")
+        await _set_usage(session, acc_id, "balance_cny", 5.01, window_start=datetime.now())
         await session.commit()
 
         q = await _get_quota(session, acc_id)

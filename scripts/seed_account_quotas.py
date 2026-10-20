@@ -36,12 +36,12 @@ QUOTA_CONFIG = [
     (
         "minimax_compat", "minimax_01",
         [
-            # 2026-10-20 用户拍板: 不 seed token 门 (5h_tokens/weekly_tokens)。
-            # 上游 TokenPlanMax 限额动态不透明 (后台可调/活动期放宽/重置卡与积分
-            # 可恢复), 固定 token 门会在上游额度已恢复时把账号假死 (生产实证:
-            # 8/14 估算的 5h_tokens=50M 被真实流量 3h 打满, 连环 429)。
-            # 上游 429 由冷却+failover 兜底; 月度预算 (~18 亿 token) 走用量看板。
-            ("rpm", 60, None, "rolling", "估算 RPM"),
+            # 2026-10-20 用户拍板: 不 seed token 门 (5h_tokens/weekly_tokens) 与
+            # 估算 rpm — 上游 TokenPlanMax 限额动态不透明 (后台可调/活动期放宽/
+            # 重置卡与积分可恢复), 固定门会在上游额度已恢复时把账号假死 (生产
+            # 实证: 8/14 估算 5h_tokens=50M 被 3h 真实流量打满; rpm=60 被
+            # 62/min 峰值击穿)。上游 429 由冷却+failover 兜底; 月度预算
+            # (~18 亿 token) 走用量看板。
             ("concurrent", 10, None, "rolling", "保守并发限制"),
         ]
     ),
@@ -55,23 +55,24 @@ QUOTA_CONFIG = [
         ]
     ),
     # === deepseek_official (按量付费) ===
+    # 2026-10-20: 余额门激活 — 阈值 5 元 (低于 5 元停止路由, 防打爆);
+    # sync 由 scheduler balance_sync job (10min) 维护, 语义见 gateway/quota.py
     (
         "deepseek_official", "deepseek_01",
         [
             ("rpm", 60, None, "rolling", "官方默认"),
-            ("tpm", 100_000, None, "rolling", "官方默认"),
-            ("balance_cny", 50.0, None, "never",
-             "估算账户余额, 定期 sync"),
+            ("balance_cny", 5.0, None, "never",
+             "余额下限 (sync 余额 <= 5 元即拦), balance_sync job 维护"),
         ]
     ),
-    # === glm_bigmodel (按量付费) ===
+    # === glm_bigmodel / stepfun_official (订阅为主) ===
+    # 2026-10-20 用户拍板: 不 seed 余额门 (订阅额度语义不适用余额门);
+    # tpm 门曾恒拒死已删 (V6.6)。siliconflow 保留 tpm=500k 作成本闸
+    # (用户拍板保留), 其 balance_cny 行因代金券未用完暂不激活 (留 seed 不 sync)。
     (
         "glm_bigmodel", "glm_01",
         [
             ("rpm", 120, None, "rolling", "智谱官方默认"),
-            ("tpm", 200_000, None, "rolling", "智谱官方默认"),
-            ("balance_cny", 30.0, None, "never",
-             "估算账户余额, 定期 sync"),
         ]
     ),
     # === siliconflow_aggregator (聚合平台) ===
@@ -79,9 +80,9 @@ QUOTA_CONFIG = [
         "siliconflow_aggregator", "siliconflow_01",
         [
             ("rpm", 200, None, "rolling", "硅基流动默认"),
-            ("tpm", 500_000, None, "rolling", "硅基流动默认"),
+            ("tpm", 500_000, None, "rolling", "硅基流动默认 (成本闸, 用户拍板保留)"),
             ("balance_cny", 20.0, None, "never",
-             "估算账户余额, 定期 sync"),
+             "代金券耗尽前不激活 (无 sync 即不拦)"),
         ]
     ),
     # === stepfun_official (按量付费) ===
@@ -89,9 +90,6 @@ QUOTA_CONFIG = [
         "stepfun_official", "stepfun_01",
         [
             ("rpm", 60, None, "rolling", "官方默认"),
-            ("tpm", 100_000, None, "rolling", "官方默认"),
-            ("balance_cny", 30.0, None, "never",
-             "估算账户余额, 定期 sync"),
         ]
     ),
 ]
