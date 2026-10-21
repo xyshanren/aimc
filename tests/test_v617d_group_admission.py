@@ -138,6 +138,26 @@ def test_candidates_vision_group_only_multimodal():
     assert "m-embed" not in ids         # 向量类非聊天模型
 
 
+def test_candidates_exclude_non_chat_modality():
+    """embedding/rerank 模型 (modality 非 text/multimodal/vision) 不进聊天组候选"""
+    from gateway.group_rules import group_candidate_models
+    g = _grp()
+    g.group_id = "tier:balanced"
+    rows = [
+        types.SimpleNamespace(model_id="baai-bge-m3", tier="T2", modality="embedding",
+                              capabilities='["general"]', context_length=8192,
+                              status="active"),
+        types.SimpleNamespace(model_id="glm-5.2", tier="T2", modality="text",
+                              capabilities='["general"]', context_length=131072,
+                              status="active"),
+        types.SimpleNamespace(model_id="asr-mini", tier="T2", modality="text",
+                              capabilities='["general"]', context_length=131072,
+                              status="active"),
+    ]
+    ids = [c["model_id"] for c in group_candidate_models(g, rows)]
+    assert ids == ["glm-5.2"]
+
+
 def test_candidates_code_group_requires_specialized():
     from gateway.group_rules import group_candidate_models
     g = _grp(caps='["code_specialized"]')

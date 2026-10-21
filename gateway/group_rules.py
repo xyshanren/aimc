@@ -141,7 +141,10 @@ def group_candidate_models(
             continue
         if (getattr(reg, "status", None) or "active") != "active":
             continue
-        if not is_chat_model(model_id):
+        modality = getattr(reg, "modality", None) or "text"
+        # 聊天组候选只收聊天模态 (embedding/rerank/生图等 modality 直接排除),
+        # 名称关键词黑名单兜底 (is_chat_model, 与 onboarding 待补价盘点同源)
+        if modality not in ("text", "multimodal", "vision") or not is_chat_model(model_id):
             continue
         if not group_tier_allowed(group_id, getattr(reg, "tier", None)):
             continue
@@ -152,7 +155,7 @@ def group_candidate_models(
         out.append({
             "model_id": model_id,
             "tier": getattr(reg, "tier", None),
-            "modality": getattr(reg, "modality", None) or "text",
+            "modality": modality,
             "capabilities": caps,
             "context_length": getattr(reg, "context_length", None),
         })
