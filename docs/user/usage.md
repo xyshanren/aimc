@@ -82,6 +82,9 @@ curl -X POST http://localhost:18080/v1/chat/completions \
 | `tier:vision-light` | glm-4.6v-flash(100), sensenova-6.8-flash-lite(105), minimax-m3(110) | 轻量视觉免费兜底 |
 | `tier:code` | kimi-k2.7-code(100), qwen3-coder-30b-a3b-instruct(105)（特化代码模型） | 代码 |
 
+> minimax-m3.1-flash 的跨组位次是**有意策展**（2026-10-21 用户拍板）：tier:vision(90) 主力 /
+> tier:strong(125) 后备，勿按"同模型位次应一致"或 GA 时的 strong(100) 旧档"修复"。
+
 视觉请求 fallback 链：`tier:vision → tier:vision-light → tier:light`（V6.0 起）。
 注意：vision 组成员均为多模态，纯文本请求会被 P0-3 规则跳过并沿 fallback 落到下游文本组——测 vision 组自身请带图。
 
