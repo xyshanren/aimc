@@ -6,7 +6,7 @@
 ## 1. 跑测试
 
 ```bash
-# 全部 (916 个 test, 基线 2026-09-27: 全绿; V6.14 人工禁用脱同步修复 + 4 回归用例)
+# 全部 (1026 个 test, 基线 2026-10-21: 全绿; V6.17d 组语义准入单一事实源 + 成员位次 + 529 过载批)
 python -m pytest tests/ -q
 
 # 单文件
@@ -22,7 +22,7 @@ python -m pytest tests/ --cov=gateway --cov=intelligence --cov-report=term-missi
 
 pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`），async test 自动运行。
 
-## 2. 现有测试结构（916 个，100 个 test 文件 + conftest）
+## 2. 现有测试结构（1026 个，112 个 test 文件 + conftest）
 
 > 注：下表为历史版本逐文件明细（数字已甩旧），当前以全量基线为准。
 > V6.x (2026-09-04) 起全量全绿 — 此前 4 个存量 e2e 失败

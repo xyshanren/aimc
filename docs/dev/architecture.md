@@ -117,6 +117,7 @@ RouteEngine (单例 route_engine)
 │       └── rate_limiter.is_limited()
 ├── _select_by_group()            tier:xxx 组路由
 │   ├── 组过滤: tier / capabilities / min_context / require_vision
+│   │   └── gateway/group_rules.group_runtime_accepts [V6.17d 单一事实源, 看板候选同源]
 │   ├── _has_multimodal_content() 跳过 multimodal [P0-3, V6.0 收窄]
 │   ├── score_account()           5 维加权排序
 │   ├── _get_input_price()        cache-aware 有效输入价折算 [V6.4 #11/#12]

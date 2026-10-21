@@ -75,15 +75,17 @@ curl -X POST http://localhost:18080/v1/chat/completions \
 | 组 | 包含的 model（生产当前成员, priority） | 适合 |
 |----|---------------------|------|
 | `tier:flagship` | deepseek-flash(100), kimi-k3(105), glm-5.3(115) | 复杂推理 |
-| `tier:strong` | minimax-m3.1-flash(100), glm-5.2(108), glm-5.3-flash(120) | 主力通用 |
+| `tier:strong` | glm-5.2(108), glm-5.3-flash(120), minimax-m3.1-flash(125) | 主力通用 |
 | `tier:balanced` | sensenova-6.8-flash-lite(100), minimax-m3(110) | 性价比 |
 | `tier:light` | qwen3-8b(100), qwen3.5-4b(110), glm-4.7-flash(130)（免费） | 轻量 |
-| `tier:vision` | glm-5.3-flash(100), deepseek-flash(120) | 多模态视觉 |
+| `tier:vision` | minimax-m3.1-flash(90), glm-5.3-flash(100), deepseek-flash(120) | 多模态视觉 |
 | `tier:vision-light` | glm-4.6v-flash(100), sensenova-6.8-flash-lite(105), minimax-m3(110) | 轻量视觉免费兜底 |
 | `tier:code` | kimi-k2.7-code(100), qwen3-coder-30b-a3b-instruct(105)（特化代码模型） | 代码 |
 
 视觉请求 fallback 链：`tier:vision → tier:vision-light → tier:light`（V6.0 起）。
 注意：vision 组成员均为多模态，纯文本请求会被 P0-3 规则跳过并沿 fallback 落到下游文本组——测 vision 组自身请带图。
+
+组准入规则（V6.17d 单一事实源 `gateway/group_rules.py`，路由与看板候选同源）：视觉组只收多模态/视觉模型（require_vision），代码组只收 `code_specialized` 特化模型（组能力约束）；看板「加成员」候选即按此计算，不会出现"加进去但路由会跳过"的死成员。
 
 **示例**：
 

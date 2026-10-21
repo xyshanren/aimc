@@ -24,7 +24,7 @@
 
 ## 1. 当前 migration 总览
 
-AIMC 当前有 **30 个 migration 脚本**（`db/migrations/`）：
+AIMC 当前有 **34 个 migration 脚本**（`db/migrations/`）：
 
 ```
 2026_07_xx  P0-P0.1  (历史)
@@ -60,6 +60,8 @@ AIMC 当前有 **30 个 migration 脚本**（`db/migrations/`）：
 2026_09_30_v6x_vl_embedding_modality_fix.py # VL embedding modality 修复（vision→embedding 存量迁移）
 2026_10_19_v6x_v4pro_depart_m31_ga.py       # v4-pro 出组 flagship + m3.1-flash GA 改名/移组 strong(100)/标价双轨
 2026_10_19_v6x_modelscope_v41_flash_1017.py  # modelscope raw id 轮换 V4.1-Flash → V4.1-Flash-1017 (旧 id 上游退役)
+2026_10_19_v6x_modelscope_glm53flash.py    # modelscope 新接入 glm-5.3-flash (0 元供给, raw id + 规范行)
+2026_10_21_v6x_group_specialization.py     # V6.17d 组语义准入 (tier:code 组能力 code_specialized + 3 特化模型补标签 + tier:vision m3.1-flash 位次 125→90)
 ```
 
 > 生产环境（生产 VM）只跑幂等 migration，**不要**跑 `seed_model_groups.py` /
