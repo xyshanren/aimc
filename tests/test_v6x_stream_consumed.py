@@ -97,7 +97,8 @@ async def _run_forward(fake_response, channel):
     captured = {}
     orig_usage_log = proxy._schedule_stream_usage_log
 
-    def spy_usage_log(channel, status, latency, model, tail, cid, kid):
+    def spy_usage_log(channel, status, latency, model, tail, cid, kid, **kwargs):
+        # V6.18: 新增 failed_channels 关键字参数, 桩用 **kwargs 兼容
         captured["tail"] = tail
         captured["status"] = status
 

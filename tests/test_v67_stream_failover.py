@@ -120,7 +120,8 @@ class _StubEngine:
     async def _auto_refresh_if_stale(self):
         return None
 
-    def select_channel(self, model, prefs=None, messages=None):
+    def select_channel(self, model, prefs=None, messages=None, **kwargs):
+        # V6.18: 新增 exclude_pairs 关键字参数, 桩用 **kwargs 兼容
         return self._channel
 
     def sibling_account_ids(self, channel_id, account_id):

@@ -6,6 +6,7 @@
 - /health
 """
 
+import json
 import logging
 import time
 
@@ -19,6 +20,65 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _finalize_failure_response(response, failed_channels: list):
+    """终态失败响应: 注入失败链 + 语义改写 + 诊断响应头。
+
+    V4.8.7 P7: 失败链注入响应体 (parsed["error"]["failed_channels"]) 与
+    X-AIMC-Failed-Channels 头, 让调用方定位余额不足/参数不支持的渠道。
+
+    V6.7 (2026-09-17): 终态 429 语义改写 — 上游把共享池 TPM 限流标成
+    code=insufficient_quota (sensenova/modelscope 实证) 时, 客户端 (ZCode)
+    会判 retryable=false 直接终止回合。语义是限流的错误体改写成
+    rate_limit_error (保留原始 message 供诊断), 让客户端走正常重试;
+    Retry-After 给出建议等待秒数。
+
+    V6.18 (2026-10-22): 抽成模块级函数 — 候选用尽回放最后失败响应时复用。
+    """
+    try:
+        content = response.body
+        parsed = json.loads(content)
+    except Exception:
+        parsed = {"error": {"message": "Upstream error", "type": "upstream_error"}}
+    if isinstance(parsed, dict) and "error" in parsed:
+        parsed["error"]["failed_channels"] = failed_channels
+    _rewrote_rate_limit = False
+    if response.status_code == 429 and isinstance(parsed, dict) and isinstance(parsed.get("error"), dict):
+        from gateway.error_classifier import _RATE_LIMIT_HINT
+        _err = parsed["error"]
+        _hay = (
+            f"{_err.get('code') or ''} {_err.get('type') or ''} "
+            f"{_err.get('message') or ''}"
+        )
+        if str(_err.get("code")) == "insufficient_quota" and _RATE_LIMIT_HINT.search(_hay):
+            _err["code"] = "rate_limit_exceeded"
+            _err["type"] = "rate_limit_error"
+            _rewrote_rate_limit = True
+    new_headers = dict(response.headers)
+    # V6.5 (production-review S1): 复制的 headers 带原响应的 content-length
+    # (及 hop-by-hop 头), 注入 failed_channels 后 body 变长而 starlette 检测到
+    # 已有 content-length 不再重算 → 声明长度 < 实际长度, h11 断连或客户端
+    # 截断 JSON (本机实证: 声明 25B / 实际 351B)。构造新响应前必须剥掉。
+    for _h in ("content-length", "transfer-encoding", "connection"):
+        new_headers.pop(_h, None)
+    new_headers["X-AIMC-Failed-Channels"] = json.dumps(failed_channels, ensure_ascii=True)
+    # V4.9: 加 X-AIMC-Last-Error-Type + Last-Error-Code, 客户端无需 parse JSON
+    if failed_channels:
+        last = failed_channels[-1]
+        new_headers["X-AIMC-Last-Error-Type"] = last.get("error_type") or "unknown"
+        if last.get("error_code"):
+            new_headers["X-AIMC-Last-Error-Code"] = str(last["error_code"])
+        # 如果最后失败 needs_human, 加 Retry-After 提示人工
+        if last.get("needs_human"):
+            new_headers["Retry-After"] = "3600"
+    if _rewrote_rate_limit:
+        new_headers.setdefault("Retry-After", "30")
+    return JSONResponse(
+        status_code=response.status_code,
+        content=parsed,
+        headers=new_headers,
+    )
 
 
 @router.get("/health")
@@ -124,7 +184,6 @@ async def chat_completions(request: Request):
     _req_start = time.time()
 
     # 解析请求中的 model 字段（仅用于路由，不修改 body）
-    import json
     try:
         body_json = json.loads(body)
     except json.JSONDecodeError:
@@ -193,14 +252,34 @@ async def chat_completions(request: Request):
     # V4.8.7 P7: 收集重试链中每个失败的渠道, 最终注入响应头让调用方定位余额不足渠道
     failed_channels = []
 
+    # V6.18 (2026-10-22): 本次请求已试过并失败的 (account_id, model) 组合。
+    # 背景: 组路由的 400 参与 failover (routes.py:354), 但 400 = client_error
+    # 不进 cooldown, 重选候选时同一条路仍是最优 → 同一渠道同一模型连撞 N 次
+    # (生产 2026-10-22 实录: sensenova_official/lixiaoy + sensenova-6.8-flash-lite
+    # 三跳全 400, 白烧 1.95s 后仍返回 400)。这里把已失败组合在本次请求内
+    # 排除, 保证每跳必然换一条路。
+    exclude_pairs: set = set()
+
+    # V6.18 (2026-10-22): 记录最近一次上游失败响应 — 排除机制把候选用尽后
+    # (select_channel 返 None) 回放它, 而不是合成 503。
+    # 理由: 503 "No available channel" 会掩盖上游真因 (400 client_error 等),
+    # 且 503 对客户端是可重试语义, 而 400 不可重试 — 合成 503 会让客户端
+    # 对一个本不会自愈的请求反复重试。生产 2026-10-22 实录: 上游 400
+    # (inference request is invalid) 透传 400 后 hermes 侧才切兜底链。
+    last_failure_response = None
+
     for attempt in range(max_retries + 1):
         # P0-3 (2026-08-14): 传 messages 给 router, 让纯文本请求跳过 multimodal candidate
         if attempt == 0:
-            channel = route_engine.select_channel(model, prefs=prefs, messages=body_json.get("messages"))
+            channel = route_engine.select_channel(model, prefs=prefs,
+                                                  messages=body_json.get("messages"),
+                                                  exclude_pairs=exclude_pairs)
         else:
             # 重试: 重新选 (cooldown account 已被 router 跳过)
             await route_engine._auto_refresh_if_stale()
-            channel = route_engine.select_channel(model, prefs=prefs, messages=body_json.get("messages"))
+            channel = route_engine.select_channel(model, prefs=prefs,
+                                                  messages=body_json.get("messages"),
+                                                  exclude_pairs=exclude_pairs)
 
         # V4.9.7: 浅拷贝隔离 per-request 路由字段 (_channel_model/_registry_*/_group_id)
         # select_channel 返回的是 _channels_cache 里的共享 dict, 并发请求会互相覆盖这些
@@ -210,6 +289,17 @@ async def chat_completions(request: Request):
             channel = dict(channel)
 
         if channel is None:
+            # V6.18 (2026-10-22): 候选用尽 (被本次请求的失败排除集清空) →
+            # 回放最后一次上游失败响应, 保留上游状态码与错误体 (真因不丢)。
+            # 没有前序失败 (首跳就无候选) → 仍是 503 "无可用渠道"。
+            if last_failure_response is not None:
+                response = last_failure_response
+                logger.warning(
+                    f"V6.18: 候选被本请求失败排除集清空, 回放最后失败响应 "
+                    f"({response.status_code}) 而非合成 503"
+                )
+                # 走下面的终态注入逻辑 (失败链 + 语义改写 + 响应头)
+                return _finalize_failure_response(response, failed_channels)
             return JSONResponse(
                 status_code=503,
                 content={
@@ -337,6 +427,8 @@ async def chat_completions(request: Request):
             actual_model=actual_model,
             caller_id=caller_id,
             caller_key_id=caller_key_id,
+            # V6.18: 失败链 — 本跳之前已失败的跳 (逐跳累积, 终态那行带完整链)
+            failed_channels=list(failed_channels) if failed_channels else None,
         )
 
         # P1-15: 429/5xx + 还有重试机会 -> 继续下一候选
@@ -375,6 +467,15 @@ async def chat_completions(request: Request):
                 "error_msg": _error_info.error_msg[:200],
                 "needs_human": _error_info.needs_human,
             })
+            # V6.18 (2026-10-22): 把本跳失败的 (账号, 成员模型) 加入排除集,
+            # 下一跳重选时不再选回同一条路。
+            # 键用 _registry_model (组路由的成员 model_id) — router 侧
+            # select_best_channel 正是按 member id 匹配候选, 键必须一致;
+            # 精确模型路由无 _registry_model, 用实际模型名兜底。
+            _failed_model = channel.get("_registry_model") or actual_model or model
+            exclude_pairs.add((channel.get("account_id"), _failed_model))
+            # V6.18: 留档最近一次失败响应 — 候选用尽时回放它 (保留上游真因)
+            last_failure_response = response
             logger.warning(
                 f"P1-15: {channel['name']} {response.status_code} "
                 f"({_error_info.category.value}), "
@@ -386,54 +487,7 @@ async def chat_completions(request: Request):
         # V6.7: 只对缓冲型响应注入 — 流式成功 (StreamingResponse) 走到这里
         # 说明前面候选失败过、本次成功, 不能包成错误 JSON。
         if failed_channels and not hasattr(response, "body_iterator"):
-            try:
-                content = response.body
-                parsed = json.loads(content)
-            except Exception:
-                parsed = {"error": {"message": "Upstream error", "type": "upstream_error"}}
-            if isinstance(parsed, dict) and "error" in parsed:
-                parsed["error"]["failed_channels"] = failed_channels
-            # V6.7 (2026-09-17): 终态 429 语义改写 — 上游把共享池 TPM 限流标成
-            # code=insufficient_quota (sensenova/modelscope 实证) 时, 客户端
-            # (ZCode) 会判 retryable=false 直接终止回合。语义是限流的错误体
-            # 改写成 rate_limit_error (保留原始 message 供诊断), 让客户端走
-            # 正常重试; Retry-After 给出建议等待秒数。
-            _rewrote_rate_limit = False
-            if response.status_code == 429 and isinstance(parsed, dict) and isinstance(parsed.get("error"), dict):
-                from gateway.error_classifier import _RATE_LIMIT_HINT
-                _err = parsed["error"]
-                _hay = (
-                    f"{_err.get('code') or ''} {_err.get('type') or ''} "
-                    f"{_err.get('message') or ''}"
-                )
-                if str(_err.get("code")) == "insufficient_quota" and _RATE_LIMIT_HINT.search(_hay):
-                    _err["code"] = "rate_limit_exceeded"
-                    _err["type"] = "rate_limit_error"
-                    _rewrote_rate_limit = True
-            new_headers = dict(response.headers)
-            # V6.5 (production-review S1): 复制的 headers 带原响应的 content-length
-            # (及 hop-by-hop 头), 注入 failed_channels 后 body 变长而 starlette 检测到
-            # 已有 content-length 不再重算 → 声明长度 < 实际长度, h11 断连或客户端
-            # 截断 JSON (本机实证: 声明 25B / 实际 351B)。构造新响应前必须剥掉。
-            for _h in ("content-length", "transfer-encoding", "connection"):
-                new_headers.pop(_h, None)
-            new_headers["X-AIMC-Failed-Channels"] = json.dumps(failed_channels, ensure_ascii=True)
-            # V4.9: 加 X-AIMC-Last-Error-Type + Last-Error-Code, 客户端无需 parse JSON
-            if failed_channels:
-                last = failed_channels[-1]
-                new_headers["X-AIMC-Last-Error-Type"] = last.get("error_type") or "unknown"
-                if last.get("error_code"):
-                    new_headers["X-AIMC-Last-Error-Code"] = str(last["error_code"])
-                # 如果最后失败 needs_human, 加 Retry-After 提示人工
-                if last.get("needs_human"):
-                    new_headers["Retry-After"] = "3600"
-            if _rewrote_rate_limit:
-                new_headers.setdefault("Retry-After", "30")
-            return JSONResponse(
-                status_code=response.status_code,
-                content=parsed,
-                headers=new_headers,
-            )
+            return _finalize_failure_response(response, failed_channels)
 
         return response
 

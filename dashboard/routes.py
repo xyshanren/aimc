@@ -2876,6 +2876,10 @@ async def list_requests(
                 "cost_yuan": r.cost_estimate,
                 "list_cost_yuan": r.list_cost_estimate,
                 "error_code": r.error_code,
+                # V6.18 (2026-10-22): 错误分类 + 失败链 (落库后看板可见)
+                "error_type": r.error_type,
+                "error_msg": r.error_msg,
+                "failed_channels": r.failed_channels,
             }
             for r in rows
         ],
@@ -2911,6 +2915,10 @@ async def get_request_transcript(req_id: int, session: AsyncSession = Depends(ge
             "usage_log_id": req_id, "matched": False, "truncated": False,
             "request_body": None, "response_body": None, "transcript_created_at": None,
             "account_name": account_name,
+            # V6.18 (2026-10-22): 错误分类 + 失败链
+            "error_type": log.error_type,
+            "error_msg": log.error_msg,
+            "failed_channels": log.failed_channels,
         }
 
     win_start = log.created_at - timedelta(seconds=5)
@@ -2940,6 +2948,10 @@ async def get_request_transcript(req_id: int, session: AsyncSession = Depends(ge
         "response_body": resp_body,
         "truncated": truncated,
         "account_name": account_name,
+        # V6.18 (2026-10-22): 错误分类 + 失败链 (排障时直接看到断在哪一跳)
+        "error_type": log.error_type,
+        "error_msg": log.error_msg,
+        "failed_channels": log.failed_channels,
     }
 
 

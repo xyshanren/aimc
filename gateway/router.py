@@ -674,13 +674,19 @@ class RouteEngine:
             if model in members
         ]
 
-    def select_best_channel(self, model: str, messages: Optional[list] = None) -> Optional[dict]:
+    def select_best_channel(self, model: str, messages: Optional[list] = None,
+                            exclude_pairs: Optional[set] = None) -> Optional[dict]:
         """核心决策：为指定模型选择最优渠道
 
         Args:
             model: 请求的模型名称
             messages: P0-3 (2026-08-14) — 请求的 messages 列表, 用于判断是否含 multimodal content
                     纯文本请求时, 跳过 multimodal channel (它们拒纯文本, 上游 400)
+            exclude_pairs: V6.18 (2026-10-22) — 本次请求已试过并失败的
+                    (account_id, model) 组合, 精确匹配阶段直接剔除。
+                    400 = client_error 不进 cooldown, 路由重选会把同一条路
+                    再选一遍 (生产 2026-10-22 实录: 同一渠道同一模型连撞 3 次
+                    400, 白烧 1.9s 且最终仍失败) — 排除后每跳必然换路。
 
         Returns:
             最优渠道字典，或 None（无可用渠道）
@@ -689,10 +695,13 @@ class RouteEngine:
             return None
 
         now = datetime.now()
+        exclude_pairs = exclude_pairs or set()
 
         # 1. 筛选支持该模型的渠道
         candidates = []
         for ch in self._channels_cache:
+            if (ch.get("account_id"), model) in exclude_pairs:
+                continue
             price_info = self._get_current_price(ch, model, now)
             if price_info is not None:
                 # V4.6.5: 给 channel 加 _channel_model 给 proxy body 替换
@@ -711,9 +720,11 @@ class RouteEngine:
         if not candidates:
             # 尝试模糊匹配（如 deepseek-chat 匹配 deepseek 前缀）
             for ch in self._channels_cache:
+                if (ch.get("account_id"), model) in exclude_pairs:
+                    continue
                 price_info = self._get_fuzzy_price(ch, model, now)
                 if price_info is not None:
-                    # V4.6.5: fuzzy match 同样存 _channel_model (可能 prefix-stripped)
+                    # V4.6.5 fuzzy match 同样存 _channel_model (可能 prefix-stripped)
                     # V4.9.7: 同上, 无条件覆写防共享 dict 残留值泄漏
                     channel_model = price_info.get("raw_model_id") or price_info.get("model") or model
                     if channel_model != model:
@@ -1408,7 +1419,8 @@ class RouteEngine:
     # ===========================================================
 
     def select_channel(self, model: str, prefs: Optional[dict] = None,
-                      messages: Optional[list] = None) -> Optional[dict]:
+                      messages: Optional[list] = None,
+                      exclude_pairs: Optional[set] = None) -> Optional[dict]:
         """Phase 2.4 入口: 按 model 字符串分发
 
         - "tier:xxx" / "scene:xxx" → _select_by_group (组路由 + fallback chain)
@@ -1421,6 +1433,9 @@ class RouteEngine:
                 - exclude_providers: 排除的 channel provider 列表 (e.g. ["local"])
                 - max_input_price: 价格上限 (元/百万 tokens, 超过的排除)
               只对组路由生效, 精确模型路由 Phase 2 不实现偏好
+            exclude_pairs: V6.18 (2026-10-22) — 本次请求已试过并失败的
+              (account_id, model) 组合集合。组路由 failover 时透传给每个
+              member 的 select_best_channel, 保证换候选而不是重撞同一条路。
 
         返回的 channel 字典会带额外字段 (组路由时注入):
         - _actual_model: 实际命中的精确 model_id
@@ -1436,9 +1451,10 @@ class RouteEngine:
         if "/" in model:
             group_model = model.split("/")[0]  # "tier:vision/glm-4.5v" -> "tier:vision"
         if group_model.startswith("tier:") or group_model.startswith("scene:"):
-            return self._select_by_group(group_model, prefs=prefs, messages=messages)
+            return self._select_by_group(group_model, prefs=prefs, messages=messages,
+                                         exclude_pairs=exclude_pairs)
         # 精确模型路由 Phase 2.6 不实现偏好 (跟 design §4.5 一致)
-        return self.select_best_channel(model, messages=messages)
+        return self.select_best_channel(model, messages=messages, exclude_pairs=exclude_pairs)
 
     def _maybe_rotate_taotoken_buckets(
         self, candidates: list, messages: Optional[list],
@@ -1511,6 +1527,7 @@ class RouteEngine:
     def _select_by_group(
         self, group_id: str, prefs: Optional[dict] = None,
         messages: Optional[list] = None,
+        exclude_pairs: Optional[set] = None,
     ) -> Optional[dict]:
         """模型组路由: 在 group 内选最优 (model, channel) 三元组
 
@@ -1530,9 +1547,13 @@ class RouteEngine:
         偏好 (Phase 2.6):
         - exclude_providers: 排除 channel provider (candidates 阶段过滤)
         - max_input_price: 价格上限 (candidates 阶段过滤)
-        - prefer_family: 同价时 tie-break (sort_key 阶段)
+        - prefer_family: 同价时 tie-break (0 = 优先, 1 = 兜底)
+
+        V6.18 (2026-10-22): exclude_pairs — 本次请求已试过并失败的
+        (account_id, model) 组合, 透传给每个 member 的 select_best_channel。
         """
         prefs = prefs or {}
+        exclude_pairs = exclude_pairs or set()
         visited: set[str] = set()
         current: Optional[str] = group_id
 
@@ -1600,7 +1621,8 @@ class RouteEngine:
                     continue
 
                 # 跑精确模型路由 (复用 select_best_channel)
-                best = self.select_best_channel(model_id, messages=messages)
+                best = self.select_best_channel(model_id, messages=messages,
+                                                exclude_pairs=exclude_pairs)
                 if not best:
                     logger.debug(f"  [{current}] {model_id} 无可用渠道, 跳过")
                     skipped += 1

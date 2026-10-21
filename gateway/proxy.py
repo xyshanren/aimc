@@ -587,6 +587,7 @@ async def forward_request(
     requested_model: str = "", actual_model: Optional[str] = None,
     caller_id: Optional[int] = None,
     caller_key_id: Optional[int] = None,
+    failed_channels: Optional[list] = None,
 ):
     """将请求透传到上游渠道
 
@@ -599,6 +600,8 @@ async def forward_request(
                       (可能跟 requested_model 不同, 此时会替换 body.model)
         caller_id: V4.8 — 调用者 user_id (从 request.state 透传), 写入 usage_logs.caller_id
         caller_key_id: V4.8.1 — api_keys.id (从 request.state 透传), 写入 usage_logs.key_id
+        failed_channels: V6.18 — 本跳之前已失败的渠道列表 (routes.py 累积),
+                      落 usage_logs.failed_channels 供看板下钻失败链
 
     Returns:
         StreamingResponse 或 JSONResponse
@@ -715,12 +718,12 @@ async def forward_request(
         if is_stream:
             return await _forward_stream(
                 target_url, forward_headers, body, channel, start_time, aimc_headers,
-                requested_model, caller_id, caller_key_id,
+                requested_model, caller_id, caller_key_id, failed_channels,
             )
         else:
             return await _forward_normal(
                 target_url, forward_headers, body, channel, start_time, aimc_headers,
-                requested_model, caller_id, caller_key_id,
+                requested_model, caller_id, caller_key_id, failed_channels,
             )
     except httpx.TimeoutException:
         logger.error(f"上游超时: {channel['name']} ({target_url})")
@@ -751,6 +754,7 @@ async def _forward_stream(
     requested_model: str = "",
     caller_id: Optional[int] = None,
     caller_key_id: Optional[int] = None,
+    failed_channels: Optional[list] = None,
 ) -> StreamingResponse:
     """流式透传：原样传递字节给客户端
 
@@ -841,6 +845,7 @@ async def _forward_stream(
             _schedule_stream_usage_log(
                 channel, response.status_code, latency_ms,
                 requested_model, error_body, caller_id, caller_key_id,
+                failed_channels=failed_channels,
             )
             if settings.transcript_log_enabled:
                 try:
@@ -909,6 +914,7 @@ async def _forward_stream(
                     channel, response.status_code, latency_ms,
                     requested_model, bytes(tail_buffer), caller_id, caller_key_id,
                     first_token_ms=first_token_ms,
+                    failed_channels=failed_channels,
                 )
             except Exception as e:
                 logger.debug(f"[P0-1] stream usage 记录失败 (非致命): {e}")
@@ -947,6 +953,7 @@ async def _forward_normal(
     requested_model: str = "",
     caller_id: Optional[int] = None,
     caller_key_id: Optional[int] = None,
+    failed_channels: Optional[list] = None,
 ) -> JSONResponse:
     """非流式转发：等待完整响应后返回
 
@@ -986,7 +993,8 @@ async def _forward_normal(
                 pass
 
     # 尝试记录用量（异步，不阻塞响应）
-    _schedule_usage_log(channel, response, latency_ms, requested_model, caller_id, caller_key_id)
+    _schedule_usage_log(channel, response, latency_ms, requested_model, caller_id, caller_key_id,
+                        failed_channels=failed_channels)
 
     # V4.9.3: 请求/响应转录 (诊断用, 默认关)
     if settings.transcript_log_enabled:
@@ -1181,7 +1189,8 @@ def _parse_cache_tokens(usage: dict):
     return cached_input_tokens, cache_read_input_tokens, cache_creation_input_tokens
 
 
-def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int, requested_model: str = "", caller_id: Optional[int] = None, caller_key_id: Optional[int] = None):
+def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int, requested_model: str = "", caller_id: Optional[int] = None, caller_key_id: Optional[int] = None,
+                         failed_channels: Optional[list] = None):
     """异步记录用量日志（fire-and-forget）
 
     Phase 3.A: 接收 requested_model, 提取 group_id 写入 usage_logs
@@ -1194,9 +1203,27 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
 
     V4.8: caller_id 透传到 _write_usage_log (多用户计量)
     V4.8.1: caller_key_id 透传到 _write_usage_log (多 key label 下钻)
+
+    V6.18 (2026-10-22): 非流式失败补分类落库
+    - 旧行为: 4xx/5xx 响应体无 usage 字段 → 落库行 error_type/error_code/
+      error_msg 全空 (生产近 3 天 224 条 400 + 283 条 429 + 19 条 5xx 空),
+      看板上只看得到状态码, 看不到归类; 响应体非 JSON 时连行都不落。
+    - 新行为: 失败时补 classify() 分类 (error_type/error_code/error_msg/
+      needs_human) + 失败链 (failed_channels); 响应体非 JSON 也照落。
+      **成本口径不变** — 仍走下面的 usage/cost 计算 (失败请求 usage 为空 →
+      cost_estimate=0.0, 与生产存量 224 条 400 行一致), 不改统计口径。
     """
     try:
-        data = response.json()
+        _is_failure = response.status_code >= 400
+        if _is_failure:
+            # 失败响应体可能非 JSON (HTML 错误页) — 不能让 .json() 抛异常
+            # 把整行落库带没 (旧行为: 请求在用量页完全不可见)
+            try:
+                data = response.json()
+            except Exception:
+                data = {}
+        else:
+            data = response.json()
         usage = data.get("usage", {})
         group_id = _extract_group_id(requested_model)
         actual_model = _resolve_actual_model(
@@ -1224,6 +1251,18 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
             usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
         )
 
+        # V6.18 (2026-10-22): 失败请求补分类 — 旧行为 error_type/error_code/
+        # error_msg 全空 (看板看不到归类)。与流式路径同构走 classify()。
+        _error_msg = _error_type = _error_code = None
+        _needs_human = False
+        if _is_failure:
+            from gateway.error_classifier import classify
+            _info = classify(response.status_code, _safe_response_text(response), None)
+            _error_msg = _info.error_msg
+            _error_type = _info.category.value
+            _error_code = _info.error_code
+            _needs_human = _info.needs_human
+
         # 创建异步任务写入数据库
         # 修复 V4.6.4: 用 asyncio.create_task 替代 asyncio.get_event_loop().create_task
         # 之前: get_event_loop() 在 Python 3.12 + uvicorn 多 worker 场景下可能返回错的 loop 或 RuntimeError
@@ -1248,15 +1287,21 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
                     caller_id=caller_id,
                     caller_key_id=caller_key_id,
                     cost_estimate=cost_estimate,
-                    # V6.0 Phase 2: 标价轨 (官方标价口径, 量化免费/订阅渠道节省)
+                    # V6.0 Phase 2: 标价轨 (成本审计, 节省 = 标价 - 实付)
                     list_cost_estimate=list_cost_estimate,
+                    # V6.18: 失败分类 + 失败链 (本跳之前已失败的跳)
+                    error_msg=_error_msg,
+                    error_type=_error_type,
+                    error_code=_error_code,
+                    needs_human=_needs_human,
+                    failed_channels=failed_channels,
                 )
             )
             # V4.6.4: 添加回调, task 失败时 log 错误 (之前静默)
             task.add_done_callback(_log_task_result)
         except RuntimeError as e:
             # 没有 running loop (不可能在 FastAPI handler 里, 但兜底)
-            logger.warning(f"V4.6.4: asyncio.create_task 失败: {e}, 跳过本次 usage_log")
+            logger.warning(f"V4.6.4: asyncio.create_task 失败, 跳过本次 usage_log")
     except Exception as e:
         # audit §E: 原 `pass` 会把用量链的名字错误 (NameError/AttributeError)
         # 静默吞掉 → 看板/周报整链断且不可见。解析失败多为上游响应体非 JSON
@@ -1265,6 +1310,14 @@ def _schedule_usage_log(channel: dict, response: httpx.Response, latency_ms: int
             "usage_log 预处理失败 (用量不入库): channel=%s model=%s err=%r",
             channel.get("name"), requested_model, e,
         )
+
+
+def _safe_response_text(response) -> str:
+    """V6.18: 安全取响应体文本 — 失败响应体可能非 UTF-8 或已被消费, 不能抛。"""
+    try:
+        return response.text
+    except Exception:
+        return ""
 
 
 def _log_task_result(task: asyncio.Task) -> None:
@@ -1299,6 +1352,7 @@ async def _write_usage_log(
     error_code: Optional[str] = None,
     needs_human: Optional[bool] = None,
     first_token_ms: Optional[int] = None,
+    failed_channels: Optional[list] = None,
 ):
     """写入用量日志到数据库
 
@@ -1325,7 +1379,12 @@ async def _write_usage_log(
 
     V6.x: error_msg/error_type/error_code/needs_human 参数 (上游失败落库)
     - NULL = 成功请求 (历史行为不变)
-    - 非 NULL = 流式失败时从 classify 结果填入, 激活 usage_logs V4.9 错误列
+    - 非 NULL = 失败时从 classify 结果填入, 激活 usage_logs V4.9 错误列
+
+    V6.18 (2026-10-22): failed_channels 参数 (JSON array)
+    - NULL = 本跳之前没有失败跳 (首次尝试)
+    - 非 NULL = 本次请求在到达本跳之前已失败的渠道列表 (routes.py 层累积)
+      → 终态那行带完整失败链, 看板可下钻"断在哪一跳"
     """
     try:
         from db.engine import async_session_factory
@@ -1366,6 +1425,8 @@ async def _write_usage_log(
                         error_type=error_type,
                         error_code=error_code,
                         needs_human=bool(needs_human) if needs_human is not None else False,
+                        # V6.18: 失败链 (本跳之前已失败的跳) — 看板可下钻
+                        failed_channels=failed_channels,
                     )
                     session.add(log)
                     await session.commit()
@@ -1497,6 +1558,7 @@ def _schedule_stream_usage_log(
     caller_id: Optional[int] = None,
     caller_key_id: Optional[int] = None,
     first_token_ms: Optional[int] = None,
+    failed_channels: Optional[list] = None,
 ):
     """P0-1: 从 streaming 尾部缓冲提取 usage 并记录 (fire-and-forget)
 
@@ -1504,6 +1566,7 @@ def _schedule_stream_usage_log(
     V4.8: caller_id 透传到 _write_usage_log
     V4.8.1: caller_key_id 透传到 _write_usage_log
     V6.10: first_token_ms (TTFT) 透传; 错误流/未捕获为 None
+    V6.18: failed_channels 透传 (本跳之前已失败的跳)
     """
     try:
         usage = _extract_stream_usage(tail_bytes)
@@ -1536,6 +1599,8 @@ def _schedule_stream_usage_log(
                             error_type=info.category.value,
                             error_code=info.error_code,
                             needs_human=info.needs_human,
+                            # V6.18: 失败链 (本跳之前已失败的跳)
+                            failed_channels=failed_channels,
                         )
                     )
                     task.add_done_callback(_log_task_result)

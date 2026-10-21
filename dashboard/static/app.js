@@ -3104,6 +3104,15 @@ function initNav() {
 // 后端按 model+时间窗 best-effort 匹配, 仅 admin key 可见 (中间件保证)。
 // ============================================================
 
+// V6.18 (2026-10-22): ErrorCategory → 中文标签 (9 类, 与 gateway/error_classifier.py 对齐)
+const _ERR_TYPE_LABELS = {
+    quota_exhausted: '配额耗尽', auth_failed: '鉴权失败', rate_limited: '限流',
+    model_unsupported: '模型不支持', context_window: '上下文超限',
+    network_transient: '网络抖动', upstream_5xx: '上游 5xx',
+    client_error: '客户端错误', unknown: '未知错误',
+};
+function errTypeLabel(t) { return _ERR_TYPE_LABELS[t] || t || ''; }
+
 let _reqPage = 1, _reqStatus = 'all', _reqModel = '', _reqChannel = '', _reqKey = '', _reqUser = '', _reqDebounce = null;
 
 function requestsFilterChanged() {
@@ -3211,6 +3220,13 @@ async function loadRequests() {
         let html = '<div class="scroll-y-420"><table><thead><tr><th>时间</th><th>模型</th><th>渠道</th><th>Key</th><th>状态</th><th>延迟</th><th>Token</th><th>实付</th><th></th></tr></thead><tbody>';
         for (const r of data.items) {
             const cls = r.status_code >= 500 ? 'st-error' : (r.status_code >= 400 ? 'st-warn' : 'st-ok');
+            // V6.18: 错误分类 tooltip (非流式失败此前 error_type 全空, 落库后可见)
+            const errTip = r.error_type
+                ? ' title="' + esc((r.error_type + (r.error_msg ? ': ' + r.error_msg : '')).slice(0, 200)) + '"'
+                : '';
+            const errTag = r.error_type
+                ? ' <span class="text-muted" style="font-size:11px;">' + esc(errTypeLabel(r.error_type)) + '</span>'
+                : '';
             html += '<tr>'
                 + '<td class="mono" style="font-size:11px;">' + esc((r.created_at || '').replace('T', ' ').slice(5, 19)) + '</td>'
                 + '<td><code class="text-mono">' + esc(r.model || '—') + '</code></td>'
@@ -3218,7 +3234,7 @@ async function loadRequests() {
                 + (r.account_name ? ' <span class="text-muted" style="font-size:11px;" title="上游服务账号">· ' + esc(r.account_name) + '</span>' : '')
                 + '</td>'
                 + '<td>' + esc(r.key_label || '—') + '</td>'
-                + '<td><span class="status-pill ' + cls + '">' + esc(String(r.status_code)) + '</span></td>'
+                + '<td' + errTip + '><span class="status-pill ' + cls + '">' + esc(String(r.status_code)) + '</span>' + errTag + '</td>'
                 + '<td class="mono">' + fmtLatency(r.latency_ms) + '</td>'
                 + '<td class="mono">' + fmtTokens((r.input_tokens || 0) + (r.output_tokens || 0)) + (r.reasoning_tokens ? ' <span class="text-muted" title="其中思考 token (上游返回)">🧠' + fmtTokens(r.reasoning_tokens) + '</span>' : '') + '</td>'
                 + '<td class="mono">' + fmtCNY(r.cost_yuan) + '</td>'
@@ -3241,9 +3257,13 @@ async function openRequestDrawer(id) {
     const meta = document.getElementById('drawer-meta');
     const reqPre = document.getElementById('drawer-req');
     const respPre = document.getElementById('drawer-resp');
+    const errBox = document.getElementById('drawer-err');
+    const errHead = document.getElementById('drawer-err-h');
     if (meta) meta.textContent = '#' + id + ' 加载中…';
     if (reqPre) reqPre.textContent = '加载中…';
     if (respPre) respPre.textContent = '';
+    if (errBox) { errBox.innerHTML = ''; errBox.hidden = true; }
+    if (errHead) errHead.hidden = true;
     try {
         const resp = await authFetch(`/dashboard/api/requests/${id}/transcript`);
         const data = await resp.json();
@@ -3255,11 +3275,45 @@ async function openRequestDrawer(id) {
             + (data.account_name ? ' · 账号 ' + data.account_name : '')
             + (data.truncated ? ' · 已截断 (超 256KB)' : '')
             + (data.transcript_created_at ? ' · 转录时间 ' + data.transcript_created_at.replace('T', ' ').slice(0, 19) : '');
+        renderRequestError(errBox, errHead, data);
         if (reqPre) reqPre.textContent = data.request_body || '(无)';
         if (respPre) respPre.textContent = data.response_body || '(无)';
     } catch (e) {
         if (reqPre) reqPre.textContent = '加载失败: ' + e.message;
     }
+}
+
+// V6.18 (2026-10-22): 渲染错误分类 + 失败链 (断在哪一跳)
+function renderRequestError(errBox, errHead, data) {
+    if (!errBox) return;
+    const etype = data.error_type;
+    const chain = Array.isArray(data.failed_channels) ? data.failed_channels : [];
+    if (!etype && !chain.length) return;
+
+    let html = '';
+    if (etype) {
+        html += '<div style="font-size:12px;margin-bottom:6px;">'
+            + '<strong>' + esc(errTypeLabel(etype)) + '</strong>'
+            + (data.error_msg ? ' — ' + esc(String(data.error_msg).slice(0, 300)) : '')
+            + '</div>';
+    }
+    if (chain.length) {
+        html += '<div style="font-size:12px;">失败链 (' + chain.length + ' 跳, 本跳之前):</div>';
+        html += '<div class="scroll-y-420"><table><thead><tr><th>渠道</th><th>账号</th><th>状态</th><th>分类</th><th>错误</th></tr></thead><tbody>';
+        for (const c of chain) {
+            html += '<tr>'
+                + '<td>' + esc(c.channel || '—') + '</td>'
+                + '<td>' + esc(c.account || '—') + '</td>'
+                + '<td><span class="status-pill ' + (c.status >= 500 ? 'st-error' : 'st-warn') + '">' + esc(String(c.status || '?')) + '</span></td>'
+                + '<td>' + esc(errTypeLabel(c.error_type)) + '</td>'
+                + '<td style="font-size:11px;">' + esc(String(c.error_msg || '').slice(0, 120)) + '</td>'
+                + '</tr>';
+        }
+        html += '</tbody></table></div>';
+    }
+    errBox.innerHTML = html;
+    errBox.hidden = false;
+    if (errHead) errHead.hidden = false;
 }
 
 function closeRequestDrawer() {
