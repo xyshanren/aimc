@@ -301,13 +301,22 @@ def test_tier_light_qwen_canonical_names():
 # ============================================================
 
 def test_require_vision_accepts_multimodal():
-    """router.py 源码: require_vision 过滤用 not in (vision, multimodal) 而非 != vision"""
+    """require_vision 过滤用 not in (vision, multimodal) 而非 != vision
+
+    V6.17d: 判定抽到 gateway/group_rules.group_runtime_accepts (路由层与
+    看板候选列表共用), 这里校验单一事实源本身 + 路由层确实走它。
+    """
     from gateway.router import RouteEngine
     import inspect
-    src = inspect.getsource(RouteEngine._select_by_group)
+    from gateway import group_rules
+
+    rules_src = inspect.getsource(group_rules)
     # 关键: 不再用 != "vision" 拒绝 multimodal
-    assert 'not in ("vision", "multimodal")' in src, \
-        "require_vision 过滤器应接受 (vision, multimodal), 检查 router.py"
+    assert 'not in ("vision", "multimodal")' in rules_src, \
+        "require_vision 过滤器应接受 (vision, multimodal), 检查 gateway/group_rules.py"
+    router_src = inspect.getsource(RouteEngine._select_by_group)
+    assert "group_runtime_accepts" in router_src, \
+        "路由层组过滤应调用 gateway/group_rules.group_runtime_accepts"
 
 
 # ============================================================

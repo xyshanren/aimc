@@ -33,6 +33,10 @@ from db.models import (
     ModelChangeSuggestion, GroupChangeSuggestion,
     User, ApiKey,
 )
+from dashboard.group_members import (
+    build_sibling_priority_map, default_priority, suggest_priority,
+)
+from gateway.group_rules import group_candidate_models
 
 logger = logging.getLogger(__name__)
 
@@ -2554,43 +2558,67 @@ async def get_registry_models(session: AsyncSession = Depends(get_session)):
 
 @router.get("/api/registry/groups")
 async def get_registry_groups(session: AsyncSession = Depends(get_session)):
-    """Phase 2.9: 列出 model_group + members (6 group + 35 member 只读)
+    """Phase 2.9: 列出 model_group + members + 候选模型 (只读)
 
     P1-2: 仅显示 is_active=1 的成员. 出组的 model 仍在表里 (审计),
     但 UI/路由不出现, 避免误导运维/路由命中 deprecated 模型.
+
+    V6.17d: 每个组额外返回 **candidates** (可加进来的模型) 与
+    suggested_priority —— 候选按组定义 (tier / capabilities / min_context /
+    require_vision) + 策展 tier 白名单算, 与路由层同源 (gateway/group_rules),
+    不再由前端硬编码 → 不会选到"加进去路由也会跳过"的死成员。
     """
     groups = list((await session.execute(
         select(ModelGroup).order_by(ModelGroup.sort_order)
     )).scalars().all())
-    members = list((await session.execute(
-        select(ModelGroupMember).where(ModelGroupMember.is_active == 1)
+    all_members = list((await session.execute(
+        select(ModelGroupMember)
+    )).scalars().all())
+    registry_rows = list((await session.execute(
+        select(ModelRegistry)
     )).scalars().all())
 
-    # 倒排 member by group_id
+    # 倒排 member by group_id (仅活跃成员进 UI)
     members_by_group: dict[str, list] = {}
-    for m in members:
+    for m in all_members:
+        if m.is_active != 1:
+            continue
         members_by_group.setdefault(m.group_id, []).append({
             "model_id": m.model_id,
             "priority": m.priority,
         })
 
+    group_payloads = []
+    for g in groups:
+        group_members = [m for m in all_members if m.group_id == g.group_id]
+        active_ids = [m.model_id for m in group_members if m.is_active == 1]
+        sibling_map = build_sibling_priority_map(group_members)
+        active_prios = [m.priority for m in group_members if m.is_active == 1]
+
+        candidates = group_candidate_models(g, registry_rows, active_ids)
+        for c in candidates:
+            c["suggested_priority"] = suggest_priority(
+                c["model_id"], sibling_map, active_prios)
+
+        group_payloads.append({
+            "group_id": g.group_id,
+            "display_name": g.display_name,
+            "tier": g.tier,
+            "capabilities": g.capabilities,
+            "min_context": g.min_context,
+            "require_vision": bool(g.require_vision),
+            "strategy": g.strategy,
+            "fallback_group": g.fallback_group,
+            "enabled": bool(g.enabled),
+            "members": members_by_group.get(g.group_id, []),
+            "candidates": candidates,
+            "suggested_priority": default_priority(active_prios),
+        })
+
     return {
         "group_count": len(groups),
-        "member_count": len(members),
-        "groups": [
-            {
-                "group_id": g.group_id,
-                "display_name": g.display_name,
-                "tier": g.tier,
-                "capabilities": g.capabilities,
-                "min_context": g.min_context,
-                "strategy": g.strategy,
-                "fallback_group": g.fallback_group,
-                "enabled": bool(g.enabled),
-                "members": members_by_group.get(g.group_id, []),
-            }
-            for g in groups
-        ],
+        "member_count": sum(len(v) for v in members_by_group.values()),
+        "groups": group_payloads,
     }
 
 

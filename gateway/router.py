@@ -21,6 +21,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from gateway.group_rules import group_runtime_accepts
 
 logger = logging.getLogger(__name__)
 
@@ -1569,55 +1570,15 @@ class RouteEngine:
                     skipped += 1
                     continue
 
-                # 组过滤: tier (NULL=不限)
-                if group.tier and registry.tier != group.tier:
+                # 组过滤: tier / capabilities / min_context / require_vision
+                # V6.17d: 抽到 gateway/group_rules.group_runtime_accepts —
+                # 看板候选列表共用同一判定, 杜绝"能加进组但路由会跳过"的死成员.
+                # (require_vision 语义: 接受 vision + multimodal — P2-A 修复, 勿改回
+                #  != "vision"; multimodal 同样是 vision-capable)
+                _accepted, _reject_reason = group_runtime_accepts(group, registry)
+                if not _accepted:
                     logger.debug(
-                        f"  [{current}] {model_id} tier={registry.tier} "
-                        f"!= {group.tier}, 跳过"
-                    )
-                    skipped += 1
-                    continue
-
-                # 组过滤: capabilities (要求所有 group 能力 model 都有)
-                if group.capabilities:
-                    try:
-                        group_caps = set(json.loads(group.capabilities))
-                    except (TypeError, json.JSONDecodeError):
-                        group_caps = set()
-                    try:
-                        model_caps = set(
-                            json.loads(registry.capabilities) if registry.capabilities else []
-                        )
-                    except (TypeError, json.JSONDecodeError):
-                        model_caps = set()
-                    if not group_caps.issubset(model_caps):
-                        logger.debug(
-                            f"  [{current}] {model_id} caps={model_caps} "
-                            f"不包含 {group_caps - model_caps}, 跳过"
-                        )
-                        skipped += 1
-                        continue
-
-                # 组过滤: min_context
-                if group.min_context and (
-                    not registry.context_length
-                    or registry.context_length < group.min_context
-                ):
-                    logger.debug(
-                        f"  [{current}] {model_id} ctx={registry.context_length} "
-                        f"< {group.min_context}, 跳过"
-                    )
-                    skipped += 1
-                    continue
-
-                # 组过滤: require_vision (P2-A: 接受 vision + multimodal)
-                # 背景: P0-3 把 multimodal 当作 vision-capable (纯文本时跳过),
-                # 但 require_vision 用 != "vision" 把 multimodal 也拒了, 两者矛盾.
-                # 修复: multimodal 同样是 vision-capable, 不应被 require_vision 拒绝.
-                if group.require_vision and registry.modality not in ("vision", "multimodal"):
-                    logger.debug(
-                        f"  [{current}] {model_id} modality={registry.modality} "
-                        f"not in (vision, multimodal), 跳过"
+                        f"  [{current}] {model_id} 不满足组约束 ({_reject_reason}), 跳过"
                     )
                     skipped += 1
                     continue

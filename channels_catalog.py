@@ -141,14 +141,16 @@ MODEL_REGISTRY = {
     "kimi-k2.7-code": {
         "tier": "T1", "family": "kimi", "modality": "text",
         "specialized": "tier:code",
-        "capabilities": ["code"],
+        # code_specialized: 代码**特化**标记 (V6.17d) —— tier:code 组要求的能力标签。
+        # 泛用模型即便 capabilities 含 'code' 也不满足 (那是"会写代码", 不是"代码专用")
+        "capabilities": ["code", "code_specialized"],
         "context_length": 262144,
         "group_priorities": {"tier:code": 100},
     },
     "qwen3-coder-30b-a3b-instruct": {
         "tier": "T3", "family": "qwen", "modality": "text",
         "specialized": "tier:code",
-        "capabilities": ["code"],
+        "capabilities": ["code", "code_specialized"],
         "context_length": 262144,
         "group_priorities": {"tier:code": 105},
     },

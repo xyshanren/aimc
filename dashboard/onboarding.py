@@ -33,6 +33,7 @@ from db import crud
 from db.engine import async_session_factory
 from db.models import Account, Channel, ModelGroup, ModelGroupMember, ModelRegistry, PriceSnapshot, SettingsRuntime
 from db.seed_default import ensure_registry_and_members, seed_all_catalog_channels
+from dashboard.group_members import resolve_add_priority
 
 logger = logging.getLogger(__name__)
 
@@ -265,15 +266,11 @@ async def pricing_unpriced(session: AsyncSession = Depends(get_session_dep())):
         .where(PriceSnapshot.input_price.is_(None))
     )).all()
 
-    non_chat_kw = (
-        "embed", "rerank", "asr", "speech", "voice", "tts", "ocr", "image",
-        "video", "i2v", "t2v", "caption", "kolors", "lora", "diffusion",
-        "gsr", "flux", "/wan",
-    )
+    # 非聊天模型关键词 —— 与 gateway/group_rules.NON_CHAT_KW 同源 (V6.17d)
+    from gateway.group_rules import is_chat_model
 
     def _is_chat(model: str) -> bool:
-        low = model.lower()
-        return not any(k in low for k in non_chat_kw)
+        return is_chat_model(model)
 
     chat_pending, non_chat = [], []
     for chname, model in rows:
@@ -396,7 +393,15 @@ async def update_group(group_id: str, payload: dict):
 
 @router.post("/api/onboarding/groups/{group_id}/members")
 async def add_group_member(group_id: str, payload: dict):
-    """加成员 body: {model_id, priority?} — 已软删的成员复活 (is_active=1)"""
+    """加成员 body: {model_id, priority?} — 已软删的成员复活 (is_active=1)
+
+    priority 语义 (V6.17d, 见 dashboard/group_members.py):
+    - 显式 priority → 用它 (UI 可填);
+    - 同一 model_id 的软删行 → 复活并**保留其原 priority** (当初的策展排位);
+    - 同族旧行 (改名/预览后缀不同, 如 minimax-m3.1-flash ← -preview) → 继承其 priority;
+    - 否则 → 组内现有最大值 +5 (追加队尾, 不抢占现有成员位次)。
+    已是活跃成员且带了 priority → 直接改 priority (幂等更新, 不再 409)。
+    """
     from datetime import datetime as dt
 
     model_id = ((payload or {}).get("model_id") or "").strip()
@@ -408,15 +413,23 @@ async def add_group_member(group_id: str, payload: dict):
         await _get_group_or_404(session, group_id)
         await _get_registry_model_or_404(session, model_id)
 
-        # 任意状态 (active/软删) 查旧行 — 软删行复活, active 行 409
+        # 任意状态 (active/软删) 查旧行 — 软删行复活, active 行改 priority
         member = (await session.execute(
             select(ModelGroupMember).where(
                 ModelGroupMember.group_id == group_id,
                 ModelGroupMember.model_id == model_id)
         )).scalars().first()
         if member is not None and member.is_active == 1:
-            raise HTTPException(status_code=409, detail="成员已存在")
-        if member is not None:  # 复活
+            if priority is None:
+                raise HTTPException(status_code=409, detail="成员已存在")
+            # 已是成员 + 显式 priority → 幂等改位次 (看板"改 priority"同一入口)
+            member.priority = int(priority)
+            await session.commit()
+            logger.info(f"[onboarding] 组 {group_id} 成员 {model_id} 改 priority={priority}")
+            return {"ok": True, "group": group_id, "model": model_id,
+                    "priority": member.priority, "updated": True,
+                    "next": "前端将自动刷新路由缓存"}
+        if member is not None:  # 复活: 保留原 priority (除非显式指定)
             member.is_active = 1
             member.removed_at = None
             member.removed_reason = None
@@ -425,13 +438,7 @@ async def add_group_member(group_id: str, payload: dict):
             if priority is not None:
                 member.priority = int(priority)
         else:
-            if priority is None:
-                pris = (await session.execute(
-                    select(ModelGroupMember.priority).where(
-                        ModelGroupMember.group_id == group_id,
-                        ModelGroupMember.is_active == 1)
-                )).scalars().all()
-                priority = (max(pris) + 5) if pris else 100
+            priority = await resolve_add_priority(session, group_id, model_id, priority)
             session.add(ModelGroupMember(
                 group_id=group_id, model_id=model_id,
                 priority=int(priority), weight=1.0, added_by="manual",
@@ -439,6 +446,34 @@ async def add_group_member(group_id: str, payload: dict):
         await session.commit()
     logger.info(f"[onboarding] 组 {group_id} 加成员 {model_id}")
     return {"ok": True, "group": group_id, "model": model_id,
+            "next": "前端将自动刷新路由缓存"}
+
+
+@router.patch("/api/onboarding/groups/{group_id}/members/{model_id}")
+async def update_group_member_priority(group_id: str, model_id: str, payload: dict):
+    """改成员位次 body: {priority} — 只改 priority, 不动其它字段"""
+    priority = (payload or {}).get("priority")
+    if priority is None:
+        raise HTTPException(status_code=400, detail="priority 必填")
+    try:
+        priority = int(priority)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="priority 须为整数")
+
+    async with async_session_factory() as session:
+        await _get_group_or_404(session, group_id)
+        member = (await session.execute(
+            select(ModelGroupMember).where(
+                ModelGroupMember.group_id == group_id,
+                ModelGroupMember.model_id == model_id)
+        )).scalars().first()
+        if member is None or member.is_active != 1:
+            raise HTTPException(status_code=404, detail="成员不存在或已出组")
+        old = member.priority
+        member.priority = priority
+        await session.commit()
+    logger.info(f"[onboarding] 组 {group_id} 成员 {model_id} priority {old} → {priority}")
+    return {"ok": True, "group": group_id, "model": model_id, "priority": priority,
             "next": "前端将自动刷新路由缓存"}
 
 

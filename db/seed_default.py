@@ -35,8 +35,22 @@ from sqlalchemy import select
 
 from channels_catalog import MODEL_REGISTRY, RAW_ALIASES
 from db.models import ModelGroup, ModelGroupMember, ModelRegistry
+from gateway.group_rules import group_runtime_accepts
 
 logger = logging.getLogger(__name__)
+
+
+class _MetaRegView:
+    """catalog 元信息 → 组准入判定用的 registry 视图 (新模型尚未落库时用)"""
+
+    __slots__ = ("model_id", "tier", "modality", "capabilities", "context_length")
+
+    def __init__(self, meta: dict, model_id: str = ""):
+        self.model_id = model_id
+        self.tier = meta.get("tier")
+        self.modality = meta.get("modality", "text")
+        self.capabilities = json.dumps(meta.get("capabilities") or [])
+        self.context_length = meta.get("context_length")
 
 # 组定义 (照搬 scripts/seed_model_groups.py V6.14 形态, 7 组 + fallback 链)
 # 字段: (group_id, display_name, tier, capabilities, min_context,
@@ -48,7 +62,9 @@ DEFAULT_GROUPS = [
     ("tier:light", "轻量免费组", None, None, 0, 0, "cheapest", None, 40),
     ("tier:vision", "多模态视觉组", None, None, 0, 1, "cheapest", "tier:vision-light", 25),
     ("tier:vision-light", "轻量视觉组", None, None, 0, 1, "cheapest", "tier:light", 26),
-    ("tier:code", "代码专用组", None, None, 0, 0, "cheapest", "tier:balanced", 50),
+    # 代码专用组 (V6.17d): 要求 code_specialized 能力 —— 运行时强制"代码特化",
+    # 泛用模型 (capabilities 含 code 但非特化) 加不进来; 看板候选列表同源镜像
+    ("tier:code", "代码专用组", None, '["code_specialized"]', 0, 0, "cheapest", "tier:balanced", 50),
 ]
 
 TIER_RANK = {"T0": 0, "T1": 1, "T2": 2, "T3": 3, "T4": 4}
@@ -151,6 +167,14 @@ async def ensure_registry_and_members(session, cfg: dict) -> dict:
     # 3) ensure 默认组 (成员入组前组必须存在)
     await ensure_default_groups(session)
 
+    # 3b) 组定义 + registry 快照 (入组前校验组约束, V6.17d)
+    #     种子不得造出"加进组但路由会跳过"的死成员 (如旗舰组 ctx>=64000、
+    #     代码组要求 code_specialized) —— 校验规则与路由层同源
+    group_rows = {g.group_id: g for g in (await session.execute(
+        select(ModelGroup))).scalars().all()}
+    reg_rows = {r.model_id: r for r in (await session.execute(
+        select(ModelRegistry))).scalars().all()}
+
     # 4) ensure 组成员 (本渠道模型 only; priority 按组内已有最大值递增)
     valid_groups = set((await session.execute(
         select(ModelGroup.group_id)
@@ -170,6 +194,16 @@ async def ensure_registry_and_members(session, cfg: dict) -> dict:
                 logger.warning(
                     f"[seed-default] {canon} 目标组 {gid!r} 不存在, 跳过入组")
                 continue
+            # 入组前校验组约束 (V6.17d): 不满足组定义 (tier/caps/min_ctx/require_vision)
+            # 的模型不入组 —— 否则造出路由永远跳过的死成员
+            grp = group_rows.get(gid)
+            if grp is not None:
+                reg_view = reg_rows.get(canon) or _MetaRegView(meta)
+                _ok, _reason = group_runtime_accepts(grp, reg_view)
+                if not _ok:
+                    logger.warning(
+                        f"[seed-default] {canon} 不满足组 {gid!r} 约束 ({_reason}), 跳过入组")
+                    continue
             if (gid, canon) in existing_members:
                 continue
             # 组内 priority: catalog group_priorities 给的 (生产精确值) 优先,

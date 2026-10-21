@@ -329,20 +329,26 @@ function renderRegistryGroups(container) {
             if (caps.length) html += '<span class="text-muted" style="font-size:11px;">caps: ' + caps.map(esc).join(', ') + '</span>';
             html += '</div>';
 
-            // members 表格 + 行内加/移操作
+            // members 表格 + 行内加/移 + 行内改 priority (V6.17d)
             if (g.members && g.members.length > 0) {
                 html += '<table style="margin-top:var(--space-sm);"><thead><tr><th>Model</th><th class="mono">Priority</th><th>操作</th></tr></thead><tbody>';
                 for (const m of g.members) {
-                    html += '<tr><td><code class="text-mono">' + esc(m.model_id) + '</code></td><td class="mono">' + esc(m.priority) + '</td>'
-                        + '<td><button class="btn-sm btn-danger" onclick="removeGroupMember(\'' + esc(g.group_id) + '\', \'' + esc(m.model_id) + '\', this)">移出</button></td></tr>';
+                    html += '<tr><td><code class="text-mono">' + esc(m.model_id) + '</code></td>'
+                        + '<td class="mono"><input type="number" class="gm-priority" data-group="' + esc(g.group_id) + '" data-model="' + esc(m.model_id)
+                        + '" value="' + esc(m.priority) + '" step="5" min="0" style="width:70px;padding:3px 6px;border:1px solid var(--border,#333);border-radius:4px;background:var(--bg-secondary,transparent);color:inherit;font-size:12px;"></td>'
+                        + '<td style="white-space:nowrap;">'
+                        + '<button class="btn-sm" onclick="saveGroupMemberPriority(\'' + esc(g.group_id) + '\', this)">保存</button> '
+                        + '<button class="btn-sm btn-danger" onclick="removeGroupMember(\'' + esc(g.group_id) + '\', \'' + esc(m.model_id) + '\', this)">移出</button>'
+                        + '</td></tr>';
                 }
                 html += '</tbody></table>';
             } else {
                 html += '<div class="text-muted" style="font-size:11px;margin-top:var(--space-sm);">无 member</div>';
             }
-            // 行内加成员 (下拉 = registry 模型 - 已是成员)
+            // 行内加成员 (下拉 = 服务端算好的候选: 按组定义 tier/caps/min_ctx/require_vision + 策展 tier 白名单)
             html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap;">'
-                + '<select class="ob-add-member" data-group="' + esc(g.group_id) + '" style="flex:1;min-width:200px;padding:5px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;font-size:12px;"><option value="">+ 加成员 (选 registry 模型)…</option></select>'
+                + '<select class="ob-add-member" data-group="' + esc(g.group_id) + '" style="flex:1;min-width:200px;padding:5px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;font-size:12px;"><option value="">+ 加成员 (选候选模型)…</option></select>'
+                + '<input type="number" class="ob-add-priority" data-group="' + esc(g.group_id) + '" value="' + esc(g.suggested_priority || 100) + '" step="5" min="0" title="位次 (越小越优先)" style="width:80px;padding:5px 8px;border:1px solid var(--border,#333);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;font-size:12px;">'
                 + '<button class="btn btn-sm" onclick="addGroupMember(\'' + esc(g.group_id) + '\', this)">加入</button>'
                 + '</div>';
             html += '</div>';
@@ -366,46 +372,31 @@ function renderRegistryGroups(container) {
     }
 }
 
-// 组成员下拉填充: registry 模型 - 该组已有成员, 且按组语义过滤 (2026-10-15)
-// - 排除非聊天模型 (向量/语音/生图/视频/OCR 等; 关键词与 onboarding.py
-//   non_chat_kw 同源, 2026-10-16 同步补 speech/gsr/flux//wan)
-// - tier 白名单: flagship/strong=[T0,T1] balanced=[T2] light=[T3,T4]
-//   vision=[T0,T1]+多模态 vision-light=[T2+]多模态 code=不限; 自定义组只排非聊天
-const CHAT_EXCLUDE_KW = ['embed', 'rerank', 'asr', 'speech', 'voice', 'tts', 'ocr',
-    'image', 'video', 'i2v', 't2v', 'caption', 'kolors', 'lora', 'diffusion',
-    'gsr', 'flux', '/wan'];
-function _isChatModel(m) {
-    const low = (m.model_id || '').toLowerCase();
-    if (CHAT_EXCLUDE_KW.some(k => low.includes(k))) return false;
-    const mod = m.modality || 'text';
-    return mod === 'text' || mod === 'multimodal' || mod === 'vision';
-}
-function _tierAllowedForGroup(g, tier) {
-    if (!tier) return true;                     // 组未限定 tier
-    const gid = g.group_id || '';
-    const allow = {
-        'tier:flagship': ['T0', 'T1'], 'tier:strong': ['T0', 'T1'],
-        'tier:balanced': ['T2'], 'tier:light': ['T3', 'T4'],
-        'tier:vision': ['T0', 'T1'], 'tier:vision-light': ['T2', 'T3', 'T4'],
-    }[gid];
-    return allow ? allow.includes(tier) : true; // 自定义组不限
-}
+// 组成员下拉填充 (V6.17d): 候选由服务端按组定义算好 (g.candidates) ——
+// 与路由层同源 (gateway/group_rules.group_runtime_accepts):
+//   tier 精确匹配 / capabilities 子集 / min_context / require_vision(视觉组只收多模态)
+//   + 策展 tier 白名单 (旗舰/主力=[T0,T1] 均衡=[T2] 轻量=[T3,T4]
+//     视觉=[T0,T1] 轻量视觉=[T2,T3,T4] 代码组不限档但要求代码特化)
+// 前端不再硬编码规则 —— 组定义改了这里自动跟着改, 也不会选到"路由会跳过"的死成员。
 function populateMemberDropdowns(groups) {
-    const models = window._aimcRegistryModels || [];
     document.querySelectorAll('.ob-add-member').forEach(sel => {
         const gid = sel.dataset.group;
         const g = (groups || []).find(x => x.group_id === gid) || {};
-        const inGroup = new Set((g.members || []).map(m => m.model_id));
-        sel.innerHTML = '<option value="">+ 加成员 (选 registry 模型)…</option>'
-            + models
-                .filter(m => !inGroup.has(m.model_id)
-                             && (m.status || 'active') === 'active'
-                             && _isChatModel(m)
-                             && _tierAllowedForGroup(g, m.tier))
-                .map(m => '<option value="' + esc(m.model_id) + '">'
+        const cands = g.candidates || [];
+        sel.innerHTML = '<option value="">+ 加成员 (选候选模型)…</option>'
+            + cands
+                .map(m => '<option value="' + esc(m.model_id) + '" data-priority="'
+                    + esc(m.suggested_priority != null ? m.suggested_priority : (g.suggested_priority || 100)) + '">'
                     + esc(m.model_id) + ' (' + esc(m.tier || '?')
-                    + (m.modality && m.modality !== 'text' ? '/' + esc(m.modality) : '') + ')</option>')
+                    + (m.modality && m.modality !== 'text' ? '/' + esc(m.modality) : '')
+                    + (m.capabilities && m.capabilities.length ? '/' + esc(m.capabilities.join(',')) : '') + ')</option>')
                 .join('');
+        // 选模型时把 priority 输入框预填成该模型的建议值 (同族旧行继承 > 队尾追加)
+        sel.onchange = () => {
+            const opt = sel.selectedOptions && sel.selectedOptions[0];
+            const pri = document.querySelector('.ob-add-priority[data-group="' + gid + '"]');
+            if (opt && opt.value && pri && opt.dataset && opt.dataset.priority) pri.value = opt.dataset.priority;
+        };
     });
 }
 
@@ -432,16 +423,41 @@ async function addGroupMember(gid, btn) {
     const sel = document.querySelector('.ob-add-member[data-group="' + gid + '"]');
     const modelId = sel ? sel.value : '';
     if (!modelId) { alert('先在下拉里选一个模型'); return; }
+    const priInput = document.querySelector('.ob-add-priority[data-group="' + gid + '"]');
+    const priority = priInput && priInput.value !== '' ? parseInt(priInput.value, 10) : undefined;
     if (btn) btn.disabled = true;
     try {
+        const payload = { model_id: modelId };
+        if (priority !== undefined && !isNaN(priority)) payload.priority = priority;
         const resp = await authFetch('/dashboard/api/onboarding/groups/' + encodeURIComponent(gid) + '/members', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model_id: modelId })
+            body: JSON.stringify(payload)
         });
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data.ok) {
             await _groupMutation(() => loadRegistryGroupsCard());
         } else { alert('加入失败: ' + (data.detail || resp.status)); if (btn) btn.disabled = false; }
+    } catch (e) { alert('请求失败: ' + e.message); if (btn) btn.disabled = false; }
+}
+
+async function saveGroupMemberPriority(gid, btn) {
+    // 行内改位次 (V6.17d): priority 越小越优先
+    const row = btn && btn.closest ? btn.closest('tr') : null;
+    const input = row ? row.querySelector('.gm-priority') : null;
+    if (!input) return;
+    const modelId = input.dataset.model;
+    const priority = parseInt(input.value, 10);
+    if (isNaN(priority)) { alert('priority 须为整数'); return; }
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await authFetch('/dashboard/api/onboarding/groups/' + encodeURIComponent(gid) + '/members/' + encodeURIComponent(modelId), {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ priority: priority })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.ok) {
+            await _groupMutation(() => loadRegistryGroupsCard());
+        } else { alert('保存失败: ' + (data.detail || resp.status)); if (btn) btn.disabled = false; }
     } catch (e) { alert('请求失败: ' + e.message); if (btn) btn.disabled = false; }
 }
 

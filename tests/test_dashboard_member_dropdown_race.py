@@ -44,6 +44,9 @@ def test_models_renderer_repopulates_dropdowns():
 
 
 def test_dropdown_source_is_registry_models():
+    # V6.17d: 下拉候选改由服务端按组定义算好 (g.candidates, 与路由层同源),
+    # 不再直接消费 window._aimcRegistryModels —— 规则单一事实源在 gateway/group_rules
     body = _function_body(_src(), "populateMemberDropdowns")
-    assert "window._aimcRegistryModels" in body, "下拉候选来源应为 registry 模型列表"
-    assert "_tierAllowedForGroup" in body, "下拉候选仍须按组语义过滤 tier"
+    assert "g.candidates" in body, "下拉候选应使用服务端算好的候选 (g.candidates)"
+    src = _src()
+    assert "window._aimcRegistryModels" in src, "registry 模型卡仍应缓存模型列表供表格渲染"
