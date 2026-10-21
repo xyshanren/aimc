@@ -348,7 +348,9 @@ async def chat_completions(request: Request):
         # 旧 `not is_stream` 门使流式请求零 failover, 上游限流直接打穿到客户端
         # (生产 2026-09-17 双 429 实证, ZCode 全流量为流式)。
         is_group_route = model.startswith(("tier:", "scene:"))
-        retryable_status = response.status_code in (429, 500, 502, 503, 504)
+        # 529: MiniMax 等非标"服务过载"码 (生产 2026-10-21 实证, tier:vision
+        # 首选 m3.1-flash 撞上) — 与 503 同语义, 不 failover 会把过载打穿到客户端
+        retryable_status = response.status_code in (429, 500, 502, 503, 504, 529)
         if is_group_route and response.status_code == 400:
             retryable_status = True
         if retryable_status and attempt < max_retries:

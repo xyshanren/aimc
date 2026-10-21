@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _SF_PROVIDER = "siliconflow"
-_RETRYABLE_STATUS = (429, 500, 502, 503, 504)
+# 529: MiniMax 非标"服务过载"码 (V6.17d) — 与 503 同语义参与 failover
+_RETRYABLE_STATUS = (429, 500, 502, 503, 504, 529)
 
 
 def _error(message: str, status: int, err_type: str = "invalid_request_error",

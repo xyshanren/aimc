@@ -416,7 +416,10 @@ def classify(
             suggested_cooldown_seconds=1800 if status_code == 404 else 0,
             suggested_probe_after_seconds=600 if status_code == 404 else None,
         )
-    if status_code in (500, 502, 503, 504):
+    if status_code in (500, 502, 503, 504, 529):
+        # 529: MiniMax 等"服务过载"非标码 (生产 2026-10-21 实证) — 瞬时过载,
+        # 与 503 同语义: 短冷却 + failover; 误判 unknown 会走兜底默认冷却
+        # 且不进组路由的 failover 白名单
         return ErrorInfo(
             category=ErrorCategory.UPSTREAM_5XX,
             error_code=code,

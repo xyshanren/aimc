@@ -805,7 +805,8 @@ async def _forward_stream(
         _update_cooldown(channel, response)
 
         # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
-        if response.status_code in (401, 403, 500, 502, 503, 504):
+        # 529: MiniMax 非标"服务过载"码 (V6.17d) — 同 5xx 计入告警
+        if response.status_code in (401, 403, 500, 502, 503, 504, 529):
             _schedule_alert(channel, response)
 
         # V4.8.7: 流式 400 同样自动学习 drop_params
@@ -970,7 +971,8 @@ async def _forward_normal(
     _update_cooldown(channel, response)
 
     # Phase 2E: 上游错误 (5xx + 401/403) 触发告警
-    if response.status_code in (401, 403, 500, 502, 503, 504):
+    # 529: MiniMax 非标"服务过载"码 (V6.17d) — 同 5xx 计入告警
+    if response.status_code in (401, 403, 500, 502, 503, 504, 529):
         _schedule_alert(channel, response)
 
     # V4.8.7: 上游 400 时自动学习 drop_params
