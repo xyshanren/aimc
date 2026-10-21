@@ -34,7 +34,15 @@ if str(ROOT) not in sys.path:
 
 @pytest.fixture
 def cli_db(tmp_path, monkeypatch):
-    """临时 SQLite, 含 users + api_keys + usage_logs 表"""
+    """临时 SQLite, 含 users + api_keys + usage_logs 表
+
+    V6.18 (2026-10-22) 隔离修复: 被测的 scripts/add_user_key.py 顶部是
+    `from db.engine import async_session_factory` + `from db.init_db import init_db`
+    —— **导入时绑定**。只 monkeypatch db.engine.async_session_factory 不够:
+    ① db.init_db.engine 仍绑真实库 (init_db() 会往真实库建表);
+    ② 脚本模块若在 monkeypatch 之前就被 import 过, 其模块级引用也不会变。
+    这里把 engine / init_db.engine / 脚本模块引用一起重绑到临时库。
+    """
     db_file = tmp_path / "v48_cli_test.db"
     async_url = f"sqlite+aiosqlite:///{db_file}"
 
@@ -51,8 +59,54 @@ def cli_db(tmp_path, monkeypatch):
     asyncio.set_event_loop(loop)
     loop.run_until_complete(_init())
 
-    monkeypatch.setattr("db.engine.async_session_factory", factory)
-    return db_file, factory, eng
+    # engine 层重绑 (db.engine.engine + db.init_db.engine)
+    import db.engine as db_engine
+    import db.init_db as db_init_db
+    _orig_engine = db_engine.engine
+    _orig_init_engine = db_init_db.engine
+    _orig_factory = db_engine.async_session_factory
+    db_engine.engine = eng
+    db_init_db.engine = eng
+    db_engine.async_session_factory = factory
+    # 断言: 必须是临时库
+    assert str(eng.url).endswith("v48_cli_test.db"), f"engine 必须指向临时库, 实际 {eng.url}"
+
+    # 脚本模块的模块级引用 (若已 import 过) 一并重绑
+    _script_mods = []
+    for _mod_name in ("scripts.add_user_key", "scripts.list_user_keys"):
+        _mod = sys.modules.get(_mod_name)
+        if _mod is not None:
+            if hasattr(_mod, "async_session_factory"):
+                _script_mods.append((_mod, _mod.async_session_factory))
+                _mod.async_session_factory = factory
+            if hasattr(_mod, "init_db"):
+                _script_mods.append((_mod, _mod.init_db))
+                _mod.init_db = _init_db_stub(eng)
+
+    def _restore():
+        db_init_db.engine = _orig_init_engine
+        db_engine.engine = _orig_engine
+        db_engine.async_session_factory = _orig_factory
+        for _mod, _orig in _script_mods:
+            if _orig is _orig_factory:
+                _mod.async_session_factory = _orig
+            else:
+                _mod.init_db = _orig
+        loop.close()
+
+    try:
+        yield db_file, factory, eng
+    finally:
+        _restore()
+
+
+def _init_db_stub(eng):
+    """init_db 的替代版 —— 在给定 engine 上建表 (不碰真实库)"""
+    async def _init():
+        from db.models import Base
+        async with eng.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    return _init
 
 
 def _run_async(coro):

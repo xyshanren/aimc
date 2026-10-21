@@ -245,54 +245,86 @@ def _seed_rows():
     """写入最小 registry + group 数据 (幂等: 多用例共用同一临时库)"""
     async def run():
         from sqlalchemy import delete, select
-        from db.init_db import init_db
-        from db.engine import async_session_factory
         from db.models import ModelGroup, ModelGroupMember, ModelRegistry
-        await init_db()
-        async with async_session_factory() as session:
-            # 清掉本文件造的测试数据 (重复执行不撞唯一约束)
-            await session.execute(delete(ModelGroupMember).where(
-                ModelGroupMember.group_id.in_(["tier:vision", "tier:code"])))
-            await session.execute(delete(ModelGroup).where(
-                ModelGroup.group_id.in_(["tier:vision", "tier:code"])))
-            await session.execute(delete(ModelRegistry).where(
-                ModelRegistry.model_id.in_(["m-mm", "m-mm2", "m-text", "coder-x", "general-y"])))
-            session.add(ModelRegistry(
-                model_id="m-mm", family="x", display_name="m-mm", tier="T1",
-                capabilities="[]", context_length=131072, modality="multimodal",
-                status="active"))
-            session.add(ModelRegistry(
-                model_id="m-mm2", family="x", display_name="m-mm2", tier="T1",
-                capabilities="[]", context_length=131072, modality="multimodal",
-                status="active"))
-            session.add(ModelRegistry(
-                model_id="m-text", family="x", display_name="m-text", tier="T1",
-                capabilities="[]", context_length=131072, modality="text",
-                status="active"))
-            session.add(ModelRegistry(
-                model_id="coder-x", family="x", display_name="coder-x", tier="T1",
-                capabilities='["code","code_specialized"]', context_length=262144,
-                modality="text", status="active"))
-            session.add(ModelRegistry(
-                model_id="general-y", family="x", display_name="general-y", tier="T1",
-                capabilities='["general"]', context_length=131072, modality="text",
-                status="active"))
-            session.add(ModelGroup(
-                group_id="tier:vision", display_name="视觉组", tier=None,
-                capabilities=None, min_context=0, require_vision=1,
-                strategy="cheapest", fallback_group=None, enabled=1, sort_order=25))
-            session.add(ModelGroup(
-                group_id="tier:code", display_name="代码组", tier=None,
-                capabilities='["code_specialized"]', min_context=0, require_vision=0,
-                strategy="cheapest", fallback_group=None, enabled=1, sort_order=50))
-            session.add(ModelGroupMember(
-                group_id="tier:vision", model_id="m-mm", priority=100,
-                weight=1.0, added_by="manual", is_active=1))
-            # 同族旧行 (软删) —— 改名模型加回时应继承其 priority
-            session.add(ModelGroupMember(
-                group_id="tier:vision", model_id="m-mm2-preview", priority=90,
-                weight=1.0, added_by="manual", is_active=0))
-            await session.commit()
+        # V6.18 (2026-10-22) 隔离修复: db/engine.py 在**模块导入时**就用
+        # settings.db_url 建 engine。本文件的 mock config 是在 import db.engine
+        # 之前装的, 但若 db.engine 已被别的模块 (gateway.router 等) 间接导入,
+        # engine 就已绑到真实 data/aimc.db —— init_db() + 下面的写入会污染
+        # 真实本地库 (2026-10-21 实录: 本地库被塞进 4 条 family='x' 的假
+        # 模型行, 触发 pre-commit 的 model_registry 一致性检查报错)。
+        # 这里显式把 engine + session factory 重绑到临时库, 不依赖 import 时序。
+        import db.engine as db_engine
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        _tmp_db = os.path.join(_TMP_DIR, "test.db")
+        _tmp_engine = create_async_engine(
+            f"sqlite+aiosqlite:///{_tmp_db}", echo=False, future=True)
+        _orig_engine = db_engine.engine
+        _orig_factory = db_engine.async_session_factory
+        db_engine.engine = _tmp_engine
+        db_engine.async_session_factory = async_sessionmaker(
+            _tmp_engine, class_=AsyncSession, expire_on_commit=False)
+        # 断言: 绑定的必须是临时库, 绝不碰真实库
+        assert str(_tmp_engine.url).endswith("test.db"), \
+            f"engine 必须指向临时库, 实际 {_tmp_engine.url}"
+        # db.init_db 是 `from db.engine import engine` (导入时绑定) —— 若它已
+        # 被别的模块导入过 (模块缓存), 光改 db.engine.engine 不够, 必须连
+        # db.init_db.engine 一起重绑, 否则 init_db() 仍往真实库建表/写数据。
+        import db.init_db as db_init_db
+        _orig_init_engine = db_init_db.engine
+        db_init_db.engine = _tmp_engine
+        try:
+            from db.init_db import init_db
+            await init_db()
+            async with db_engine.async_session_factory() as session:
+                # 清掉本文件造的测试数据 (重复执行不撞唯一约束)
+                await session.execute(delete(ModelGroupMember).where(
+                    ModelGroupMember.group_id.in_(["tier:vision", "tier:code"])))
+                await session.execute(delete(ModelGroup).where(
+                    ModelGroup.group_id.in_(["tier:vision", "tier:code"])))
+                await session.execute(delete(ModelRegistry).where(
+                    ModelRegistry.model_id.in_(["m-mm", "m-mm2", "m-text", "coder-x", "general-y"])))
+                session.add(ModelRegistry(
+                    model_id="m-mm", family="x", display_name="m-mm", tier="T1",
+                    capabilities="[]", context_length=131072, modality="multimodal",
+                    status="active"))
+                session.add(ModelRegistry(
+                    model_id="m-mm2", family="x", display_name="m-mm2", tier="T1",
+                    capabilities="[]", context_length=131072, modality="multimodal",
+                    status="active"))
+                session.add(ModelRegistry(
+                    model_id="m-text", family="x", display_name="m-text", tier="T1",
+                    capabilities="[]", context_length=131072, modality="text",
+                    status="active"))
+                session.add(ModelRegistry(
+                    model_id="coder-x", family="x", display_name="coder-x", tier="T1",
+                    capabilities='["code","code_specialized"]', context_length=262144,
+                    modality="text", status="active"))
+                session.add(ModelRegistry(
+                    model_id="general-y", family="x", display_name="general-y", tier="T1",
+                    capabilities='["general"]', context_length=131072, modality="text",
+                    status="active"))
+                session.add(ModelGroup(
+                    group_id="tier:vision", display_name="视觉组", tier=None,
+                    capabilities=None, min_context=0, require_vision=1,
+                    strategy="cheapest", fallback_group=None, enabled=1, sort_order=25))
+                session.add(ModelGroup(
+                    group_id="tier:code", display_name="代码组", tier=None,
+                    capabilities='["code_specialized"]', min_context=0, require_vision=0,
+                    strategy="cheapest", fallback_group=None, enabled=1, sort_order=50))
+                session.add(ModelGroupMember(
+                    group_id="tier:vision", model_id="m-mm", priority=100,
+                    weight=1.0, added_by="manual", is_active=1))
+                # 同族旧行 (软删) —— 改名模型加回时应继承其 priority
+                session.add(ModelGroupMember(
+                    group_id="tier:vision", model_id="m-mm2-preview", priority=90,
+                    weight=1.0, added_by="manual", is_active=0))
+                await session.commit()
+        finally:
+            # 还原原 engine (不留副作用给后续用例)
+            db_init_db.engine = _orig_init_engine
+            db_engine.engine = _orig_engine
+            db_engine.async_session_factory = _orig_factory
+            await _tmp_engine.dispose()
     asyncio.run(run())
 
 

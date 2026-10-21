@@ -415,7 +415,11 @@ class UsageLog(Base):
     error_msg = Column(Text, nullable=True, comment="上游 error.message (截断 500)")
     error_type = Column(Text, nullable=True, comment="ErrorCategory: quota_exhausted/auth_failed/...")
     error_code = Column(Text, nullable=True, comment="上游 error.code (1113 / insufficient_quota)")
-    failed_channels = Column(JSON, nullable=True, comment="JSON array, V4.8.7 P7 失败链路")
+    # V6.18 (2026-10-22): none_as_null=True — 否则 Python None 会被序列化成
+    # JSON 字面量 'null' 字符串 (typeof='text') 而非 SQL NULL, 导致
+    # "failed_channels IS NOT NULL" 之类的查询把成功请求也算进去。
+    # 无失败链的行应是真正的 NULL。
+    failed_channels = Column(JSON(none_as_null=True), nullable=True, comment="JSON array, V4.8.7 P7 失败链路")
     needs_human = Column(Boolean, default=False, comment="True=需人工干预 (quota/auth/model_unsupported)")
 
 

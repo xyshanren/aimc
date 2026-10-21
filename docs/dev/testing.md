@@ -6,7 +6,7 @@
 ## 1. 跑测试
 
 ```bash
-# 全部 (1037 个 test, 基线 2026-10-22: 全绿; V6.18 400 failover 换路 + 失败分类落库 + 失败链落库)
+# 全部 (1038 个 test, 基线 2026-10-22: 全绿; V6.18 400 failover 换路 + 失败分类落库 + 失败链落库)
 python -m pytest tests/ -q
 
 # 单文件
@@ -22,7 +22,32 @@ python -m pytest tests/ --cov=gateway --cov=intelligence --cov-report=term-missi
 
 pytest-asyncio mode 已在 `pyproject.toml` 配置（`asyncio_mode = "auto"`），async test 自动运行。
 
-## 2. 现有测试结构（1037 个，114 个 test 文件 + conftest）
+## 2. 现有测试结构（1038 个，114 个 test 文件 + conftest）
+
+> ⚠️ **测试不得写真实本地库**（V6.18, 2026-10-22）：`db/engine.py` 在**模块导入时**就用
+> `settings.db_url` 建 engine，`db/init_db.py` 又是 `from db.engine import engine`（导入时绑定）。
+> 测试文件顶层 mock `config` 后，若 `db.engine` / `db.init_db` 已被别的模块间接导入（模块缓存），
+> engine 仍绑真实 `data/aimc.db` —— `init_db()` + 测试写入就会污染真实库。
+> 2026-10-21 实录：本地库被塞进 4 条 `family='x'` 的假模型行，触发 pre-commit 的
+> model_registry 一致性检查报错（与当次代码改动无关）。
+>
+> **正确写法**：在测试里显式把 engine 重绑到临时库，且**在 import `db.init_db` 之前**重绑：
+>
+> ```python
+> import db.engine as db_engine
+> import db.init_db as db_init_db
+> db_engine.engine = _tmp_engine            # 临时库 engine
+> db_init_db.engine = _tmp_engine           # 关键: init_db 是导入时绑定的
+> ```
+>
+> 参见 `tests/test_v617d_group_admission.py` 的 `_seed_rows`。
+> `tests/conftest.py` 另有两层守卫：① **预防**——conftest 加载时把
+> `config.settings.db_url` 指向守卫自己的临时库，任何"漏改"的测试即使沿用默认
+> settings 也写不到真实库；② **事后**——autouse fixture `_guard_real_local_db`
+> 检测真实本地库指纹（大小/mtime）变化，污染即失败并给出修法——不用等
+> pre-commit 才发现。
+
+## 2.1 现有测试结构明细
 
 > 注：下表为历史版本逐文件明细（数字已甩旧），当前以全量基线为准。
 > V6.x (2026-09-04) 起全量全绿 — 此前 4 个存量 e2e 失败

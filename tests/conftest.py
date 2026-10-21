@@ -27,6 +27,7 @@ P1 (2026-08-19): 全局状态隔离 fixture
        - 还原被 mock 的第三方模块 (httpx/fastapi/starlette 等) 到真实对象
 """
 import asyncio
+import os
 import sys
 import types
 from pathlib import Path
@@ -226,6 +227,83 @@ def _event_loop_policy():
     import asyncio
     loop_policy = asyncio.DefaultEventLoopPolicy()
     asyncio.set_event_loop_policy(loop_policy)
+
+
+# ============================================================
+# V6.18 (2026-10-22): 真实本地库防污染守卫
+# ============================================================
+# 背景: db/engine.py 在**模块导入时**用 settings.db_url 建 engine;
+#       db/init_db.py 是 `from db.engine import engine` (导入时绑定)。
+#       测试文件顶层 mock config 后, 若 db.engine / db.init_db 已被别的
+#       模块间接导入 (模块缓存), engine 仍绑真实 data/aimc.db ——
+#       init_db() + 测试写入会污染真实本地库。
+#       2026-10-21 实录: 本地库被塞进 4 条 family='x' 的假模型行,
+#       触发 pre-commit 的 model_registry 一致性检查报错。
+#
+# 守卫两层:
+# ① 预防 —— conftest 加载时把 config.settings.db_url 指向本文件自己的
+#    临时库, 并删掉真实库文件路径的可达性: 任何"漏改"的测试即使
+#    沿用了默认 settings, 也只会写到临时库, 碰不到 data/aimc.db。
+#    (自建临时库的测试文件会自己重绑 engine, 不受影响)
+# ② 事后 —— autouse fixture 检测真实库指纹变化, 污染即失败并给出修法。
+
+_REAL_LOCAL_DB = ROOT / "data" / "aimc.db"
+
+# conftest 专用临时库 (预防层用)
+import tempfile as _tempfile
+_GUARD_TMP_DIR = _tempfile.mkdtemp(prefix="aimc_conftest_guard_")
+_GUARD_TMP_DB = os.path.join(_GUARD_TMP_DIR, "guard.db")
+_GUARD_TMP_URL = f"sqlite+aiosqlite:///{_GUARD_TMP_DB}"
+
+
+def _local_db_fingerprint():
+    """真实本地库的 (大小, mtime_ns) — 不存在时返回 None"""
+    try:
+        st = _REAL_LOCAL_DB.stat()
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime_ns)
+
+
+def _apply_guard_db_url():
+    """把 config.settings 的库指向守卫临时库 (预防层)。
+
+    只改 db_url / db_path 两个字段, 其余 settings 原样保留 ——
+    真实 config 的 db_path 是开发者的本地库, 绝不能让测试碰到。
+    """
+    try:
+        import config as cfg
+        cfg.settings.db_url = _GUARD_TMP_URL
+        cfg.settings.db_path = _GUARD_TMP_DB
+        return True
+    except Exception:
+        return False
+
+
+# 预防层: conftest import 期就改掉 settings 的库路径。
+# 之后任何测试 import config 拿到的都是临时库。
+_apply_guard_db_url()
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_local_db():
+    """禁止测试写真实本地库 (data/aimc.db)。
+
+    失败时给出可操作提示: 哪个测试污染了库 / 怎么修 (显式重绑
+    db.engine.engine + db.init_db.engine 到临时库)。
+    """
+    # 每个 test 前再确认一次 (别的测试文件可能 mock 了 config.settings)
+    _apply_guard_db_url()
+    before = _local_db_fingerprint()
+    yield
+    after = _local_db_fingerprint()
+    if before is not None and after is not None and before != after:
+        # 再确认一次: 可能是别的并行进程写的 (少见), 但仍要报出来
+        raise AssertionError(
+            f"测试污染了真实本地库 {_REAL_LOCAL_DB} (before={before}, after={after})。"
+            f" 修法: 显式把 db.engine.engine 与 db.init_db.engine 重绑到临时库 "
+            f"(参考 tests/test_v617d_group_admission.py 的 _seed_rows)。"
+        )
 
 
 @pytest.fixture
