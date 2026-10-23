@@ -474,6 +474,7 @@ class RouteEngine:
                 "disable_thinking_pass_through": ch.disable_thinking_pass_through,  # V4.6.4: thinking 剥离
                 "disable_thinking_inject": ch.disable_thinking_inject,  # Phase B: thinking 注入
                 "requires_reasoning_echo": ch.requires_reasoning_echo,  # V6.5: DeepSeek thinking 回传
+                "sanitize_tool_history": ch.sanitize_tool_history,  # V6.x: MiniMax 2013 tool 配对清洗
                 "drop_params": ch.drop_params,  # P2-B: 按通道剥离不支持的上游参数
                 "auto_drop_params": ch.auto_drop_params,  # V4.8.7: 上游 400 自动学习
                 "priority": ch.priority,

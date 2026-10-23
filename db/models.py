@@ -85,6 +85,14 @@ class Channel(Base):
         Integer, nullable=False, server_default="0",
         comment="0=不强制 (默认), 1=转发前补齐缺失的 reasoning_content (DeepSeek 官方要求)",
     )
+    # V6.x (2026-10-23): MiniMax 2013 类 tool 配对严格校验兜底
+    # 跨模型混历史 (组内 failover) 会产生孤儿/错位/缺失的 tool_result,
+    # 宽松渠道不校验, 落到 MiniMax 整轮 400。置 1 时 proxy 转发前归一化:
+    # 孤儿转 user 文本 / 错位结果归位 / 缺失补合成结果 (输出形态上游实测 200)
+    sanitize_tool_history = Column(
+        Integer, nullable=False, server_default="0",
+        comment="0=不改 (默认), 1=转发前清洗 tool_call/tool_result 配对 (MiniMax 2013 兜底)",
+    )
     # P2-B (2026-08-20): 按 channel 剥离不支持的上游参数 (deny-list)
     # JSON-as-text 存 list[str], e.g. '["reasoning_effort","max_tokens"]'
     # proxy 层在 thinking strip 之后过滤 body 顶层字段, messages/model/stream 永远保留
@@ -444,6 +452,13 @@ class RequestTranscript(Base):
     request_body = Column(Text, nullable=True, comment="发给上游的请求 body (注入后, 截断)")
     response_body = Column(Text, nullable=True, comment="上游响应 body (截断)")
     status_code = Column(Integer, nullable=True)
+    # V6.x (2026-10-23): 消息骨架 (role/tool_call_id/content 形态, 非 200 时写入)
+    # request_body 50000 字符截断对图片重的请求会在 base64 处截断, 消息结构看不到
+    # (2026-10-23 取证 minimax 2013 实证) — 骨架列保住取证能力, ~百字节/条
+    message_skeleton = Column(
+        Text, nullable=True,
+        comment="消息骨架 u~str|a~tc[id]|t~id~list[text], 非 200 请求取证用",
+    )
     caller_id = Column(Integer, nullable=True)
     key_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.now)

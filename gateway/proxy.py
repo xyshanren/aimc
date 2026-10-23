@@ -224,6 +224,172 @@ def _fill_reasoning_content(body: bytes) -> bytes:
     return json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
 
 
+def _tool_content_text(content) -> str:
+    """V6.x: tool 消息 content → 纯文本 (孤儿转换时保留信息)"""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, dict):
+                if isinstance(p.get("text"), str):
+                    parts.append(p["text"])
+                else:
+                    parts.append(json.dumps(p, ensure_ascii=False)[:120])
+            else:
+                parts.append(str(p)[:120])
+        return " ".join(parts)
+    return str(content)[:200]
+
+
+def _sanitize_tool_history(body: bytes) -> bytes:
+    """V6.x (2026-10-23): 清洗 tool 历史配对 (MiniMax 2013 兜底, 同 reasoning echo 模式)
+
+    MiniMax 对 tool_call/tool_result 配对做严格校验, 三种破坏形态实测全部 400 (2013)
+    (2026-10-23 生产账号直探复现):
+    - 孤儿: tool 消息的 tool_call_id 匹配不到前置 assistant tool_calls
+    - 错位: tool 结果被其他消息与 assistant(tool_calls) 隔开
+    - 缺失: 并行 tool_calls 只回传了部分结果
+    跨模型会话 (组内 failover 混历史) / harness 裁剪历史都可能产生上述形态,
+    宽松渠道 (glm 等) 不校验, 只有落到 minimax 时爆 400。渠道
+    sanitize_tool_history=1 时转发前归一化:
+    - 匹配的 tool 结果紧贴 assistant 重排 (错位归位)
+    - 缺失的 tool_call 补 "[tool result unavailable]" 合成结果
+    - 孤儿 tool 消息转 user 文本 (保留信息)
+    输出形态 (含连续 user 消息) 已直探 MiniMax 上游实测 200; 干净历史原样返回。
+
+    同族先例: DeepSeek reasoning_content 回传 400 (V6.5 requires_reasoning_echo)。
+    """
+    try:
+        body_dict = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return body
+    msgs = body_dict.get("messages")
+    if not msgs or not isinstance(msgs, list):
+        return body
+    # 预检: 无 tool 消息且无 assistant(tool_calls) 则无配对问题可修
+    has_call = any(
+        isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+        for m in msgs
+    )
+    has_result = any(
+        isinstance(m, dict) and m.get("role") == "tool" for m in msgs
+    )
+    if not has_call and not has_result:
+        return body
+
+    out = []
+    pending = []   # 待回传的 tool_call id (按 assistant 内顺序)
+    held = []      # pending 未决期间挂起的非 tool 消息 (结果归位后回放)
+    changed = False
+
+    def _close_pending():
+        nonlocal changed
+        if pending:
+            for tid in pending:
+                out.append({"role": "tool", "tool_call_id": tid,
+                            "content": "[tool result unavailable]"})
+            changed = True
+        out.extend(held)
+        held.clear()
+        del pending[:]
+
+    for m in msgs:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            _close_pending()
+            out.append(m)
+            pending.extend(
+                tc.get("id") for tc in m["tool_calls"]
+                if isinstance(tc, dict) and tc.get("id")
+            )
+        elif role == "tool":
+            tid = m.get("tool_call_id")
+            if pending and tid in pending:
+                out.append(m)
+                pending.remove(tid)
+            else:
+                # 孤儿结果: 转 user 文本保留信息; pending 未决时挂起,
+                # 让合成结果先紧贴 assistant 落位
+                conv = {
+                    "role": "user",
+                    "content": f"[Tool Result {tid}] {_tool_content_text(m.get('content'))}",
+                }
+                if pending or held:
+                    held.append(conv)
+                else:
+                    out.append(conv)
+                changed = True
+        else:
+            if pending or held:
+                if pending:
+                    # 挂起消息跨过待回传结果 = 重排, 必须置 changed
+                    changed = True
+                held.append(m)
+            else:
+                out.append(m)
+    _close_pending()
+
+    if not changed:
+        return body
+    logger.info(
+        f"[V6.x tool 历史清洗] {len(msgs)} → {len(out)} 条消息 "
+        f"(孤儿转 user / 缺失补位 / 错位归位), channel 强校验兜底"
+    )
+    body_dict["messages"] = out
+    return json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
+
+
+def _message_skeleton(body: bytes, limit: int = 2000) -> str:
+    """V6.x (2026-10-23): 请求消息骨架 (非 200 transcript 取证用)
+
+    request_body 按 transcript_log_max_body (50000) 截断, 图片重的请求在
+    base64 处截断后消息结构不可见 (2026-10-23 取证 minimax 2013 实证)。
+    骨架只记 role / tool_call_id / content 形态, ~百字节, 解析原始 body
+    (截断前) 生成, 保住配对类 400 的取证能力。
+    """
+    try:
+        body_dict = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return ""
+    parts = []
+    tools = body_dict.get("tools")
+    if tools is not None:
+        parts.append(f"tools={len(tools) if isinstance(tools, list) else tools}")
+    for m in body_dict.get("messages") or []:
+        if not isinstance(m, dict):
+            parts.append("?")
+            continue
+        role = m.get("role", "?")
+        ct = m.get("content")
+        if isinstance(ct, str):
+            kind = "str"
+        elif isinstance(ct, list):
+            kinds = ",".join(
+                str(p.get("type", "?")) for p in ct if isinstance(p, dict)
+            )
+            kind = f"list[{kinds}]"
+        elif ct is None:
+            kind = "none"
+        else:
+            kind = type(ct).__name__
+        if role == "assistant" and m.get("tool_calls"):
+            ids = ",".join(
+                str(tc.get("id")) for tc in m["tool_calls"] if isinstance(tc, dict)
+            )
+            parts.append(f"a~tc[{ids}]~{kind}")
+        elif role == "tool":
+            parts.append(f"t~{m.get('tool_call_id')}~{kind}")
+        else:
+            parts.append(f"{str(role)[:4]}~{kind}")
+    return "|".join(parts)[:limit]
+
+
 def _parse_drop_params(raw) -> list:
     """P2-B: 解析 channel.drop_params 为 list[str]
 
@@ -673,6 +839,12 @@ async def forward_request(
     # 缺失的 reasoning_content 占位, 避免带 tools 的混合历史被上游 400.
     if channel.get("requires_reasoning_echo"):
         body = _fill_reasoning_content(body)
+
+    # V6.x (2026-10-23): sanitize_tool_history 渠道 (MiniMax) 转发前清洗
+    # tool_call/tool_result 配对 — 孤儿/错位/缺失三种形态全部 2013 400
+    # (上游直探复现 + 清洗后形态实测 200), 同 reasoning echo 渠道标记模式.
+    if channel.get("sanitize_tool_history"):
+        body = _sanitize_tool_history(body)
 
     # 构建上游请求头
     forward_headers = {
@@ -1468,6 +1640,11 @@ def _schedule_transcript_log(
             status_code = stream_status or 0
 
         loop = asyncio.get_running_loop()
+        # V6.x (2026-10-23): 非 200 时附消息骨架 — request_body 截断对图片重的
+        # 请求会吃光预算, 消息结构看不到 (minimax 2013 取证实证), 骨架保取证
+        skeleton = ""
+        if status_code and status_code != 200:
+            skeleton = _message_skeleton(request_body)
         task = _spawn(_write_transcript_log(
             channel_id=channel.get("id"),
             model=requested_model,
@@ -1476,6 +1653,7 @@ def _schedule_transcript_log(
             status_code=status_code,
             caller_id=caller_id,
             caller_key_id=caller_key_id,
+            message_skeleton=skeleton,
         ))
         task.add_done_callback(_log_task_result)
     except Exception as e:
@@ -1485,7 +1663,7 @@ def _schedule_transcript_log(
 
 async def _write_transcript_log(
     channel_id, model, request_body, response_body,
-    status_code, caller_id=None, caller_key_id=None,
+    status_code, caller_id=None, caller_key_id=None, message_skeleton=None,
 ):
     """V4.9.3: 异步写入 request_transcripts 表"""
     try:
@@ -1500,6 +1678,7 @@ async def _write_transcript_log(
                 status_code=status_code,
                 caller_id=caller_id,
                 key_id=caller_key_id,
+                message_skeleton=message_skeleton,
             )
             session.add(log)
             await session.commit()
