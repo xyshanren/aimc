@@ -165,10 +165,16 @@ class Settings(BaseSettings):
     # 依据: sensenova 免费公测池=共享吞吐, 大请求基本必拒、小请求可过 → max 挡大;
     # taotoken 按**调用次数**计费 (~2000 次/5h), 小请求烧次数不划算 → min 挡小。
     # 即: 小请求优先 sensenova, 大请求走 taotoken; 一方不可用时另一方兜底。
+    # modelscope_inference max (2026-10-25): 免费档吞吐慢 — 6-12k 输入成功也要
+    # 80-174s, 130-153s 后上游网关 504 (生产 10-25 实录 2 例, 每例浪费一轮等待后
+    # failover 自愈)。>30k 大请求直接走 glm_bigmodel/taotoken, 与 sensenova 同窗。
     # 估算口径见 gateway/router.py:_estimate_input_tokens (~3 字符/token, 图片 1000/张)。
     # env: AIMC_CHANNEL_MAX_INPUT_TOKENS / AIMC_CHANNEL_MIN_INPUT_TOKENS (JSON)
     channel_max_input_tokens: dict = Field(
-        default_factory=lambda: {"sensenova_official": 30000},
+        default_factory=lambda: {
+            "sensenova_official": 30000,
+            "modelscope_inference": 30000,
+        },
     )
     channel_min_input_tokens: dict = Field(
         default_factory=lambda: {"taotoken_coding": 30000},

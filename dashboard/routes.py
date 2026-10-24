@@ -2317,6 +2317,7 @@ async def get_prices(session: AsyncSession = Depends(get_session)):
     return [
         {
             "id": row.PriceSnapshot.id,
+            "channel_id": row.PriceSnapshot.channel_id,
             "channel_name": row.channel_name,
             "provider": row.provider,
             "model": row.PriceSnapshot.model,
@@ -2324,6 +2325,8 @@ async def get_prices(session: AsyncSession = Depends(get_session)):
             "time_range": row.PriceSnapshot.time_range,
             "input_price": row.PriceSnapshot.input_price,
             "output_price": row.PriceSnapshot.output_price,
+            # 2026-10-25 价格表卡行内编辑 modal 需要 (向后兼容: 纯增字段)
+            "cached_input_price": row.PriceSnapshot.cached_input_price,
         }
         for row in rows
     ]

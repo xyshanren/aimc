@@ -91,11 +91,18 @@ async def _seed_users_and_keys(factory):
 def _log(caller_id, key_id, in_tok, out_tok, hours_ago=1, status=200, lat=100):
     from db.models import UsageLog
 
+    # 午夜窗口夹逼: 00:00-01:00 跑测试时 now-1h 落昨天, 「末桶=今天」类断言必挂
+    # (2026-10-25 实录)。默认 1h 种子若跨天, 钉到今天 00:05。
+    now = datetime.now()
+    ts = now - timedelta(hours=hours_ago)
+    if hours_ago == 1 and ts.date() != now.date():
+        ts = now.replace(hour=0, minute=5, second=0, microsecond=0)
+
     return UsageLog(
         caller_id=caller_id, key_id=key_id,
         model="glm-5.2", input_tokens=in_tok, output_tokens=out_tok,
         reasoning_tokens=None, latency_ms=lat, status_code=status,
-        created_at=datetime.now() - timedelta(hours=hours_ago),
+        created_at=ts,
     )
 
 

@@ -497,3 +497,188 @@ async def remove_group_member(group_id: str, model_id: str):
         await session.commit()
     logger.info(f"[onboarding] 组 {group_id} 移出成员 {model_id} (软删)")
     return {"ok": True, "group": group_id, "model": model_id}
+
+
+# ============================================================
+# 价格表手动编辑 (渠道页 价格表卡, 2026-10-25)
+# 语义: 补价/改时段/退役清理此前只能生产库 SQL (价格表卡只读)。
+# 护栏:
+# - price_type 枚举 + time_range 格式校验 + 价格 >=0 (null=未定价/不支持)
+# - 全天行与时段行并存 409: 取价按 prices 列表 id 序「首个时段命中」,
+#   normal+全天 行恒命中 → 时段行 (峰谷) 永远选不中 (2026-10-24 补分时段
+#   价踩过: 必须把 NULL 全天行就地转成时段行)。拒绝的是「保留全天且定价」
+#   同时存在时段行; 全天行改成时段行 / 删时段行后再定价都放行。
+# - 四元组 (channel,model,price_type,time_range) 唯一冲突 → 409
+# 写后 route_engine.invalidate_price(channel_id) 精准刷新, 免重启。
+# ============================================================
+
+_PRICE_TYPES = {"normal", "peak", "offpeak", "cache_hit", "free"}
+_PRICE_NUM_FIELDS = ("input_price", "output_price", "cached_input_price", "cache_write_price")
+
+
+def _valid_time_range(tr: str) -> bool:
+    """与 gateway/router._match_time_range 支持集对齐"""
+    if tr in ("全天", "非高峰全天"):
+        return True
+    for prefix in ("周末", "工作日"):
+        if tr.startswith(prefix):
+            rest = tr[len(prefix):]
+            return rest in ("", "全天") or _valid_hhmm(rest)
+    return _valid_hhmm(tr)
+
+
+def _valid_hhmm(tr: str) -> bool:
+    parts = tr.split("-")
+    if len(parts) != 2:
+        return False
+    try:
+        h1, h2 = int(parts[0].split(":")[0]), int(parts[1].split(":")[0])
+    except (ValueError, IndexError):
+        return False
+    return 0 <= h1 < 24 and 0 < h2 <= 24 and h1 < h2
+
+
+def _parse_price_fields(p: dict, out: dict) -> None:
+    """价格字段: 接受 number/null/空串(=null)/缺省(不动); 拒绝负数与非法数字"""
+    for f in _PRICE_NUM_FIELDS:
+        if f not in p:
+            continue
+        v = p[f]
+        if v is None or v == "":
+            out[f] = None
+        else:
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                raise HTTPException(400, detail=f"{f} 须为数字或留空: {v!r}")
+            if fv < 0:
+                raise HTTPException(400, detail=f"{f} 不能为负数")
+            out[f] = fv
+
+
+def _parse_type_fields(p: dict, out: dict, *, partial: bool) -> None:
+    if not partial or "price_type" in p:
+        pt = p.get("price_type", "normal")
+        if pt not in _PRICE_TYPES:
+            raise HTTPException(400, detail=f"price_type 须为 {'/'.join(sorted(_PRICE_TYPES))}")
+        out["price_type"] = pt
+    if not partial or "time_range" in p:
+        tr = p.get("time_range", "全天")
+        if not _valid_time_range(tr):
+            raise HTTPException(400, detail="time_range 格式不支持 (全天/非高峰全天/工作日HH:MM-HH:MM/周末…/HH:MM-HH:MM)")
+        out["time_range"] = tr
+
+
+async def _guard_all_day_conflict(session, row: PriceSnapshot) -> None:
+    """normal+全天 且任一价格非空 时, 同 (channel,model) 不允许存在时段行"""
+    if row.price_type != "normal" or row.time_range != "全天":
+        return
+    if all(getattr(row, f) is None for f in _PRICE_NUM_FIELDS):
+        return  # 未定价的 NULL 全天行 = 待补价占位, 与时段行无冲突
+    sibling = (await session.execute(
+        select(PriceSnapshot.id).where(
+            PriceSnapshot.channel_id == row.channel_id,
+            PriceSnapshot.model == row.model,
+            PriceSnapshot.id != row.id,
+            PriceSnapshot.time_range != "全天")
+        .limit(1)
+    )).scalar_one_or_none()
+    if sibling is not None:
+        raise HTTPException(
+            409,
+            detail="全天 normal 行与时段行并存时, 取价按 id 序恒命中全天行, "
+                   "峰/谷时段行永远不会被选中 — 请把本行 time_range 改成时段 "
+                   "(如 00:00-02:00) 或先删时段行",
+        )
+
+
+async def _invalidate_route_price(channel_id: int) -> None:
+    try:
+        from gateway.router import route_engine
+        await route_engine.invalidate_price(channel_id)
+    except Exception as e:  # 刷新失败不影响落库 (cache ~60s 也会自动过期)
+        logger.warning(f"[prices-admin] invalidate_price({channel_id}) 失败: {e}")
+
+
+@router.put("/api/prices/{row_id}")
+async def update_price_row(row_id: int, payload: dict):
+    """编辑价格行 body: 价格字段/null 清空 + price_type/time_range; source 置 manual:dashboard"""
+    p = payload or {}
+    fields: dict = {}
+    if "model" in p:
+        m = (p.get("model") or "").strip()
+        if not m:
+            raise HTTPException(400, detail="model 不能为空")
+        fields["model"] = m
+    _parse_price_fields(p, fields)
+    _parse_type_fields(p, fields, partial=True)
+    if not fields:
+        raise HTTPException(400, detail="没有可更新字段")
+    async with async_session_factory() as session:
+        row = await session.get(PriceSnapshot, row_id)
+        if row is None:
+            raise HTTPException(404, detail=f"价格行不存在: id={row_id}")
+        old = {f: getattr(row, f) for f in fields}
+        for f, v in fields.items():
+            setattr(row, f, v)
+        row.source = "manual:dashboard"
+        await _guard_all_day_conflict(session, row)
+        try:
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            raise HTTPException(409, detail=f"保存失败 (唯一约束冲突?): {e}")
+        await _invalidate_route_price(row.channel_id)
+    logger.info(f"[prices-admin] 编辑价行 {row_id}: {old} -> {fields}")
+    return {"ok": True, "id": row_id, "updated": fields}
+
+
+@router.post("/api/prices")
+async def create_price_row(payload: dict):
+    """新增价格行 body: {channel_id, model, price_type?, time_range?, 价格字段?}"""
+    p = payload or {}
+    fields: dict = {}
+    _parse_price_fields(p, fields)
+    _parse_type_fields(p, fields, partial=False)
+    channel_id = p.get("channel_id")
+    model = (p.get("model") or "").strip()
+    if not isinstance(channel_id, int) or channel_id <= 0:
+        raise HTTPException(400, detail="channel_id 须为正整数")
+    if not model:
+        raise HTTPException(400, detail="model 不能为空")
+    async with async_session_factory() as session:
+        ch = await session.get(Channel, channel_id)
+        if ch is None:
+            raise HTTPException(404, detail=f"渠道不存在: {channel_id}")
+        row = PriceSnapshot(
+            channel_id=channel_id, model=model,
+            price_type=fields.get("price_type", "normal"),
+            time_range=fields.get("time_range", "全天"),
+            source="manual:dashboard",
+            **{f: fields.get(f) for f in _PRICE_NUM_FIELDS},
+        )
+        await _guard_all_day_conflict(session, row)
+        session.add(row)
+        try:
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            raise HTTPException(409, detail=f"新增失败 (四元组 (渠道,模型,类型,时段) 已存在?): {e}")
+        await _invalidate_route_price(channel_id)
+    logger.info(f"[prices-admin] 新增价行: {ch.name}/{model} {row.price_type} {row.time_range} (id={row.id})")
+    return {"ok": True, "id": row.id, "model": model, "channel_id": channel_id}
+
+
+@router.delete("/api/prices/{row_id}")
+async def delete_price_row(row_id: int):
+    """删除价格行 (退役模型清理 / 误建行)"""
+    async with async_session_factory() as session:
+        row = await session.get(PriceSnapshot, row_id)
+        if row is None:
+            raise HTTPException(404, detail=f"价格行不存在: id={row_id}")
+        channel_id, model = row.channel_id, row.model
+        await session.delete(row)
+        await session.commit()
+        await _invalidate_route_price(channel_id)
+    logger.info(f"[prices-admin] 删除价行 {row_id} (channel={channel_id} model={model})")
+    return {"ok": True, "id": row_id, "model": model}

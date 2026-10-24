@@ -228,9 +228,12 @@ function renderPrices(container) {
             return;
         }
         // 长表限高滚动 (不做翻页: 对比场景翻页打断视线), 行数标注防"下面还有"的错觉
-        let html = '<div class="text-muted" style="margin-bottom:var(--space-xs);font-size:11px;">共 ' + esc(data.length) + ' 条价格记录 (滚动查看)</div>';
-        html += '<div class="scroll-y-420 scroll-table"><table><thead><tr><th>模型</th><th>渠道</th><th>类型</th><th>时段</th><th>输入价</th><th>输出价</th></tr></thead><tbody>';
+        let html = '<div class="text-muted" style="margin-bottom:var(--space-xs);font-size:11px;">共 ' + esc(data.length) + ' 条价格记录 (滚动查看)'
+            + ' <button class="btn-tiny" onclick="addPriceRow()">＋ 新增价行</button></div>';
+        html += '<div class="scroll-y-420 scroll-table"><table><thead><tr><th>模型</th><th>渠道</th><th>类型</th><th>时段</th><th>输入价</th><th>输出价</th><th>缓存价</th><th></th></tr></thead><tbody>';
         data.forEach(p => {
+            const rowData = JSON.stringify({id: p.id, model: p.model, ch: p.channel_name, pt: p.price_type, tr: p.time_range, ip: p.input_price, op: p.output_price, cp: p.cached_input_price ?? null})
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
             html += `<tr>
                 <td>${esc(p.model)}</td>
                 <td>${esc(p.channel_name)}</td>
@@ -238,6 +241,9 @@ function renderPrices(container) {
                 <td>${esc(p.time_range)}</td>
                 <td class="price-low">${esc(p.input_price ?? '-')}</td>
                 <td>${esc(p.output_price ?? '-')}</td>
+                <td>${esc(p.cached_input_price ?? '-')}</td>
+                <td><button class="btn-tiny" onclick='editPriceRow(${rowData})'>编辑</button>
+                    <button class="btn-tiny" onclick='deletePriceRow(${p.id}, ${esc(JSON.stringify(p.model))})'>删</button></td>
             </tr>`;
         });
         html += '</tbody></table></div>';
@@ -245,6 +251,117 @@ function renderPrices(container) {
     } catch (e) {
         // 非 JSON 响应
     }
+}
+
+// === 价格表行内编辑 (2026-10-25): 补价/退役清理此前只能生产库 SQL ===
+function _priceModalOpen(title, fieldsHtml, onSave) {
+    let m = document.getElementById('price-edit-modal');
+    if (m) m.remove();
+    m = document.createElement('div');
+    m.id = 'price-edit-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:300;display:flex;align-items:center;justify-content:center;';
+    m.innerHTML = `<div style="background:var(--bg-card,#fff);border-radius:8px;padding:16px 18px;min-width:340px;max-width:92vw;box-shadow:0 8px 30px rgba(0,0,0,.25);font-size:13px;">
+        <div style="font-weight:600;margin-bottom:10px;">${esc(title)}</div>
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;">
+            ${fieldsHtml}
+        </div>
+        <div style="margin-top:12px;text-align:right;">
+            <button class="btn-tiny" onclick="this.closest('#price-edit-modal').remove()">取消</button>
+            <button class="btn-tiny" id="price-edit-save" style="margin-left:6px;">保存</button>
+        </div>
+    </div>`;
+    document.body.appendChild(m);
+    m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+    m.querySelector('#price-edit-save').addEventListener('click', () => {
+        const get = id => (document.getElementById(id) || {}).value;
+        if (onSave(get)) m.remove();
+    });
+}
+
+function _priceFieldRow(label, id, val, ph) {
+    return `<label style="justify-self:end;color:var(--text-secondary);">${label}</label>
+        <input id="${id}" value="${val === null || val === undefined ? '' : String(val)}" placeholder="${ph || ''}"
+               style="padding:3px 6px;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--bg-main,#fff);color:inherit;">`;
+}
+
+async function _priceSaved() {
+    // 价格表 + 待补价卡同刷 (补价后待补价卡应收敛); 路由缓存后端已精准刷新
+    await Promise.all([loadPricesCard(), loadUnpricedCard()]);
+}
+
+function editPriceRow(d) {
+    const fieldsHtml =
+        _priceFieldRow('模型*', 'pe-model', d.model) +
+        _priceFieldRow('类型', 'pe-pt', d.pt, 'normal/peak/offpeak/free') +
+        _priceFieldRow('时段', 'pe-tr', d.tr, '全天 / 00:00-02:00 / 工作日09:00-12:00') +
+        _priceFieldRow('输入价', 'pe-ip', d.ip, '元/百万tokens, 留空=未定价') +
+        _priceFieldRow('输出价', 'pe-op', d.op, '') +
+        _priceFieldRow('缓存价', 'pe-cp', d.cp, '无则留空') +
+        `<div style="grid-column:1/-1;color:var(--text-muted);font-size:11px;margin-top:4px;">
+            补分时段价须先消灭同模型的全天行 (全天行恒被取价命中, 时段行永不生效);
+            改法 = 把原全天行的时段改成如 00:00-02:00。留空价格 = 未定价。</div>`;
+    _priceModalOpen('编辑价行 #' + d.id + ' · ' + d.ch, fieldsHtml, async get => {
+        const body = {
+            model: get('pe-model').trim(), price_type: get('pe-pt').trim(),
+            time_range: get('pe-tr').trim(),
+            input_price: get('pe-ip'), output_price: get('pe-op'), cached_input_price: get('pe-cp'),
+        };
+        if (!body.model) { alert('模型名不能为空'); return false; }
+        if (!body.price_type) delete body.price_type;
+        if (!body.time_range) delete body.time_range;
+        const resp = await authFetch(`/dashboard/api/prices/${d.id}`, {
+            method: 'PUT', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        });
+        const result = await resp.json().catch(() => ({}));
+        if (!result.ok) { alert('保存失败: ' + (result.detail || resp.status)); return false; }
+        await _priceSaved();
+        return true;
+    });
+}
+
+async function addPriceRow() {
+    let channels = [];
+    try {
+        const resp = await authFetch('/dashboard/api/channels');
+        const data = await resp.json();
+        channels = Array.isArray(data) ? data : [];
+    } catch (e) { /* 渠道列表拉不到时手填 id */ }
+    const opts = channels.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+    const fieldsHtml =
+        `<label style="justify-self:end;color:var(--text-secondary);">渠道*</label>
+         ${opts ? `<select id="np-ch" style="padding:3px 6px;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--bg-main,#fff);color:inherit;">${opts}</select>`
+                : '<input id="np-ch" placeholder="channel_id 数字">'}` +
+        _priceFieldRow('模型*', 'np-model', '', '如 Qwen/Qwen4-32B 或规范名') +
+        _priceFieldRow('类型', 'np-pt', 'normal', 'normal/peak/offpeak/free') +
+        _priceFieldRow('时段', 'np-tr', '全天', '全天 / 00:00-02:00 / …') +
+        _priceFieldRow('输入价', 'np-ip', '', '元/百万tokens') +
+        _priceFieldRow('输出价', 'np-op', '', '') +
+        _priceFieldRow('缓存价', 'np-cp', '', '无则留空');
+    _priceModalOpen('新增价格行', fieldsHtml, async get => {
+        const body = {
+            channel_id: parseInt(get('np-ch'), 10), model: get('np-model').trim(),
+            price_type: get('np-pt').trim() || 'normal', time_range: get('np-tr').trim() || '全天',
+            input_price: get('np-ip'), output_price: get('np-op'), cached_input_price: get('np-cp'),
+        };
+        if (!body.channel_id || !body.model) { alert('渠道与模型必填'); return false; }
+        const resp = await authFetch('/dashboard/api/prices', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        });
+        const result = await resp.json().catch(() => ({}));
+        if (!result.ok) { alert('新增失败: ' + (result.detail || resp.status)); return false; }
+        await _priceSaved();
+        return true;
+    });
+}
+
+async function deletePriceRow(id, model) {
+    if (!confirm(`删除价行 #${id} (${model})?\n退役模型清理用; 删错可用「新增价行」补回。`)) return;
+    const resp = await authFetch(`/dashboard/api/prices/${id}`, {method: 'DELETE'});
+    const result = await resp.json().catch(() => ({}));
+    if (!result.ok) { alert('删除失败: ' + (result.detail || resp.status)); return; }
+    await _priceSaved();
 }
 
 // === P0-UI v5: model_registry + model_group 渲染 ===
