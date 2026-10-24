@@ -20,6 +20,12 @@ from sqlalchemy import select
 SF_BASE = "https://api.siliconflow.cn/v1"
 SF_CHANNEL_NAME = "siliconflow_aggregator"
 
+# 上游 /models 仍列出、但推理已 400 (20012 "Model does not exist") 的僵尸 raw id。
+# 2026-10-24 直探实证: Kev-4B 经网关 / SemIf 直连上游, 均 0.1s 返 400 (列表不作数)。
+# 不跳过的话, 每日 model_list 同步会把人工清理掉的 NULL 价行原样重建,
+# 渠道页「待补价」永远清不空 (官方定价页也查不到这两个模型)。
+SF_RETIRED_MODEL_IDS = frozenset({"Kev-4B", "SemIf"})
+
 
 async def fetch_sf_models(api_key: str) -> list[str]:
     """从硅基流动 /v1/models 拉 model_id 列表.
@@ -69,7 +75,8 @@ async def sync_siliconflow_models_to_price_snapshots(session, model_ids: list[st
         select(PriceSnapshot.model).where(PriceSnapshot.channel_id == ch.id)
     )).scalars().all())
 
-    to_add = [m for m in model_ids if m not in existing]
+    to_add = [m for m in model_ids
+              if m not in existing and m not in SF_RETIRED_MODEL_IDS]
     for model in to_add:
         session.add(PriceSnapshot(
             channel_id=ch.id,

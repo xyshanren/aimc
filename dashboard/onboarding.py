@@ -280,7 +280,7 @@ async def pricing_unpriced(session: AsyncSession = Depends(get_session_dep())):
         "total": len(rows),
         "chat_pending": chat_pending,
         "non_chat_count": len(non_chat),
-        "hint": "去对应渠道官方定价页核对后, 在价格表卡编辑或 SQL UPDATE 补价",
+        "hint": "去对应渠道官方定价页核对后, 用 SQL UPDATE 补价 (价格表卡为只读, 无编辑入口)",
     }
 
 
