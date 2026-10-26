@@ -509,11 +509,21 @@ async def remove_group_member(group_id: str, model_id: str):
 #   价踩过: 必须把 NULL 全天行就地转成时段行)。拒绝的是「保留全天且定价」
 #   同时存在时段行; 全天行改成时段行 / 删时段行后再定价都放行。
 # - 四元组 (channel,model,price_type,time_range) 唯一冲突 → 409
+# - 严格 raw id 渠道 (siliconflow) 的规范名行必须带 raw_model_id: 路由取价
+#   精确命中后 _channel_model = raw_model_id or model, 缺失时与请求同名 →
+#   body 改写被跳过 → 规范名裸发上游 400 "Model does not exist" (20012)。
+#   2026-10-26 生产实证: 10-14 手工补的 glm-5.3-flash 规范名行压住 raw 行,
+#   该模型在此渠道 20 天零成功全 400。同渠道已存在 raw 兄弟行 → 服务端自动
+#   回填; 没有 → 422 (先让每日同步/手工把 raw id 行建起来再补规范名行)。
 # 写后 route_engine.invalidate_price(channel_id) 精准刷新, 免重启。
 # ============================================================
 
 _PRICE_TYPES = {"normal", "peak", "offpeak", "cache_hit", "free"}
 _PRICE_NUM_FIELDS = ("input_price", "output_price", "cached_input_price", "cache_write_price")
+
+# 上游严格按 raw id (org/name) 寻址、不认规范名的渠道。按需扩充 (须有
+# "规范名裸发上游即 400" 的生产证据, modelscope/minimax 实测接受规范名)。
+_RAW_ID_STRICT_PROVIDERS = frozenset({"siliconflow"})
 
 
 def _valid_time_range(tr: str) -> bool:
@@ -592,6 +602,36 @@ async def _guard_all_day_conflict(session, row: PriceSnapshot) -> None:
         )
 
 
+async def _guard_raw_model_id(session, row: PriceSnapshot, provider: str) -> None:
+    """严格 raw id 渠道: 规范名行缺 raw_model_id 时自动回填, 无兄弟行则拒绝"""
+    if provider not in _RAW_ID_STRICT_PROVIDERS:
+        return
+    if "/" in row.model:
+        return  # 本身就是 raw id 行
+    if (row.raw_model_id or "").strip():
+        return
+    model_lower = row.model.lower()
+    candidates = (await session.execute(
+        select(PriceSnapshot.raw_model_id).where(
+            PriceSnapshot.channel_id == row.channel_id,
+            PriceSnapshot.raw_model_id.isnot(None),
+            PriceSnapshot.id != row.id,
+        ).order_by(PriceSnapshot.id)
+    )).scalars().all()
+    for raw in candidates:
+        raw_lower = raw.lower()
+        if raw_lower == model_lower or raw_lower.endswith("/" + model_lower):
+            row.raw_model_id = raw
+            return
+    raise HTTPException(
+        422,
+        detail=f"{provider} 渠道上游只认 raw id (org/name): 规范名行 {row.model} "
+               f"缺 raw_model_id 时路由会把规范名裸发上游 (400 Model does not "
+               f"exist)。请请求带 raw_model_id, 或先确保同渠道已建对应 raw id 行 "
+               f"(有则自动回填)",
+    )
+
+
 async def _invalidate_route_price(channel_id: int) -> None:
     try:
         from gateway.router import route_engine
@@ -610,6 +650,8 @@ async def update_price_row(row_id: int, payload: dict):
         if not m:
             raise HTTPException(400, detail="model 不能为空")
         fields["model"] = m
+    if "raw_model_id" in p:
+        fields["raw_model_id"] = (p.get("raw_model_id") or "").strip() or None
     _parse_price_fields(p, fields)
     _parse_type_fields(p, fields, partial=True)
     if not fields:
@@ -618,10 +660,12 @@ async def update_price_row(row_id: int, payload: dict):
         row = await session.get(PriceSnapshot, row_id)
         if row is None:
             raise HTTPException(404, detail=f"价格行不存在: id={row_id}")
+        ch = await session.get(Channel, row.channel_id)
         old = {f: getattr(row, f) for f in fields}
         for f, v in fields.items():
             setattr(row, f, v)
         row.source = "manual:dashboard"
+        await _guard_raw_model_id(session, row, ch.provider if ch else "")
         await _guard_all_day_conflict(session, row)
         try:
             await session.commit()
@@ -652,11 +696,13 @@ async def create_price_row(payload: dict):
             raise HTTPException(404, detail=f"渠道不存在: {channel_id}")
         row = PriceSnapshot(
             channel_id=channel_id, model=model,
+            raw_model_id=(p.get("raw_model_id") or "").strip() or None,
             price_type=fields.get("price_type", "normal"),
             time_range=fields.get("time_range", "全天"),
             source="manual:dashboard",
             **{f: fields.get(f) for f in _PRICE_NUM_FIELDS},
         )
+        await _guard_raw_model_id(session, row, ch.provider)
         await _guard_all_day_conflict(session, row)
         session.add(row)
         try:

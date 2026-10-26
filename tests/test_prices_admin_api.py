@@ -8,6 +8,9 @@
 3. POST /dashboard/api/prices: 新增 + 四元组唯一冲突 409
 4. DELETE: 删除 + 404
 5. GET /dashboard/api/prices: cached_input_price / channel_id 字段 (modal 依赖)
+6. 严格 raw id 渠道 (siliconflow) 规范名行 raw_model_id 护栏: 兄弟行自动回填 /
+   无兄弟 422 / 显式直存 / raw 行与非 strict 渠道放行 (2026-10-26 glm-5.3-flash
+   规范名行压住 raw 行致 20 天全 400 事件的防复发护栏)
 
 跑法: python -m pytest tests/test_prices_admin_api.py -v
 """
@@ -217,3 +220,93 @@ def test_modelscope_size_gate_default():
     assert s.channel_max_input_tokens.get("modelscope_inference") == 30000
     assert s.channel_max_input_tokens.get("sensenova_official") == 30000
     assert s.channel_min_input_tokens.get("taotoken_coding") == 30000
+
+
+def test_raw_model_id_guard_siliconflow():
+    """严格 raw id 渠道护栏: 规范名行缺 raw_model_id → 兄弟行回填 / 无兄弟 422"""
+    import asyncio
+
+    async def run():
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from db.models import Base, Channel, PriceSnapshot
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        import db.engine as db_engine_mod
+        db_engine_mod.async_session_factory = maker
+
+        async with maker() as s:
+            s.add(Channel(name="sf_ch", provider="siliconflow",
+                          base_url="https://sf.local/v1"))
+            s.add(Channel(name="t_ch", provider="t", base_url="https://t.local/v1"))
+            await s.flush()
+            s.add(PriceSnapshot(channel_id=1, model="zai-org/GLM-5.3-Flash",
+                                price_type="normal", time_range="全天",
+                                input_price=0.8, output_price=2.8,
+                                raw_model_id="zai-org/GLM-5.3-Flash",
+                                source="api:siliconflow"))
+            await s.commit()
+
+        async with _get_client() as client:
+            # 1. sf 规范名行 + 同渠道 raw 兄弟 → 200, 自动回填 raw_model_id
+            r = await client.post("/dashboard/api/prices", json={
+                "channel_id": 1, "model": "glm-5.3-flash", "input_price": 0.8})
+            assert r.status_code == 200, r.text
+            glm_row_id = r.json()["id"]
+            async with maker() as s:
+                row = await s.get(PriceSnapshot, glm_row_id)
+                assert row.raw_model_id == "zai-org/GLM-5.3-Flash"
+
+            # 2. 显式 raw_model_id → 直存不覆盖
+            r = await client.post("/dashboard/api/prices", json={
+                "channel_id": 1, "model": "mock-canonical",
+                "raw_model_id": "mock-org/Mock-Raw"})
+            assert r.status_code == 200, r.text
+            mock_row_id = r.json()["id"]
+            async with maker() as s:
+                row = await s.get(PriceSnapshot, mock_row_id)
+                assert row.raw_model_id == "mock-org/Mock-Raw"
+
+            # 3. sf 规范名行 + 无兄弟 + 缺 raw_model_id → 422 (裸发上游必 400)
+            r = await client.post("/dashboard/api/prices", json={
+                "channel_id": 1, "model": "orphan-model"})
+            assert r.status_code == 422, r.text
+            assert "raw_model_id" in r.json()["detail"]
+
+            # 4. raw id 行 (model 含 "/") 本身不受限
+            r = await client.post("/dashboard/api/prices", json={
+                "channel_id": 1, "model": "org/New-Raw-Model"})
+            assert r.status_code == 200, r.text
+
+            # 5. 非 strict 渠道规范名行缺 raw_model_id → 放行 (上游认规范名)
+            r = await client.post("/dashboard/api/prices", json={
+                "channel_id": 2, "model": "plain-model"})
+            assert r.status_code == 200, r.text
+
+            # 6. PUT 清空 raw_model_id → 有兄弟时自动兜底回填
+            r = await client.put(f"/dashboard/api/prices/{glm_row_id}",
+                                 json={"raw_model_id": ""})
+            assert r.status_code == 200, r.text
+            async with maker() as s:
+                row = await s.get(PriceSnapshot, glm_row_id)
+                assert row.raw_model_id == "zai-org/GLM-5.3-Flash"
+
+            # 7. GET /api/prices 带 raw_model_id 字段 (modal 可见)
+            import httpx
+            from fastapi import FastAPI
+            from dashboard.routes import router as dashboard_router
+
+            app = FastAPI()
+            app.include_router(dashboard_router)
+            async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://testserver") as client2:
+                r = await client2.get("/dashboard/api/prices")
+                assert r.status_code == 200
+                rows = r.json()
+                assert rows
+                assert all("raw_model_id" in row for row in rows)
+
+    asyncio.run(run())

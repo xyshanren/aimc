@@ -2327,6 +2327,9 @@ async def get_prices(session: AsyncSession = Depends(get_session)):
             "output_price": row.PriceSnapshot.output_price,
             # 2026-10-25 价格表卡行内编辑 modal 需要 (向后兼容: 纯增字段)
             "cached_input_price": row.PriceSnapshot.cached_input_price,
+            # 2026-10-26 严格 raw id 渠道 (siliconflow) 规范名行的上游映射,
+            # 缺失会让路由把规范名裸发上游 (400 Model does not exist)
+            "raw_model_id": row.PriceSnapshot.raw_model_id,
         }
         for row in rows
     ]
