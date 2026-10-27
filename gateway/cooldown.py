@@ -561,13 +561,29 @@ class CooldownManager:
             due.append((aid, model))
         return due
 
-    def quota_probe_result(self, account_id: int, model: str, success: bool) -> None:
+    def quota_probe_result(
+        self,
+        account_id: int,
+        model: str,
+        success: bool,
+        *,
+        transient: bool = False,
+    ) -> None:
         """V6.15: 配额桶恢复探测结果回写.
 
         成功 → mark_success 清桶隔离 + 复位账号失败计数 (渠道即刻回到路由池);
-        失败 → 只推探测节拍 (指数退避), 不动 count/needs_human/cooldown —
-        探测是观察不是路由失败, 自愈型配额账号不该被探测推进 needs_human
-        (needs_human 后本方法所在的探测循环也会停, 桶只能干等 until)。
+        失败 → 只推探测节拍, 不动 count/needs_human/cooldown — 探测是观察不是
+        路由失败, 自愈型配额账号不该被探测推进 needs_human (needs_human 后本
+        方法所在的探测循环也会停, 桶只能干等 until)。
+
+        V6.19 (2026-10-27): transient=True 表示探测**自身异常** (超时/连接失败/
+        job 级超时) 而非上游明确拒绝 (429 = 真没恢复)。两类失败节拍不同:
+        - 上游明确拒绝: 原指数退避 300s→1800s (窗口离重置还远, 探了也白探)
+        - 自身异常: 不确定性最大 — 上游可能已恢复 (2026-10-27 生产实证:
+          minimax 窗口重置后探测超时被当"未恢复", 用户手点 30 分钟后才恢复),
+          且异常与窗口重置强相关 (重置瞬间上游负载抖动)。短重试
+          quota_probe_transient_seconds (默认 90s, 上限 300s 防风暴), 同时
+          不递增 attempts (异常轮不应消耗退避曲线)。
         """
         if success:
             self._quarantine_probe.pop((account_id, model), None)
@@ -579,6 +595,19 @@ class CooldownManager:
             return
         st = self._quarantine_probe.get((account_id, model))
         if not st:
+            return
+        if transient:
+            try:
+                from config import settings
+                short = int(getattr(settings, 'quota_probe_transient_seconds', 90))
+            except Exception:
+                short = 90
+            st["next_probe_at"] = time.time() + short
+            logger.info(
+                f"CooldownManager: account_id={account_id} model={model} "
+                f"恢复探测自身异常 (非上游拒绝), {short}s 后短重试 "
+                f"(不消耗退避曲线)"
+            )
             return
         st["attempts"] = st.get("attempts", 0) + 1
         backoff = min(

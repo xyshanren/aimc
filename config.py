@@ -142,6 +142,11 @@ class Settings(BaseSettings):
     health_probe_enabled: bool = True                  # env: AIMC_HEALTH_PROBE_ENABLED (总开关)
     health_probe_interval: int = 60                    # env: AIMC_HEALTH_PROBE_INTERVAL (调度间隔, 秒; 实际只探到期的)
     health_probe_concurrency: int = 8                  # env: AIMC_HEALTH_PROBE_CONCURRENCY (并发数, 防打爆上游)
+    # V6.19 (2026-10-27): 配额恢复探测自身异常 (超时/连接失败, 非上游 429 拒绝)
+    # 的短重试间隔 (秒)。上游 429 = 真没恢复走 300s→1800s 指数退避; 自身异常 =
+    # 不确定状态 (订阅窗口可能已重置, 生产实证 minimax 重置瞬间探测超时被当
+    # "未恢复" 白等 30 分钟), 短间隔尽快复探。防风暴: 受 job 调度节拍约束。
+    quota_probe_transient_seconds: int = 90            # env: AIMC_QUOTA_PROBE_TRANSIENT_SECONDS
     health_probe_timeout: float = 5.0                  # env: AIMC_HEALTH_PROBE_TIMEOUT (单 channel 超时, 秒)
     health_probe_max_backoff: int = 3600               # env: AIMC_HEALTH_PROBE_MAX_BACKOFF (指数退避上限, 秒)
     # V4.9.1 防护: 防止「雪崩」 — 上限每 job 探活数 + 总超时 (防止网络全挂时积压上千个待探活)

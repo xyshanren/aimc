@@ -64,6 +64,7 @@ AIMC 当前有 **35 个 migration 脚本**（`db/migrations/`）：
 2026_10_21_v6x_group_specialization.py     # V6.17d 组语义准入 (tier:code 组能力 code_specialized + 3 特化模型补标签 + tier:vision m3.1-flash 位次 125→90)
 2026_10_22_v6x_failed_channels_null.py    # V6.18 failed_channels JSON 'null' 占位清理 (无失败链的行改回 SQL NULL)
 2026_10_23_v6x_minimax_tool_history.py     # channels.sanitize_tool_history (MiniMax 2013 tool 配对清洗, minimax=1) + transcripts.message_skeleton
+2026_10_27_v6x_ch1_tool_history.py         # sanitize_tool_history 扩展 deepseek_official=1 (ch1 缺失结果/空 assistant 400 清洗)
 ```
 
 > 生产环境（生产 VM）只跑幂等 migration，**不要**跑 `seed_model_groups.py` /

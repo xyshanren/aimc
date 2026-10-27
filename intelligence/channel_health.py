@@ -185,7 +185,15 @@ def _probe_error_info(r: dict) -> ErrorInfo:
 
 async def _chat_probe_one(account_id: int, base_url: str, api_key: Optional[str],
                           upstream_model: str) -> dict:
-    """单桶恢复探测: 最小聊天请求, 200 即视为配额恢复"""
+    """单桶恢复探测: 最小聊天请求, 200 即视为配额恢复
+
+    V6.19 (2026-10-27): 结果新增 transient 字段, 区分两类失败 —
+    - 上游明确拒绝 (HTTP 4xx/5xx): 真没恢复, 维持原指数退避
+    - 探测自身异常 (超时/连接失败): 不确定状态, 上游可能已恢复
+      (生产实证: minimax 窗口重置瞬间探测超时被当"未恢复", 白等 30 分钟),
+      上游层对 transient 短重试 + 先用 GET /models 轻探活佐证
+      (人工 recovery_check 按钮即走 /models, 与恢复强相关)
+    """
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -213,18 +221,26 @@ async def _chat_probe_one(account_id: int, base_url: str, api_key: Optional[str]
             "error_type": info.category.value,
             "error_code": info.error_code,
             "error_msg": info.error_msg[:200],
+            "transient": False,
         }
     except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
         latency_ms = int((time.monotonic() - start) * 1000)
         info = classify(0, None, e)
+        # V6.19: 自身异常 → /models 轻探活佐证 (上游明显恢复时 200)
+        models_result = await _probe_one(
+            account_id, base_url, api_key,
+            timeout=getattr(settings, 'health_probe_timeout', 5.0) + 5.0,
+        )
         return {
             "account_id": account_id,
             "success": False,
             "status_code": None,
-            "latency_ms": latency_ms,
+            "latency_ms": latency_ms + models_result.get("latency_ms", 0),
             "error_type": info.category.value,
             "error_code": None,
             "error_msg": str(e)[:200],
+            "transient": True,
+            "models_ok": bool(models_result.get("success")),
         }
     except Exception as e:
         latency_ms = int((time.monotonic() - start) * 1000)
@@ -236,6 +252,7 @@ async def _chat_probe_one(account_id: int, base_url: str, api_key: Optional[str]
             "error_type": "unknown",
             "error_code": None,
             "error_msg": str(e)[:200],
+            "transient": True,
         }
 
 
@@ -344,18 +361,27 @@ async def quota_recovery_probe() -> int:
         logs.append((aid, probe))
         if probe["success"]:
             recovered += 1
-        cooldown_manager.quota_probe_result(aid, model, success=probe["success"])
+        cooldown_manager.quota_probe_result(
+            aid, model, success=probe["success"],
+            transient=bool(probe.get("transient")),
+        )
 
     if logs:
         async with async_session_factory() as session:
             for aid, probe in logs:
+                msg = probe.get("error_msg") or ""
+                # V6.19: transient 且 /models 轻探活 200 → 上游大概率已恢复,
+                # 把佐证结果附进日志 (观测用, 不据此直接清桶 — 轻探活不证配额)
+                if probe.get("transient") and probe.get("models_ok"):
+                    msg = (msg + " [models_ok: GET /models 200, 上游可达性已恢复]"
+                           )[:200]
                 session.add(AccountHealthLog(
                     account_id=aid,
                     triggered_by="quota_recovery",
                     success=1 if probe["success"] else 0,
                     status_code=probe.get("status_code"),
                     error_type=probe.get("error_type"),
-                    error_msg=probe.get("error_msg"),
+                    error_msg=msg,
                     latency_ms=probe.get("latency_ms"),
                 ))
             await session.commit()

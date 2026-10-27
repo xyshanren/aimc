@@ -302,7 +302,8 @@ def test_quota_recovery_probe_success_clears_bucket():
          patch("security.crypto.try_decrypt", side_effect=RuntimeError("no ciphertext")):
         recovered = asyncio.run(ch_mod.quota_recovery_probe())
     check("recovered=1", recovered, 1)
-    mock_cm.quota_probe_result.assert_called_once_with(2, "glm-5.3", success=True)
+    mock_cm.quota_probe_result.assert_called_once_with(
+        2, "glm-5.3", success=True, transient=False)
     log = session.add.call_args.args[0]
     check("health log triggered_by", log.triggered_by, "quota_recovery")
     check("health log success", log.success, 1)
@@ -316,7 +317,8 @@ def test_quota_recovery_probe_failure_keeps_bucket():
          patch.object(ch_mod, "_get_probe_client", return_value=client):
         recovered = asyncio.run(ch_mod.quota_recovery_probe())
     check("recovered=0", recovered, 0)
-    mock_cm.quota_probe_result.assert_called_once_with(2, "glm-5.3", success=False)
+    mock_cm.quota_probe_result.assert_called_once_with(
+        2, "glm-5.3", success=False, transient=False)
 
 
 def test_quota_recovery_probe_noop_without_due_buckets():
