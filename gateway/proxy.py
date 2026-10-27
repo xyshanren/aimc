@@ -247,18 +247,28 @@ def _tool_content_text(content) -> str:
 def _sanitize_tool_history(body: bytes) -> bytes:
     """V6.x (2026-10-23): 清洗 tool 历史配对 (MiniMax 2013 兜底, 同 reasoning echo 模式)
 
-    MiniMax 对 tool_call/tool_result 配对做严格校验, 三种破坏形态实测全部 400 (2013)
-    (2026-10-23 生产账号直探复现):
+    MiniMax 与 DeepSeek 官方都对 tool_call/tool_result 配对做严格校验, 破坏形态
+    实测全部 400 (两渠道生产账号直探复现, 2026-10-23/27):
     - 孤儿: tool 消息的 tool_call_id 匹配不到前置 assistant tool_calls
+      (MiniMax 2013 "tool call id is invalid"; DeepSeek 拒绝)
     - 错位: tool 结果被其他消息与 assistant(tool_calls) 隔开
-    - 缺失: 并行 tool_calls 只回传了部分结果
+      (MiniMax 2013 "tool call result does not follow tool call",
+       文案与生产 4 天 67 例一字不差)
+    - 缺失: 并行 tool_calls 只回传了部分结果 / 完全没有结果
+      (MiniMax 2013 同错位文案; DeepSeek "must be followed by tool messages
+       responding to each tool_call_id" — ch1 生产 8 天 654 例, 付费白烧)
+    - 空 assistant: content 与 tool_calls 双缺
+      (DeepSeek "Invalid assistant message: content or tool_calls must be set",
+       ch1 生产 3 例)
     跨模型会话 (组内 failover 混历史) / harness 裁剪历史都可能产生上述形态,
-    宽松渠道 (glm 等) 不校验, 只有落到 minimax 时爆 400。渠道
+    宽松渠道 (glm 等) 不校验, 只有落到严格渠道时爆 400。渠道
     sanitize_tool_history=1 时转发前归一化:
     - 匹配的 tool 结果紧贴 assistant 重排 (错位归位)
     - 缺失的 tool_call 补 "[tool result unavailable]" 合成结果
     - 孤儿 tool 消息转 user 文本 (保留信息)
-    输出形态 (含连续 user 消息) 已直探 MiniMax 上游实测 200; 干净历史原样返回。
+    - content 与 tool_calls 双缺的 assistant 补 content="" 空串
+    输出形态 (含连续 user 消息) 已直探 MiniMax 与 DeepSeek 上游实测 200;
+    干净历史原样返回 (零拷贝)。
 
     同族先例: DeepSeek reasoning_content 回传 400 (V6.5 requires_reasoning_echo)。
     """
@@ -269,7 +279,7 @@ def _sanitize_tool_history(body: bytes) -> bytes:
     msgs = body_dict.get("messages")
     if not msgs or not isinstance(msgs, list):
         return body
-    # 预检: 无 tool 消息且无 assistant(tool_calls) 则无配对问题可修
+    # 预检: 无 tool 消息、无 assistant(tool_calls) 且无空 assistant 则无可修项
     has_call = any(
         isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
         for m in msgs
@@ -277,7 +287,12 @@ def _sanitize_tool_history(body: bytes) -> bytes:
     has_result = any(
         isinstance(m, dict) and m.get("role") == "tool" for m in msgs
     )
-    if not has_call and not has_result:
+    has_empty_asst = any(
+        isinstance(m, dict) and m.get("role") == "assistant"
+        and not m.get("tool_calls") and m.get("content") is None
+        for m in msgs
+    )
+    if not has_call and not has_result and not has_empty_asst:
         return body
 
     out = []
@@ -308,6 +323,13 @@ def _sanitize_tool_history(body: bytes) -> bytes:
                 tc.get("id") for tc in m["tool_calls"]
                 if isinstance(tc, dict) and tc.get("id")
             )
+        elif role == "assistant" and m.get("content") is None:
+            # 空 assistant (content 与 tool_calls 双缺): 补空串
+            # (DeepSeek "content or tool_calls must be set"; 已探 200)
+            fixed = dict(m)
+            fixed["content"] = ""
+            out.append(fixed)
+            changed = True
         elif role == "tool":
             tid = m.get("tool_call_id")
             if pending and tid in pending:
@@ -339,7 +361,7 @@ def _sanitize_tool_history(body: bytes) -> bytes:
         return body
     logger.info(
         f"[V6.x tool 历史清洗] {len(msgs)} → {len(out)} 条消息 "
-        f"(孤儿转 user / 缺失补位 / 错位归位), channel 强校验兜底"
+        f"(孤儿转 user / 缺失补位 / 错位归位 / 空 assistant 补 content), 强校验渠道兜底"
     )
     body_dict["messages"] = out
     return json.dumps(body_dict, ensure_ascii=False).encode("utf-8")

@@ -154,6 +154,54 @@ def test_zero_results_synthesized():
     assert out[3]["content"] == "总结"
 
 
+def test_empty_assistant_content_filled():
+    """ch1 生产 3 例同族: content 与 tool_calls 双缺的 assistant → 补 content=""
+
+    DeepSeek 官方 400 "Invalid assistant message: content or tool_calls must be
+    set"; 清洗后形态直探 DeepSeek 实测 200 (2026-10-27)。reasoning_content 保留。
+    """
+    out = _run([
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": None, "reasoning_content": "思考过"},
+        {"role": "user", "content": "总结"},
+    ])
+    assert out[1]["role"] == "assistant"
+    assert out[1]["content"] == ""
+    assert out[1]["reasoning_content"] == "思考过"
+
+
+def test_assistant_missing_content_key_filled():
+    """content 键整个缺失的 assistant → 同样补空串"""
+    out = _run([
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "reasoning_content": "x"},
+        {"role": "user", "content": "总结"},
+    ])
+    assert out[1]["content"] == ""
+
+
+def test_assistant_with_content_untouched():
+    """有 content 的普通 assistant 不动 (零改写)"""
+    body = json.dumps({"messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "再总结"},
+    ]}).encode()
+    assert _sanitize_tool_history(body) == body
+
+
+def test_missing_results_synthesized_ch1_family():
+    """ch1 生产 654 例同族: assistant(tool_calls) 缺失结果 → 补合成 (DeepSeek 探 200)"""
+    out = _run([
+        {"role": "user", "content": "北京天气如何"},
+        _asst_tool(["tc1"]),
+        {"role": "user", "content": "总结"},
+    ])
+    assert out[2]["role"] == "tool" and out[2]["tool_call_id"] == "tc1"
+    assert out[2]["content"] == "[tool result unavailable]"
+    assert out[3]["content"] == "总结"
+
+
 # ============================================================
 # 边界: 多轮 assistant / 非 tool 流量 / 非法 body
 # ============================================================
