@@ -170,6 +170,49 @@ def test_empty_assistant_content_filled():
     assert out[1]["reasoning_content"] == "思考过"
 
 
+def test_tool_calls_assistant_null_content_filled():
+    """ModelScope 生产 2026-10-29: 带 tool_calls 的 assistant content=None 也拒收
+
+    ModelScope Pydantic 严格校验 "20 validation errors ... 'content', 'str'
+    ... 'input': None" (生产 33 例, message_skeleton 取证形态 `a~tc[...]~none`)。
+    补 content="" 后直探 DeepSeek/MiniMax 实测 200 (2026-10-29)。
+    """
+    out = _run([
+        {"role": "user", "content": "北京天气如何"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "tc1", "type": "function",
+                         "function": {"name": "get_weather", "arguments": "{}"}}]},
+        _tool_result("tc1"),
+    ])
+    assert out[1]["content"] == ""
+    assert out[1]["tool_calls"][0]["id"] == "tc1"
+    assert out[2]["role"] == "tool" and out[2]["tool_call_id"] == "tc1"
+
+
+def test_tool_calls_assistant_missing_content_key_filled():
+    """content 键整个缺失且带 tool_calls → 同样补空串"""
+    out = _run([
+        {"role": "user", "content": "q"},
+        {"role": "assistant",
+         "tool_calls": [{"id": "tc1", "type": "function",
+                         "function": {"name": "get_weather", "arguments": "{}"}}]},
+        _tool_result("tc1"),
+    ])
+    assert out[1]["content"] == ""
+
+
+def test_tool_calls_assistant_with_content_untouched():
+    """带 tool_calls 且 content 已是字符串 → 原样保留 (零改写)"""
+    out = _run([
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "我来查一下",
+         "tool_calls": [{"id": "tc1", "type": "function",
+                         "function": {"name": "get_weather", "arguments": "{}"}}]},
+        _tool_result("tc1"),
+    ])
+    assert out[1]["content"] == "我来查一下"
+
+
 def test_assistant_missing_content_key_filled():
     """content 键整个缺失的 assistant → 同样补空串"""
     out = _run([

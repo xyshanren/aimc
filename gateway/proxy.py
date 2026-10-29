@@ -260,13 +260,17 @@ def _sanitize_tool_history(body: bytes) -> bytes:
     - 空 assistant: content 与 tool_calls 双缺
       (DeepSeek "Invalid assistant message: content or tool_calls must be set",
        ch1 生产 3 例)
+    - 带 tool_calls 的 assistant content=None
+      (ModelScope Pydantic 严格校验拒收 null: "20 validation errors ...
+       'content', 'str' ... 'input': None", 生产 2026-10-29 实录)
     跨模型会话 (组内 failover 混历史) / harness 裁剪历史都可能产生上述形态,
     宽松渠道 (glm 等) 不校验, 只有落到严格渠道时爆 400。渠道
     sanitize_tool_history=1 时转发前归一化:
     - 匹配的 tool 结果紧贴 assistant 重排 (错位归位)
     - 缺失的 tool_call 补 "[tool result unavailable]" 合成结果
     - 孤儿 tool 消息转 user 文本 (保留信息)
-    - content 与 tool_calls 双缺的 assistant 补 content="" 空串
+    - assistant content=None 一律补 content="" 空串
+      (带/不带 tool_calls 两种形态; OpenAI 规范允许 null, ModelScope 要求字符串)
     输出形态 (含连续 user 消息) 已直探 MiniMax 与 DeepSeek 上游实测 200;
     干净历史原样返回 (零拷贝)。
 
@@ -318,7 +322,15 @@ def _sanitize_tool_history(body: bytes) -> bytes:
         role = m.get("role")
         if role == "assistant" and m.get("tool_calls"):
             _close_pending()
-            out.append(m)
+            if m.get("content") is None:
+                # 带 tool_calls 但 content=None: ModelScope 等严格校验渠道要求
+                # content 为字符串 (OpenAI 规范允许 null), 补空串不影响语义
+                fixed = dict(m)
+                fixed["content"] = ""
+                out.append(fixed)
+                changed = True
+            else:
+                out.append(m)
             pending.extend(
                 tc.get("id") for tc in m["tool_calls"]
                 if isinstance(tc, dict) and tc.get("id")
