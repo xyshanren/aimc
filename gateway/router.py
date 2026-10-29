@@ -753,6 +753,19 @@ class RouteEngine:
                         f"-> upstream model={fuzzy_price['model']} (priority={fallback['priority']})"
                     )
                 else:
+                    # 透传闸门 (2026-10-29): 模型在任一渠道已有价行 → 不做聚合透传。
+                    # exclude_pairs (V6.18) 把唯一价行渠道排除后候选清空也会落到本
+                    # 分支 — 透传一个该渠道没有的模型必 400 (生产实录:
+                    # sensenova-6.8-flash-lite → siliconflow 20012, 分类
+                    # MODEL_UNSUPPORTED 误冷却 1800s + needs_human 假告警,
+                    # ~30min 重撞)。透传仅保留给零渠道定价的纯新模型发现场景。
+                    if any(self._get_current_price(ch, model, now) is not None
+                           for ch in self._channels_cache):
+                        logger.warning(
+                            f"无可用渠道支持模型: {model} (有价行渠道均冷却/被排除, "
+                            f"跳过聚合透传)"
+                        )
+                        return None
                     fallback["_channel_model"] = model  # 没匹配到, 透传
                     logger.info(
                         f"无可用渠道支持模型: {model}, fallback 到 {fallback['name']} "
