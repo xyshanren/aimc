@@ -213,6 +213,76 @@ def test_tool_calls_assistant_with_content_untouched():
     assert out[1]["content"] == "我来查一下"
 
 
+def test_empty_assistant_between_call_and_result_repositioned():
+    """生产 2026-10-31: 空 assistant 夹在 assistant(tool_calls) 与 tool 结果之间
+
+    空 assistant 补位分支此前直挂 out, 把空 assistant 插进 assistant 与其 tool
+    结果之间 → DeepSeek 紧邻校验 400 "insufficient tool messages" (67 例)。
+    修复后补位走 held 挂起逻辑 → 输出 a~tc → t → assi。
+    """
+    out = _run([
+        {"role": "user", "content": "画面上有什么?"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "tc1", "type": "function",
+                         "function": {"name": "click", "arguments": "{}"}}]},
+        {"role": "assistant", "content": None, "reasoning_content": "思考过"},
+        _tool_result("tc1"),
+        {"role": "user", "content": "继续"},
+    ])
+    assert out[2]["role"] == "tool" and out[2]["tool_call_id"] == "tc1"
+    assert out[3]["role"] == "assistant" and out[3]["content"] == ""
+    assert out[3]["reasoning_content"] == "思考过"
+    assert out[4]["content"] == "继续"
+
+
+def test_empty_assistant_before_missing_result_repositioned():
+    """空 assistant 夹在中间且结果缺失 → 合成结果紧贴 assistant, 空 assistant 在后"""
+    out = _run([
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "tc1", "type": "function",
+                         "function": {"name": "click", "arguments": "{}"}}]},
+        {"role": "assistant", "content": None},
+        {"role": "user", "content": "继续"},
+    ])
+    assert out[2]["role"] == "tool" and out[2]["tool_call_id"] == "tc1"
+    assert out[2]["content"] == "[tool result unavailable]"
+    assert out[3]["role"] == "assistant" and out[3]["content"] == ""
+    assert out[4]["content"] == "继续"
+
+
+def test_empty_assistant_after_result_stays_in_place():
+    """空 assistant 在结果之后 (健康位) → 不挪动"""
+    out = _run([
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "tc1", "type": "function",
+                         "function": {"name": "click", "arguments": "{}"}}]},
+        _tool_result("tc1"),
+        {"role": "assistant", "content": None},
+        {"role": "user", "content": "继续"},
+    ])
+    assert out[3]["role"] == "assistant" and out[3]["content"] == ""
+    assert out[4]["content"] == "继续"
+
+
+def test_parallel_calls_with_empty_assistant_before_results():
+    """并行调用 + 空 assistant 夹在中间 → 两条结果都紧贴 assistant"""
+    out = _run([
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "tc1", "type": "function",
+                         "function": {"name": "click", "arguments": "{}"}},
+                        {"id": "tc2", "type": "function",
+                         "function": {"name": "scroll", "arguments": "{}"}}]},
+        {"role": "assistant", "content": None},
+        _tool_result("tc1"),
+        _tool_result("tc2"),
+    ])
+    assert out[2]["tool_call_id"] == "tc1" and out[3]["tool_call_id"] == "tc2"
+    assert out[4]["role"] == "assistant" and out[4]["content"] == ""
+
+
 def test_assistant_missing_content_key_filled():
     """content 键整个缺失的 assistant → 同样补空串"""
     out = _run([

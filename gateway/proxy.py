@@ -338,9 +338,16 @@ def _sanitize_tool_history(body: bytes) -> bytes:
         elif role == "assistant" and m.get("content") is None:
             # 空 assistant (content 与 tool_calls 双缺): 补空串
             # (DeepSeek "content or tool_calls must be set"; 已探 200)
+            # V6.x fix (2026-10-31): 补位后走 held 挂起逻辑而非直挂 out —
+            # 直挂 out 会把空 assistant 插在 assistant(tool_calls) 与其 tool
+            # 结果之间, 破坏紧邻校验 (生产实录: deepseek_official 67 例 400,
+            # 输出骨架 a~tc → assi → t, "insufficient tool messages")。
             fixed = dict(m)
             fixed["content"] = ""
-            out.append(fixed)
+            if pending or held:
+                held.append(fixed)
+            else:
+                out.append(fixed)
             changed = True
         elif role == "tool":
             tid = m.get("tool_call_id")
