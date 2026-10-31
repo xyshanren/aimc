@@ -214,12 +214,17 @@ def test_get_prices_fields_for_modal():
 
 
 def test_modelscope_size_gate_default():
-    """modelscope 大请求门槛默认值 (2026-10-25): 与 sensenova 同窗 30k"""
+    """modelscope 大请求门槛默认值 (2026-10-25): 与 sensenova 同窗 30k
+
+    taotoken min 临时 10000 (2026-11-01): minimax Token Plan 周限额缺位期,
+    0 元桶提前接管 vision 缺口; 回滚锚点见 config.py 注释 — 回滚 30000 时
+    本断言同步改回。
+    """
     from config import Settings
     s = Settings()
     assert s.channel_max_input_tokens.get("modelscope_inference") == 30000
     assert s.channel_max_input_tokens.get("sensenova_official") == 30000
-    assert s.channel_min_input_tokens.get("taotoken_coding") == 30000
+    assert s.channel_min_input_tokens.get("taotoken_coding") == 10000
 
 
 def test_raw_model_id_guard_siliconflow():
