@@ -396,9 +396,10 @@ CHANNELS = [
                 "仅限 GLM-5.3 系列）即可按订阅额度调用；目录中的 0 元价 = "
                 "订阅额度内的边际成本口径，超出额度或未订阅部分按官方按量价计费。"
             ),
-            "register_url": "https://open.bigmodel.cn/",
+            # 此为维护者邀请链接 (icode 参数已内嵌, 注册时自动带入)
+            "register_url": "https://www.bigmodel.cn/invite?icode=IP8%2F9yNirLDDdh5n3Kgz0Onfet45IvM%2BqDogImfeLyI%3D",
             "key_console_url": "https://bigmodel.cn/usercenter/profit-metric",
-            "invite": None,
+            "invite": "此为维护者邀请链接, 你注册后维护者获得少量积分返利, 不影响你的权益",
             "models_display": ["glm-5.3", "glm-5.3-flash"],
         },
         "prices": [
