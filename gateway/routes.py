@@ -81,6 +81,26 @@ def _finalize_failure_response(response, failed_channels: list):
     )
 
 
+def _failover_next_action(category_value, attempt, max_retries,
+                          total_hops, hard_cap):
+    """V6.x quota-hop 不烧预算 (2026-11-01): 失败跳的 failover 预算决策 (纯函数)。
+
+    - "free":   quota_exhausted 类失败 — 确定性失败 (渠道配额耗尽不会因等待
+                自愈), 换道不消耗 retry 预算; 撞 hard_cap 时转 final (防御,
+                正常由 exclude_pairs + 桶隔离先耗尽候选)。
+    - "budget": 其余 retryable 失败 (5xx/限流/网络类), 消耗一次预算。
+    - "final":  预算耗尽 → 落到终态响应 (V6.18 真因回放语义)。
+
+    上下文 (生产 2026-11-01): minimax 周限额缺位期, modelscope 日额首次触顶
+    的漏出窗内, 2 跳烧完于付费兜底前, 一批客户端可见 429。
+    """
+    if category_value == "quota_exhausted":
+        return "free" if total_hops < hard_cap else "final"
+    if attempt < max_retries:
+        return "budget"
+    return "final"
+
+
 @router.get("/health")
 async def health_check():
     """健康检查探针"""
@@ -268,9 +288,19 @@ async def chat_completions(request: Request):
     # (inference request is invalid) 透传 400 后 hermes 侧才切兜底链。
     last_failure_response = None
 
-    for attempt in range(max_retries + 1):
+    # V6.x quota-hop 不烧预算 (2026-11-01): quota_exhausted 是确定性失败 (渠道
+    # 配额耗尽不会因等待自愈), failover 换道不该消耗 retry 预算 — 否则 depletion
+    # 期 (多渠道同时配额耗尽) 两跳就烧完, 客户端收到回放的 429 (生产 2026-11-01
+    # 实录: minimax 周限额缺位期, modelscope 日额首次触顶的漏出窗内, 2 跳烧完
+    # 于付费兜底前, 一批客户端可见 429)。attempt = 已耗预算跳数; quota 类失败只
+    # 推进 total_hops 不推进 attempt; 终止保证 = exclude_pairs 逐跳排除 + 桶隔离
+    # (候选有限 → 耗尽时 select 返 None → V6.18 回放), total_hops 硬帽兜底。
+    attempt = 0
+    total_hops = 0
+    _hard_hop_cap = max_retries + 5
+    while attempt <= max_retries and total_hops <= _hard_hop_cap:
         # P0-3 (2026-08-14): 传 messages 给 router, 让纯文本请求跳过 multimodal candidate
-        if attempt == 0:
+        if total_hops == 0:
             channel = route_engine.select_channel(model, prefs=prefs,
                                                   messages=body_json.get("messages"),
                                                   exclude_pairs=exclude_pairs)
@@ -364,7 +394,7 @@ async def chat_completions(request: Request):
                     logger.warning(
                         f"配额预检拒绝: {channel['name']}"
                         f"/{channel.get('account_name', '')} {reason}, "
-                        f"failover 到下一候选 (attempt {attempt + 1}/{max_retries + 1})"
+                        f"quota-hop 不烧预算 (累计 {total_hops}/{_hard_hop_cap} 跳)"
                     )
                     # 失败落库 — 旧行为此路径无 usage_logs 行, 看板完全不可见
                     await _write_usage_log(
@@ -379,7 +409,8 @@ async def chat_completions(request: Request):
                         error_type=_quota_info.category.value,
                         needs_human=True,
                     )
-                    if attempt < max_retries:
+                    total_hops += 1
+                    if total_hops <= _hard_hop_cap:
                         continue
                     return JSONResponse(
                         status_code=429,
@@ -445,7 +476,7 @@ async def chat_completions(request: Request):
         retryable_status = response.status_code in (429, 500, 502, 503, 504, 529)
         if is_group_route and response.status_code == 400:
             retryable_status = True
-        if retryable_status and attempt < max_retries:
+        if retryable_status:
             from gateway.error_classifier import classify
             # V4.9: 用 error_classifier 拿到 error_type/error_msg/needs_human
             # V6.4.x: 这里不再 mark_failure — proxy.forward_request 内部的
@@ -476,12 +507,30 @@ async def chat_completions(request: Request):
             exclude_pairs.add((channel.get("account_id"), _failed_model))
             # V6.18: 留档最近一次失败响应 — 候选用尽时回放它 (保留上游真因)
             last_failure_response = response
-            logger.warning(
-                f"P1-15: {channel['name']} {response.status_code} "
-                f"({_error_info.category.value}), "
-                f"failover 到下一候选 (attempt {attempt + 1}/{max_retries})"
-            )
-            continue
+            # V6.x quota-hop 不烧预算: 决策抽纯函数 (见 _failover_next_action)
+            _action = _failover_next_action(
+                _error_info.category.value, attempt, max_retries,
+                total_hops, _hard_hop_cap)
+            if _action == "free":
+                total_hops += 1
+                logger.warning(
+                    f"P1-15: {channel['name']} {response.status_code} "
+                    f"({_error_info.category.value}), quota-hop 不烧预算 "
+                    f"(已耗 {attempt}/{max_retries}, 累计 {total_hops} 跳)"
+                )
+                continue
+            total_hops += 1
+            if _action == "budget":
+                attempt += 1
+                logger.warning(
+                    f"P1-15: {channel['name']} {response.status_code} "
+                    f"({_error_info.category.value}), "
+                    f"failover 到下一候选 (attempt {attempt + 1}/{max_retries + 1})"
+                )
+                continue
+            # "final": 预算耗尽 / quota-hop 撞硬帽 → 不 continue, 落到下方终态响应
+            # (V6.18 真因回放语义不变)
+
 
         # V4.8.7 P7: 最后一次也失败 (或非 retryable), 把失败链注入响应头
         # V6.7: 只对缓冲型响应注入 — 流式成功 (StreamingResponse) 走到这里
