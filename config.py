@@ -193,6 +193,28 @@ class Settings(BaseSettings):
         default_factory=lambda: {"taotoken_coding": 7000},
     )
 
+    # === V6.x 水位线/429 突发软降级 (2026-11-01) ===
+    # 背景: 0 元池同价层静态 priority 决胜 + 事后冷却 = 锯齿 (gb 吃到积分帽 →
+    # 429 → 冷却 → 流量倒灌 tt → 恢复 → 又吃回全部)。本机制在同价层内主动换手:
+    # (a) 按次计费渠道 5h 滚动成功调用数对照帽值, >60% 降级 / <40% 回升 (滞回);
+    # (b) 60min 内 ≥3 次 rate_limited 的渠道软降级 10min — glm_bigmodel 积分帽
+    # 是 credit-based 无法本地按次计数, 429 突发作代理信号 (每次恢复即再撞,
+    # 71 次/5h 的 futile re-hit 全靠这个消除)。price 永远第一关键字, 降级只在
+    # 同价层内 (0 元降级后仍在付费候选之前); 撞帽 429→冷却→兜底链保留作保险丝。
+    channel_5h_call_caps: dict = Field(
+        # 帽值是外部知识 (account_quotas 零行盲区), 硬编码校准: taotoken 按次
+        # 计费 ~2000 次/5h。glm_bigmodel credit-based 不进本表 (交突发降级)。
+        default_factory=lambda: {"taotoken_coding": 2000},
+    )
+    watermark_demote_ratio: float = 0.6
+    watermark_restore_ratio: float = 0.4
+    burst_demote_channels: list = Field(
+        default_factory=lambda: ["glm_bigmodel"],
+    )
+    burst_demote_threshold: int = 3
+    burst_demote_window_minutes: int = 60
+    burst_demote_minutes: int = 10
+
     # === V4.9: needs_human 触发阈值 (按 ErrorCategory) ===
     # 当某 error_type 累计失败次数 >= 此阈值时, 标 needs_human=True (等人介入, 不再主动探)
     needs_human_quota_threshold: int = 2               # env: AIMC_NEEDS_HUMAN_QUOTA_THRESHOLD (quota 失败 2 次 → 需人工)

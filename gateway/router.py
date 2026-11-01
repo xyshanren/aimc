@@ -17,7 +17,7 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -148,6 +148,13 @@ class RouteEngine:
         # deepseek_for_coding / glm_for_coding 两个配额桶共同承担, 避免
         # 单桶每 ~3h 触顶 429 (9/20 实证) 且账号级冷却拖死另一桶。
         self._taotoken_bucket_lru: dict[tuple[int, str], float] = {}
+        # V6.x 水位线/429 突发软降级 (2026-11-01): 同价层主动换手状态
+        # _watermark_demoted: 5h 调用水位越限的渠道名 (滞回: >60% 降级 / <40% 回升)
+        # _burst_demote_until: 429 突发软降级截止时间 (channel_name → time.time())
+        # _5h_call_counts: 最近一轮刷新算出的 5h 滚动成功调用数 (观测用)
+        self._watermark_demoted: set[str] = set()
+        self._burst_demote_until: dict[str, float] = {}
+        self._5h_call_counts: dict[str, int] = {}
         # P0-7 (2026-08-14): score weights 缓存, 从 settings_runtime 表读
         # 后续 dashboard 可调, 不需改代码
         self._score_weights: dict = {
@@ -175,6 +182,8 @@ class RouteEngine:
             await self._load_cards_cache(session)
             # P0-7: 从 settings_runtime 表读 score weights (dashboard 可改)
             await self._load_score_weights(session)
+            # V6.x 水位线/429 突发软降级: 同价层主动换手状态装载 (非致命)
+            await self._refresh_dynamic_health(session)
             # V6.14: 人工禁用对账 — DB accounts.status 为准校正内存标记
             # (账号表 /enable /disable 与 CLI 只写 DB, 待处理卡两端都写,
             #  双份真相曾双向漂移, 靠每轮全量刷新收敛; DB 永远赢)
@@ -203,6 +212,129 @@ class RouteEngine:
         logger.info(
             f"路由缓存已全量刷新: {len(self._channels_cache)} 个可用渠道账号"
         )
+
+    async def _refresh_dynamic_health(self, session) -> None:
+        """V6.x 水位线/429 突发软降级 (2026-11-01): 同价层主动换手状态装载。
+
+        在 refresh_cache 会话内调用 (60s TTL / db mtime 触发)。两类信号:
+        - 水位线: 按次计费渠道 5h 滚动成功调用数 vs 帽值
+          (config.channel_5h_call_caps), >60% 降级 / <40% 回升 (滞回防震荡);
+        - 429 突发: 60min 内 rate_limited 冷却事件 ≥ 阈值 → 软降级 10min
+          (glm_bigmodel 积分帽 credit-based 无法本地按次计数, 用突发作代理)。
+        DB 查询失败保持上一轮降级状态 (非致命), 不影响路由可用性。
+        """
+        try:
+            # --- 水位线: 5h 滚动成功调用数 (按账号走 account_time 索引) ---
+            caps = getattr(settings, "channel_5h_call_caps", None) or {}
+            counts: dict[str, int] = {}
+            cutoff = (datetime.now() - timedelta(hours=5)).strftime(
+                "%Y-%m-%d %H:%M:%S")
+            if caps:
+                # 渠道名 → 其名下账号集合 (channels_cache 是 channel×account 条目)
+                accounts_by_channel: dict[str, set[int]] = {}
+                for ch in self._channels_cache:
+                    aid = ch.get("account_id")
+                    if aid is not None:
+                        accounts_by_channel.setdefault(
+                            ch.get("name"), set()).add(aid)
+                for name, aids in accounts_by_channel.items():
+                    if name not in caps:
+                        continue
+                    total = 0
+                    for aid in aids:
+                        res = await session.execute(
+                            text(
+                                "SELECT COUNT(*) FROM usage_logs "
+                                "WHERE account_id = :aid AND status_code = 200 "
+                                "AND created_at > :cutoff"
+                            ),
+                            {"aid": aid, "cutoff": cutoff},
+                        )
+                        total += (res.scalar() or 0)
+                    counts[name] = total
+            self._5h_call_counts = counts
+            self._update_watermark_state(counts)
+
+            # --- 429 突发软降级 ---
+            burst_channels = getattr(settings, "burst_demote_channels", None) or []
+            if burst_channels:
+                bcut = (datetime.now() - timedelta(
+                    minutes=settings.burst_demote_window_minutes)).strftime(
+                    "%Y-%m-%d %H:%M:%S")
+                res = await session.execute(
+                    text(
+                        "SELECT channel_name, COUNT(*) AS n FROM cooldown_events "
+                        "WHERE error_type = 'rate_limited' AND created_at > :cutoff "
+                        "GROUP BY channel_name"
+                    ),
+                    {"cutoff": bcut},
+                )
+                burst_counts = {r[0]: r[1] for r in res}
+                self._update_burst_state(burst_counts)
+        except Exception as e:
+            logger.warning("动态健康装载失败 (保持上一轮降级状态, 非致命): %s", e)
+
+    def _update_watermark_state(self, counts: dict[str, int]) -> None:
+        """水位滞回状态机: ≥60% 降级 / <40% 回升, 40-60% 区间保持现态。"""
+        caps = getattr(settings, "channel_5h_call_caps", None) or {}
+        for name, cap in caps.items():
+            count = counts.get(name, 0)
+            was = name in self._watermark_demoted
+            if count >= cap * settings.watermark_demote_ratio:
+                if not was:
+                    self._watermark_demoted.add(name)
+                    logger.warning(
+                        f"[水位线] {name} 5h 调用 {count}/{cap} "
+                        f"(≥{settings.watermark_demote_ratio:.0%}) — 同价层降级"
+                    )
+            elif count < cap * settings.watermark_restore_ratio:
+                if was:
+                    self._watermark_demoted.discard(name)
+                    logger.warning(
+                        f"[水位线] {name} 5h 调用 {count}/{cap} "
+                        f"(<{settings.watermark_restore_ratio:.0%}) — 回升"
+                    )
+
+    def _update_burst_state(self, burst_counts: dict[str, int]) -> None:
+        """429 突发软降级: 60min 内 ≥ 阈值次 rate_limited → 降级 N 分钟。"""
+        now_ts = time.time()
+        configured = getattr(settings, "burst_demote_channels", None) or []
+        for name in configured:
+            n = burst_counts.get(name, 0)
+            was = now_ts < self._burst_demote_until.get(name, 0)
+            if n >= settings.burst_demote_threshold:
+                if not was:
+                    logger.warning(
+                        f"[突发降级] {name} 近 "
+                        f"{settings.burst_demote_window_minutes}min {n} 次 "
+                        f"rate_limited (≥{settings.burst_demote_threshold}) "
+                        f"— 软降级 {settings.burst_demote_minutes}min"
+                    )
+                self._burst_demote_until[name] = (
+                    now_ts + settings.burst_demote_minutes * 60)
+            # 未达阈值时不主动清状态: 到期后 sort 侧 now < until 判定即失效,
+            # 条目由"滑出配置列表"清理兜底, 避免阈值临界抖动反复打日志
+        # 滑出配置列表的渠道清理残留状态
+        for name in list(self._burst_demote_until):
+            if name not in configured:
+                self._burst_demote_until.pop(name, None)
+
+    def _dynamic_sort_key(self, item):
+        """V6.x 水位线/突发软降级 (2026-11-01): 同价层主动换手排序键。
+
+        在 _group_cheapest_sort_key 的 (price, ...) 前缀后插入降级位 —
+        降级只发生在同价层内 (0 元降级后仍排在付费候选之前),
+        price 第一关键字不可动摇。
+        """
+        ch = item[0]
+        name = ch.get("name")
+        now_ts = time.time()
+        demoted = name in self._watermark_demoted or (
+            now_ts < self._burst_demote_until.get(name, 0))
+        price, family_bonus, member_priority, neg_priority = (
+            _group_cheapest_sort_key(item))
+        return (price, 1 if demoted else 0, family_bonus, member_priority,
+                neg_priority)
 
     async def _auto_refresh_if_stale(self) -> bool:
         """P0-4 (2026-08-14): cache stale 时自动刷新, 避免 "db 改了必须重启 service"
@@ -1707,7 +1839,8 @@ class RouteEngine:
                 # cheapest (default): subscription/free 视为 0 元, 永远最便宜
                 # V5.1: 排序 key (price, family_bonus, member_priority, -priority)
                 # — 成员优先级激活, 抽成模块级 _group_cheapest_sort_key 供测试直接引用
-                candidates.sort(key=_group_cheapest_sort_key)
+                # V6.x 水位线/突发软降级: 同价层内主动换手 (见 _dynamic_sort_key)
+                candidates.sort(key=self._dynamic_sort_key)
 
             best_ch, best_model, _, _, _, correct_channel_model = candidates[0]
 
