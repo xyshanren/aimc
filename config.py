@@ -182,12 +182,15 @@ class Settings(BaseSettings):
         },
     )
     channel_min_input_tokens: dict = Field(
-        # 临时 10000 (默认 30000, 2026-11-01): minimax_compat Token Plan 周限额
-        # 打满, ~24h 后刷新 — 缺位期 vision 缺口由 0 元桶提前接管 (taotoken
-        # 是 glm-5.3-flash/deepseek-flash 的 0 元主力, glm_bigmodel 1302 已饱和),
-        # 省付费兜底 (ch1/siliconflow)。回滚锚点: minimax 周额度刷新且恢复探测
-        # 放行, 或游戏 agent 测试收官 (~11-02), 两者取先。
-        default_factory=lambda: {"taotoken_coding": 10000},
+        # 临时 7000 (默认 30000, 2026-11-01): minimax Token Plan 周限额缺位期
+        # 0 元桶提前接管。7000 而非 10000 的原因: 估算器图片按 1000/张平算,
+        # 游戏截图实际 ~2-3k token/张 → 高图量请求被低估 (实际 ≥10k 的请求
+        # est 多落在 7-10k), 10k 门槛把它们挡在 taotoken 门外 (5h 实证: tt
+        # 只接 181 条, glm_bigmodel 却接了 110 条实际 ≥10k)。est 7-10k 带放行
+        # 后 tt 量 ~400-600/5h vs 帽 2000, 余量充足。
+        # 回滚锚点: minimax 周额度刷新且恢复探测放行, 或游戏 agent 测试收官
+        # (~11-02), 两者取先。
+        default_factory=lambda: {"taotoken_coding": 7000},
     )
 
     # === V4.9: needs_human 触发阈值 (按 ErrorCategory) ===
