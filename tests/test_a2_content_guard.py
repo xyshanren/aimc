@@ -305,7 +305,7 @@ def test_blindspot_skips_when_too_few_sources(audit_db, monkeypatch):
     alerts = []
 
     async def _fake_alert(msg, key=None, silence_seconds=None):
-        alerts.append(msg)
+        alerts.append({"msg": msg, "key": key})
 
     import intelligence.alerter as alerter_mod
     monkeypatch.setattr(alerter_mod, "send_alert", _fake_alert)
@@ -313,7 +313,10 @@ def test_blindspot_skips_when_too_few_sources(audit_db, monkeypatch):
     from intelligence.scheduler import intel_blindspot_audit_task
     _run_async(intel_blindspot_audit_task())
 
-    assert len(alerts) == 0, "参与源不足 3 个时不应告警"
+    # 轴3 (2026-11-04) 后审计新增独立判定 (fixture 里 "never" 源会触发
+    # never_ran 告警, 属预期) — 本测试只约束旧"7 天零变化"判据自身的告警
+    blind_alerts = [a for a in alerts if a["key"] == "blindspot_audit:intel_blind"]
+    assert len(blind_alerts) == 0, "参与源不足 3 个时不应告警"
 
 
 def test_blindspot_excludes_model_list_sources(audit_db, monkeypatch):
@@ -329,7 +332,7 @@ def test_blindspot_excludes_model_list_sources(audit_db, monkeypatch):
     alerts = []
 
     async def _fake_alert(msg, key=None, silence_seconds=None):
-        alerts.append(msg)
+        alerts.append({"msg": msg, "key": key})
 
     import intelligence.alerter as alerter_mod
     monkeypatch.setattr(alerter_mod, "send_alert", _fake_alert)
@@ -337,7 +340,9 @@ def test_blindspot_excludes_model_list_sources(audit_db, monkeypatch):
     from intelligence.scheduler import intel_blindspot_audit_task
     _run_async(intel_blindspot_audit_task())
 
-    assert len(alerts) == 1, "model_list 空转源不应阻挡失明判定"
+    # 轴3 新判定 (dsm 从未检查 → never_ran 告警) 独立计数, 本测试只断言旧判据
+    blind_alerts = [a for a in alerts if a["key"] == "blindspot_audit:intel_blind"]
+    assert len(blind_alerts) == 1, "model_list 空转源不应阻挡失明判定"
 
 
 # ============================================================

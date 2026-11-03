@@ -4376,6 +4376,38 @@ async def reject_promotion_review(
 # V6.3.1 (2026-09-06): 瞬时冷却事件流水查询 (抓"现场")
 # ============================================================
 
+@router.get("/api/jobs/health")
+async def api_jobs_health(session: AsyncSession = Depends(get_session)):
+    """轴2 (2026-11-04): 调度任务健康卡 — job_health 全量一屏
+
+    数据源 job_health 表 (listener 逐次写入)。轴2 修复后 last_error_* 独立保留
+    ("最近一次失败" 不被成功抹掉), last_duration_ms 为真实耗时近似。
+    排序: 最近执行优先; 失败中的 job 由前端标红。
+    """
+    from db.models import JobHealth
+
+    result = await session.execute(
+        select(JobHealth).order_by(JobHealth.last_run_at.desc())
+    )
+    rows = result.scalars().all()
+    return {
+        "total": len(rows),
+        "jobs": [{
+            "job_id": r.job_id,
+            "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
+            "last_success_at": (r.last_success_at.isoformat()
+                                if r.last_success_at else None),
+            "last_error_at": (r.last_error_at.isoformat()
+                              if r.last_error_at else None),
+            "last_error_msg": r.last_error_msg,
+            "last_duration_ms": r.last_duration_ms,
+            "total_runs": r.total_runs or 0,
+            "total_successes": r.total_successes or 0,
+            "total_failures": r.total_failures or 0,
+        } for r in rows],
+    }
+
+
 @router.get("/api/cooldown-events")
 async def list_cooldown_events(
     hours: int = Query(24, ge=1, le=168, description="最近 N 小时"),

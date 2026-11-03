@@ -2356,6 +2356,58 @@ async function loadCooldownEvents() {
     }
 }
 
+// 轴2 (2026-11-04): 调度任务健康卡 — 全部定时任务最近执行/失败现场一屏
+// 排序: 失败未恢复 (最近失败晚于最近成功) 的排前, 其余按最近执行
+async function loadJobsHealth() {
+    const container = document.getElementById('jobs-health-list');
+    const badge = document.getElementById('jobs-health-count');
+    if (!container) return;
+    try {
+        const resp = await authFetch('/dashboard/api/jobs/health');
+        if (!resp.ok) {
+            container.innerHTML = '<p class="error">加载失败: HTTP ' + resp.status + '</p>';
+            return;
+        }
+        const data = await resp.json();
+        const jobs = data.jobs || [];
+        if (badge) badge.textContent = jobs.length;
+        const sorted = jobs.slice().sort((a, b) => {
+            const fa = a.last_error_at && a.last_error_at > (a.last_success_at || '');
+            const fb = b.last_error_at && b.last_error_at > (b.last_success_at || '');
+            if (fa !== fb) return fa ? -1 : 1;
+            return (b.last_run_at || '').localeCompare(a.last_run_at || '');
+        });
+        let html = '';
+        for (const j of sorted) {
+            const failing = j.last_error_at && (!j.last_success_at || j.last_error_at > j.last_success_at);
+            const dot = failing
+                ? '<span class="status-dot-small" style="background:var(--color-danger);"></span>'
+                : '<span class="status-dot-small status-healthy"></span>';
+            const dur = j.last_duration_ms != null
+                ? (j.last_duration_ms >= 1000 ? (j.last_duration_ms / 1000).toFixed(1) + 's' : j.last_duration_ms + 'ms')
+                : '—';
+            html += '<div class="pr-card">';
+            html += '<div class="pr-row">';
+            html += dot;
+            html += '<strong>' + esc(j.job_id) + '</strong>';
+            html += '<span style="margin-left:auto;font-size:11px;color:var(--text-muted);">' + esc((j.last_run_at || '').replace('T', ' ').slice(0, 19)) + '</span>';
+            html += '</div>';
+            html += '<div style="font-size:11px;margin-top:4px;color:var(--text-secondary);">';
+            html += '成功 ' + j.total_successes + ' / 失败 ' + j.total_failures + ' · 耗时 ' + dur;
+            if (failing && j.last_error_msg) {
+                html += '<div style="color:var(--color-danger);margin-top:2px;">'
+                    + esc(j.last_error_msg.length > 160 ? j.last_error_msg.slice(0, 160) + '…' : j.last_error_msg)
+                    + '</div>';
+            }
+            html += '</div>';
+            html += '</div>';
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
 async function ackRecover(accountId, btn) {
     if (!confirm('确认账号 #' + accountId + ' 问题已解决?将立即触发探活。')) return;
     const note = prompt('备注 (可选, 充值来源/操作人)');
@@ -3175,7 +3227,7 @@ const PAGE_ROUTES = {
     // 注意: 情报页三张审批卡必须留在轮询 — 批准/拒绝只做本地 card.remove(), 卡间联动全靠轮询.
     channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard], once: [loadUnpricedCard, loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
     intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard], once: [loadReportsList, loadWeeklyReportLatest] },
-    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadSuggestionsList, loadAccountsCard, loadAutoJoinMetrics], once: [loadUserKeys, loadSources, renderMetricDefs] },
+    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadJobsHealth, loadSuggestionsList, loadAccountsCard, loadAutoJoinMetrics], once: [loadUserKeys, loadSources, renderMetricDefs] },
 };
 
 let _currentPage = null;

@@ -177,6 +177,65 @@ async def scheduler_watchdog_task(
                 logger.error(f"[watchdog] 告警发送失败: {e}")
 
 
+def record_job_health_event(job_id: str, success: bool, exception=None,
+                            scheduled_run_time=None) -> None:
+    """轴2 (2026-11-04): job_health 写入器 (从 listener 闭包抽出, 可测试)。
+
+    三处修复:
+    ① 成功不再抹掉失败现场 — last_error_* 语义 = "最近一次失败" (旧实现成功
+       清空 error 字段 → channel_health_probe 45 天 1024 次失败零可诊断性);
+    ② last_duration_ms 真实耗时近似 = now - scheduled_run_time (含排队延迟;
+       旧实现误填 scheduled_run_time 的 epoch 毫秒, 量级=当前时间戳不可用);
+    ③ 写入失败从 print(stderr) 收编进 logger.debug (journal 噪声主源之一,
+       每 job 每次 2 条 stderr)。
+    sync 函数 (apscheduler listener 线程), 3 次重试对抗 async 侧长写事务。
+    """
+    from datetime import datetime as _dt
+    import time as _time
+
+    from db.engine import sync_engine as _sync_engine
+    from db.models import JobHealth as _JobHealth
+    from sqlalchemy.orm import Session as _SyncSession
+
+    now = _dt.now()
+    duration_ms = None
+    if scheduled_run_time is not None:
+        try:
+            _aware_now = _dt.now(scheduled_run_time.tzinfo)
+            duration_ms = max(0, int(
+                (_aware_now - scheduled_run_time).total_seconds() * 1000))
+        except Exception:
+            duration_ms = None
+
+    # busy_timeout=5s 仍不够覆盖 async 侧长写事务, 加 3 次重试 (2s 间隔)
+    for attempt in range(1, 4):
+        try:
+            with _SyncSession(_sync_engine) as s:
+                jh = s.get(_JobHealth, job_id)
+                if jh is None:
+                    jh = _JobHealth(job_id=job_id, total_runs=0,
+                                    total_successes=0, total_failures=0)
+                    s.add(jh)
+                jh.last_run_at = now
+                jh.total_runs = (jh.total_runs or 0) + 1
+                if success:
+                    jh.last_success_at = now
+                    jh.total_successes = (jh.total_successes or 0) + 1
+                else:
+                    jh.last_error_at = now
+                    jh.last_error_msg = str(exception or "unknown")[:500]
+                    jh.total_failures = (jh.total_failures or 0) + 1
+                jh.last_duration_ms = duration_ms
+                s.commit()
+            logger.debug(f"[job_health] wrote for {job_id}")
+            break
+        except Exception as e:
+            if attempt < 3:
+                _time.sleep(2)
+                continue
+            logger.debug(f"[job_health] 写失败 (非致命, 重试 3 次): {e}")
+
+
 async def start_scheduler():
     """启动情报采集调度器
 
@@ -402,57 +461,19 @@ async def start_scheduler():
     )
 
     # 阶段2 (2026-08-14): 注册 apscheduler event listener
-    # 同步写 job_health 表 (last_run_at / last_success_at / last_error_at / last_duration_ms)
-    # 不阻塞 scheduler, 失败仅 log
+    # 同步写 job_health 表 — 轴2 (2026-11-04) 重构: 写入逻辑抽到模块级
+    # record_job_health_event (可测试 + 三处数据质量修复), 闭包只做事件解包
     def _record_job_event(event):
-        """apscheduler event listener (sync): 写 job_health
-
-        注意: 这是 sync 函数, 用 sync db session 写 (避免 asyncio 嵌套)
-        """
-        from datetime import datetime as _dt
-        import sys as _sys
-        import time as _time
-        print(f"[job_health LISTENER] FIRED for {event.job_id}, success={event.exception is None}", file=_sys.stderr, flush=True)
-        from db.engine import sync_engine as _sync_engine
-        from sqlalchemy.orm import Session as _SyncSession
-        from db.models import JobHealth as _JobHealth
-        job_id = event.job_id
-        now = _dt.now()
-        success = event.exception is None
-        # 实际事件字段是 scheduled_run_time (不是 scheduled_call_time)
-        duration_ms = None
-        if hasattr(event, "scheduled_run_time") and event.scheduled_run_time:
-            duration_ms = int(event.scheduled_run_time.timestamp() * 1000)
-
-        # busy_timeout=5s 仍不够覆盖 async 侧长写事务, 加 3 次重试 (2s 间隔)
-        for attempt in range(1, 4):
-            try:
-                with _SyncSession(_sync_engine) as s:
-                    jh = s.get(_JobHealth, job_id)
-                    if jh is None:
-                        jh = _JobHealth(job_id=job_id, total_runs=0, total_successes=0, total_failures=0)
-                        s.add(jh)
-                    jh.last_run_at = now
-                    jh.total_runs = (jh.total_runs or 0) + 1
-                    if success:
-                        jh.last_success_at = now
-                        jh.last_error_at = None
-                        jh.last_error_msg = None
-                        jh.last_duration_ms = duration_ms
-                        jh.total_successes = (jh.total_successes or 0) + 1
-                    else:
-                        jh.last_error_at = now
-                        jh.last_error_msg = str(event.exception)[:500]
-                        jh.total_failures = (jh.total_failures or 0) + 1
-                    s.commit()
-                print(f"[job_health] wrote for {job_id}", file=_sys.stderr, flush=True)
-                break
-            except Exception as e:
-                if attempt < 3:
-                    _time.sleep(2)
-                    continue
-                print(f"[job_health] 写失败 (非致命, 重试{attempt}次后): {e}", file=_sys.stderr, flush=True)
-                logger.debug(f"[job_health] 写失败 (非致命): {e}")
+        """apscheduler event listener (sync): 事件解包 → record_job_health_event"""
+        try:
+            record_job_health_event(
+                event.job_id,
+                event.exception is None,
+                event.exception,
+                getattr(event, "scheduled_run_time", None),
+            )
+        except Exception as e:
+            logger.debug(f"[job_health] listener 异常 (非致命): {e}")
 
     scheduler.add_listener(_record_job_event, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
     logger.info("[阶段2] 注册 apscheduler event listener -> 写 job_health")
@@ -992,6 +1013,67 @@ BLINDSPOT_MIN_SOURCES = 3
 BLINDSPOT_ACTIVE_WINDOW_HOURS = 48
 
 
+async def _audit_source_structure() -> None:
+    """轴3 (2026-11-04): 盲区审计扩展 — 结构性死源 + 重复源判定。
+
+    11-04 盘点实证: qwen/hunyuan/moonshot model_list 三个 active 源从未成功
+    执行过 (配了 api_key_from 但对应渠道不存在 → _resolve_api_key None →
+    每轮静默跳过), 旧盲区判据 (参与源 7 天零变化) 结构性抓不到这类死亡。
+    - Rule A: active 源 last_check_at IS NULL (从未执行) → 结构性死源告警;
+    - Rule B: 同 (provider, source_type) 多行 active → 重复源告警。
+    注: "last_check >48h" 不进判定 — 自适应降频 (no_change≥4 → 4×/8× 间隔)
+    是健康态, 8 天一查的 deepseek model_list 会被误报。
+    """
+    from sqlalchemy import select
+
+    from db.engine import async_session_factory
+    from db.models import IntelSource
+
+    async with async_session_factory() as session:
+        rows = (await session.execute(
+            select(IntelSource).where(IntelSource.status == "active")
+        )).scalars().all()
+
+    never_ran = [r for r in rows if r.last_check_at is None]
+    if never_ran:
+        detail = "\n".join(
+            f"- {r.provider}/{r.source_type} (id={r.id})" for r in never_ran)
+        logger.warning(
+            f"[盲区审计] {len(never_ran)} 个 active 源从未执行 (结构性死源): "
+            + ", ".join(f"{r.provider}/{r.source_type}" for r in never_ran)
+        )
+        from intelligence.alerter import send_alert
+        await send_alert(
+            f"⚠️ 盲区审计: {len(never_ran)} 个 active 源从未执行 (结构性死源, "
+            f"典型=配置了 api_key_from 但渠道不存在, 每轮静默跳过):\n{detail}\n"
+            f"处置: 配渠道/补 key, 或把源置 disabled 显性化",
+            key="blindspot_audit:never_ran",
+            silence_seconds=24 * 3600,
+        )
+
+    seen = {}
+    dupes = []
+    for r in rows:
+        key = (r.provider, r.source_type)
+        if key in seen:
+            dupes.append((seen[key], r))
+        else:
+            seen[key] = r
+    if dupes:
+        detail = "\n".join(
+            f"- {a.provider}/{a.source_type}: id={a.id} 与 id={b.id}"
+            for a, b in dupes)
+        logger.warning(
+            f"[盲区审计] {len(dupes)} 组重复 active 源: {detail}")
+        from intelligence.alerter import send_alert
+        await send_alert(
+            f"⚠️ 盲区审计: {len(dupes)} 组重复 active 源 (同 provider+type 多行):\n{detail}\n"
+            f"处置: 保留正常行, 删/禁另一行",
+            key="blindspot_audit:duplicate_sources",
+            silence_seconds=7 * 86400,
+        )
+
+
 async def intel_blindspot_audit_task():
     """A-2 (2026-09-08): 系统级盲区审计 — 每 6h 检查"情报系统是否失明"
 
@@ -1005,6 +1087,15 @@ async def intel_blindspot_audit_task():
        从未检查过的源
     2. 全部参与源 last_check_at 距今 < 48h — 爬虫还在正常跑
     3. 全部参与源 last_changed_at 距今 > BLINDSPOT_DAYS 天 — 但很久没见到任何变化
+
+    轴3 (2026-11-04) 扩展两条独立判定 (_audit_source_structure):
+    - Rule A 结构性死源: active 源 last_check_at 为 NULL (从未执行, 典型=
+      配了 api_key_from 但渠道不存在 → 每轮静默跳过) — 11-04 盘点实证
+      qwen/hunyuan/moonshot model_list 三源从未跑过而旧判据全没抓;
+    - Rule B 重复源: 同 (provider, source_type) 多行 active
+      (minimax model_list 曾 api:// 死约定行 + 正常行双 active)。
+    注: "active 源 >48h 未检查" 不进判定 — 自适应降频 (no_change≥4 → 4×/8×
+    间隔) 是健康态, 8 天一查的 deepseek model_list 会被误报。
     """
     try:
         from datetime import timedelta
@@ -1015,6 +1106,9 @@ async def intel_blindspot_audit_task():
         from db.models import IntelSource
 
         now = datetime.now()
+        # --- 轴3 (2026-11-04): 结构性死源 + 重复源判定 (独立于旧判据链) ---
+        await _audit_source_structure()
+
         participating_types = ("web_page", "announcement", "price_aggregator")
         async with async_session_factory() as session:
             rows = (
