@@ -546,7 +546,7 @@ CHANNELS = [
                 "第三方 coding plan 会员聚合，分 Token Plan 与 Coding Plan 两类订阅。"
                 "综合推荐 Coding Plan Pro 档（Lite 档已售罄）：约 2000 次/5h + "
                 "15000 次/周，按调用次数而非 token 计——大请求量场景比较划算、"
-                "量大管饱。订阅后 glm-5.3-flash / deepseek-v4-flash 以 0 元边际成本"
+                "量大管饱。订阅后 glm-5.3-flash / deepseek-flash 以 0 元边际成本"
                 "参与路由。适合大请求量用户。"
             ),
             "register_url": "https://taotoken.net/coding-plan?u=inv_ua31j1nkx1i7ch5w&utm_source=tt_invite",
@@ -555,7 +555,7 @@ CHANNELS = [
         },
         "prices": [
             ("glm-5.3-flash", "normal", "全天", 0.0, 0.0),
-            ("deepseek-v4-flash", "normal", "全天", 0.0, 0.0),
+            ("deepseek-flash", "normal", "全天", 0.0, 0.0),
         ],
     },
 ]
