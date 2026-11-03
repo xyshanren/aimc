@@ -182,15 +182,13 @@ class Settings(BaseSettings):
         },
     )
     channel_min_input_tokens: dict = Field(
-        # 临时 7000 (默认 30000, 2026-11-01): minimax Token Plan 周限额缺位期
-        # 0 元桶提前接管。7000 而非 10000 的原因: 估算器图片按 1000/张平算,
-        # 游戏截图实际 ~2-3k token/张 → 高图量请求被低估 (实际 ≥10k 的请求
-        # est 多落在 7-10k), 10k 门槛把它们挡在 taotoken 门外 (5h 实证: tt
-        # 只接 181 条, glm_bigmodel 却接了 110 条实际 ≥10k)。est 7-10k 带放行
-        # 后 tt 量 ~400-600/5h vs 帽 2000, 余量充足。
-        # 回滚锚点: minimax 周额度刷新且恢复探测放行, 或游戏 agent 测试收官
-        # (~11-02), 两者取先。
-        default_factory=lambda: {"taotoken_coding": 7000},
+        # taotoken 30000 原值恢复 (2026-11-04, v1.1.0 发布前拍板): 11-01 起临时
+        # 7000 (minimax Token Plan 周限额缺位期 0 元桶提前接管, 期间 tt 零 429
+        # 门槛按设计工作)。两个回滚条件 (minimax 周额度刷新 / 游戏 agent 测试
+        # 收官) 均已满足, 对外版本不带临时态。历史坑留档: 估算器图片按 1000/张
+        # 平算会低估游戏截图 (~2-3k token/张), 高图量请求 est 多落 7-10k 带 ——
+        # 门槛与估算器校准联动时须复核 [[估算器图片加权]] 候选改进。
+        default_factory=lambda: {"taotoken_coding": 30000},
     )
 
     # === V6.x 水位线/429 突发软降级 (2026-11-01) ===

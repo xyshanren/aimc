@@ -25,11 +25,17 @@ from gateway.router import RouteEngine
 
 @pytest.fixture
 def engine(monkeypatch):
-    """真实 config.settings 上 monkeypatch 超时突发参数 (pytest 自动还原)。"""
-    from config import settings
-    monkeypatch.setattr(settings, "timeout_burst_threshold", 3, raising=False)
-    monkeypatch.setattr(settings, "timeout_burst_window_minutes", 60, raising=False)
-    monkeypatch.setattr(settings, "timeout_burst_minutes", 10, raising=False)
+    """超时突发参数打桩。
+
+    注意钉的是 gateway.router 模块内绑定的 settings 引用 (record_upstream_timeout
+    实际读的对象), 而非 from config import settings —— 老测试文件 (cleanup_/
+    null_price_/phase4_e1_) 会在模块顶层把 config.settings 换成 _MockSettings,
+    子集跑时该 mock 会泄漏进 router (全量按字母序本文件在前不触发)。"""
+    import gateway.router as router_mod
+    s = router_mod.settings
+    monkeypatch.setattr(s, "timeout_burst_threshold", 3, raising=False)
+    monkeypatch.setattr(s, "timeout_burst_window_minutes", 60, raising=False)
+    monkeypatch.setattr(s, "timeout_burst_minutes", 10, raising=False)
     return RouteEngine()
 
 
@@ -109,7 +115,8 @@ class TestTimeoutBurstDemote:
 
     def test_convergence_skips_demoted_taotoken(self, engine, monkeypatch, caplog):
         """V6.10 收敛让路: taotoken 降级时不再收敛 (保持原候选), 健康时照常收敛"""
-        from config import settings
+        import gateway.router as router_mod
+        settings = router_mod.settings  # 与 router 同源, 防 _MockSettings 泄漏错位
 
         def _ch(name, price_val, priority):
             return {

@@ -224,7 +224,7 @@ def test_modelscope_size_gate_default():
     s = Settings()
     assert s.channel_max_input_tokens.get("modelscope_inference") == 30000
     assert s.channel_max_input_tokens.get("sensenova_official") == 30000
-    assert s.channel_min_input_tokens.get("taotoken_coding") == 7000
+    assert s.channel_min_input_tokens.get("taotoken_coding") == 30000
 
 
 def test_raw_model_id_guard_siliconflow():
