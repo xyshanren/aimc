@@ -102,8 +102,15 @@ def test_burst_state_threshold_and_expiry(engine):
 
 
 def test_burst_state_removes_unconfigured(engine):
-    """滑出 burst_demote_channels 的渠道 → 清理残留状态"""
+    """V6.x 超时突发共用降级位后清理规则改为到期清理 (2026-11-04):
+    未过期条目保留 (旧"滑出配置列表即清"规则会把不在 429 白名单里的
+    超时降级在每轮刷新时误清), 已过期条目清理兜底"""
     e = engine
+    # 未过期: 保留 (超时突发降级的渠道大多不在 429 白名单里)
     e._burst_demote_until = {"legacy_channel": time.time() + 600}
     e._update_burst_state({})
-    assert "legacy_channel" not in e._burst_demote_until
+    assert "legacy_channel" in e._burst_demote_until
+    # 已过期: 清理
+    e._burst_demote_until["expired_channel"] = time.time() - 1
+    e._update_burst_state({})
+    assert "expired_channel" not in e._burst_demote_until

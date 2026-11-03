@@ -215,6 +215,17 @@ class Settings(BaseSettings):
     burst_demote_window_minutes: int = 60
     burst_demote_minutes: int = 10
 
+    # === V6.x 超时连击软降级 (2026-11-04) ===
+    # 第三类同价层换手信号 (与水位线/429 突发并列): 60min 内上游超时 (504)
+    # ≥ 阈值 → 同价层软降级 N 分钟。背景: 11-03 晚 taotoken 上游对 ~370k+
+    # input 大请求全 120s 超时, 每笔白等 120s 才 failover (~28 笔 ≈ 57min
+    # 累计延迟), 且超时既不写 cooldown_events 也不写 usage_logs — 既无痕也
+    # 不换手。内存计数 (超时无 DB 痕), 对所有渠道生效 (任意渠道卡死都该
+    # 让位), 不设渠道白名单。降级位与 429 突发共用 (_burst_demote_until)。
+    timeout_burst_threshold: int = 3
+    timeout_burst_window_minutes: int = 60
+    timeout_burst_minutes: int = 10
+
     # === V4.9: needs_human 触发阈值 (按 ErrorCategory) ===
     # 当某 error_type 累计失败次数 >= 此阈值时, 标 needs_human=True (等人介入, 不再主动探)
     needs_human_quota_threshold: int = 2               # env: AIMC_NEEDS_HUMAN_QUOTA_THRESHOLD (quota 失败 2 次 → 需人工)

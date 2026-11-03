@@ -940,6 +940,41 @@ async def forward_request(
             )
     except httpx.TimeoutException:
         logger.error(f"上游超时: {channel['name']} ({target_url})")
+        # V6.x 超时连击软降级 (2026-11-04): 内存计数 → 阈值触发同价层换手
+        # (超时无 DB 痕, 内存计数是唯一信号源; 计数失败不影响 504 返回)
+        try:
+            from gateway.router import route_engine
+            route_engine.record_upstream_timeout(channel.get("name"))
+        except Exception as _e:
+            logger.warning(f"超时计数失败 (非致命): {_e}")
+        # V6.x 超时失败落库 (2026-11-04): 超时在 client.send() 前就抛出,
+        # 走不到 stream/normal 失败分支的落库逻辑, 看板完全隐身 (11-03 晚
+        # taotoken 28 笔超时零记录实证)。补一行 tokens=0 的 usage_logs,
+        # error_type 用分类器 (504 → upstream_5xx)。
+        try:
+            from gateway.error_classifier import classify
+            info = classify(504, "Upstream timeout", None)
+            loop = asyncio.get_running_loop()
+            task = _spawn(_write_usage_log(
+                channel_id=channel.get("id"),
+                account_id=channel.get("account_id"),
+                model=actual_model,
+                input_tokens=0,
+                output_tokens=0,
+                status_code=504,
+                latency_ms=int((time.time() - start_time) * 1000),
+                group_id=_extract_group_id(requested_model),
+                caller_id=caller_id,
+                caller_key_id=caller_key_id,
+                error_msg="Upstream timeout",
+                error_type=info.category.value,
+                error_code=info.error_code,
+                needs_human=info.needs_human,
+                failed_channels=failed_channels,
+            ))
+            task.add_done_callback(_log_task_result)
+        except RuntimeError as _e:
+            logger.warning(f"超时失败落库 create_task 失败: {_e}, 跳过")
         return JSONResponse(
             status_code=504,
             content={"error": {"message": "Upstream timeout", "type": "gateway_timeout"}},

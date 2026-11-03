@@ -154,6 +154,9 @@ class RouteEngine:
         # _5h_call_counts: 最近一轮刷新算出的 5h 滚动成功调用数 (观测用)
         self._watermark_demoted: set[str] = set()
         self._burst_demote_until: dict[str, float] = {}
+        # V6.x 超时连击计数 (2026-11-04): channel_name → 窗内超时时间戳列表;
+        # 超时无 DB 痕 (不写 cooldown_events), 内存计数是唯一信号源
+        self._timeout_events: dict[str, list[float]] = {}
         self._5h_call_counts: dict[str, int] = {}
         # P0-7 (2026-08-14): score weights 缓存, 从 settings_runtime 表读
         # 后续 dashboard 可调, 不需改代码
@@ -313,11 +316,49 @@ class RouteEngine:
                 self._burst_demote_until[name] = (
                     now_ts + settings.burst_demote_minutes * 60)
             # 未达阈值时不主动清状态: 到期后 sort 侧 now < until 判定即失效,
-            # 条目由"滑出配置列表"清理兜底, 避免阈值临界抖动反复打日志
-        # 滑出配置列表的渠道清理残留状态
+            # 条目由下方过期清理兜底, 避免阈值临界抖动反复打日志
+        # 清理已过期条目 (超时突发 (2026-11-04) 与 429 突发共用本 dict —
+        # 到期清理取代旧的"滑出配置列表即清"规则: 那条规则会把不在 429
+        # 白名单里的超时降级在每轮 60s 刷新时误清; 未过期条目保留,
+        # 到期后 sort 侧 now < until 判定自然失效)
         for name in list(self._burst_demote_until):
-            if name not in configured:
+            if now_ts >= self._burst_demote_until[name]:
                 self._burst_demote_until.pop(name, None)
+
+    def record_upstream_timeout(self, channel_name: str) -> None:
+        """V6.x 超时连击软降级 (2026-11-04): 上游超时内存计数 → 阈值触发同价层换手。
+
+        超时不写 cooldown_events (usage_logs 落库也是本次才补的), 429 突发的
+        cooldown_events 计数路子数不到它 — 必须在 proxy 超时点直接计数。
+        60min 窗内 ≥ 阈值 → 写 _burst_demote_until (与 429 突发共用降级位,
+        换手语义相同: 同价层排后); 已在降级中的再超时只延期不打日志。
+        对所有渠道生效, 不设白名单 (任意渠道卡死都该让位)。
+        """
+        try:
+            now_ts = time.time()
+            events = self._timeout_events.setdefault(channel_name, [])
+            events.append(now_ts)
+            window = settings.timeout_burst_window_minutes * 60
+            while events and events[0] < now_ts - window:
+                events.pop(0)
+            if len(events) >= settings.timeout_burst_threshold:
+                was = now_ts < self._burst_demote_until.get(channel_name, 0)
+                self._burst_demote_until[channel_name] = (
+                    now_ts + settings.timeout_burst_minutes * 60)
+                if not was:
+                    logger.warning(
+                        f"[超时突发降级] {channel_name} 近 "
+                        f"{settings.timeout_burst_window_minutes}min {len(events)} 次 "
+                        f"上游超时 (≥{settings.timeout_burst_threshold}) — "
+                        f"软降级 {settings.timeout_burst_minutes}min"
+                    )
+        except Exception as e:
+            logger.warning(f"超时计数失败 (非致命): {e}")
+
+    def _is_demoted(self, name: str) -> bool:
+        """V6.x 降级联合判定: 水位线 ∪ (429 突发 ∪ 超时突发, 共用 _burst_demote_until)。"""
+        return name in self._watermark_demoted or (
+            time.time() < self._burst_demote_until.get(name, 0))
 
     def _dynamic_sort_key(self, item):
         """V6.x 水位线/突发软降级 (2026-11-01): 同价层主动换手排序键。
@@ -328,9 +369,7 @@ class RouteEngine:
         """
         ch = item[0]
         name = ch.get("name")
-        now_ts = time.time()
-        demoted = name in self._watermark_demoted or (
-            now_ts < self._burst_demote_until.get(name, 0))
+        demoted = self._is_demoted(name)
         price, family_bonus, member_priority, neg_priority = (
             _group_cheapest_sort_key(item))
         return (price, 1 if demoted else 0, family_bonus, member_priority,
@@ -999,6 +1038,7 @@ class RouteEngine:
                         if ch["name"] == "taotoken_coding"
                         and price.get("input_price") is not None
                         and price["input_price"] <= _min_price
+                        and not self._is_demoted(ch["name"])
                     ]
                     if _tt_at_min and len(_tt_at_min) < len(candidates):
                         candidates = _tt_at_min
