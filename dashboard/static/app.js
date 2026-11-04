@@ -2568,7 +2568,9 @@ async function loadJobsHealth() {
             const dot = failing
                 ? '<span class="status-dot-small" style="background:var(--color-danger);"></span>'
                 : '<span class="status-dot-small status-healthy"></span>';
-            const dur = j.last_duration_ms != null
+            // 调度体真实耗时 (now - scheduled_run_time, 含排队) 正常 ms~分钟级;
+            // >1h 只可能是轴2 修复前 recorder 的 epoch 垃圾 (1.79e12ms), 显示 '—'
+            const dur = j.last_duration_ms != null && j.last_duration_ms <= 3600000
                 ? (j.last_duration_ms >= 1000 ? (j.last_duration_ms / 1000).toFixed(1) + 's' : j.last_duration_ms + 'ms')
                 : '—';
             html += '<div class="pr-card">';

@@ -536,6 +536,22 @@ async def start_scheduler():
         replace_existing=True,
     )
 
+    # 轴2 补丁 (2026-11-04 晚): job_health 对账 — 死行会让"数据新鲜度"与
+    # "调度任务健康"两张卡永久红/永久垃圾耗时 (job 改名/停用后旧 id 的行
+    # 不再更新)。必须在全部 add_job + prune 完成之后调用 (jobstore=真实全集)。
+    try:
+        from db.job_health_ops import reconcile_job_health
+        _removed, _cleaned = reconcile_job_health(
+            {j.id for j in scheduler.get_jobs()}
+        )
+        if _removed or _cleaned:
+            logger.info(
+                "[job_health] 启动对账: 删除死行 %d (job 已不存在), 清理垃圾耗时 %d",
+                _removed, _cleaned,
+            )
+    except Exception as e:
+        logger.warning(f"[job_health] 启动对账失败 (非阻断): {e}")
+
     # V6.16: 断链 watchdog — 独立 asyncio task, 调度链被锁异常打断时自愈+告警
     global _watchdog_task
     _watchdog_task = asyncio.create_task(scheduler_watchdog_task(scheduler))
@@ -561,7 +577,6 @@ async def stop_scheduler():
 
 async def wait_inflight_fetches(timeout: float = 30):
     """V4.8.4: 优雅等待 in-flight fetch task 完成 (shutdown 时调用)
-
     stop_scheduler 只停调度器 (不再派发新 task), 但已通过 run_source_now 或
     _run_provider_batch 派发的 task 仍在运行. 若此时直接 close_browser 会
     导致正在使用的 context/page 崩溃. 本函数给它们一个优雅退出的窗口.
