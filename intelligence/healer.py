@@ -310,39 +310,61 @@ async def handle_parse_result(content: str, source) -> bool:
 
 
 async def _handle_price_aggregator_result(result: ParseResult, source):
-    """Phase 3.4: 把 price_aggregator 解析出的模型价格同步到 price_snapshots
+    """Phase 3.4: 把 price_aggregator 解析出的价格转成「待确认价行建议」。
+
+    2026-11-04 (P3): 不再直写 price_snapshots —— 这条路径的价格来自"key=value 行
+    解析"(启发式), 错价会立刻成为路由候选。现在只落 price_change_suggestions,
+    由 dashboard 批准后才真正写价行。
 
     期望 AI 在 content / summary / discount_desc 中给出 (model, input_price, output_price)
-    表。本实现采用保守的"key=value 行解析"，避免依赖结构化字段（Phase 3.2 未引入）。
-    未识别行被忽略，避免污染。
+    表。未识别行被忽略, 避免污染。
     """
-    from intelligence.pricing_sync import apply_price_change_to_route_cache, sync_price_change
+    from db import crud, price_suggestions
+    from db.engine import async_session_factory
+    from intelligence.model_resolver import resolve_canonical_model
 
     text = "\n".join(
         part for part in (result.discount_desc, result.content, result.summary) if part
     )
     rows = _parse_price_lines(text)
+    if not rows:
+        return
 
-    synced = 0
-    refreshed = 0
-    for model, input_price, output_price in rows:
-        change = await sync_price_change(
-            source.provider,
-            model,
-            input_price,
-            output_price,
-            source="crawler",
-        )
-        if change is None:
-            continue
-        synced += 1
-        if change.changed and await apply_price_change_to_route_cache(change):
-            refreshed += 1
+    suggested = 0
+    async with async_session_factory() as session:
+        channel = await crud.get_channel_by_provider(session, source.provider)
+        if channel is None:
+            logger.debug(
+                "price_aggregator 报价跳过: provider=%s 无 active channel",
+                source.provider,
+            )
+            return
 
-    if synced:
+        for model, input_price, output_price in rows:
+            resolution = await resolve_canonical_model(session, model)
+            if not resolution.resolved and "/" in model:
+                # 未解析的线名不写 canonical 键空间 (同 pricing_writer 口径)
+                continue
+            canonical = resolution.canonical or model
+            raw_model_id = model if resolution.resolved and canonical != model else None
+            row = await price_suggestions.suggest_price(
+                session,
+                channel_id=channel.id,
+                model=canonical,
+                input_price=input_price,
+                output_price=output_price,
+                raw_model_id=raw_model_id,
+                source="crawler",
+            )
+            if row is not None:
+                suggested += 1
+        await session.commit()
+
+    if suggested:
         logger.info(
-            "price_aggregator 同步: provider=%s synced=%s, refreshed=%s",
-            source.provider, synced, refreshed,
+            "price_aggregator 报价 → 价行建议: provider=%s suggested=%s "
+            "(待 dashboard 批准)",
+            source.provider, suggested,
         )
 
 

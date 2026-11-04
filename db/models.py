@@ -219,6 +219,46 @@ class PriceSnapshot(Base):
     channel = relationship("Channel", back_populates="price_snapshots")
 
 
+class PriceChangeSuggestion(Base):
+    """价行变更建议 (2026-11-04, P3)
+
+    intel 抓到的价格**不再直写 price_snapshots** —— 错价会立刻进路由候选
+    (价格是路由第一排序键), 人工完全来不及察觉。改为先进本表等人工批准:
+    approve → crud.upsert_price_snapshot 落库 + 精准刷该渠道路由缓存;
+    reject → 只标记, 不动价行。
+
+    去重语义: 同 (channel_id, model, price_type, time_range) 的 pending 只保留 1 条
+    (upsert 覆盖), 避免同一价行每天新增一行。已处理行 (approved/rejected) 保留
+    作审计轨迹。
+    """
+    __tablename__ = "price_change_suggestions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
+    model = Column(Text, nullable=False, comment="规范名 (路由键)")
+    raw_model_id = Column(Text, nullable=True, comment="上游线名 (严格 raw id 渠道用)")
+    price_type = Column(Text, default="normal", comment="normal/peak/offpeak/cache_hit")
+    time_range = Column(Text, default="全天")
+    input_price = Column(Float, nullable=True, comment="建议输入价 (元/百万tokens)")
+    output_price = Column(Float, nullable=True, comment="建议输出价")
+    old_input_price = Column(Float, nullable=True, comment="现存价行输入价 (无行=None)")
+    old_output_price = Column(Float, nullable=True, comment="现存价行输出价 (无行=None)")
+    source = Column(Text, default="crawler", comment="crawler / manual")
+    confidence = Column(Float, nullable=True)
+    status = Column(Text, default="pending", comment="pending / approved / rejected")
+    note = Column(Text, nullable=True, comment="人工备注 / 拒绝原因")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    resolved_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        # 只做查询索引, 不加唯一约束: pending 去重靠 crud 的 upsert (同键只保留 1 条
+        # pending), 而 approved/rejected 是审计轨迹 — 同一价行被拒过多次时必须能
+        # 各自留档, 加唯一约束反而会在第二次拒绝时撞键
+        Index("ix_pcs_channel_model_type", "channel_id", "model", "price_type", "time_range", "status"),
+    )
+
+
 class Promotion(Base):
     """优惠活动表（情报核心）"""
     __tablename__ = "promotions"

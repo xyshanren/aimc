@@ -1,15 +1,19 @@
 """Phase 4 v4.3 (2026-08-13): 价格快照写入器
 
-把 AI 解析出的 pricing 列表（ParseResult.models[].pricing）增量 upsert 到 price_snapshots 表。
+2026-11-04 (P3): 语义已改 —— **不再直写 price_snapshots**。
+intel 解析出的价格先落 `price_change_suggestions` (待确认价行建议),
+人工批准后才写价行并精准刷该渠道路由缓存。原因: 价格是路由第一排序键,
+错价会立刻改变路由与成本记账, 且 intel 定价页解析本就容易错行。
+
 支持 3 种 price_type:
 - normal: 常规按量计费
 - cache_hit: 上下文缓存命中
 - free: 完全免费
 
 设计:
-- 每个 (channel, model, price_type, time_range) 唯一 upsert
-- 改价时刷新 router cache (跟 Phase 3.4 sync_price_change 一致)
-- id 缺失 (channel 不存在) 时跳过, 不污染
+- 每个 (channel, model, price_type, time_range) 只保留 1 条 pending 建议
+- 与现价相同 → 不产建议 (不打扰人)
+- channel 不存在时跳过, 不污染
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from __future__ import annotations
 import logging
 from typing import Iterable, Optional
 
-from db import crud
+from db import crud, price_suggestions
 from db.engine import async_session_factory
 from db.models import Channel, PriceSnapshot
 from sqlalchemy import select
@@ -100,16 +104,17 @@ async def _upsert_pricing_for_model(
     channel_id: int,
     item: ModelIntelItem,
 ) -> tuple[int, int]:
-    """单个 model 的所有 pricing 项 upsert 到 price_snapshots。
+    """单个 model 的 pricing 项 → 写「待确认价行建议」(P3, 2026-11-04)。
 
-    2026-11-04 (O1 小修): 写前先解析规范名, 并把上游线名一起写进 raw_model_id。
-    原因: `price_snapshots.model` 是**路由键**。intel 的 model_id 可能是展示名/线名
-    (`deepseek-ai/DeepSeek-V4.1-Flash`), 直接写会造出一条永远不会被 group 路由命中的
-    脏 canonical 行; 而严格 raw id 渠道 (siliconflow) 又要求规范名行带 raw_model_id,
-    否则 proxy 会把规范名裸发上游 (400 model not exist)。
+    语义变更: **不再直写 price_snapshots**。价格是路由第一排序键, intel 错价会
+    立刻改变路由与成本记账, 人工来不及察觉。现在只落 `price_change_suggestions`
+    (与现价相同则不产建议), 由 dashboard 批准后才写价行并刷缓存。
+
+    保留 O1 的规范名解析: `price_snapshots.model` 是路由键, intel 的展示名/线名
+    必须先解析成 canonical, 上游线名写进 raw_model_id (严格 raw id 渠道必需)。
 
     Returns:
-        (synced_count, refreshed_count)
+        (suggested_count, 0) 第二个返回值保留签名兼容, 不再有"刷缓存"语义
     """
     from intelligence.model_resolver import resolve_canonical_model
 
@@ -130,35 +135,28 @@ async def _upsert_pricing_for_model(
         )
         return 0, 0
 
-    synced = 0
-    refreshed = 0
-    wrote_any = False
+    suggested = 0
     for pricing in item.pricing:
         try:
-            _, _created = await crud.upsert_price_snapshot(
+            row = await price_suggestions.suggest_price(
                 session,
                 channel_id=channel_id,
                 model=canonical,
                 input_price=pricing.input_price,
                 output_price=pricing.output_price,
-                source="crawler",
+                raw_model_id=raw_model_id,
                 price_type=pricing.type,
                 time_range=pricing.time_range or "全天",
-                raw_model_id=raw_model_id,
+                source="crawler",
             )
         except Exception as e:
             logger.warning(
-                "pricing_writer upsert 失败: channel_id=%s model=%s type=%s err=%s",
+                "pricing_writer 写价行建议失败: channel_id=%s model=%s type=%s err=%s",
                 channel_id, canonical, pricing.type, e,
             )
             continue
 
-        synced += 1
-        wrote_any = True
+        if row is not None:
+            suggested += 1
 
-    # 价格落库 → 精准刷该渠道路由缓存 (幂等且便宜, 见 _invalidate_channel_price)
-    if wrote_any:
-        if await _invalidate_channel_price(channel_id):
-            refreshed += 1
-
-    return synced, refreshed
+    return suggested, 0

@@ -857,6 +857,127 @@ function renderPendingReview(container) {
     }
 }
 
+// ==== 2026-11-04 (P3): 待确认价行建议 ====
+async function approvePriceSuggestion(id, btn) {
+    if (!confirm(`批准价行建议 #${id} ?\n\n会写入 price_snapshots 并立即刷该渠道路由缓存`)) return;
+    try {
+        const resp = await authFetch(`/dashboard/api/price-suggestions/${id}/approve`, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) { alert('批准失败: ' + (data.detail || resp.statusText)); return; }
+        const card = btn.closest('.pr-card');
+        if (card) card.remove();
+        const summary = document.getElementById('ps-summary');
+        if (summary) {
+            const n = Math.max(0, parseInt(summary.textContent.replace(/\D/g, '') || '0', 10) - 1);
+            summary.textContent = `${n} 条待确认`;
+        }
+    } catch (e) { alert('网络错误: ' + e.message); }
+}
+
+async function rejectPriceSuggestion(id, btn) {
+    if (!confirm(`拒绝价行建议 #${id} ? 不会修改任何价行`)) return;
+    try {
+        const resp = await authFetch(`/dashboard/api/price-suggestions/${id}/reject`, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) { alert('拒绝失败: ' + (data.detail || resp.statusText)); return; }
+        const card = btn.closest('.pr-card');
+        if (card) card.remove();
+        const summary = document.getElementById('ps-summary');
+        if (summary) {
+            const n = Math.max(0, parseInt(summary.textContent.replace(/\D/g, '') || '0', 10) - 1);
+            summary.textContent = `${n} 条待确认`;
+        }
+    } catch (e) { alert('网络错误: ' + e.message); }
+}
+
+function renderPriceSuggestions(container) {
+    try {
+        const data = JSON.parse(container.textContent);
+        const items = data.items || [];
+        if (items.length === 0) {
+            container.innerHTML = '<p class="loading">✓ 当前无待确认价行建议</p>';
+            return;
+        }
+        const fmtP = (v) => (v === null || v === undefined) ? '—' : String(v);
+        let html = `<p class="meta">共 <strong id="ps-summary">${esc(data.count)} 条待确认</strong>，批准后才写入价格表</p>`;
+        for (const item of items) {
+            const created = item.created_at ? new Date(item.created_at).toLocaleString('zh-CN') : '?';
+            const rawTag = item.raw_model_id
+                ? `<span class="pr-provider" title="上游线名 (proxy 发这个)">↑ ${esc(item.raw_model_id)}</span>`
+                : '';
+            const verTag = item.price_type && item.price_type !== 'normal'
+                ? `<span class="pr-warn">${esc(item.price_type)}</span>` : '';
+            const timeTag = item.time_range && item.time_range !== '全天'
+                ? `<span class="pr-provider">${esc(item.time_range)}</span>` : '';
+            html += `<div class="pr-card">
+                <div class="pr-row">
+                    <span class="pr-provider">${esc(item.channel_name || ('ch#' + item.channel_id))}</span>
+                    <code class="pr-model">${esc(item.model)}</code>
+                    ${rawTag}${verTag}${timeTag}
+                    <span class="pr-field">价格</span>
+                    <span class="pr-old">${fmtP(item.old_input_price)} / ${fmtP(item.old_output_price)}</span>
+                    <span class="pr-arrow">→</span>
+                    <span class="pr-new">${fmtP(item.input_price)} / ${fmtP(item.output_price)}</span>
+                    <span class="pr-time">${esc(created)}</span>
+                </div>
+                <div class="pr-actions">
+                    <button class="btn-approve" onclick="approvePriceSuggestion(${item.id}, this)">批准</button>
+                    <button class="btn-reject" onclick="rejectPriceSuggestion(${item.id}, this)">拒绝</button>
+                </div>
+            </div>`;
+        }
+        container.innerHTML = html;
+    } catch (e) {
+        console.error('renderPriceSuggestions failed:', e);
+        container.innerHTML = '<p class="loading">渲染失败: ' + esc(e.message) + '</p>';
+    }
+}
+
+// ==== 2026-11-04 (P4): 发现但不可路由 ====
+// 口径: registry 有行 (status != deprecated) + 没有任何 active 渠道价行。
+// 页面侧用两个既有端点合成 (registry/models + prices), 不新增后端查询。
+async function loadUnroutableModels() {
+    const container = document.getElementById('unroutable-list');
+    if (!container) return;
+    try {
+        const [regResp, priceResp] = await Promise.all([
+            authFetch('/dashboard/api/registry/models'),
+            authFetch('/dashboard/api/prices'),
+        ]);
+        if (!regResp.ok || !priceResp.ok) throw new Error('HTTP ' + regResp.status + '/' + priceResp.status);
+        const reg = await regResp.json();
+        const prices = await priceResp.json();
+        const priced = new Set((prices || []).map(p => p.model));
+        const list = (reg.models || []).filter(m => m.status !== 'deprecated' && !priced.has(m.model_id));
+        if (list.length === 0) {
+            container.innerHTML = '<p class="loading">✓ registry 内模型都有 active 渠道价行</p>';
+            return;
+        }
+        // active 在前 (语义上"想要它"却没价行 = 待补), inactive 表示还没配渠道
+        list.sort((a, b) => (a.status === b.status ? a.model_id.localeCompare(b.model_id) : (a.status === 'active' ? -1 : 1)));
+        let html = `<p class="meta">共 <strong>${list.length}</strong> 个模型有 registry 行但选不到 (缺规范名价行)</p>`;
+        html += '<table class="data-table" style="width:100%;font-size:12px;"><thead><tr>'
+            + '<th>model_id</th><th>tier</th><th>状态</th><th>模态</th><th>建议</th>'
+            + '</tr></thead><tbody>';
+        for (const m of list) {
+            const hint = m.status === 'active'
+                ? '去「价格表」给某渠道配一条规范名价行'
+                : '先确认渠道真供应, 再配价行 (无渠道会保持 inactive)';
+            html += '<tr>'
+                + '<td><code>' + esc(m.model_id) + '</code></td>'
+                + '<td>' + esc(m.tier || '—') + '</td>'
+                + '<td>' + esc(m.status) + '</td>'
+                + '<td>' + esc(m.modality || '—') + '</td>'
+                + '<td class="text-muted">' + esc(hint) + '</td>'
+                + '</tr>';
+        }
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
+    }
+}
+
 // V4.8.4: 低置信度优惠审查队列
 function renderPromotionReview(container) {
     try {
@@ -3099,6 +3220,8 @@ function loadRegistryGroupsCard() { return loadJsonCard('registry-groups-list', 
 function loadPromotionsCard() { return loadJsonCard('promotions-list', '/dashboard/api/promotions', renderPromotions); }
 function loadPromotionReviewsCard() { return loadJsonCard('promotion-review-list', '/dashboard/api/promotion-reviews', renderPromotionReview); }
 function loadPendingReviewCard() { return loadJsonCard('pending-review-list', '/dashboard/api/pending-review', renderPendingReview); }
+function loadPriceSuggestionsCard() { return loadJsonCard('price-suggestions-list', '/dashboard/api/price-suggestions', renderPriceSuggestions); }
+function loadUnroutableCard() { return loadUnroutableModels(); }
 function loadAccountsCard() { loadAccounts(); loadActiveChannels(); }
 // loadWeeklyReportLatest 定义在周报 markdown 渲染区 (带 marked.parse, 此处不重复)
 
@@ -3269,7 +3392,7 @@ const PAGE_ROUTES = {
     // 周报周级生成 — 以上均只在进页时加载一次 (once).
     // 注意: 情报页三张审批卡必须留在轮询 — 批准/拒绝只做本地 card.remove(), 卡间联动全靠轮询.
     channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard], once: [loadUnpricedCard, loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
-    intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard], once: [loadReportsList, loadWeeklyReportLatest] },
+    intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard, loadPriceSuggestionsCard, loadUnroutableCard], once: [loadReportsList, loadWeeklyReportLatest] },
     ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadJobsHealth, loadSuggestionsList, loadAccountsCard, loadAutoJoinMetrics], once: [loadUserKeys, loadSources, renderMetricDefs] },
 };
 

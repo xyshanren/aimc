@@ -2335,6 +2335,87 @@ async def get_prices(session: AsyncSession = Depends(get_session)):
     ]
 
 
+# === 价行建议队列 (P3, 2026-11-04): intel 报价先过人工 ===
+
+@router.get("/api/price-suggestions")
+async def get_price_suggestions(
+    status: str = Query("pending", description="pending / approved / rejected"),
+    limit: int = Query(100, ge=1, le=500),
+    session: AsyncSession = Depends(get_session),
+):
+    """列出价行建议 (默认 pending), 带渠道名, 供看板审批"""
+    from db import price_suggestions as ps
+
+    rows = await ps.list_suggestions(session, status=status, limit=limit)
+    items = [
+        {
+            "id": sug.id,
+            "channel_id": sug.channel_id,
+            "channel_name": channel_name,
+            "model": sug.model,
+            "raw_model_id": sug.raw_model_id,
+            "price_type": sug.price_type,
+            "time_range": sug.time_range,
+            "input_price": sug.input_price,
+            "output_price": sug.output_price,
+            "old_input_price": sug.old_input_price,
+            "old_output_price": sug.old_output_price,
+            "source": sug.source,
+            "confidence": sug.confidence,
+            "status": sug.status,
+            "created_at": sug.created_at.isoformat() if sug.created_at else None,
+        }
+        for sug, channel_name in rows
+    ]
+    return {"count": len(items), "items": items}
+
+
+@router.post("/api/price-suggestions/{suggestion_id}/approve")
+async def approve_price_suggestion(
+    suggestion_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """批准价行建议 → 写 price_snapshots + 精准刷该渠道路由缓存"""
+    from db import price_suggestions as ps
+
+    row, applied = await ps.approve_suggestion(session, suggestion_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Price suggestion {suggestion_id} not found")
+    await session.commit()
+
+    refreshed = False
+    if applied:
+        try:
+            from gateway.router import route_engine
+            await route_engine.invalidate_price(row.channel_id)
+            refreshed = True
+        except Exception as e:
+            logger.warning("价行建议批准后刷路由缓存失败: id=%s err=%s", suggestion_id, e)
+
+    return {
+        "status": row.status,
+        "id": row.id,
+        "model": row.model,
+        "channel_id": row.channel_id,
+        "cache_refreshed": refreshed,
+    }
+
+
+@router.post("/api/price-suggestions/{suggestion_id}/reject")
+async def reject_price_suggestion(
+    suggestion_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """拒绝价行建议 (只标记, 不动价行)"""
+    from db import price_suggestions as ps
+
+    row = await ps.reject_suggestion(session, suggestion_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Price suggestion {suggestion_id} not found")
+    await session.commit()
+    return {"status": row.status, "id": row.id, "model": row.model}
+
+
 @router.post("/api/sources/run-now")
 async def run_source_now(provider: str = Query(..., description="厂商标识，如 deepseek / qwen / glm")):
     """手动触发指定 provider 的情报采集（不等定时器）

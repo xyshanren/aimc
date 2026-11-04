@@ -359,6 +359,7 @@ async def test_alias_log_short_circuits_next_scan(db_session):
 # 4. pricing_writer: 规范名 + raw_model_id
 # ============================================================
 async def test_pricing_writer_writes_canonical_plus_raw(db_session, monkeypatch):
+    """P3 (2026-11-04): 价行建议而非直写 —— 规范名 + raw id 落在建议里"""
     from schemas.intel import ModelIntelItem, ModelPricingItem
     from intelligence.pricing_writer import _upsert_pricing_for_model
     await _seed_registry(db_session, "deepseek-flash")
@@ -367,15 +368,6 @@ async def test_pricing_writer_writes_canonical_plus_raw(db_session, monkeypatch)
         raw_model_id="deepseek-ai/DeepSeek-V4.1-Flash-1017",
     )
     ch = await _seed_channel_and_price(db_session, "deepseek", "deepseek-official")
-    # 路由缓存刷新走真实 route_engine 太重, 改 patch 掉 _invalidate_channel_price
-    import intelligence.pricing_writer as pw
-    calls = []
-
-    async def _fake_invalidate(channel_id):
-        calls.append(channel_id)
-        return True
-
-    monkeypatch.setattr(pw, "_invalidate_channel_price", _fake_invalidate)
 
     item = ModelIntelItem(
         model_id="DeepSeek-V4.1-Flash", family="deepseek",
@@ -387,21 +379,87 @@ async def test_pricing_writer_writes_canonical_plus_raw(db_session, monkeypatch)
         source_provider="modelscope",
     )
 
+    suggested, _ = await _upsert_pricing_for_model(db_session, ch, item)
+    assert suggested == 1, "应产出一条价行建议"
+
+    from db import price_suggestions as ps
+    pending = await ps.list_suggestions(db_session, status="pending")
+    assert len(pending) == 1
+    sug = pending[0][0]
+    assert sug.channel_id == ch
+    assert sug.model == "deepseek-flash", "建议必须落规范名 (路由键)"
+    assert sug.raw_model_id == "DeepSeek-V4.1-Flash", "上游线名一并带上"
+    assert (sug.input_price, sug.output_price) == (1.0, 2.0)
+
+    # 批准前: 该渠道上不应有 deepseek-flash 价行 (种子只给了 deepseek-official)
     from db.models import PriceSnapshot
     from sqlalchemy import select
-    async with db_session.begin_nested():
-        synced, refreshed = await _upsert_pricing_for_model(db_session, ch, item)
-    assert synced == 1
-    assert refreshed == 1, "写价后应精准刷该渠道路由缓存"
+    before = (await db_session.execute(
+        select(PriceSnapshot).where(
+            PriceSnapshot.channel_id == ch,
+            PriceSnapshot.model == "deepseek-flash",
+        )
+    )).scalars().all()
+    assert before == [], "未批准前不应写价行"
+
+    # 批准 → 写价行
+    row, applied = await ps.approve_suggestion(db_session, sug.id)
+    assert applied is True
+    assert row.status == "approved"
+    after = (await db_session.execute(
+        select(PriceSnapshot).where(
+            PriceSnapshot.channel_id == ch,
+            PriceSnapshot.model == "deepseek-flash",
+        )
+    )).scalars().all()
+    assert len(after) == 1
+    assert after[0].model == "deepseek-flash"
+    assert after[0].raw_model_id == "DeepSeek-V4.1-Flash"
+    assert (after[0].input_price, after[0].output_price) == (1.0, 2.0)
+
+
+async def test_suggest_price_skips_when_unchanged(db_session):
+    """与现价相同 → 不产建议 (不打扰人); 改价才产建议"""
+    from db import price_suggestions as ps
+    ch = await _seed_channel_and_price(db_session, "deepseek", "deepseek-flash")
+
+    first = await ps.suggest_price(
+        db_session, ch, "deepseek-flash", 0.001, 0.002, source="crawler",
+    )
+    assert first is None, "与现价一致不应产建议"
+
+    second = await ps.suggest_price(
+        db_session, ch, "deepseek-flash", 0.5, 0.9, source="crawler",
+    )
+    assert second is not None
+    assert second.old_input_price == 0.001 and second.old_output_price == 0.002
+
+    # 重复扫到同一值 → 覆盖同一条 pending (不新增)
+    third = await ps.suggest_price(
+        db_session, ch, "deepseek-flash", 0.5, 0.9, source="crawler",
+    )
+    assert third.id == second.id
+    pending = await ps.list_suggestions(db_session, status="pending")
+    assert len(pending) == 1
+
+
+async def test_reject_suggestion_leaves_price_untouched(db_session):
+    from db import price_suggestions as ps
+    from db.models import PriceSnapshot
+    from sqlalchemy import select
+    ch = await _seed_channel_and_price(db_session, "deepseek", "deepseek-flash")
+    sug = await ps.suggest_price(db_session, ch, "deepseek-flash", 9.0, 9.0)
+
+    row = await ps.reject_suggestion(db_session, sug.id, note="test reject")
+    assert row.status == "rejected"
 
     rows = (await db_session.execute(
-        select(PriceSnapshot).where(PriceSnapshot.model == "deepseek-flash")
+        select(PriceSnapshot).where(PriceSnapshot.channel_id == ch)
     )).scalars().all()
-    assert rows, "应存在规范名价行"
-    assert any(r.raw_model_id == "DeepSeek-V4.1-Flash" for r in rows), (
-        "规范名行必须带上游线名"
+    assert len(rows) == 1
+    assert (rows[0].input_price, rows[0].output_price) == (0.001, 0.002), (
+        "拒绝后价行必须保持原值"
     )
-    assert calls == [ch]
 
 
 async def test_pricing_writer_skips_unresolved_wire_name(db_session):

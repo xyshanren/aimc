@@ -136,8 +136,19 @@ pending 分支**不校验可供应性**，于是这些名字全部变成待确�
 | P0 | 批准弹窗文案按 field 如实说明；volcengine 源代码级停用 | ✅ 已完成 |
 | P1 | C 闸门 + A 的确定性 resolver（只建议）、pending 附 resolved 字段 | ✅ 已完成 (O1) |
 | P2 | 价行链路接入 resolver + raw_model_id（pricing_writer 小修，不动审批流） | ✅ 已完成 (O1)；`model_alias` 表仍不建 |
-| P3 | 价行「建议 → 审批」队列化（`pricing_writer` 不再直写） | ⏳ 另立项 |
-| P4 | 看板「发现但不可路由」清单（段2/段3 健康链可视化） | ⏳ 未拍板 |
+| P3 | 价行「建议 → 审批」队列化 | ✅ 已完成 (2026-11-04)：`price_change_suggestions` 表 + `db/price_suggestions.py`；`pricing_writer` 与 `_handle_price_aggregator_result` 都改走建议，批准后才写价行并 `invalidate_price`；promotion 价行保持直写（上游已人工审查） |
+| P4 | 看板「发现但不可路由」清单 | ✅ 已完成 (2026-11-04)：情报页卡片，页面侧用 `/api/registry/models` + `/api/prices` 合成（registry 有行 ∧ 无 active 渠道价行） |
+
+### 3.5 P3/P4 实现要点（2026-11-04）
+
+- **P3 语义**：intel 报价不再直写 `price_snapshots`。`suggest_price()` 先与现价比对，
+  **相同则不出建议**（不打扰人）；同 `(channel, model, price_type, time_range)` 的 pending
+  只保留 1 条；`approved/rejected` 保留为审计轨迹（故不加唯一约束，否则二次拒绝会撞键）。
+  批准 = `upsert_price_snapshot` + `invalidate_price(channel_id)`；重复批准幂等且不刷缓存
+  （`approve_suggestion` 返回 `(row, applied)`）。
+- **P4 口径**：registry 有行 + `status != deprecated` + 没有任何 **active 渠道**的价行。
+  纯展示层合成，不新增后端查询 —— 口径依赖 `/api/prices`（已按 active 渠道过滤）与
+  `/api/registry/models`，两者本就是看板既有数据源。
 
 ## 4. 采集源治理盘点（2026-11-04 生产实测）
 
@@ -163,7 +174,32 @@ pending 分支**不校验可供应性**，于是这些名字全部变成待确�
 建议（待拍板）：启动时对已存在的周级 job 保留原 `next_run_time`（存在即跳过 re-add），
 或给 benchmark 类源改用日级 tick + 内部周闸门。
 
-### 4.4 已落地
+✅ 已修 (2026-11-04, 94f7003)：`_batch_job_add_kwargs` 对 ≥604800s 的 job 保留原
+`next_run_time`（未来保留 / 过期补跑 / 暂停不唤醒）。**并且**发现 `scheduler.start()`
+原本在 `start_scheduler()` 末尾 —— APScheduler 在 `STATE_STOPPED` 时 `get_job/get_jobs`
+只查本进程 pending、不读 jobstore，导致这套逻辑与 V6.5 S12 的残留清理此前全部空转；
+修法 = listener + `start()` 提前到注册/清理之前。
+
+### 4.5 benchmark 死链：5 个源代码级停用（2026-11-04）
+`scripts/refresh_benchmark.py` 是唯一写 `model_cards`（→ `score_bonus` 影响路由排序）的
+入口，**未被任何 timer/cron/scheduler 调度**；benchmark 源抓取结果只会以 promotions
+形式进库，且 artificial_analysis / livebench / opencompass 在失败时回退 **mock 分数**。
+故 lmsys / superclue / artificial_analysis / livebench / opencompass 全部 `enabled=False`。
+将来若要做 benchmark 评分：先给 `refresh_benchmark` 排调度，再让 mock 回退变成诚实失败。
+
+### 4.6 盲区审计追加两条规则（2026-11-04）
+- **Rule C**：代码里启用、但库里没有任何状态行 → 从未真正执行过（成功/失败都会 upsert
+  行，所以"无行"只可能是没跑过）。此前 Rule A 只扫 `status=active` 的行，这类天然是盲区。
+- **Rule D**：孤儿行（DB 有行 / 代码里已无该源）。状态键 `(provider, url)` 在源 URL
+  变更后会留旧行，采集管理页只渲染内存源 → 不可见也不可管。
+两规则都只告警（7 天节流），不自动删。
+
+### 4.7 一次性清理（2026-11-04 已执行，含备份）
+- 6 条 volcengine 垃圾 pending（id 58-63）→ `approved=-1`；
+- 7 条孤儿行（id 35-41）→ `DELETE`；备份在
+  `/opt/aimc/backups/intel_{cap_log,sources}_20261104_184712.sql.gz`。
+
+### 4.8 已落地（P0）
 - `enabled=False` 从"装饰性字段"变成真闸门：调度注册、手动触发、`_run_source_task`
   三处短路；dashboard 显示「已下线(代码)」并灰掉开关/采集按钮；toggle/run-now 返回 409。
 - 生产库 `intel_sources#32 (volcengine)` 已置 `disabled`（即时止血，无需等发版）。
