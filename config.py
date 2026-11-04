@@ -188,7 +188,21 @@ class Settings(BaseSettings):
         # 收官) 均已满足, 对外版本不带临时态。历史坑留档: 估算器图片按 1000/张
         # 平算会低估游戏截图 (~2-3k token/张), 高图量请求 est 多落 7-10k 带 ——
         # 门槛与估算器校准联动时须复核 [[估算器图片加权]] 候选改进。
+        # 注: 2026-11-04 起支持模型级覆盖 (见 channel_model_min_input_tokens):
+        # 渠道级门槛对渠道内所有模型一视同仁, 但 taotoken_coding 内两模型的
+        # 供给生态不同 (glm-5.3-flash 有 minimax 顶包 / deepseek-flash 是
+        # flagship 唯一 0 元走量位)。
         default_factory=lambda: {"taotoken_coding": 30000},
+    )
+    # 模型级体量准入 (2026-11-04): {渠道名: {模型名: min}} — 优先于渠道级门槛,
+    # 未列的模型回落渠道级。背景 (生产数据): deepseek-flash 7d 内 2666 笔落
+    # 付费 deepseek_official (¥27.17), 因 sensenova 免费面 93% 失败 (160/172)
+    # 而 taotoken 0 元供给被渠道级 30000 门槛挡在门外; 该模型在 tier:flagship
+    # 是位次第一 (100) 的主力位, 10-30k 带 14 天 466 笔里 387 笔在烧钱。
+    # 7000 = 11-01~11-03 实战验证值 (零 429, tt 400-600/5h vs 帽 2000/5h),
+    # 水位线 (≥1200/5h 降级) + 次数帽仍是熔断器, 洪泛时自动让位。
+    channel_model_min_input_tokens: dict = Field(
+        default_factory=lambda: {"taotoken_coding": {"deepseek-flash": 7000}},
     )
 
     # === V6.x 水位线/429 突发软降级 (2026-11-01) ===

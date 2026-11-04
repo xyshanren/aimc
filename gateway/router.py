@@ -1001,13 +1001,26 @@ class RouteEngine:
         # 即: 小请求优先 sensenova, 大请求走 taotoken; 一方不可用时另一方兜底。
         _min_map = getattr(settings, "channel_min_input_tokens", None) or {}
         _max_map = getattr(settings, "channel_max_input_tokens", None) or {}
-        if (_min_map or _max_map) and messages:
+        # 模型级门槛 (2026-11-04): 渠道内不同模型的供给生态不同 — taotoken_coding
+        # 的 glm-5.3-flash 有 minimax 顶包 (渠道级 30000 合适), deepseek-flash 是
+        # tier:flagship 唯一 0 元走量位 (渠道级门槛把它锁在门外 → 流量落付费
+        # deepseek_official)。模型级优先, 未列的模型回落渠道级。
+        _model_min_map = getattr(settings, "channel_model_min_input_tokens", None) or {}
+        if (_min_map or _max_map or _model_min_map) and messages:
             # est=0 (极小请求) 对上界无影响, 对下界意味着 "远低于窗" — 必须参与判定
             _est_in = _estimate_input_tokens(messages)
 
+            def _min_for(ch_name, price_model):
+                """模型级 min 优先, 回落渠道级 (None = 无下界)"""
+                lo = (_model_min_map.get(ch_name) or {}).get(price_model)
+                if lo is None:
+                    lo = _min_map.get(ch_name)
+                return lo
+
             def _out_of_window(pair):
-                ch, _ = pair
-                lo = _min_map.get(ch["name"])
+                ch, price = pair
+                price_model = price.get("model") if isinstance(price, dict) else None
+                lo = _min_for(ch["name"], price_model)
                 hi = _max_map.get(ch["name"])
                 return (lo is not None and _est_in < lo) or (
                     hi is not None and _est_in > hi)
@@ -1025,7 +1038,8 @@ class RouteEngine:
             # taotoken (deepseek_for_coding / glm_for_coding 双桶共同承担; 用户
             # 拍板: taotoken 按**次数**计费, 次数留给 sensenova 接不住的大请求,
             # 直连大请求同样落 taotoken)。taotoken 全不可用 → 保持原候选 (宁试不 503)。
-            _tt_min = _min_map.get("taotoken_coding")
+            # V6.10 收敛门槛同样走模型级 (deepseek-flash 7000 / glm-5.3-flash 30000)
+            _tt_min = _min_for("taotoken_coding", model)
             if _tt_min is not None and _est_in >= _tt_min:
                 _min_price = min(
                     (p.get("input_price") for _, p in candidates
