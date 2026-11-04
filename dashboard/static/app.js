@@ -936,6 +936,18 @@ function renderPriceSuggestions(container) {
 // ==== 2026-11-04 (P4): 发现但不可路由 ====
 // 口径: registry 有行 (status != deprecated) + 没有任何 active 渠道价行。
 // 页面侧用两个既有端点合成 (registry/models + prices), 不新增后端查询。
+// 非聊天类关键词与 gateway/group_rules.NON_CHAT_KW 同源 (那边是单一事实源;
+// 这里是展示层过滤, 若那边新增关键词需同步, 否则只是多列几条不痛)。
+const NON_CHAT_KW_JS = [
+    'embed', 'rerank', 'asr', 'speech', 'voice', 'tts', 'ocr', 'image',
+    'video', 'i2v', 't2v', 'caption', 'kolors', 'lora', 'diffusion',
+    'gsr', 'flux', '/wan',
+];
+function isChatModelId(modelId) {
+    const low = (modelId || '').toLowerCase();
+    return !NON_CHAT_KW_JS.some(k => low.includes(k));
+}
+
 async function loadUnroutableModels() {
     const container = document.getElementById('unroutable-list');
     if (!container) return;
@@ -948,18 +960,27 @@ async function loadUnroutableModels() {
         const reg = await regResp.json();
         const prices = await priceResp.json();
         const priced = new Set((prices || []).map(p => p.model));
-        const list = (reg.models || []).filter(m => m.status !== 'deprecated' && !priced.has(m.model_id));
-        if (list.length === 0) {
+        const missing = (reg.models || []).filter(m => m.status !== 'deprecated' && !priced.has(m.model_id));
+        const list = missing.filter(m => isChatModelId(m.model_id));
+        const nonChat = missing.length - list.length;
+        if (missing.length === 0) {
             container.innerHTML = '<p class="loading">✓ registry 内模型都有 active 渠道价行</p>';
+            return;
+        }
+        let html = `<p class="meta">共 <strong>${list.length}</strong> 个聊天模型有 registry 行但选不到 (缺规范名价行)`
+            + (nonChat ? ` · 另有 ${nonChat} 个非聊天类(向量/重排/生图等)未列` : '')
+            + '</p>';
+        if (list.length === 0) {
+            container.innerHTML = html;
             return;
         }
         // active 在前 (语义上"想要它"却没价行 = 待补), inactive 表示还没配渠道
         list.sort((a, b) => (a.status === b.status ? a.model_id.localeCompare(b.model_id) : (a.status === 'active' ? -1 : 1)));
-        let html = `<p class="meta">共 <strong>${list.length}</strong> 个模型有 registry 行但选不到 (缺规范名价行)</p>`;
+        const shown = list.slice(0, 50);
         html += '<table class="data-table" style="width:100%;font-size:12px;"><thead><tr>'
             + '<th>model_id</th><th>tier</th><th>状态</th><th>模态</th><th>建议</th>'
             + '</tr></thead><tbody>';
-        for (const m of list) {
+        for (const m of shown) {
             const hint = m.status === 'active'
                 ? '去「价格表」给某渠道配一条规范名价行'
                 : '先确认渠道真供应, 再配价行 (无渠道会保持 inactive)';
