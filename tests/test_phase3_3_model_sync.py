@@ -190,6 +190,10 @@ def _install_mock_db():
 
     model_sync.async_session_factory = _factory
 
+    # 2026-11-04 (O1): 本文件用 mock session, 查不到价行/上游列表 → 显式关掉供给闸门
+    # (否则所有 model 都被判"无供应证据" → 走 unsupplied 分支, 断言全变)
+    model_sync.SUPPLY_GATE_ENABLED = False
+
     return _state
 
 

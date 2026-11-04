@@ -25,6 +25,11 @@ from typing import Optional
 
 from db import crud
 from db.engine import async_session_factory
+from intelligence.model_resolver import (
+    Resolution,
+    is_suppliable_by_any_channel,
+    resolve_canonical_model,
+)
 from schemas.intel import ModelIntelItem
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,12 @@ logger = logging.getLogger(__name__)
 # 自动动作的置信度阈值
 JOIN_THRESHOLD = 0.8
 LEAVE_THRESHOLD = 0.9
+
+# O1 (2026-11-04): 供给侧闸门 — 本站没有任何供应证据 (无价行 / 无上游列表 / 无该厂商
+# 渠道) 的模型不进待确认队列 (实证: volcengine 文档页上的 Seedream / Seedance 等
+# 只有名字的 metadata 把队列刷成噪声)。单元测试用 mock session 时没有供给证据可查,
+# 会整体降级 → 那些用例显式把本开关置 False (见 test_phase3_3 / test_phase3_5)。
+SUPPLY_GATE_ENABLED = True
 
 # Phase 4 v4.3.1 (2026-08-13): T1/T2/T3 也可自动入组 (默认关闭, 跟现有 T0-only 默认行为兼容)
 # V6.4 S3 (2026-09-11): F3 观察期收口, 用户拍板 S3 — 开启 T1-T3 自动入组但加置信门槛.
@@ -55,7 +66,10 @@ class SyncResult:
     """单条 model 元信息的处理结果"""
 
     model_id: str
-    action: str  # auto_joined / auto_left / pending_review / rejected / noop
+    # auto_joined / auto_left / pending_review / rejected / noop
+    # 2026-11-04 (O1): + unsupplied (本站无供应证据, 未入队)
+    #                  + resolved   (已解析到现网模型, 未入队)
+    action: str
     confidence: float
     target_group: Optional[str] = None
     reason: str = ""
@@ -171,6 +185,67 @@ async def _find_target_group(session, inferred_tier: str) -> Optional[str]:
     return None
 
 
+async def _assess_supply(
+    session, item: ModelIntelItem,
+) -> tuple[Optional[Resolution], bool, Optional[str]]:
+    """解析 canonical + 判供给（O1 闸门）
+
+    Returns:
+        (resolution, suppliable, supply_reason)
+        - 闸门关闭 / 解析异常 → (None, True, None): 降级为旧行为 (照常写 pending),
+          解析层是增强项, 不能因为它挂了就吞掉情报。
+    """
+    if not SUPPLY_GATE_ENABLED:
+        return None, True, None
+    try:
+        resolution = await resolve_canonical_model(
+            session, item.model_id, item.display_name,
+        )
+        suppliable, reason = await is_suppliable_by_any_channel(
+            session,
+            raw_model_id=item.model_id,
+            canonical=resolution.canonical,
+            source_provider=item.source_provider,
+        )
+        return resolution, suppliable, reason
+    except Exception as e:
+        logger.warning(
+            "模型名解析/供给判定失败, 降级为旧行为: model=%s err=%s",
+            item.model_id, e,
+        )
+        return None, True, None
+
+
+async def _log_resolution_conflicts(
+    session, canonical: str, item: ModelIntelItem,
+) -> list[str]:
+    """解析命中现网模型后, 只把"真冲突"写进应用日志 (不落待确认队列)
+
+    2026-11-04 决策: 队列只放"要人做决定"的东西。既然已经确定是现网模型,
+    intel 说的 modality / context_length 与 registry 不一致只是**参考信息**,
+    落一条 approved=0 的日志只会重新制造噪声 (而且 approve 对这些字段本来
+    也不生效, 见 crud.approve_capability_change)。
+    """
+    registry = await crud.get_model_registry(session, canonical)
+    if registry is None:
+        return []
+    diffs: list[str] = []
+    if item.modality and registry.modality and item.modality != registry.modality:
+        diffs.append(f"modality {registry.modality}→{item.modality}")
+    if (
+        item.context_length
+        and registry.context_length
+        and item.context_length != registry.context_length
+    ):
+        diffs.append(f"context_length {registry.context_length}→{item.context_length}")
+    if diffs:
+        logger.info(
+            "intel 与现网模型字段不一致 (仅留痕, 不改 registry): model=%s 现网=%s 差异=%s",
+            item.model_id, canonical, ", ".join(diffs),
+        )
+    return diffs
+
+
 async def process_model_item(
     session,
     item: ModelIntelItem,
@@ -277,13 +352,52 @@ async def process_model_item(
 
     # 2) 入组判定 (高置信度)
     if not should_auto_join(item):
-        # 写 log + 不动 registry
+        # O1 (2026-11-04): 先解析规范名 + 判供给, 再决定要不要落待确认队列
+        resolution, suppliable, supply_reason = await _assess_supply(session, item)
+
+        # 2a) 本站没有任何供应证据 → 只留观察日志, 不进队列
+        #     (volcengine 文档页抓来的 Seedream / Seedance 这类"只有名字"的条目)
+        if not suppliable:
+            logger.info(
+                "待确认跳过 (本站无供应证据): model=%s provider=%s conf=%.2f "
+                "— 不写 model_capabilities_log",
+                model_id, item.source_provider, item.confidence,
+            )
+            return SyncResult(
+                model_id=model_id, action="unsupplied",
+                confidence=item.confidence,
+                reason=f"无供应证据 (provider={item.source_provider or 'unknown'})",
+            )
+
+        # 2b) 确定性解析命中现网模型 → 不是"新模型", 不入队列
+        if resolution is not None and resolution.resolved and not resolution.is_proposal:
+            await _log_resolution_conflicts(session, resolution.canonical, item)
+            logger.debug(
+                "待确认跳过 (已解析到现网模型): model=%s ≈ %s (%s)",
+                model_id, resolution.canonical, resolution.method,
+            )
+            return SyncResult(
+                model_id=model_id, action="resolved",
+                confidence=item.confidence,
+                target_group=resolution.canonical,
+                reason=f"已解析到 {resolution.canonical} ({resolution.method})",
+            )
+
+        # 2c) 其余照旧写 log; 启发式解析的结果一并挂上 (批准后即成为别名记忆)
+        payload = item.model_dump()
+        if resolution is not None and resolution.resolved:
+            payload.update(resolution.as_payload())
+            payload["resolution_note"] = (
+                "启发式解析, 请确认; 批准后本次解析会记为别名, 后续扫描自动命中"
+            )
+        if supply_reason:
+            payload["supply_evidence"] = supply_reason
         await crud.log_capability_change(
             session,
             model_id=model_id,
             field_changed="metadata",
             old_value=None,
-            new_value=json.dumps(item.model_dump(), ensure_ascii=False),
+            new_value=json.dumps(payload, ensure_ascii=False),
             source="ai_infer",
             confidence=item.confidence,
             approved=0,
@@ -291,8 +405,9 @@ async def process_model_item(
         )
         action = "pending_review" if item.confidence >= 0.6 else "rejected"
         logger.debug(
-            "待确认: model=%s conf=%.2f tier=%s family=%s (action=%s)",
-            model_id, item.confidence, item.inferred_tier, item.family, action,
+            "待确认: model=%s conf=%.2f tier=%s family=%s resolved=%s (action=%s)",
+            model_id, item.confidence, item.inferred_tier, item.family,
+            resolution.canonical if resolution else None, action,
         )
         return SyncResult(
             model_id=model_id, action=action,

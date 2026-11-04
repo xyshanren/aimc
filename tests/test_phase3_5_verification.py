@@ -184,6 +184,9 @@ def test_new_model_auto_join():
     import intelligence.model_sync as model_sync
     model_sync._find_target_group = _find_target_group
     model_sync.async_session_factory = lambda: _MockSessionCtx()
+    # 2026-11-04 (O1): mock session 查不到价行/上游列表 → 显式关供给闸门, 否则
+    # 低置信度用例会走 unsupplied 而非 rejected (assert 全部失效)
+    model_sync.SUPPLY_GATE_ENABLED = False
 
     # === 模拟 scheduler 触发: API 抽取到 1 个新 model ===
     raw_data = json.dumps({
@@ -426,6 +429,7 @@ def test_deprecated_model_soft_delete():
     import intelligence.model_sync as model_sync
     model_sync._find_target_group = lambda s, t: "tier:flagship" if t == "T0" else None
     model_sync.async_session_factory = lambda: _MockSessionCtx()
+    model_sync.SUPPLY_GATE_ENABLED = False  # O1: mock session 无供给证据, 显式关闸门
 
     # 预验证: 路由 cache 应有 old-model (P1-2: is_active=1)
     active_before = [
@@ -540,6 +544,7 @@ def test_low_confidence_change_triggers_alert():
     import intelligence.model_sync as model_sync
     model_sync._find_target_group = lambda s, t: None
     model_sync.async_session_factory = lambda: _MockSessionCtx()
+    model_sync.SUPPLY_GATE_ENABLED = False  # O1: mock session 无供给证据, 显式关闸门
 
     # patch alerter.send_alert (避免真实发飞书)
     async def _mock_send_alert(message, key=None):

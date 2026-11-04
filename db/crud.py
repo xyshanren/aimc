@@ -197,6 +197,7 @@ async def upsert_price_snapshot(
     effective_from: Optional[str] = None,
     effective_to: Optional[str] = None,
     is_promotion: int = 0,
+    raw_model_id: Optional[str] = None,
 ) -> tuple[PriceSnapshot, bool]:
     """按 (channel, model, price_type, time_range) upsert 价椌快照
 
@@ -205,6 +206,9 @@ async def upsert_price_snapshot(
 
     Phase 3.4: 价椌变动会调用此函数, 以 source=crawler 标记便于区分手动录入.
     V4.8.5: 加 is_promotion 参数, 让 promotion 价行标记 is_promotion=1.
+    2026-11-04 (O1): 加 raw_model_id — intel 解析出规范名后, 上游线名必须一起落,
+    否则严格 raw id 渠道 (siliconflow) 会把规范名裸发上游 (400 model not exist)。
+    传 None 时不动已有映射 (避免把手工补的 raw id 洗掉)。
     """
     stmt = select(PriceSnapshot).where(
         PriceSnapshot.channel_id == channel_id,
@@ -222,6 +226,8 @@ async def upsert_price_snapshot(
         snapshot.effective_from = effective_from or snapshot.effective_from
         snapshot.effective_to = effective_to or snapshot.effective_to
         snapshot.is_promotion = is_promotion
+        if raw_model_id:
+            snapshot.raw_model_id = raw_model_id
         return snapshot, False
 
     snapshot = PriceSnapshot(
@@ -236,6 +242,7 @@ async def upsert_price_snapshot(
         effective_to=effective_to,
         source=source,
         is_promotion=is_promotion,
+        raw_model_id=raw_model_id,
     )
     session.add(snapshot)
     await session.flush()

@@ -566,9 +566,14 @@ async def _save_promotion(result: ParseResult, source):
             pending = sum(1 for r in sync_results if r.action == "pending_review")
             rejected = sum(1 for r in sync_results if r.action == "rejected")
             left = sum(1 for r in sync_results if r.action == "auto_left")
+            # 2026-11-04 (O1): 供给闸门 / 别名解析拦下来的量 — 不落队列也要看得见
+            unsupplied = sum(1 for r in sync_results if r.action == "unsupplied")
+            resolved = sum(1 for r in sync_results if r.action == "resolved")
             logger.info(
-                "Phase 3.3 自动消费: promo=%s models=%d (joined=%d pending=%d rejected=%d left=%d)",
+                "Phase 3.3 自动消费: promo=%s models=%d (joined=%d pending=%d "
+                "rejected=%d left=%d unsupplied=%d resolved=%d)",
                 promo_id, len(sync_results), joined, pending, rejected, left,
+                unsupplied, resolved,
             )
         except Exception as e:
             # 仅 logger.warning, 不影响 _save_promotion 主流程

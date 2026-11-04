@@ -236,6 +236,40 @@ def record_job_health_event(job_id: str, success: bool, exception=None,
             logger.debug(f"[job_health] 写失败 (非致命, 重试 3 次): {e}")
 
 
+def _batch_job_add_kwargs(
+    scheduler_obj, job_id: str, interval: int, *, now=None,
+) -> dict:
+    """重启时注册 batch job → 决定要不要"保留原 next_run_time"。
+
+    背景 (2026-11-04 生产实证): `add_job(..., replace_existing=True)` 会按 trigger
+    从"现在"重算 next_run_time。周级源 (benchmark 604800s) 因此只要重启间隔 < 7 天
+    就永远轮不到执行 —— apscheduler_jobs 里 4 个周级 job 的 next_run_time 全部等于
+    最近一次重启时刻 + 7 天, 而 lmsys/livebench/superclue 的 last_check_at 停在 10-12。
+
+    只对 >= PRESERVE_NEXT_RUN_MIN_INTERVAL 的源生效:
+    - 短间隔 job 每次重启顺延无害 (反正马上就要跑), 而集体立即补跑会在服务启动
+      瞬间打出一波抓取 (17 个 provider 同时起 playwright), 得不偿失;
+    - 长间隔 job 保留原计划 (仍在未来) 或立即补跑 (已过期), 保证"至少每周期跑一次"。
+
+    Returns:
+        add_job 的额外 kwargs: {} 表示维持现状; {"next_run_time": dt} 表示保留/补跑。
+    """
+    if interval < PRESERVE_NEXT_RUN_MIN_INTERVAL:
+        return {}
+    try:
+        job = scheduler_obj.get_job(job_id)
+    except Exception:
+        return {}
+    if job is None or job.next_run_time is None:
+        return {}
+    nrt = job.next_run_time
+    tz = nrt.tzinfo
+    now = now or (datetime.now(tz) if tz is not None else datetime.now())
+    if tz is not None and now.tzinfo is None:
+        now = now.replace(tzinfo=tz)
+    return {"next_run_time": nrt if nrt > now else now}
+
+
 async def start_scheduler():
     """启动情报采集调度器
 
@@ -295,6 +329,14 @@ async def start_scheduler():
                 pass  # job 不存在 OK
 
     for (provider, interval), group_sources in by_provider_interval.items():
+        job_id = f"batch_crawl_{provider}_{interval}"
+        # 2026-11-04: 周级 job 不因重启重锚 (否则永远轮不到执行)
+        extra = _batch_job_add_kwargs(scheduler, job_id, interval)
+        if extra:
+            logger.info(
+                "保留长间隔采集 job 原计划: %s next_run=%s",
+                job_id, extra.get("next_run_time"),
+            )
         scheduler.add_job(
             _run_provider_batch,
             trigger=IntervalTrigger(
@@ -302,9 +344,10 @@ async def start_scheduler():
                 jitter=min(300, max(1, interval // 20)),
             ),
             args=[provider, group_sources],
-            id=f"batch_crawl_{provider}_{interval}",
+            id=job_id,
             name=f"批量采集: {provider} ({interval}s, {len(group_sources)} sources)",
             replace_existing=True,
+            **extra,
         )
         logger.info(
             f"注册批量采集: {provider} ({len(group_sources)} sources, "
@@ -1040,6 +1083,9 @@ BLINDSPOT_DAYS = 7
 BLINDSPOT_MIN_SOURCES = 3
 # "在采" 判定: 距上次检查在此窗口内 (说明爬虫还活着, 而不是停摆)
 BLINDSPOT_ACTIVE_WINDOW_HOURS = 48
+# 2026-11-04: 长间隔采集 job 在重启时保留原 next_run_time 的门槛 (秒)
+# 低于该值顺延无害; 高于该值不保留就会被"每次重启 +1 周期"无限推迟
+PRESERVE_NEXT_RUN_MIN_INTERVAL = 604800  # 7 天
 
 
 async def _audit_source_structure() -> None:
