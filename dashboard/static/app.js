@@ -933,11 +933,18 @@ function renderPriceSuggestions(container) {
     }
 }
 
-// ==== 2026-11-04 (P4): 发现但不可路由 ====
-// 口径: registry 有行 (status != deprecated) + 没有任何 active 渠道价行。
-// 页面侧用两个既有端点合成 (registry/models + prices), 不新增后端查询。
-// 非聊天类关键词与 gateway/group_rules.NON_CHAT_KW 同源 (那边是单一事实源;
-// 这里是展示层过滤, 若那边新增关键词需同步, 否则只是多列几条不痛)。
+// ==== 2026-11-04 (P4): 发现但不可路由 — 三态分级 v2 ====
+// 口径 (每模型一个桶):
+//   A 缺价行·在活跃组  — canonical/raw 都没有 ∧ 在任一活跃组成员里 → 真要处理
+//                       (组路由候选只认规范名精确价行, 这个模型组路由永远选不到)
+//   B 缺价行·不在组    — 多为退役/虚标旧模型, 建议清理 registry 而不是补价
+//   C 仅 raw 键价行    — deepseek-ai/DeepSeek-R1 这类 raw 行: 直接请求走 fuzzy
+//                       可路由, 但组路由进不了候选 → 动作=补规范名键 (非"没价")
+//   canonical 命中     → 不列
+// 页面侧用三个既有端点合成, 不新增后端查询。
+// raw 命中判定用"末段相等" (deepseek-ai/DeepSeek-R1 → deepseek-r1): 比服务端
+// fuzzy (前缀剥离/共同子串) 保守, 只会把 fuzzy 可路由的误标成缺价, 不会漏报。
+// 非聊天类关键词与 gateway/group_rules.NON_CHAT_KW 同源 (展示层过滤)。
 const NON_CHAT_KW_JS = [
     'embed', 'rerank', 'asr', 'speech', 'voice', 'tts', 'ocr', 'image',
     'video', 'i2v', 't2v', 'caption', 'kolors', 'lora', 'diffusion',
@@ -948,51 +955,101 @@ function isChatModelId(modelId) {
     return !NON_CHAT_KW_JS.some(k => low.includes(k));
 }
 
+function _priceKeyTails(prices) {
+    // canonical 键全集 + raw 键尾段全集 (小写)
+    const canonical = new Set();
+    const rawTails = new Set();
+    for (const p of prices || []) {
+        for (const key of [p.model, p.raw_model_id]) {
+            if (!key) continue;
+            const low = key.toLowerCase();
+            canonical.add(low);
+            rawTails.add(low.split('/').pop());
+        }
+    }
+    return { canonical, rawTails };
+}
+
 async function loadUnroutableModels() {
     const container = document.getElementById('unroutable-list');
     if (!container) return;
     try {
-        const [regResp, priceResp] = await Promise.all([
+        const [regResp, priceResp, groupResp] = await Promise.all([
             authFetch('/dashboard/api/registry/models'),
             authFetch('/dashboard/api/prices'),
+            authFetch('/dashboard/api/registry/groups'),
         ]);
-        if (!regResp.ok || !priceResp.ok) throw new Error('HTTP ' + regResp.status + '/' + priceResp.status);
+        if (!regResp.ok || !priceResp.ok || !groupResp.ok) {
+            throw new Error('HTTP ' + regResp.status + '/' + priceResp.status + '/' + groupResp.status);
+        }
         const reg = await regResp.json();
         const prices = await priceResp.json();
-        const priced = new Set((prices || []).map(p => p.model));
-        const missing = (reg.models || []).filter(m => m.status !== 'deprecated' && !priced.has(m.model_id));
-        const list = missing.filter(m => isChatModelId(m.model_id));
-        const nonChat = missing.length - list.length;
-        if (missing.length === 0) {
-            container.innerHTML = '<p class="loading">✓ registry 内模型都有 active 渠道价行</p>';
-            return;
+        const groupsData = await groupResp.json();
+
+        const { canonical, rawTails } = _priceKeyTails(prices);
+        const memberSet = new Set();
+        for (const g of (groupsData.groups || [])) {
+            for (const m of (g.members || [])) memberSet.add(m.model_id);
         }
-        let html = `<p class="meta">共 <strong>${list.length}</strong> 个聊天模型有 registry 行但选不到 (缺规范名价行)`
+
+        const buckets = { a_in_group: [], b_other: [], c_raw_only: [] };
+        let nonChat = 0;
+        for (const m of (reg.models || [])) {
+            if (m.status === 'deprecated') continue;
+            if (!isChatModelId(m.model_id)) { nonChat++; continue; }
+            const low = m.model_id.toLowerCase();
+            if (canonical.has(low)) continue;
+            if (rawTails.has(low)) { buckets.c_raw_only.push(m); continue; }
+            (memberSet.has(m.model_id) ? buckets.a_in_group : buckets.b_other).push(m);
+        }
+
+        const renderTable = (models, hintFn) => {
+            let h = '<table class="data-table" style="width:100%;font-size:12px;"><thead><tr>'
+                + '<th>model_id</th><th>tier</th><th>状态</th><th>在组</th><th>建议</th>'
+                + '</tr></thead><tbody>';
+            for (const m of models) {
+                h += '<tr>'
+                    + '<td><code>' + esc(m.model_id) + '</code></td>'
+                    + '<td>' + esc(m.tier || '—') + '</td>'
+                    + '<td>' + esc(m.status) + '</td>'
+                    + '<td>' + (memberSet.has(m.model_id) ? '✓' : '—') + '</td>'
+                    + '<td class="text-muted">' + esc(hintFn(m)) + '</td>'
+                    + '</tr>';
+            }
+            return h + '</tbody></table>';
+        };
+
+        const aHint = (m) => m.status === 'active'
+            ? '真·缺价行: 组路由选不到它 — 确认渠道供应后配规范名价行'
+            : '真·缺价行: 先确认渠道真供应, 再配价行 (无渠道保持 inactive)';
+        const bHint = () => '多为退役/虚标旧模型: 不建议盲目补价, 建议清理 registry 或忽略';
+        const cHint = (m) => '仅 raw 键价行 (fuzzy 可路由): 补规范名键后才能进组路由候选';
+
+        let html = `<p class="meta">缺价行 <strong>${buckets.a_in_group.length + buckets.b_other.length}</strong>`
+            + ` (在活跃组 <strong class="text-danger">${buckets.a_in_group.length}</strong>)`
+            + ` · 仅 raw 键 ${buckets.c_raw_only.length}`
             + (nonChat ? ` · 另有 ${nonChat} 个非聊天类(向量/重排/生图等)未列` : '')
             + '</p>';
-        if (list.length === 0) {
-            container.innerHTML = html;
-            return;
+
+        if (buckets.a_in_group.length) {
+            html += '<div style="font-weight:600;font-size:12px;margin:6px 0 2px;">'
+                + `A · 缺价行且在活跃组 (${buckets.a_in_group.length}) — 优先处理</div>`;
+            html += renderTable(buckets.a_in_group, aHint);
         }
-        // active 在前 (语义上"想要它"却没价行 = 待补), inactive 表示还没配渠道
-        list.sort((a, b) => (a.status === b.status ? a.model_id.localeCompare(b.model_id) : (a.status === 'active' ? -1 : 1)));
-        const shown = list.slice(0, 50);
-        html += '<table class="data-table" style="width:100%;font-size:12px;"><thead><tr>'
-            + '<th>model_id</th><th>tier</th><th>状态</th><th>模态</th><th>建议</th>'
-            + '</tr></thead><tbody>';
-        for (const m of shown) {
-            const hint = m.status === 'active'
-                ? '去「价格表」给某渠道配一条规范名价行'
-                : '先确认渠道真供应, 再配价行 (无渠道会保持 inactive)';
-            html += '<tr>'
-                + '<td><code>' + esc(m.model_id) + '</code></td>'
-                + '<td>' + esc(m.tier || '—') + '</td>'
-                + '<td>' + esc(m.status) + '</td>'
-                + '<td>' + esc(m.modality || '—') + '</td>'
-                + '<td class="text-muted">' + esc(hint) + '</td>'
-                + '</tr>';
+        const details = (open, title, body) => '<details' + (open ? ' open' : '') + ' style="margin-top:8px;">'
+            + '<summary style="cursor:pointer;font-size:12px;font-weight:600;">' + title + '</summary>'
+            + '<div style="margin-top:4px;">' + body + '</div></details>';
+
+        html += details(false,
+            `B · 缺价行但不在任何组 (${buckets.b_other.length}) — 多为旧模型, 默认折叠`,
+            buckets.b_other.length ? renderTable(buckets.b_other, bHint) : '<p class="meta">无</p>');
+        html += details(false,
+            `C · 仅 raw 键价行 — fuzzy 可路由但进不了组路由候选 (${buckets.c_raw_only.length})`,
+            buckets.c_raw_only.length ? renderTable(buckets.c_raw_only, cHint) : '<p class="meta">无</p>');
+
+        if (!buckets.a_in_group.length && !buckets.b_other.length && !buckets.c_raw_only.length) {
+            html = '<p class="loading">✓ registry 内聊天模型都有 canonical 价行</p>';
         }
-        html += '</tbody></table>';
         container.innerHTML = html;
     } catch (e) {
         container.innerHTML = '<p class="error">加载失败: ' + esc(e.message) + '</p>';
@@ -1174,7 +1231,7 @@ function renderCrossSource(container) {
 }
 
 // 阶段1/2 (2026-08-14) 死代码已移除: loadDataFreshness / loadCacheStats / 旧版 loadSuggestions
-// 指向不存在的 df-* / cache-* / sg-* IDs, 现役实现为 loadDataFreshnessDonut /
+// 指向不存在的 df-* / cache-* / sg-* IDs, 现役实现为 loadJobsHealth (含新鲜度) /
 // loadCacheStatsList / loadSuggestionsList (见下方)。
 // 方案A (2026-08-14): 模型分组建议 — 批准/拒绝/一键应用动作保留, 列表由 loadSuggestionsList 渲染
 async function approveSuggestion(type, id) {
@@ -1556,7 +1613,7 @@ async function triggerExpireCheck() {
 // 阶段P0-UI (2026-08-16): dashboard redesign JS
 // - loadOverviewKPIs: 顶部 4 KPI 卡片 + status bar
 // - filterChannels/filterRegistry: 搜索过滤
-// - loadDataFreshnessDonut: 替换旧表格为 donut + 失败列表
+// - 调度任务健康卡已合并数据新鲜度 (loadJobsHealth, 2026-11-04)
 // - keydown listener: r / a / / / ? 快捷键
 
 async function loadOverviewKPIs() {
@@ -1594,60 +1651,6 @@ function filterRegistry() {
     document.querySelectorAll("#registry-models-list tr").forEach(tr => {
         tr.style.display = (!q || tr.textContent.toLowerCase().includes(q.toLowerCase())) ? "" : "none";
     });
-}
-
-async function loadDataFreshnessDonut() {
-    try {
-        const resp = await authFetch("/dashboard/api/data-freshness");
-        if (!resp.ok) return;
-        const data = await resp.json();
-        const jobs = data.jobs || [];
-        const total = jobs.length;
-        const healthy = jobs.filter(j => j.health === "healthy").length;
-        const warning = jobs.filter(j => j.health === "warning").length;
-        const stale = jobs.filter(j => j.health === "stale").length;
-
-        const donut = document.getElementById("freshness-donut");
-        if (donut && total > 0) {
-            const hDeg = (healthy / total) * 360;
-            const wDeg = (warning / total) * 360;
-            donut.style.setProperty("--healthy-deg", hDeg + "deg");
-            donut.style.setProperty("--warning-deg", wDeg + "deg");
-        }
-        const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-        set("freshness-pct", total ? Math.round(healthy / total * 100) + "%" : "--%");
-        set("freshness-total", total ? (healthy + " / " + total + " 健康") : "0 / 0 健康");
-
-        const failedList = document.getElementById("freshness-failed");
-        if (failedList) {
-            const failed = jobs.filter(j => j.health !== "healthy");
-            if (failed.length === 0) {
-                failedList.innerHTML = '<div class="text-success" style="padding:8px 0;font-size:12px;">✓ 所有 job 健康</div>';
-            } else {
-                let html = '<div class="flex-col gap-sm">';
-                for (let i = 0; i < Math.min(failed.length, 5); i++) {
-                    const j = failed[i];
-                    const color = {warning: "var(--color-warning)", stale: "var(--color-danger)", unknown: "var(--text-muted)"}[j.health];
-                    html += '<div class="flex gap-sm" style="font-size:12px;">';
-                    html += '<span class="status-dot-small" style="background:' + color + ';"></span>';
-                    html += '<code class="text-mono">' + esc(j.job_id.slice(0, 40)) + '</code>';
-                    html += '<span class="text-muted">' + esc(j.last_success_ago || "从未") + '</span>';
-                    if (j.last_error_msg) {
-                        html += '<span class="text-danger" title="' + esc(j.last_error_msg) + '">!</span>';
-                    }
-                    html += '</div>';
-                }
-                html += '</div>';
-                failedList.innerHTML = html;
-            }
-        }
-
-        // 向后兼容 (旧的 df-* ID 也保持填充)
-        set("df-total", total);
-        set("df-healthy", healthy);
-        set("df-warning", warning);
-        set("df-stale", stale);
-    } catch (e) { console.warn("freshness donut failed:", e); }
 }
 
 document.addEventListener("keydown", (e) => {
@@ -2541,8 +2544,9 @@ async function loadCooldownEvents() {
     }
 }
 
-// 轴2 (2026-11-04): 调度任务健康卡 — 全部定时任务最近执行/失败现场一屏
-// 排序: 失败未恢复 (最近失败晚于最近成功) 的排前, 其余按最近执行
+// 调度任务健康卡 (2026-11-04 晚合并原「数据新鲜度」卡):
+// 同一张 job_health 表的双视图 (数据面 last_success 分级 / 执行面 last_run+失败现场)
+// 属冗余 → 一次请求渲染 摘要环图 + 全量任务表。
 async function loadJobsHealth() {
     const container = document.getElementById('jobs-health-list');
     const badge = document.getElementById('jobs-health-count');
@@ -2556,6 +2560,34 @@ async function loadJobsHealth() {
         const data = await resp.json();
         const jobs = data.jobs || [];
         if (badge) badge.textContent = jobs.length;
+
+        // --- 摘要环图 (原数据新鲜度卡) ---
+        const total = jobs.length;
+        const healthy = jobs.filter(j => j.health === 'healthy').length;
+        const warning = jobs.filter(j => j.health === 'warning').length;
+        const stale = jobs.filter(j => j.health === 'stale');
+        const unknown = jobs.filter(j => j.health === 'unknown').length;
+        const donut = document.getElementById('freshness-donut');
+        if (donut && total > 0) {
+            const hDeg = (healthy / total) * 360;
+            const wDeg = (warning / total) * 360;
+            donut.style.setProperty('--healthy-deg', hDeg + 'deg');
+            donut.style.setProperty('--warning-deg', wDeg + 'deg');
+        }
+        const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        set('freshness-pct', total ? Math.round(healthy / total * 100) + '%' : '--%');
+        set('freshness-total', total ? (healthy + ' / ' + total + ' 健康') : '0 / 0 健康');
+        const summary = document.getElementById('jobs-health-summary');
+        if (summary) {
+            const parts = [];
+            if (healthy) parts.push('<span class="text-success">健康 ' + healthy + '</span>');
+            if (warning) parts.push('<span style="color:var(--color-warning);">注意 ' + warning + '</span>');
+            if (stale.length) parts.push('<span class="text-danger">过期 ' + stale.length + '</span>');
+            if (unknown) parts.push('<span class="text-muted">从未成功 ' + unknown + '</span>');
+            summary.innerHTML = parts.length ? parts.join(' · ') : '—';
+        }
+
+        // --- 全量任务表 (失败未恢复置顶) ---
         const sorted = jobs.slice().sort((a, b) => {
             const fa = a.last_error_at && a.last_error_at > (a.last_success_at || '');
             const fb = b.last_error_at && b.last_error_at > (b.last_success_at || '');
@@ -2573,6 +2605,7 @@ async function loadJobsHealth() {
             const dur = j.last_duration_ms != null && j.last_duration_ms <= 3600000
                 ? (j.last_duration_ms >= 1000 ? (j.last_duration_ms / 1000).toFixed(1) + 's' : j.last_duration_ms + 'ms')
                 : '—';
+            const successAgo = j.last_success_ago || '从未成功';
             html += '<div class="pr-card">';
             html += '<div class="pr-row">';
             html += dot;
@@ -2580,7 +2613,9 @@ async function loadJobsHealth() {
             html += '<span style="margin-left:auto;font-size:11px;color:var(--text-muted);">' + esc((j.last_run_at || '').replace('T', ' ').slice(0, 19)) + '</span>';
             html += '</div>';
             html += '<div style="font-size:11px;margin-top:4px;color:var(--text-secondary);">';
-            html += '成功 ' + j.total_successes + ' / 失败 ' + j.total_failures + ' · 耗时 ' + dur;
+            html += '成功 ' + j.total_successes + ' / 失败 ' + j.total_failures
+                + ' · 耗时 ' + dur
+                + ' · <span title="最近一次成功产出距今 (数据新鲜度口径)">产出 ' + esc(successAgo) + '</span>';
             if (failing && j.last_error_msg) {
                 html += '<div style="color:var(--color-danger);margin-top:2px;">'
                     + esc(j.last_error_msg.length > 160 ? j.last_error_msg.slice(0, 160) + '…' : j.last_error_msg)
@@ -3416,7 +3451,7 @@ const PAGE_ROUTES = {
     // 注意: 情报页三张审批卡必须留在轮询 — 批准/拒绝只做本地 card.remove(), 卡间联动全靠轮询.
     channels: { title: '渠道', ms: 30000, loaders: [loadChannelsCard], once: [loadUnpricedCard, loadPricesCard, loadRegistryModelsCard, loadRegistryGroupsCard] },
     intel:    { title: '情报', ms: 120000, loaders: [loadPromotionsCard, loadPromotionReviewsCard, loadPendingReviewCard, loadPriceSuggestionsCard, loadUnroutableCard], once: [loadReportsList, loadWeeklyReportLatest] },
-    ops:      { title: '运维', ms: 60000, loaders: [loadDataFreshnessDonut, loadPendingSummary, loadCooldownEvents, loadJobsHealth, loadSuggestionsList, loadAccountsCard, loadAutoJoinMetrics], once: [loadUserKeys, loadSources, renderMetricDefs] },
+    ops:      { title: '运维', ms: 60000, loaders: [loadPendingSummary, loadCooldownEvents, loadJobsHealth, loadSuggestionsList, loadAccountsCard, loadAutoJoinMetrics], once: [loadUserKeys, loadSources, renderMetricDefs] },
 };
 
 let _currentPage = null;

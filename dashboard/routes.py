@@ -1438,12 +1438,12 @@ def _cache_saved_yuan(ch_model_prices: dict, model_prices: dict,
 async def get_data_freshness(session: AsyncSession = Depends(get_session)):
     """阶段2 (2026-08-14): APScheduler job 数据新鲜度
 
+    ⚠️ 2026-11-04 晚: 前端"数据新鲜度"卡已并入"调度任务健康"卡
+    (/api/jobs/health 现含 health 分级 + last_success_ago, 一次请求渲染全部)。
+    本端点保留向后兼容 (docs/dev/api.md 有档), 看板不再调用。
+
     读 job_health 表, 按 last_success_at 倒序, 返回每个 job 的
     last_success / last_error / 距今多久 / total_runs / total_failures.
-
-    用途: dashboard "数据新鲜度" 卡片
-    - 显示 "优惠情报 X 小时前更新" (last_success_at)
-    - 高亮失败 job (last_error_at 近 + total_failures > 0)
     """
     from datetime import datetime
     from db.models import JobHealth
@@ -4478,18 +4478,53 @@ async def reject_promotion_review(
 
 @router.get("/api/jobs/health")
 async def api_jobs_health(session: AsyncSession = Depends(get_session)):
-    """轴2 (2026-11-04): 调度任务健康卡 — job_health 全量一屏
+    """调度任务健康卡 — job_health 全量一屏 (2026-11-04 合并"数据新鲜度"卡)
 
-    数据源 job_health 表 (listener 逐次写入)。轴2 修复后 last_error_* 独立保留
-    ("最近一次失败" 不被成功抹掉), last_duration_ms 为真实耗时近似。
+    数据源 job_health 表 (listener 逐次写入)。last_error_* 独立保留
+    ("最近一次失败" 不被成功抹掉), last_duration_ms 为真实耗时近似
+    (启动对账会把 >1h 的历史 epoch 垃圾清 NULL)。
+
+    2026-11-04 晚: 原独立的"数据新鲜度"卡与本卡读同一张表 (前者=数据面
+    last_success 分级, 后者=执行面 last_run/失败现场), 属同表双视图冗余 →
+    合并进本端点: 增补 health 分级 (healthy/warning/stale/unknown) 与
+    last_success_ago, 前端一次请求渲染 摘要环图 + 全量任务表。
+    /api/data-freshness 端点保留向后兼容 (docs/dev/api.md 有档), 卡片已撤。
+
     排序: 最近执行优先; 失败中的 job 由前端标红。
     """
+    from datetime import datetime as _dt
+
     from db.models import JobHealth
 
     result = await session.execute(
         select(JobHealth).order_by(JobHealth.last_run_at.desc())
     )
     rows = result.scalars().all()
+
+    now = _dt.now()
+
+    def _ago(dt) -> Optional[str]:
+        if dt is None:
+            return None
+        delta = (now - dt).total_seconds()
+        if delta < 60:
+            return f"{int(delta)}秒前"
+        if delta < 3600:
+            return f"{int(delta // 60)}分钟前"
+        if delta < 86400:
+            return f"{int(delta // 3600)}小时前"
+        return f"{int(delta // 86400)}天前"
+
+    def _health(r) -> str:
+        if r.last_success_at is None:
+            return "unknown"
+        age = (now - r.last_success_at).total_seconds()
+        if age < 86400:
+            return "healthy"
+        if age < 3 * 86400:
+            return "warning"
+        return "stale"
+
     return {
         "total": len(rows),
         "jobs": [{
@@ -4497,6 +4532,7 @@ async def api_jobs_health(session: AsyncSession = Depends(get_session)):
             "last_run_at": r.last_run_at.isoformat() if r.last_run_at else None,
             "last_success_at": (r.last_success_at.isoformat()
                                 if r.last_success_at else None),
+            "last_success_ago": _ago(r.last_success_at),
             "last_error_at": (r.last_error_at.isoformat()
                               if r.last_error_at else None),
             "last_error_msg": r.last_error_msg,
@@ -4504,6 +4540,7 @@ async def api_jobs_health(session: AsyncSession = Depends(get_session)):
             "total_runs": r.total_runs or 0,
             "total_successes": r.total_successes or 0,
             "total_failures": r.total_failures or 0,
+            "health": _health(r),
         } for r in rows],
     }
 

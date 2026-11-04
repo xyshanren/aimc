@@ -127,3 +127,58 @@ def test_empty_table_noop(memory_db):
 
     engine, Session = memory_db
     assert reconcile_job_health({"job_x"}) == (0, 0)
+
+
+def test_jobs_health_endpoint_has_freshness_fields():
+    """合并后的健康端点应含原数据新鲜度卡的全部字段 (health 分级 + last_success_ago)"""
+    import asyncio
+    import warnings
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import StaticPool
+
+    from db.models import Base, JobHealth
+
+    async def _run():
+        engine = create_async_engine(
+            "sqlite+aiosqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with factory() as session:
+                from datetime import datetime, timedelta
+
+                session.add(JobHealth(
+                    job_id="job_fresh", total_runs=5, total_successes=5,
+                    last_run_at=datetime.now(), last_success_at=datetime.now(),
+                    last_duration_ms=42,
+                ))
+                session.add(JobHealth(
+                    job_id="job_stale", total_runs=2, total_successes=1,
+                    last_run_at=datetime.now() - timedelta(days=10),
+                    last_success_at=datetime.now() - timedelta(days=10),
+                ))
+                session.add(JobHealth(
+                    job_id="job_never", total_runs=1, total_successes=0,
+                    last_run_at=datetime.now(),
+                ))
+                await session.commit()
+
+                from dashboard.routes import api_jobs_health
+                return await api_jobs_health(session=session)
+        finally:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                await engine.dispose()
+
+    data = asyncio.run(_run())
+    by_id = {j["job_id"]: j for j in data["jobs"]}
+    assert by_id["job_fresh"]["health"] == "healthy"
+    assert by_id["job_fresh"]["last_success_ago"] is not None
+    assert by_id["job_stale"]["health"] == "stale"
+    assert by_id["job_never"]["health"] == "unknown"
+    assert by_id["job_never"]["last_success_ago"] is None

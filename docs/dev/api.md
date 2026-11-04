@@ -107,6 +107,9 @@ curl 'http://localhost:18080/dashboard/api/cache/stats?days=7' \
 
 ### GET /dashboard/api/data-freshness
 
+> ⚠️ 2026-11-04 晚起看板不再调用 — "数据新鲜度"卡已并入 `/api/jobs/health`
+> （后者增补 `health` 分级 + `last_success_ago`，一次请求渲染摘要+全量）。端点保留向后兼容。
+
 ```bash
 curl http://localhost:18080/dashboard/api/data-freshness \
   -H "Authorization: Bearer $AIMC_DASHBOARD_TOKEN"
