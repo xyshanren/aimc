@@ -48,10 +48,43 @@ def captured(monkeypatch):
     return calls
 
 
+_MEM_SOURCES: list = []
+
+
+@pytest.fixture(autouse=True)
+def patch_memory_sources(monkeypatch):
+    """2026-11-04 (Rule C/D): 审计会拿内存源清单跟 DB 行比对 —— 测试里让内存源
+    与 _add_source 造的行一一对应 (否则真实 get_all_sources 的源都会被判成
+    "启用但无状态行" / DB 行都被判成孤儿行, 断言全乱)"""
+    import intelligence.sources as sources_mod
+
+    class _FakeSource:
+        def __init__(self, provider, source_type, url="", enabled=True):
+            self.provider = provider
+            self.source_type = source_type
+            self.url = url
+            self.enabled = enabled
+
+    _MEM_SOURCES.clear()
+    monkeypatch.setattr(sources_mod, "get_all_sources", lambda: list(_MEM_SOURCES))
+    yield
+    _MEM_SOURCES.clear()
+
+
 def _add_source(session, sid, provider, stype, status="active", last_check=None):
     session.add(IntelSource(id=sid, provider=provider, source_type=stype,
                             url="", poll_interval=900, status=status,
                             last_check_at=last_check))
+
+    class _Src:
+        def __init__(self, provider, source_type):
+            self.provider = provider
+            self.source_type = source_type
+            self.url = ""
+            self.enabled = True
+
+    if not any(s.provider == provider and s.url == "" for s in _MEM_SOURCES):
+        _MEM_SOURCES.append(_Src(provider, stype))
     return session
 
 

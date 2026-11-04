@@ -61,6 +61,9 @@ class ArtificialAnalysisBenchmarkSource(BenchmarkSource):
             css_selector=None,
             wait_until="domcontentloaded",
             wait_for=None,
+            # 2026-11-04: benchmark 死链 + 无 API key 时 fetch 返回 mock 数据
+            # (mock 分若进 model_cards 会污染路由 score_bonus) → 代码级停用.
+            enabled=False,
         )
 
     async def fetch(self) -> List[BenchmarkEntry]:

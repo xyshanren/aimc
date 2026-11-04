@@ -218,6 +218,29 @@ def audit_db(tmp_path, monkeypatch):
     return factory
 
 
+_MEM_SOURCES: list = []
+
+
+class _MemSource:
+    """内存源替身 (Rule C/D 会拿内存清单跟 DB 行比对)"""
+
+    def __init__(self, provider, source_type, url):
+        self.provider = provider
+        self.source_type = source_type
+        self.url = url
+        self.enabled = True
+
+
+@pytest.fixture(autouse=True)
+def _patch_mem_sources(monkeypatch):
+    import intelligence.sources as sources_mod
+
+    _MEM_SOURCES.clear()
+    monkeypatch.setattr(sources_mod, "get_all_sources", lambda: list(_MEM_SOURCES))
+    yield
+    _MEM_SOURCES.clear()
+
+
 def _seed_sources(factory, rows):
     """rows: [(provider, source_type, last_check_at|None, last_changed_at|None)]"""
 
@@ -225,12 +248,14 @@ def _seed_sources(factory, rows):
         from db.models import IntelSource
         async with factory() as s:
             for provider, stype, check, changed in rows:
+                url = f"https://{provider}.example/x"
                 s.add(IntelSource(
-                    provider=provider, url=f"https://{provider}.example/x",
+                    provider=provider, url=url,
                     source_type=stype, status="active",
                     last_check_at=check, last_changed_at=changed,
                     consecutive_no_change=100,
                 ))
+                _MEM_SOURCES.append(_MemSource(provider, stype, url))
             await s.commit()
 
     _run_async(_run())

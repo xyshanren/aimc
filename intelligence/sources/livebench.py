@@ -61,6 +61,8 @@ class LiveBenchBenchmarkSource(BenchmarkSource):
             wait_until="domcontentloaded",
             wait_for=".leaderboard-table",
             wait_for_timeout=15000,
+            # 2026-11-04: benchmark 死链 (无消费方), 抓取失败还会回退 mock → 停用
+            enabled=False,
         )
 
     async def fetch(self) -> List[BenchmarkEntry]:

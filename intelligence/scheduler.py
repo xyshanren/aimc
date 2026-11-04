@@ -1110,6 +1110,17 @@ async def _audit_source_structure() -> None:
             select(IntelSource).where(IntelSource.status == "active")
         )).scalars().all()
 
+    # Rule C/D 需要全量行 (含 disabled/error) — 走 crud helper 取, 不动上面的
+    # active 查询 (Mimosa 对含 select 的 hunk 误报, 家规: hunk 避开)
+    from db import crud as _crud
+
+    async with async_session_factory() as session:
+        rows_all = list(rows)
+        for _status in ("disabled", "error"):
+            rows_all.extend(
+                await _crud.get_intel_sources(session, status=_status)
+            )
+
     never_ran = [r for r in rows if r.last_check_at is None]
     if never_ran:
         detail = "\n".join(
@@ -1146,6 +1157,58 @@ async def _audit_source_structure() -> None:
             f"⚠️ 盲区审计: {len(dupes)} 组重复 active 源 (同 provider+type 多行):\n{detail}\n"
             f"处置: 保留正常行, 删/禁另一行",
             key="blindspot_audit:duplicate_sources",
+            silence_seconds=7 * 86400,
+        )
+
+    # === Rule C (2026-11-04): 已启用但从未落过状态行 ===
+    # 成功/失败两条路径都会 upsert intel_sources (differ / handle_fetch_error),
+    # 所以"DB 里没有对应行"只有一个解释: 该源从未真正执行过。
+    # 旧 Rule A 只扫 status=active 的行 → 这类完全无行的源天然是盲区
+    # (实证: artificial_analysis / opencompass 自 V4.8.3 注册起从未执行)。
+    from intelligence.sources import get_all_sources
+
+    mem_sources = [
+        s for s in get_all_sources()
+        if getattr(s, "enabled", True)
+    ]
+    db_keys = {(r.provider, r.url) for r in rows_all}
+    never_rowed = [
+        s for s in mem_sources if (s.provider, s.url) not in db_keys
+    ]
+    if never_rowed:
+        detail = "\n".join(
+            f"- {s.provider}/{s.source_type} (url={s.url or '(API only)'})"
+            for s in never_rowed)
+        logger.warning(
+            f"[盲区审计] {len(never_rowed)} 个启用源从未落过状态行: "
+            + ", ".join(f"{s.provider}/{s.source_type}" for s in never_rowed)
+        )
+        from intelligence.alerter import send_alert
+        await send_alert(
+            f"⚠️ 盲区审计: {len(never_rowed)} 个启用源从未成功执行过 "
+            f"(库里无任何状态行, 典型=周级 job 被重启无限推迟 / 缺 key 静默跳过):\n"
+            f"{detail}\n处置: 手动采集一次确认链路, 或代码级停用显性化",
+            key="blindspot_audit:never_rowed",
+            silence_seconds=7 * 86400,
+        )
+
+    # === Rule D (2026-11-04): 孤儿行 (DB 有行 / 内存无源) ===
+    # 状态键是 (provider, url): 源 URL 改过之后旧行留在库里, 采集管理页只渲染
+    # 内存源 → 既不可见也不可管 (实证: 7 条 qwen/deepseek/hunyuan/sensenova 旧 URL
+    # 行躺了三周)。这里只告警, 不自动删 (留着可查历史 last_check)。
+    mem_keys = {(s.provider, s.url) for s in get_all_sources()}
+    orphans = [r for r in rows_all if (r.provider, r.url) not in mem_keys]
+    if orphans:
+        detail = "\n".join(
+            f"- id={r.id} {r.provider}/{r.source_type} status={r.status} url={r.url}"
+            for r in orphans)
+        logger.warning(f"[盲区审计] {len(orphans)} 条孤儿 intel_sources 行")
+        from intelligence.alerter import send_alert
+        await send_alert(
+            f"⚠️ 盲区审计: {len(orphans)} 条孤儿采集源行 (DB 有, 代码里已无此源; "
+            f"采集管理页看不到也管不到):\n{detail}\n"
+            f"处置: 确认无用后 DELETE FROM intel_sources WHERE id IN (...)",
+            key="blindspot_audit:orphan_sources",
             silence_seconds=7 * 86400,
         )
 

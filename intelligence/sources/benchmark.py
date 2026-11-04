@@ -118,6 +118,12 @@ class LMSYSArenaBenchmarkSource(BenchmarkSource):
             wait_until="networkidle",
             wait_for="table",
             wait_for_timeout=20000,
+            # 2026-11-04: benchmark 链无消费方 —— 唯一写 model_cards 的
+            # scripts/refresh_benchmark.py 未被任何 timer/cron/scheduler 调度,
+            # 抓取结果只会以 promotions 形式进库 (语义噪声) → 代码级停用.
+            # 若将来要接 benchmark 评分, 先给 refresh_benchmark 排调度, 再把
+            # mock 回退改成诚实失败 (mock 分进 score_bonus 会污染路由排序).
+            enabled=False,
         )
 
     async def fetch(self) -> List[BenchmarkEntry]:
@@ -145,6 +151,8 @@ class SuperCLUEBenchmarkSource(BenchmarkSource):
             css_selector="main, body",
             wait_until="domcontentloaded",
             wait_for=None,
+            # 2026-11-04: benchmark 死链 (见 LMSYSArenaBenchmarkSource 注释)
+            enabled=False,
         )
 
     async def fetch(self) -> List[BenchmarkEntry]:

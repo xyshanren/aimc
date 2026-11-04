@@ -64,16 +64,23 @@ def test_volcengine_source_code_disabled_but_still_registered():
     )
 
 
-def test_only_volcengine_is_code_disabled():
+def test_only_benchmark_and_volcengine_are_code_disabled():
     from intelligence.sources import get_all_sources
 
-    disabled = [
+    disabled = sorted(
         f"{s.provider}/{s.source_type}"
         for s in get_all_sources() if not s.enabled
-    ]
-    assert disabled == ["volcengine/model_list"], (
-        f"当前只应有 volcengine 一个代码级停用源, 实际 {disabled}"
     )
+    # volcengine: 无渠道无 key 的 HTML 文档页源
+    # 5 个 benchmark: 死链 (refresh_benchmark 无调度, 且失败回退 mock 分)
+    assert disabled == sorted([
+        "volcengine/model_list",
+        "lmsys/benchmark",
+        "superclue/benchmark",
+        "artificial_analysis/benchmark",
+        "livebench/benchmark",
+        "opencompass/benchmark",
+    ]), f"代码停用源清单变化, 实际 {disabled}"
 
 
 # ============================================================
