@@ -14,7 +14,19 @@
 > - 价行小修已实现（§3.2 B1）—— `pricing_writer` 写前 resolver + `raw_model_id`，顺带修了
 >   旧实现"缓存精准刷新从不触发"的 dead path；
 > - 周级采集 job 重启重锚已修 —— `_batch_job_add_kwargs` 保留原 `next_run_time`（未来保留 / 过期补跑）。
-> 相应回归：`tests/test_intel_model_resolver.py`（17 例）+ `tests/test_intel_batch_job_next_run.py`（6 例）。
+> 相应回归：`tests/test_intel_model_resolver.py`（17 例）+ `tests/test_intel_batch_job_next_run.py`（7 例）。
+
+> **部署记录（2026-11-04, tx-ai @ 94f7003）**：三个 commit（67b94bc P0 治理 / 4c238e5 O1 / 94f7003 顺序修复）
+> 已推 gitee+github 并上产，1155 绿。生产验收：`跳过代码级停用源: volcengine/model_list`、
+> `保留长间隔采集 job 原计划 ×5`、`清理残留采集 job: batch_crawl_volcengine_86400`（jobstore 46→45）、
+> `/health` 200、`/api/sources` volcengine `code_disabled=true`、pending 仍 6 条（未清）。
+>
+> **踩坑（重要，直接影响同类逻辑）**：APScheduler 3.11 `BaseScheduler.get_job/get_jobs` 在
+> `STATE_STOPPED`（未 `start()`）时**只查本进程 `_pending_jobs`，从不读持久化 jobstore**。
+> 原 `start_scheduler()` 把 `scheduler.start()` 放在函数末尾 —— 于是所有注册/清理逻辑
+> （含 V6.5 S12 的 `_prune_stale_crawl_jobs`）三条周来一直在空列表上运行，"清理残留"
+> 从未真正生效过。修法 = listener + `start()` 提前到注册/清理之前。任何"启动时读既有 job"
+> 的新逻辑都必须放在 `start()` 之后，或用 jobstore 直连（`scheduler._jobstores['default']`）。
 
 ## 1. 现状链路（代码事实）
 
