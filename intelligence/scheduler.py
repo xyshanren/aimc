@@ -299,6 +299,27 @@ async def start_scheduler():
         )
     sources = [s for s in sources if s.enabled]
 
+    # 阶段2 (2026-08-14): event listener + 启动调度器必须在注册/清理 job 之前。
+    # 2026-11-04 实证: SQLAlchemyJobStore 要等 scheduler.start() 才把库里已持久化的
+    # job 加载进调度器内存 — start() 之前 scheduler.get_job()/get_jobs() 全返回空
+    # (直接访问 jobstore 却有 46 条), 导致 _batch_job_add_kwargs 的周级 next_run
+    # 保留和 _prune_stale_crawl_jobs 的残留清理双双静默失效。
+    def _record_job_event(event):
+        """apscheduler event listener (sync): 事件解包 → record_job_health_event"""
+        try:
+            record_job_health_event(
+                event.job_id,
+                event.exception is None,
+                event.exception,
+                getattr(event, "scheduled_run_time", None),
+            )
+        except Exception as e:
+            logger.debug(f"[job_health] listener 异常 (非致命): {e}")
+
+    scheduler.add_listener(_record_job_event, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
+    scheduler.start()
+    logger.info("[阶段2] 调度器已 start() — 持久化 job 已加载, 开始注册/清理")
+
     # 阶段2 (2026-08-14): 按 provider 合并成 batch job
     # - 每个厂商 1 个 batch job, 串联该 provider 所有 source_types
     # - 31 个 crawl_* 合并成 ~10 个 batch (deepseek/glm/qwen/siliconflow/...)
@@ -514,26 +535,6 @@ async def start_scheduler():
         name="情报系统盲区审计 (A-2)",
         replace_existing=True,
     )
-
-    # 阶段2 (2026-08-14): 注册 apscheduler event listener
-    # 同步写 job_health 表 — 轴2 (2026-11-04) 重构: 写入逻辑抽到模块级
-    # record_job_health_event (可测试 + 三处数据质量修复), 闭包只做事件解包
-    def _record_job_event(event):
-        """apscheduler event listener (sync): 事件解包 → record_job_health_event"""
-        try:
-            record_job_health_event(
-                event.job_id,
-                event.exception is None,
-                event.exception,
-                getattr(event, "scheduled_run_time", None),
-            )
-        except Exception as e:
-            logger.debug(f"[job_health] listener 异常 (非致命): {e}")
-
-    scheduler.add_listener(_record_job_event, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
-    logger.info("[阶段2] 注册 apscheduler event listener -> 写 job_health")
-
-    scheduler.start()
 
     # V6.16: 断链 watchdog — 独立 asyncio task, 调度链被锁异常打断时自愈+告警
     global _watchdog_task

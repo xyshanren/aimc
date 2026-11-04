@@ -29,6 +29,11 @@ class _FakeJob:
         self.next_run_time = next_run_time
 
 
+async def _noop_job():
+    """模块级函数 — APScheduler 持久化 job 需要可被 pickle 的 func_ref"""
+    pass
+
+
 class _FakeScheduler:
     def __init__(self, job=None, error=False):
         self._job = job
@@ -92,6 +97,57 @@ def test_weekly_paused_job_not_woken():
     assert _batch_job_add_kwargs(sched, "batch_crawl_x_604800", 604800) == {}, (
         "暂停状态的 job 不应被启动补跑唤醒"
     )
+
+
+def test_helper_requires_started_scheduler(tmp_path):
+    """持久化 job 对调度器公开 API 的可见性依赖 start()。
+
+    APScheduler 语义 (源码实证): STATE_STOPPED 时 get_job/get_jobs 只查本进程
+    _pending_jobs, 从不读 jobstore — 2026-11-04 生产实证: start() 放在注册之后,
+    周级 next_run 保留 (_batch_job_add_kwargs) 与残留清理 (_prune_stale_crawl_jobs)
+    都拿到空 → 双双静默失效。修法=start() 提前到注册之前, 本用例锁死该顺序契约。
+    """
+    import asyncio
+
+    from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    from intelligence.scheduler import _batch_job_add_kwargs
+
+    db_url = f"sqlite:///{tmp_path / 'jobs.db'}"
+    future = datetime.now() + timedelta(days=2)  # 模拟上次重启留下的周级计划
+
+    async def _run():
+        # 会话 1: 把周级 job 持久化进 jobstore (上次重启留下的老计划)
+        s1 = AsyncIOScheduler(jobstores={"default": SQLAlchemyJobStore(url=db_url)})
+        s1.add_job(
+            _noop_job, trigger=IntervalTrigger(seconds=604800),
+            id="batch_crawl_probe_604800", next_run_time=future,
+        )
+        s1.start()
+        s1.shutdown(wait=False)
+
+        # 会话 2: 模拟重启 — 库里已有 job, 但 scheduler 尚未 start()
+        s2 = AsyncIOScheduler(jobstores={"default": SQLAlchemyJobStore(url=db_url)})
+        try:
+            assert s2.get_job("batch_crawl_probe_604800") is None, (
+                "start() 前公开 API 只查本进程 pending, 持久化 job 不可见"
+            )
+            assert not _batch_job_add_kwargs(
+                s2, "batch_crawl_probe_604800", 604800,
+            ), "start() 前不可依赖公开 API — 顺序契约"
+            s2.start()
+            kwargs = _batch_job_add_kwargs(
+                s2, "batch_crawl_probe_604800", 604800,
+            )
+            assert kwargs["next_run_time"].replace(tzinfo=None) == future, (
+                "start() 后应保留周级原计划 (未来不变)"
+            )
+        finally:
+            s2.shutdown(wait=False)
+
+    asyncio.run(_run())
 
 
 def test_weekly_jobstore_error_falls_back():
