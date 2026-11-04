@@ -48,6 +48,16 @@ class VolcengineArkModelListSource(IntelSourceBase):
 
     Phase 3.6: API 结构化抽取 (主) + HTML 文档页 (降级)
     频率: 1 天
+
+    2026-11-04 代码级停用 (enabled=False):
+    - 本站没有 volcengine 渠道 → api_key_from="volcengine" 解析不到 key →
+      每轮静默降级抓 HTML 文档页 (url 存在就不会走"无 key 静默跳过"分支);
+    - 文档页只给模型名 → 解析出的 metadata 无 tier/价格/上下文 →
+      inferred_tier=None → 全部落 pending, 零可路由价值
+      (实证: 11-02 那批 Seedream / Seedance / Seed-Evolving / DeepSeek-V4.1-Flash);
+    - Seedream 是生图、Seedance 是视频生成, 本来就不该进 LLM 网关路由。
+    保留注册 (不删类/不删实例) 是为了让它继续出现在采集源管理页可解释,
+    删掉会变成 DB 孤儿行 — 不可见也不可管理。
     """
 
     def __init__(self):
@@ -62,6 +72,8 @@ class VolcengineArkModelListSource(IntelSourceBase):
             # Phase 3.6: API 结构化抽取 (主路径)
             api_endpoint="https://ark.cn-beijing.volces.com/api/v3",
             api_key_from="volcengine",
+            # 2026-11-04: 无渠道无 key 的 HTML 文档页源, 产出全是垃圾 pending
+            enabled=False,
         )
 
 

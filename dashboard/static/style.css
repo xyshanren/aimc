@@ -1100,6 +1100,15 @@ details.accounts-form-details[open] > summary::before {
     background: rgba(255, 107, 107, 0.08);
     border: 1px solid rgba(255, 107, 107, 0.3);
 }
+/* 2026-11-04 (O1): 模型名解析命中现网模型的提示 (启发式解析才显示, 需人工确认) */
+.pr-resolved {
+    color: var(--color-info, #4da3ff);
+    font-size: 11px;
+    padding: 1px 5px;
+    border-radius: var(--radius-sm);
+    background: rgba(77, 163, 255, 0.08);
+    border: 1px solid rgba(77, 163, 255, 0.3);
+}
 .pr-field { color: var(--text-secondary); }
 .pr-old { color: var(--color-danger); text-decoration: line-through; }
 .pr-arrow { color: var(--text-muted); }

@@ -706,8 +706,33 @@ async function loadGroupRouting() {
 }
 
 // Phase 4 E1: 待确认能力变更队列
-async function approvePendingReview(logId, btn) {
-    if (!confirm(`确定批准 log #${logId} ? Tier 会自动写入 ModelRegistry`)) return;
+const PR_FIELD_LABELS = {
+    'create': '新模型入库',
+    'metadata': '元信息变更',
+    'tier': '档位调整',
+    'status': '状态变更',
+    'display_name': '显示名变更',
+    'context_length': '上下文长度',
+    'modality': '多模态变更',
+};
+
+// 批准后实际会做什么 (与 db/crud.py:approve_capability_change 的 apply 分支一一对应).
+// 只有 tier / create / status 有落库动作, 其余 field 仅结案归档 — 弹窗必须如实说明,
+// 否则用户会以为"批准 = 元信息已生效".
+const PR_APPLY_NOTES = {
+    'tier': 'tier 会写入 ModelRegistry, 并从旧 tier: 组迁移到新组',
+    'create': '仅当已有可用渠道价行时才翻为 active; 无价行则保持 inactive',
+    'status': '会把模型标记为 deprecated 并出组',
+    'display_name': '不会改 ModelRegistry, 仅结案归档 (显示名需在模型管理手动改)',
+    'context_length': '不会改 ModelRegistry, 仅结案归档 (上下文长度需手动改)',
+    'modality': '不会改 ModelRegistry, 仅结案归档 (模态需手动改)',
+    'metadata': '不会改 ModelRegistry, 仅结案归档 (元信息不自动应用)',
+};
+
+async function approvePendingReview(logId, fieldChanged, btn) {
+    const fieldLabel = PR_FIELD_LABELS[fieldChanged] || fieldChanged || '能力变更';
+    const applyNote = PR_APPLY_NOTES[fieldChanged] || '仅结案归档, 不会改动 ModelRegistry';
+    if (!confirm(`确定批准 log #${logId} (${fieldLabel}) ?\n\n${applyNote}`)) return;
     try {
         const resp = await authFetch(`/dashboard/api/pending-review/${logId}/approve`, { method: 'POST' });
         const data = await resp.json();
@@ -760,15 +785,7 @@ function renderPendingReview(container) {
             container.innerHTML = '<p class="loading">✓ 当前无待确认能力变更</p>';
             return;
         }
-        const FIELD_LABELS = {
-            'create': '新模型入库',
-            'metadata': '元信息变更',
-            'tier': '档位调整',
-            'status': '状态变更',
-            'display_name': '显示名变更',
-            'context_length': '上下文长度',
-            'modality': '多模态变更',
-        };
+        const FIELD_LABELS = PR_FIELD_LABELS;
         let html = `<p class="meta">共 <strong id="pr-summary">${esc(data.count)} 条待确认</strong>，按时间倒序</p>`;
         for (const item of items) {
             const conf = item.confidence || 0;
@@ -784,11 +801,17 @@ function renderPendingReview(container) {
             let oldVal = item.old_value ?? '(空)';
             // V4.8.6: 解析 new_value JSON, 检测 channel_available 标记
             let channelWarn = '';
+            // 2026-11-04 (O1): 启发式解析命中现网模型时, 标明"≈ 已匹配 X"
+            let resolvedChip = '';
             try {
                 if (typeof newVal === 'string' && newVal.startsWith('{')) {
                     const obj = JSON.parse(newVal);
                     if (obj.channel_available === false) {
                         channelWarn = '<span class="pr-warn" title="当前无 active 渠道为该模型配过价格">⚠️ 无可用渠道</span>';
+                    }
+                    if (obj.resolved_model_id) {
+                        const how = obj.resolved_by ? ` (${obj.resolved_by})` : '';
+                        resolvedChip = `<span class="pr-resolved" title="模型名解析${esc(how)}: 批准后本次解析会记为别名, 后续扫描自动命中">≈ 已匹配 ${esc(obj.resolved_model_id)}</span>`;
                     }
                     const parts = [];
                     for (const [k, v] of Object.entries(obj)) {
@@ -812,6 +835,7 @@ function renderPendingReview(container) {
                     <code class="pr-model">${esc(item.model_id)}</code>
                     ${item.display_name ? `<span class="pr-display-name">${esc(item.display_name)}</span>` : ''}
                     ${providerTag}
+                    ${resolvedChip}
                     ${channelWarn}
                     <span class="pr-field" title="${esc(item.field_changed)}">${esc(FIELD_LABELS[item.field_changed] || item.field_changed)}</span>
                     <span class="pr-old">${oldVal}</span>
@@ -821,7 +845,7 @@ function renderPendingReview(container) {
                     <span class="pr-time">${esc(created)}</span>
                 </div>
                 <div class="pr-actions">
-                    <button class="btn-approve" onclick="approvePendingReview(${item.id}, this)">批准</button>
+                    <button class="btn-approve" onclick="approvePendingReview(${item.id}, '${esc(item.field_changed)}', this)">批准</button>
                     <button class="btn-reject" onclick="rejectPendingReview(${item.id}, this)">拒绝</button>
                 </div>
             </div>`;
@@ -2144,7 +2168,13 @@ async function loadSources() {
         const resp = await authFetch('/dashboard/api/sources');
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
-        if (meta) meta.textContent = `共 ${data.count} 个源`;
+        // 2026-11-04: 表体是 300px 滚动区, 代码停用源按字母序沉底 (volcengine 就是最后一个)
+        // → meta 里点名, 否则用户会以为"这个源不存在"
+        const codeDisabledCount = (data.sources || []).filter(s => s.code_disabled).length;
+        if (meta) {
+            meta.textContent = `共 ${data.count} 个源`
+                + (codeDisabledCount ? ` (含 ${codeDisabledCount} 个已代码停用)` : '');
+        }
 
         if (!data.sources || data.sources.length === 0) {
             container.innerHTML = '<p class="text-muted">无采集源</p>';
@@ -2167,10 +2197,18 @@ async function loadSources() {
             const intervalStr = intervalMin >= 60
                 ? (intervalMin / 60).toFixed(intervalMin % 60 === 0 ? 0 : 1) + 'h'
                 : intervalMin + 'm';
-            const statusClass = s.enabled
-                ? (s.status === 'error' ? 'status-error' : 'status-active')
-                : 'status-disabled';
-            const statusText = s.enabled ? s.status : 'disabled';
+            // 2026-11-04: 代码级停用 (enabled=False) 与 DB toggle 是两套闸门 —
+            // 代码停用的源不可被开关/手动采集唤醒, 必须显性标注, 否则会误判成
+            // "点一下启用就能恢复" (实际永远不会采集)
+            const codeDisabled = !!s.code_disabled;
+            const statusClass = codeDisabled
+                ? 'status-disabled'
+                : (s.enabled
+                    ? (s.status === 'error' ? 'status-error' : 'status-active')
+                    : 'status-disabled');
+            const statusText = codeDisabled
+                ? '已下线(代码)'
+                : (s.enabled ? s.status : 'disabled');
             const lastCheck = s.last_check_at
                 ? s.last_check_at.slice(5, 16).replace('T', ' ')
                 : '-';
@@ -2180,10 +2218,15 @@ async function loadSources() {
             const apiBadge = s.api_endpoint_configured
                 ? '<span class="text-muted" title="API 结构化抽取">API</span>'
                 : '<span class="text-muted" title="HTML 抓取">HTML</span>';
-            const toggleBtn = s.enabled
-                ? `<button class="btn-sm btn-disable" data-action="src-toggle" data-provider="${esc(s.provider)}">禁用</button>`
-                : `<button class="btn-sm btn-enable" data-action="src-toggle" data-provider="${esc(s.provider)}">启用</button>`;
-            const runBtn = `<button class="btn-sm" data-action="src-run-now" data-provider="${esc(s.provider)}">采集</button>`;
+            const codeDisabledNote = '<span class="text-muted" title="源已在代码中停用 (enabled=False): 需改 intelligence/sources 下的源定义才能恢复">停用 · 代码</span>';
+            const toggleBtn = codeDisabled
+                ? codeDisabledNote
+                : (s.enabled
+                    ? `<button class="btn-sm btn-disable" data-action="src-toggle" data-provider="${esc(s.provider)}">禁用</button>`
+                    : `<button class="btn-sm btn-enable" data-action="src-toggle" data-provider="${esc(s.provider)}">启用</button>`);
+            const runBtn = codeDisabled
+                ? ''
+                : `<button class="btn-sm" data-action="src-run-now" data-provider="${esc(s.provider)}">采集</button>`;
             html += '<tr>'
                 + '<td><code>' + esc(s.provider) + '</code></td>'
                 + '<td>' + esc(s.source_type) + ' ' + apiBadge + '</td>'

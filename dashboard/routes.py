@@ -2347,9 +2347,17 @@ async def run_source_now(provider: str = Query(..., description="厂商标识，
         400: 未知 provider
     """
     from intelligence.scheduler import run_source_now as _run_now
+    from intelligence.sources import get_source_by_provider
 
     count = await _run_now(provider)
     if count == 0:
+        # 2026-11-04: 区分"未知 provider"与"已知但代码级停用" (后者不是 404 语义)
+        known = get_source_by_provider(provider)
+        if known:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{provider} 的采集源已代码级停用 (enabled=False), 无法手动采集",
+            )
         raise HTTPException(status_code=400, detail=f"Unknown provider: {provider}")
 
     return {
@@ -2394,6 +2402,9 @@ async def list_sources(session: AsyncSession = Depends(get_session)):
             "error_count": db_src.error_count if db_src else 0,
             "consecutive_no_change": db_src.consecutive_no_change if db_src else 0,
             "enabled": src.enabled and (not db_src or db_src.status != "disabled"),
+            # 2026-11-04: 代码级停用 (enabled=False) — 与 DB toggle 是两套闸门,
+            # 代码停用的源不可通过 toggle/手动采集唤醒, UI 需灰掉按钮并标注原因
+            "code_disabled": not src.enabled,
             "api_endpoint_configured": bool(getattr(src, "api_endpoint", None)),
         })
 
@@ -2418,9 +2429,17 @@ async def toggle_source(
     sources = get_source_by_provider(provider)
     if not sources:
         raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
-
-    toggled = 0
+    # 2026-11-04: 代码级停用的源不能被 toggle 唤醒 (否则出现"显示启用但永不采集")
+    if not any(s.enabled for s in sources):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{provider} 的采集源已在代码中停用 (enabled=False), "
+                "无法通过开关启用; 如需恢复请改 intelligence/sources 下的源定义"
+            ),
+        )
     new_status = None
+    toggled = 0
     for src in sources:
         db_src = await crud.get_intel_source_by_provider_url(session, src.provider, src.url)
         if db_src:

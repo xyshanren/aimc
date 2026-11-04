@@ -253,6 +253,18 @@ async def start_scheduler():
 
     sources = get_all_sources()
 
+    # 2026-11-04: 代码级停用 (source.enabled=False) 的源不注册调度 job。
+    # 此前 enabled 只被 dashboard 展示用, 调度照跑 —— volcengine 垃圾源就是这样
+    # 每天抓一次文档页产 pending (无渠道无 key, 产出全是空壳 metadata)。
+    # 停用源仍留在 get_all_sources() 里, 保证采集管理页能看到它 (不变孤儿行)。
+    code_disabled = [s for s in sources if not s.enabled]
+    if code_disabled:
+        logger.info(
+            "跳过代码级停用源 (enabled=False): %s",
+            ", ".join(f"{s.provider}/{s.source_type}" for s in code_disabled),
+        )
+    sources = [s for s in sources if s.enabled]
+
     # 阶段2 (2026-08-14): 按 provider 合并成 batch job
     # - 每个厂商 1 个 batch job, 串联该 provider 所有 source_types
     # - 31 个 crawl_* 合并成 ~10 个 batch (deepseek/glm/qwen/siliconflow/...)
@@ -547,6 +559,14 @@ async def run_source_now(provider: str) -> int:
     if not sources:
         logger.warning(f"手动触发失败：未知 provider '{provider}'")
         return 0
+    # 2026-11-04: 代码级停用源不允许手动触发 (结构性垃圾源, 见 model_lists.py 注释)
+    runnable = [s for s in sources if s.enabled]
+    if not runnable:
+        logger.warning(
+            f"手动触发跳过：{provider} 的所有源已代码级停用 (enabled=False)"
+        )
+        return 0
+    sources = runnable
 
     count = 0
     for source in sources:
@@ -613,6 +633,15 @@ async def _run_source_task(source):
     # Phase 2D-2: 总开关（试用阶段可关）
     if not settings.crawl_enabled:
         logger.debug(f"采集已禁用 (AIMC_CRAWL_ENABLED=false), skip: {source.provider}")
+        return
+
+    # 2026-11-04: 代码级停用兜底 — 残留 jobstore 任务 / in-flight batch 仍会调到这里
+    # (getattr 兜底: 测试/鸭子类型 source 可能没有 enabled 字段, 默认视为启用)
+    if not getattr(source, "enabled", True):
+        logger.debug(
+            f"源已代码级停用 (enabled=False), skip: "
+            f"{source.provider}/{source.source_type}"
+        )
         return
 
     # V4.8.3: per-source 禁用检查 (dashboard toggle 写 DB status=disabled)
