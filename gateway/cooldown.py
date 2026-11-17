@@ -282,9 +282,14 @@ class CooldownManager:
             if s["count"] >= self.failure_threshold:
                 # V6.10: 模型桶级配额隔离 — quota_exhausted 且携带 model 时只封该
                 # 上游配额桶, 不设账号级 cooldown_until (同账号另一模型桶继续路由).
+                # V6.20: 共享池吞吐限流 (throughput_shared=True, TPM/RPM 类) 复用
+                # 同一隔离桶 — 免费公测池共享吞吐死循环 (生产实证 sensenova kimi-k3
+                # 455/480 429), 真实流量撞一次才知空隙, 全白打. 进桶后由
+                # quota_recovery_probe 发 1-token 真聊天感知池空隙: 200 即放行.
                 if (
                     model
-                    and error_info.category == ErrorCategory.QUOTA_EXHAUSTED
+                    and (error_info.category == ErrorCategory.QUOTA_EXHAUSTED
+                         or getattr(error_info, "throughput_shared", False))
                     and cooldown_secs > 0
                 ):
                     self._quarantine[(account_id, model)] = now + cooldown_secs
@@ -731,7 +736,7 @@ def _build_cooldown_manager():
             quota_probe_initial_seconds=getattr(
                 settings, 'quota_recovery_probe_initial_seconds', 300),
             quota_probe_max_seconds=getattr(
-                settings, 'quota_recovery_probe_max_seconds', 1800),
+                settings, 'quota_recovery_probe_max_seconds', 3600),
         )
     except Exception:
         return CooldownManager()

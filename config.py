@@ -162,7 +162,7 @@ class Settings(BaseSettings):
     # 消息级探测有成本 (modelscope 免费次数用完为止), 节拍从 initial 起指数退避。
     quota_recovery_probe_enabled: bool = True          # env: AIMC_QUOTA_RECOVERY_PROBE_ENABLED (总开关)
     quota_recovery_probe_initial_seconds: int = 300    # env: AIMC_QUOTA_RECOVERY_PROBE_INITIAL (首次探测延迟, 秒)
-    quota_recovery_probe_max_seconds: int = 1800       # env: AIMC_QUOTA_RECOVERY_PROBE_MAX (退避上限, 秒)
+    quota_recovery_probe_max_seconds: int = 3600       # env: AIMC_QUOTA_RECOVERY_PROBE_MAX (退避上限, 秒)
 
     # === V6.6.x (2026-09-16): 路由体量准入 ===
     # 渠道名 -> 单请求估算输入 token 的适配窗上/下界。窗口外的候选在频限+配额过滤

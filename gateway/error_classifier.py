@@ -42,6 +42,13 @@ class ErrorInfo:
     needs_human: bool               # 是否需要人工干预
     suggested_cooldown_seconds: int
     suggested_probe_after_seconds: Optional[int]  # None = 不主动探活
+    # V6.20 (2026-11-17): 共享池吞吐限流 (TPM/RPM 类) 标记. 与 QUOTA_EXHAUSTED
+    # 一样无绝对重置时间、上游自愈, 但走 rate_limited 路径会被排除在恢复探测
+    # 之外 (quota_recovery_probe 只辨 QUOTA_EXHAUSTED 隔离桶). 生产实证
+    # (2026-11-16 sensenova): 455/480 429 全来自 kimi-k3 的 EndpointTPMExceeded /
+    # ModelAccountRpmRateLimitExceeded — 免费公测池共享吞吐死循环, 真实流量
+    # 撞一次才知空隙, 全白打. 置位后由 mark_failure 纳入吞吐桶隔离 + 恢复探测.
+    throughput_shared: bool = False
 
 
 # === 关键字匹配 (regex, ignorecase) ===
@@ -87,6 +94,16 @@ _CONTEXT_WINDOW_KEYWORDS = re.compile(
 # 这类都是共享池吞吐限流 (分钟级自愈), 不是计费配额耗尽。
 _RATE_LIMIT_HINT = re.compile(
     r"(rate.?limit|\btpm\b|\brpm\b|429001|token.?limit|too many requests|触发限流|请求过于频繁)",
+    re.IGNORECASE,
+)
+
+# V6.20 (2026-11-17): 共享池吞吐限流判别 — 比 _RATE_LIMIT_HINT 窄, 只认
+# TPM/RPM 共享吞吐约束 (免费公测池池级 TPM / 账号级 RPM, 生产实证
+# sensenova EndpointTPMExceeded / ModelAccountRpmRateLimitExceeded)。
+# 这类无绝对重置、上游自愈, 走吞吐桶隔离 + 恢复探测; 而"too many requests"
+# 等普通瞬时限流 (glm 1305 过载波纹) 应保持账号级快速冷却, 不进桶。
+_THROUGHPUT_SHARED_RE = re.compile(
+    r"(429001|endpoint.?tpm|tpm.?exceed|\btpm\b|\brpm\b|token.?limit)",
     re.IGNORECASE,
 )
 
@@ -287,6 +304,7 @@ def classify(
             needs_human=False,
             suggested_cooldown_seconds=300,
             suggested_probe_after_seconds=600,
+            throughput_shared=bool(_THROUGHPUT_SHARED_RE.search(haystack)),
         )
 
     # === 3. code 字段优先匹配 (最准) ===
@@ -382,6 +400,8 @@ def classify(
         # 其他瞬时 429 (如 glm 1305 过载波纹) 保持 30s 快速自愈。
         _h = haystack.lower()
         if "429001" in _h or "tpm" in _h or "rpm" in _h:
+            # V6.20: 共享池吞吐限流 (TPM/RPM) — 与瞬时过载不同, 无绝对重置、
+            # 上游自愈 (免费公测池共享吞吐), 走吞吐桶隔离 + 恢复探测, 见 ErrorInfo.
             return ErrorInfo(
                 category=ErrorCategory.RATE_LIMITED,
                 error_code=code,
@@ -389,6 +409,7 @@ def classify(
                 needs_human=False,
                 suggested_cooldown_seconds=300,
                 suggested_probe_after_seconds=600,
+                throughput_shared=True,
             )
         return ErrorInfo(
             category=ErrorCategory.RATE_LIMITED,

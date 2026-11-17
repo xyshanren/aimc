@@ -25,17 +25,24 @@ from gateway.router import RouteEngine
 
 @pytest.fixture
 def engine(monkeypatch):
-    """超时突发参数打桩。
+    """超时突发参数打桩 — 真 Settings 同时钉 config.settings 与 router 绑定。
 
-    注意钉的是 gateway.router 模块内绑定的 settings 引用 (record_upstream_timeout
-    实际读的对象), 而非 from config import settings —— 老测试文件 (cleanup_/
-    null_price_/phase4_e1_) 会在模块顶层把 config.settings 换成 _MockSettings,
-    子集跑时该 mock 会泄漏进 router (全量按字母序本文件在前不触发)。"""
+    钉两处的原因: gateway/router.py 的 select_best_channel 内部是局部
+    `from config import settings` (router.py:810), 只钉模块全局会被遮蔽; 老测试
+    文件 (cleanup_/null_price_/phase4_e1_) 收集期把 config.settings 换成
+    _MockSettings, 子集跑时该 mock 会泄漏进 router (全量按字母序本文件在前
+    不触发)。这里统一用真 Settings 实例, 顺序无关。
+    """
+    import config as cfg_mod
     import gateway.router as router_mod
-    s = router_mod.settings
-    monkeypatch.setattr(s, "timeout_burst_threshold", 3, raising=False)
-    monkeypatch.setattr(s, "timeout_burst_window_minutes", 60, raising=False)
-    monkeypatch.setattr(s, "timeout_burst_minutes", 10, raising=False)
+    from config import Settings
+
+    s = Settings()
+    s.timeout_burst_threshold = 3
+    s.timeout_burst_window_minutes = 60
+    s.timeout_burst_minutes = 10
+    monkeypatch.setattr(cfg_mod, "settings", s, raising=False)
+    monkeypatch.setattr(router_mod, "settings", s, raising=False)
     return RouteEngine()
 
 
