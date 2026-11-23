@@ -79,6 +79,7 @@ class CooldownManager:
         max_probe_backoff_seconds: int = DEFAULT_MAX_PROBE_BACKOFF_SECONDS,
         quota_probe_initial_seconds: int = 300,
         quota_probe_max_seconds: int = 1800,
+        quota_probe_stall_after_attempts: Optional[int] = None,
     ):
         self.cooldown_seconds = cooldown_seconds
         self.failure_threshold = failure_threshold
@@ -87,6 +88,13 @@ class CooldownManager:
         # V6.15: 配额桶恢复探测节拍 (指数退避 initial → max)
         self.quota_probe_initial_seconds = quota_probe_initial_seconds
         self.quota_probe_max_seconds = quota_probe_max_seconds
+        # V6.21 (2026-11-23): 共享吞吐桶长满停探阈值 — 免费公测池长期满载时
+        # 探测 100% 失败, 指数退避封顶 1h 也照样反复重撞, 白打上游 71+/天
+        # (生产实证 2026-11-22 sensenova kimi-k3)。达到阈值后停止自动探测、
+        # 钉住隔离桶 (不再放行路由), 等人工确认。None = 无限探测 (旧行为)。
+        self.quota_probe_stall_after_attempts = quota_probe_stall_after_attempts
+        # (account_id, model) → 连续探测失败计数 (attempts 到阈值即停探)
+        self._quarantine_stall: dict[tuple[int, str], int] = {}
         # account_id → state dict (V4.9 扩展)
         self._state: dict[int, dict] = {}
         # V6.10 (2026-09-20): 模型桶级隔离 — (account_id, model) → 冷却截止时间戳.
@@ -405,6 +413,8 @@ class CooldownManager:
                 self._quarantine.pop(key, None)
             for key in [k for k in self._quarantine_probe if k[0] == account_id]:
                 self._quarantine_probe.pop(key, None)
+            for key in [k for k in self._quarantine_stall if k[0] == account_id]:
+                self._quarantine_stall.pop(key, None)
         s = self._state.get(account_id)
         if not s:
             return
@@ -592,6 +602,7 @@ class CooldownManager:
         """
         if success:
             self._quarantine_probe.pop((account_id, model), None)
+            self._quarantine_stall.pop((account_id, model), None)
             self.mark_success(account_id, model=model)
             logger.info(
                 f"CooldownManager: account_id={account_id} model={model} "
@@ -615,6 +626,23 @@ class CooldownManager:
             )
             return
         st["attempts"] = st.get("attempts", 0) + 1
+        # V6.21: 共享吞吐桶长满停探 — 连续探测失败达到阈值即停止自动探测, 钉住
+        # 隔离桶等人工 (免费公测池长期满载时探测永不自愈, 白打上游)。只有"真没
+        # 恢复" (上游明确拒绝 429) 才计数; transient 自身上异常不消耗阈值。
+        if self.quota_probe_stall_after_attempts:
+            attempted = self._quarantine_stall.get((account_id, model), 0) + 1
+            if attempted >= self.quota_probe_stall_after_attempts:
+                self._quarantine_stall[(account_id, model)] = attempted
+                # 把桶彻底钉住: 延长冷却到远期 (路由不再放行), 清探测节拍 (不再探)
+                self._quarantine[(account_id, model)] = time.time() + 365 * 86400
+                self._quarantine_probe.pop((account_id, model), None)
+                logger.warning(
+                    f"CooldownManager: account_id={account_id} model={model} "
+                    f"共享吞吐桶连续 {attempted} 次探测未恢复 → 停止自动探测, "
+                    f"钉住隔离桶等人工确认 (需 ack-recover / 份额排查后才能放行)"
+                )
+                return
+            self._quarantine_stall[(account_id, model)] = attempted
         backoff = min(
             self.quota_probe_max_seconds,
             self.quota_probe_initial_seconds * (2 ** (st["attempts"] - 1)),
@@ -672,6 +700,7 @@ class CooldownManager:
         expired_q = [k for k, until in self._quarantine.items() if now >= until]
         for k in expired_q:
             self._quarantine.pop(k, None)
+            self._quarantine_stall.pop(k, None)
         # V6.15: 探测节拍记录跟随桶隔离 — 桶已不存在 (到期/被成功清掉) 的节拍无意义
         orphan_qp = [k for k in self._quarantine_probe if k not in self._quarantine]
         for k in orphan_qp:
@@ -737,6 +766,8 @@ def _build_cooldown_manager():
                 settings, 'quota_recovery_probe_initial_seconds', 300),
             quota_probe_max_seconds=getattr(
                 settings, 'quota_recovery_probe_max_seconds', 3600),
+            quota_probe_stall_after_attempts=getattr(
+                settings, 'quota_probe_stall_after_attempts', None),
         )
     except Exception:
         return CooldownManager()
