@@ -15,7 +15,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -303,7 +303,7 @@ def test_quota_recovery_probe_success_clears_bucket():
         recovered = asyncio.run(ch_mod.quota_recovery_probe())
     check("recovered=1", recovered, 1)
     mock_cm.quota_probe_result.assert_called_once_with(
-        2, "glm-5.3", success=True, transient=False)
+        2, "glm-5.3", success=True, transient=False, error_msg=ANY)
     log = session.add.call_args.args[0]
     check("health log triggered_by", log.triggered_by, "quota_recovery")
     check("health log success", log.success, 1)
@@ -318,7 +318,7 @@ def test_quota_recovery_probe_failure_keeps_bucket():
         recovered = asyncio.run(ch_mod.quota_recovery_probe())
     check("recovered=0", recovered, 0)
     mock_cm.quota_probe_result.assert_called_once_with(
-        2, "glm-5.3", success=False, transient=False)
+        2, "glm-5.3", success=False, transient=False, error_msg=ANY)
 
 
 def test_quota_recovery_probe_noop_without_due_buckets():

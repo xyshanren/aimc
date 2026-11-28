@@ -156,6 +156,26 @@ def _truncate(s: Optional[str], n: int = _ERR_MSG_MAX) -> str:
     return s[:n] if len(s) > n else s
 
 
+def parse_quota_reset_datetime(msg: str) -> Optional[datetime]:
+    """V6.22: 从配额消息解析上游声明的重置点 (解析不到 → None).
+
+    提取自 _quota_reset_cooldown_seconds (V6.15), 供 cooldown.quota_probe_result
+    判断"恢复点未到"复用: 消息声明了未来重置点 = 有界窗口, 重置前探测失败是
+    设计内必然, 不该计入 V6.21 长满停探阈值。
+    """
+    if not msg or not _RESET_KEYWORD_RE.search(msg):
+        return None
+    m = _RESET_DATETIME_RE.search(msg)
+    if not m:
+        return None
+    try:
+        y, mo, d, h, mi = (int(m.group(i)) for i in range(1, 6))
+        sec = int(m.group(6)) if m.group(6) else 0
+        return datetime(y, mo, d, h, mi, sec)
+    except ValueError:
+        return None
+
+
 def _quota_reset_cooldown_seconds(msg: str, default_seconds: int) -> int:
     """V6.15: 从 quota_exhausted 消息解析上游重置时间 → 冷却到重置点 (+缓冲).
 
@@ -163,16 +183,8 @@ def _quota_reset_cooldown_seconds(msg: str, default_seconds: int) -> int:
     2026-09-28 16:44:16 重置。" 固定 3600s 冷却在 16:44 重置后仍空窗 28 分钟。
     解析不到 / 无重置语义词 / 时间非法 → 原默认值 (行为不变)。
     """
-    if not msg or not _RESET_KEYWORD_RE.search(msg):
-        return default_seconds
-    m = _RESET_DATETIME_RE.search(msg)
-    if not m:
-        return default_seconds
-    try:
-        y, mo, d, h, mi = (int(m.group(i)) for i in range(1, 6))
-        sec = int(m.group(6)) if m.group(6) else 0
-        reset_dt = datetime(y, mo, d, h, mi, sec)
-    except ValueError:
+    reset_dt = parse_quota_reset_datetime(msg or "")
+    if reset_dt is None:
         return default_seconds
     delta = (reset_dt - datetime.now()).total_seconds() + _RESET_BUFFER_SECONDS
     if delta < _RESET_MIN_SECONDS:

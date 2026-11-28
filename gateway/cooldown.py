@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -308,6 +309,11 @@ class CooldownManager:
                     self._quarantine_probe[(account_id, model)] = {
                         "next_probe_at": now + self.quota_probe_initial_seconds,
                         "attempts": 0,
+                        # V6.22: 有界窗口标记 — quota_exhausted 桶的 until 就是
+                        # 上游声明的重置点, 恢复点之前探测失败是设计内必然
+                        # (glm 周配额/5h 窗口); 共享吞吐桶 (V6.20) 无重置点,
+                        # 不带此标记 → 探测失败照常计入停探阈值 (V6.21 语义)
+                        "bounded": not getattr(error_info, "throughput_shared", False),
                     }
                     logger.warning(
                         f"CooldownManager: account_id={account_id} model={model} "
@@ -583,6 +589,7 @@ class CooldownManager:
         success: bool,
         *,
         transient: bool = False,
+        error_msg: str = "",
     ) -> None:
         """V6.15: 配额桶恢复探测结果回写.
 
@@ -629,7 +636,15 @@ class CooldownManager:
         # V6.21: 共享吞吐桶长满停探 — 连续探测失败达到阈值即停止自动探测, 钉住
         # 隔离桶等人工 (免费公测池长期满载时探测永不自愈, 白打上游)。只有"真没
         # 恢复" (上游明确拒绝 429) 才计数; transient 自身上异常不消耗阈值。
-        if self.quota_probe_stall_after_attempts:
+        # V6.22: 恢复点未到不计数 — 有界配额窗口 (桶 until = 上游声明的重置点,
+        # glm 周配额/5h 窗口) 重置前探测失败是设计内必然; 计入停探阈值会把有界
+        # 窗口钉成永久隔离 (生产实证 2026-11-24: glm-5.3/flash 周配额桶 12 次
+        # 探满被钉 365d, 11-26 16:01 上游重置点既无探测也无流量 → 20h+ 不自愈)。
+        # 双信号判定: ①mark_failure 埋 bounded 标记的桶, until 未到不计;
+        # ②探测失败消息声明了未来重置点不计 (兜底 until 被解析上限截短的场景)。
+        # 恢复点已过仍失败 (上游迟重置/真停满) 照常计数 — 那才是停探的对象。
+        if not self._recovery_pending(account_id, model, st, error_msg) \
+                and self.quota_probe_stall_after_attempts:
             attempted = self._quarantine_stall.get((account_id, model), 0) + 1
             if attempted >= self.quota_probe_stall_after_attempts:
                 self._quarantine_stall[(account_id, model)] = attempted
@@ -638,7 +653,7 @@ class CooldownManager:
                 self._quarantine_probe.pop((account_id, model), None)
                 logger.warning(
                     f"CooldownManager: account_id={account_id} model={model} "
-                    f"共享吞吐桶连续 {attempted} 次探测未恢复 → 停止自动探测, "
+                    f"配额桶连续 {attempted} 次探测未恢复 → 停止自动探测, "
                     f"钉住隔离桶等人工确认 (需 ack-recover / 份额排查后才能放行)"
                 )
                 return
@@ -652,6 +667,44 @@ class CooldownManager:
             f"CooldownManager: account_id={account_id} model={model} "
             f"恢复探测未恢复 (桶仍隔离), 下次探测 {backoff:.0f}s 后"
         )
+
+    # ============ V6.22 恢复点感知 ============
+
+    def _recovery_pending(
+        self,
+        account_id: int,
+        model: str,
+        st: dict,
+        error_msg: str = "",
+    ) -> bool:
+        """V6.22: 探测失败是否发生在"恢复点未到"的有界窗口内.
+
+        有界配额窗口 (quota_exhausted 桶, until = 上游声明的重置点): 重置前
+        探测失败是设计内必然 — 上游没恢复本来就探不通, 计入停探阈值会把有界
+        窗口钉成永久隔离 (生产实证 2026-11-24: glm-5.3/flash 周配额桶 12 次
+        探满被钉 365d, 11-26 16:01 上游重置点既无探测也无流量 → 20h+ 不自愈)。
+
+        判定双信号 (满足其一 = 恢复点未到, 不计入停探阈值):
+        1. mark_failure 埋的 bounded 标记 + 桶 until 在未来 — quota_exhausted
+           桶 (glm 周配额/5h 窗口, minimax Token Plan, modelscope 日配额)
+           重置点之前的失败全部跳过;
+        2. 探测失败消息声明了未来重置点 (parse_quota_reset_datetime) — 兜底
+           桶 until 被 _RESET_MAX_SECONDS (7d) 解析上限截短的场景。
+
+        共享吞吐桶 (无 bounded 标记, V6.20/6.21 目标场景 — 池级 TPM/RPM 无
+        重置点) 照常计数; 恢复点已过仍失败 (上游迟重置/真停满) 照常计数 —
+        那才是 V6.21 停探要拦的对象。
+        """
+        until = self._quarantine.get((account_id, model))
+        if st.get("bounded") and until is not None and until > time.time():
+            return True
+        if error_msg:
+            from gateway.error_classifier import parse_quota_reset_datetime
+
+            reset_dt = parse_quota_reset_datetime(error_msg)
+            if reset_dt is not None and reset_dt > datetime.now():
+                return True
+        return False
 
     # ============ 维护 ============
 

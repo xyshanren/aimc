@@ -364,6 +364,7 @@ async def quota_recovery_probe() -> int:
         cooldown_manager.quota_probe_result(
             aid, model, success=probe["success"],
             transient=bool(probe.get("transient")),
+            error_msg=str(probe.get("error_msg") or ""),
         )
 
     if logs:

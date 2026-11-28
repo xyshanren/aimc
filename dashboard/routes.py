@@ -1673,12 +1673,27 @@ async def get_pending_summary(
             models = ", ".join(
                 f"{m}({rem:.0f}s)" for m, rem in s["quarantine_models"].items()
             )
+            # V6.22: last_error_msg 是账号级字段, 可能属于另一个模型的桶
+            # (生产实证: glm-5.4 的 5h 窗口消息混进 glm-5.3/flash 的隔离告警行,
+            # 看起来"重置点已过 20h 还不恢复", 实为别桶消息)。归属校验后才展示。
             msg = s.get("last_error_msg", "")[:100]
+            if s.get("last_error_model") and \
+                    s["last_error_model"] not in s["quarantine_models"]:
+                msg = ""
+            # V6.22: 钉桶 (>7d = 超过解析上限 7d 的隔离只可能是 V6.21 钉桶)
+            # 显式标注停探等人工, 区别于会自动恢复的普通有界隔离
+            max_rem = max(s["quarantine_models"].values(), default=0)
+            pinned_hint = (
+                "（已停探, 需人工确认恢复）" if max_rem > 7 * 86400 + 3600 else ""
+            )
             bucket_examples.append({
                 "account_id": aid,
                 "channel": ch_info["name"] if ch_info else "?",
                 "account_name": ch_info.get("account_name", "") if ch_info else "",
-                "error_msg": f"配额桶隔离中 {models}" + (f" — {msg}" if msg else ""),
+                "error_msg": (
+                    f"配额桶隔离中 {models}{pinned_hint}"
+                    + (f" — {msg}" if msg else "")
+                ),
             })
         items.append({
             "category": "quota_bucket",
